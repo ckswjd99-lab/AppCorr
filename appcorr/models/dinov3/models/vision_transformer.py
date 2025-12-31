@@ -179,6 +179,27 @@ class DinoVisionTransformer(nn.Module):
         self.head = nn.Identity()
         self.mask_token = nn.Parameter(torch.empty(1, embed_dim, device=device))
 
+        # AppCorr settings
+        self.appcorr_enabled = False
+        self.appcorr_update_attn = False
+        self.appcorr_pyramid_levels = [0]
+        self.appcorr_plan = []
+        self.appcorr_group = 0
+    
+    def set_appcorr_mode(
+        self,
+        enabled: bool | None = None,
+        update_attn: bool | None = None,
+        pyramid_levels: List[int] | None = None,
+        plan: List[Tuple[str, int, range, Optional[int]]] | None = None,
+        num_groups: int | None = None,
+    ):
+        if enabled is not None: self.appcorr_enabled = enabled
+        if update_attn is not None: self.appcorr_update_attn = update_attn
+        if pyramid_levels is not None: self.appcorr_pyramid_levels = pyramid_levels
+        if plan is not None: self.appcorr_plan = plan
+        if num_groups is not None: self.appcorr_group = num_groups
+
     def init_weights(self):
         self.rope_embed._init_weights()
         nn.init.normal_(self.cls_token, std=0.02)
@@ -220,18 +241,112 @@ class DinoVisionTransformer(nn.Module):
         return x, (H, W)
 
     def forward_features_list(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
+        # AppCorr-specific forward_features
+        if self.appcorr_enabled:
+            return self.forward_features_list_appcorr(x_list, masks_list)
+
         x = []
         rope = []
+
+        # Patch embed and concat additional tokens
         for t_x, t_masks in zip(x_list, masks_list):
             t2_x, hw_tuple = self.prepare_tokens_with_masks(t_x, t_masks)
             x.append(t2_x)
             rope.append(hw_tuple)
+        
+        # Run through transformer blocks
         for _, blk in enumerate(self.blocks):
             if self.rope_embed is not None:
                 rope_sincos = [self.rope_embed(H=H, W=W) for H, W in rope]
             else:
                 rope_sincos = [None for r in rope]
             x = blk(x, rope_sincos)
+        
+        # Post normalization and output formatting
+        output = self.post_features_list(x, masks_list)
+
+        return output
+
+    def forward_features_list_appcorr(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
+        if len(x_list) != 1:
+            raise NotImplementedError("AppCorr forward_features_list currently only supports single input.")
+
+        x_tensor = x_list[0]
+        mask = masks_list[0]
+
+        num_pretokens = 1 + self.n_storage_tokens  # CLS + storage tokens
+
+        x_pyramid = []
+        x_groups = []
+        rope_pyramid = []
+
+        # Prepare pyramid of inputs
+        for level in self.appcorr_pyramid_levels:
+            # downsample and upsample
+            x_temp = x_tensor
+            x_temp = nn.functional.interpolate(x_temp, scale_factor=2**(-level), mode='bicubic', align_corners=False)
+            x_temp = nn.functional.interpolate(x_temp, scale_factor=2**level, mode='bicubic', align_corners=False)
+
+            t2_x, hw_tuple = self.prepare_tokens_with_masks(x_temp, mask)
+            x_pyramid.append(t2_x)
+            rope_pyramid.append(hw_tuple)
+
+            # x_group = torch.randint(1, self.appcorr_group+1, (t2_x.shape[1], ))
+            
+            B, N, _ = t2_x.shape
+            probs = torch.rand((N, ), device=t2_x.device)
+            x_group = torch.ones((N, ), dtype=torch.long, device=t2_x.device)
+            
+            for i in range(1, self.appcorr_group):
+                threshold = 1.0 - (0.5 ** i)
+                x_group += (probs > threshold).long()
+            
+            x_groups.append(x_group)
+
+        # Run through transformer blocks
+        cache_feature = {}
+
+        x_feature = x_pyramid[0]
+        for (op_type, level, layers, group_idx) in self.appcorr_plan:
+            # TEST: Measure time
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+
+            if op_type == "A":
+                # Approx
+                for lidx in layers:
+                    blk = self.blocks[lidx]
+                    rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
+                    x_feature, cache_feature = blk.approx(x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}")
+            elif op_type == "C":
+                # Correct
+                dmask = (x_groups[level] == group_idx)
+                dmask[:num_pretokens] = True  # Always keep pre-tokens
+                dindice = dmask.nonzero(as_tuple=False).view(-1)
+
+                x_temp = x_pyramid[level]
+                for lidx in layers:
+                    blk = self.blocks[lidx]
+                    rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
+                    x_temp, cache_feature = blk.correct(x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}")
+                
+                x_feature[:, dindice] = x_temp[:, dindice].to(x_feature.dtype)
+            else:
+                raise NotImplementedError(f"Unknown op_type {op_type} in AppCorr plan.")
+        
+            end_event.record()
+            torch.cuda.synchronize()
+            elapsed_time_ms = start_event.elapsed_time(end_event)
+            # print(f"AppCorr block op_type={op_type}, level={level}, layers={list(layers)}, group_idx={group_idx} took {elapsed_time_ms:.2f} ms")
+        
+        # Post normalization and output formatting
+        output = self.post_features_list([x_feature], masks_list)
+        return output
+            
+
+    def post_features_list(self, x: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
+        # Post normalization and output formatting
         all_x = x
         output = []
         for idx, (x, masks) in enumerate(zip(all_x, masks_list)):
@@ -258,6 +373,7 @@ class DinoVisionTransformer(nn.Module):
                     "masks": masks,
                 }
             )
+
         return output
 
     def forward_features(self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
