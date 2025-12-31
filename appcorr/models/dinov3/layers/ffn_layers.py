@@ -75,3 +75,14 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         x2 = self.w2(x)
         hidden = F.silu(x1) * x2
         return self.w3(hidden)
+
+    def correct(self, x: Tensor, dindice: Tensor) -> Tensor:
+        x_sel = x[:, dindice]
+        x1 = self.w1(x_sel)
+        x2 = self.w2(x_sel)
+        hidden = F.silu(x1) * x2
+        x_sel = self.w3(hidden)
+
+        x = x.to(dtype=x_sel.dtype) # TEMP
+        x[:, dindice] = x_sel
+        return x

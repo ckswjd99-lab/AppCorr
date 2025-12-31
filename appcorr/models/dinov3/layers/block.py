@@ -3,7 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple, Dict
 
 import torch
 from torch import Tensor, nn
@@ -210,6 +210,22 @@ class SelfAttentionBlock(nn.Module):
             return self._forward_list(x_or_x_list, rope_list=rope_or_rope_list)
         else:
             raise AssertionError
+    
+    def approx(self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
+        x_attn, cache_feature = self.attn.approx(self.norm1(x), rope=rope, cache_feature=cache_feature, tag=tag)
+        x_attn = x + self.ls1(x_attn)
+        x_ffn = x_attn + self.ls2(self.mlp(self.norm2(x_attn)))
+
+        return x_ffn, cache_feature
+
+    def correct(self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
+        x_attn, cache_feature = self.attn.correct(self.norm1(x), dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag)
+        x_attn = x + self.ls1(x_attn)
+        
+        x_ffn = self.mlp.correct(self.norm2(x_attn), dindice=dindice)
+        x_ffn = x_attn + self.ls2(x_ffn)
+
+        return x_ffn, cache_feature
 
 
 class CausalSelfAttentionBlock(nn.Module):

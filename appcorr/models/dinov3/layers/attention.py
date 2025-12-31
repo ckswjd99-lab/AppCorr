@@ -4,7 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import math
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import torch
 import torch.nn.functional as F
@@ -84,6 +84,34 @@ class SelfAttention(nn.Module):
         k = k.to(dtype=k_dtype)
         return q, k
 
+    def apply_rope_partial(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor], dindice: Tensor) -> Tuple[Tensor, Tensor]:
+        # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
+        q_dtype = q.dtype
+        k_dtype = k.dtype
+        sin, cos = rope
+        rope_dtype = sin.dtype
+
+        N = q.shape[-2]
+        prefix = N - sin.shape[-2]
+        dindice_real = dindice[prefix:]
+
+        q_sel = q[:, :, dindice_real].to(dtype=rope_dtype)
+        k_sel = k[:, :, dindice_real].to(dtype=rope_dtype)
+
+        assert prefix >= 0
+        q_prefix = q[:, :, :prefix, :]
+        q_sel = rope_apply(q[:, :, dindice_real, :], sin[dindice_real-prefix], cos[dindice_real-prefix])
+        q_sel = torch.cat((q_prefix, q_sel), dim=-2)
+        
+        k_prefix = k[:, :, :prefix, :]
+        k_sel = rope_apply(k[:, :, dindice_real, :], sin[dindice_real-prefix], cos[dindice_real-prefix])
+        k_sel = torch.cat((k_prefix, k_sel), dim=-2)
+
+        q[:, :, dindice] = q_sel.to(dtype=q_dtype)
+        k[:, :, dindice] = k_sel.to(dtype=k_dtype)
+        
+        return q, k
+
     def forward(self, x: Tensor, attn_bias=None, rope: Tensor = None) -> Tensor:
         qkv = self.qkv(x)
         attn_v = self.compute_attention(qkv=qkv, attn_bias=attn_bias, rope=rope)
@@ -116,6 +144,42 @@ class SelfAttention(nn.Module):
         x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
+
+    def approx(self, x: Tensor, rope: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+        qkv = self.qkv(x)
+        cache_feature[f"{tag}_qkv"] = qkv.detach()
+
+        attn_v = self.compute_attention(qkv=qkv, attn_bias=None, rope=rope)
+        x = self.proj(attn_v)
+        x = self.proj_drop(x)
+
+        return x, cache_feature
+
+    def correct(self, x: Tensor, dindice: Tensor, rope: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+        qkv_old = cache_feature[f"{tag}_qkv"]
+        qkv_new = self.qkv(x[:, dindice])
+        qkv = qkv_old
+        qkv[:, dindice] = qkv_new
+
+        B, N, C = x.shape
+        num_alive = dindice.shape[0]
+
+        qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        q, k, v = torch.unbind(qkv, 2)
+        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+        if rope is not None:
+            q, k = self.apply_rope_partial(q, k, rope, dindice)
+        
+        attn_out_new = torch.nn.functional.scaled_dot_product_attention(q[:, :, dindice, :], k, v)
+        attn_out_new = attn_out_new.transpose(1, 2).reshape(B, num_alive, C)
+
+        x_sel = self.proj(attn_out_new)
+        x_sel = self.proj_drop(x_sel)
+
+        x = x.to(dtype=x_sel.dtype) # TEMP
+        x[:, dindice] = x_sel
+
+        return x, cache_feature
 
 
 class CausalSelfAttention(nn.Module):
