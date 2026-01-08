@@ -76,8 +76,9 @@ def eval_classifier(args):
     model.backbone.set_appcorr_mode(
         enabled=True, 
         update_attn=True, 
-        pyramid_levels=args.levels,  # 인자로 받은 levels 적용
-        plan=current_plan,           # 인자로 받은 plan 적용
+        pyramid_levels=args.levels,
+        token_res = [0.5, 1],
+        plan=current_plan,
         num_groups=args.groups,
     )
 
@@ -88,7 +89,8 @@ def eval_classifier(args):
             DEVICE, 
             image_size=256, 
             batch_size=args.batch_size, 
-            dtype=PRECISION, 
+            dtype=PRECISION,
+            # max_samples=args.batch_size * 10,  # For quick eval
         )
     
     print(f"[{args.plan} | Levels {args.levels}] Top-1 Accuracy: {eval_result['top1_accuracy']:.2f}%")

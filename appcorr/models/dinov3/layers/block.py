@@ -14,6 +14,8 @@ from .attention import CausalSelfAttention, SelfAttention
 from .ffn_layers import Mlp
 from .layer_scale import LayerScale  # , DropPath
 
+from ..utils.hier_token import HierarchicalToken
+
 torch._dynamo.config.automatic_dynamic_shapes = False
 torch._dynamo.config.accumulated_cache_size_limit = 1024
 
@@ -226,6 +228,36 @@ class SelfAttentionBlock(nn.Module):
         x_ffn = x_attn + self.ls2(x_ffn)
 
         return x_ffn, cache_feature
+
+    def approx_hier(self, x_approx: HierarchicalToken, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
+        x_orig_tensor = x_approx.to_tensor()
+        x_norm = x_approx.from_tensor(self.norm1(x_orig_tensor))
+        x_attn, cache_feature = self.attn.approx_hier(x_norm, rope=rope, cache_feature=cache_feature, tag=tag)
+        
+        x_approx.from_tensor(x_orig_tensor + self.ls1(x_attn.to_tensor()))
+
+        x_approx.from_tensor(x_approx.to_tensor() + self.ls2(self.mlp(self.norm2(x_approx.to_tensor()))))
+
+        return x_approx, cache_feature
+
+    def correct_hier(
+        self, 
+        x_approx: HierarchicalToken, 
+        x_correct: HierarchicalToken, 
+        rope_approx: Tuple[torch.Tensor], 
+        rope_correct: Tuple[torch.Tensor], 
+        cache_feature: Dict, 
+        tag: str
+    ) -> List[Tensor]:
+        x_orig_tensor = x_correct.to_tensor()
+        x_norm = x_correct.from_tensor(self.norm1(x_orig_tensor))
+        x_attn, cache_feature = self.attn.correct_hier(x_approx, x_norm, rope_approx, rope_correct, cache_feature=cache_feature, tag=tag)
+        
+        x_correct.from_tensor(x_orig_tensor + self.ls1(x_attn.to_tensor()))
+
+        x_correct.from_tensor(x_correct.to_tensor() + self.ls2(self.mlp(self.norm2(x_correct.to_tensor()))))
+
+        return x_correct, cache_feature
 
 
 class CausalSelfAttentionBlock(nn.Module):
