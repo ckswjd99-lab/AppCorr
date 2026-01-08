@@ -9,7 +9,9 @@ from typing import List, Tuple, Dict
 import torch
 import torch.nn.functional as F
 from ..utils import cat_keep_shapes, uncat_with_shapes
+from ..utils.hier_token import HierarchicalToken
 from torch import Tensor, nn
+
 
 
 # RoPE-related functions:
@@ -112,6 +114,21 @@ class SelfAttention(nn.Module):
         
         return q, k
 
+    def apply_rope_single(self, x: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tensor:
+        # All operations will use the dtype of rope, the output is cast back to the dtype of x
+        x_dtype = x.dtype
+        sin, cos = rope
+        rope_dtype = sin.dtype
+        x = x.to(dtype=rope_dtype)
+        N = x.shape[-2]
+        prefix = N - sin.shape[-2]
+        assert prefix >= 0
+        x_prefix = x[:, :, :prefix, :]
+        x = rope_apply(x[:, :, prefix:, :], sin, cos)  # [B, head, hw, D//head]
+        x = torch.cat((x_prefix, x), dim=-2)  # [B, head, N, D//head]
+        x = x.to(dtype=x_dtype)
+        return x
+
     def forward(self, x: Tensor, attn_bias=None, rope: Tensor = None) -> Tensor:
         qkv = self.qkv(x)
         attn_v = self.compute_attention(qkv=qkv, attn_bias=attn_bias, rope=rope)
@@ -180,6 +197,153 @@ class SelfAttention(nn.Module):
         x[:, dindice] = x_sel
 
         return x, cache_feature
+
+    def approx_hier(self, x: HierarchicalToken, rope: Tuple[Tensor], cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+        x_tensor = x.to_tensor()
+
+        qkv = self.qkv(x_tensor)
+        
+        B, N, C = x_tensor.shape
+
+        qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        q, k, v = torch.unbind(qkv, 2)
+        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+
+        # Cache k, v separately for pretokens, lowres, highres
+        k_pretokens = torch.zeros_like(x.pretokens, device=x.pretokens.device)
+        v_pretokens = torch.zeros_like(x.pretokens, device=x.pretokens.device)
+        k_lowres = torch.zeros_like(x.lowres_tokens, device=x.lowres_tokens.device)
+        v_lowres = torch.zeros_like(x.lowres_tokens, device=x.lowres_tokens.device)
+        k_highres = torch.zeros_like(x.highres_tokens, device=x.highres_tokens.device)
+        v_highres = torch.zeros_like(x.highres_tokens, device=x.highres_tokens.device)
+
+        k_reshaped = k.transpose(1, 2).reshape(B, N, C)
+        v_reshaped = v.transpose(1, 2).reshape(B, N, C)
+
+        k_pretokens.copy_(k_reshaped[..., :x.pretokens.shape[-2], :])
+        v_pretokens.copy_(v_reshaped[..., :x.pretokens.shape[-2], :])
+        k_lowres[..., x.lowres_alive, :].copy_(k_reshaped[..., x.pretokens.shape[-2]:x.pretokens.shape[-2]+x.lowres_alive.sum().item(), :])
+        v_lowres[..., x.lowres_alive, :].copy_(v_reshaped[..., x.pretokens.shape[-2]:x.pretokens.shape[-2]+x.lowres_alive.sum().item(), :])
+        k_highres[..., x.highres_alive, :].copy_(k_reshaped[..., x.pretokens.shape[-2]+x.lowres_alive.sum().item():, :])
+        v_highres[..., x.highres_alive, :].copy_(v_reshaped[..., x.pretokens.shape[-2]+x.lowres_alive.sum().item():, :])
+
+        cache_feature[f"{tag}_k_pretokens"] = k_pretokens.detach()
+        cache_feature[f"{tag}_v_pretokens"] = v_pretokens.detach()
+        cache_feature[f"{tag}_k_lowres"] = k_lowres.detach()
+        cache_feature[f"{tag}_v_lowres"] = v_lowres.detach()
+        cache_feature[f"{tag}_k_highres"] = k_highres.detach()
+        cache_feature[f"{tag}_v_highres"] = v_highres.detach()
+
+        if rope is not None:
+            q, k = self.apply_rope(q, k, rope)
+
+        # TODO: make attention mask
+        # -------------------------------------------------------------------------
+        # [Log N Correction] Low-res 토큰의 면적만큼 Logit에 가산점 부여
+        # -------------------------------------------------------------------------
+        # 1. 구간 길이 계산
+        n_pre = x.pretokens.shape[-2]
+        n_low_alive = int(x.lowres_alive.sum().item())
+        seq_len = k.shape[-2]
+
+        # 2. 면적비(N) 계산: (High_H / Low_H)^2 -> 예: (28/14)^2 = 4
+        if x.H_high is not None and x.H_low > 0:
+            area_ratio = (x.H_high // x.H_low) ** 2
+        else:
+            area_ratio = 1.0
+
+        # 3. Bias Tensor 생성: [1, 1, 1, Seq_Len] -> (B, Head, N, N)으로 브로드캐스팅됨
+        attn_bias = torch.zeros((1, 1, 1, seq_len), device=q.device, dtype=q.dtype)
+
+        # 4. Low-res 구간(Pretoken 직후 ~ Low-res 끝)에만 log(area) 적용
+        if area_ratio > 1.0 and n_low_alive > 0:
+            attn_bias[..., n_pre : n_pre + n_low_alive] = math.log(area_ratio)
+
+        x_tensor = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
+        x_tensor = x_tensor.transpose(1, 2).reshape(B, N, C)
+        x_tensor = self.proj(x_tensor)
+        x_tensor = self.proj_drop(x_tensor)
+
+        x = x.from_tensor(x_tensor)
+
+        return x, cache_feature
+    
+    def correct_hier(
+        self, 
+        x_approx: HierarchicalToken, 
+        x_correct: HierarchicalToken, 
+        rope_approx: Tuple[Tensor],
+        rope_correct: Tuple[Tensor], 
+        cache_feature: Dict, 
+        tag: str
+    ) -> Tuple[Tensor, dict]:
+        x_cor_tensor = x_correct.to_tensor()
+        B, Nq, C = x_cor_tensor.shape
+
+        # Generate q, k, v for the correction tokens
+        qkv_new = self.qkv(x_cor_tensor)
+        qkv_new = qkv_new.reshape(B, Nq, 3, self.num_heads, C // self.num_heads)
+        q_new, k_new, v_new = torch.unbind(qkv_new, 2)
+        k_new = k_new.reshape(B, -1, C)
+        v_new = v_new.reshape(B, -1, C)
+
+        # Retrieve cached k, v
+        k_pretokens, v_pretokens = cache_feature[f"{tag}_k_pretokens"], cache_feature[f"{tag}_v_pretokens"]
+        k_lowres, v_lowres = cache_feature[f"{tag}_k_lowres"], cache_feature[f"{tag}_v_lowres"]
+        k_highres, v_highres = cache_feature[f"{tag}_k_highres"], cache_feature[f"{tag}_v_highres"]
+
+        # Update cache
+        k_pretokens.copy_(k_new[..., :x_correct.num_pretokens, :])
+        v_pretokens.copy_(v_new[..., :x_correct.num_pretokens, :])
+        k_highres[..., x_correct.highres_alive, :].copy_(k_new[..., x_correct.num_pretokens:, :])
+        v_highres[..., x_correct.highres_alive, :].copy_(v_new[..., x_correct.num_pretokens:, :])
+        
+        # Take only alive tokens from lowres and highres
+        k_lowres = k_lowres[..., x_approx.lowres_alive, :]
+        v_lowres = v_lowres[..., x_approx.lowres_alive, :]
+        k_highres = k_highres[..., x_approx.highres_alive, :]
+        v_highres = v_highres[..., x_approx.highres_alive, :]
+
+        k = torch.cat([k_pretokens, k_lowres, k_highres], dim=-2)
+        v = torch.cat([v_pretokens, v_lowres, v_highres], dim=-2)
+
+        # Prepare q, k, v for attention computation
+        q = q_new.transpose(1, 2)
+        k = k.reshape(B, -1, self.num_heads, C // self.num_heads).transpose(1, 2)
+        v = v.reshape(B, -1, self.num_heads, C // self.num_heads).transpose(1, 2)
+
+        if rope_approx is not None:
+            q = self.apply_rope_single(q, rope_correct)
+            k = self.apply_rope_single(k, rope_approx)
+
+        # Make attention mask for low-res tokens
+        n_pre = k_pretokens.shape[-2]
+        n_low = k_lowres.shape[-2]
+        n_high = k_highres.shape[-2]
+        total_k = n_pre + n_low + n_high
+
+        if x_approx.H_low > 0:
+            area_ratio = (x_approx.H_high // x_approx.H_low) ** 2
+        else:
+            area_ratio = 1.0 
+
+        attn_bias = torch.zeros((1, 1, 1, total_k), device=q.device, dtype=q.dtype)
+
+        if n_low > 0 and area_ratio > 1.0:
+            bias_val = math.log(area_ratio)
+            attn_bias[..., n_pre : n_pre + n_low] = bias_val
+
+        # Attention computation
+        attn_out_new = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
+        attn_out_new = attn_out_new.transpose(1, 2).reshape(B, Nq, C)
+        x_sel = self.proj(attn_out_new)
+        x_sel = self.proj_drop(x_sel)
+
+        x_correct = x_correct.from_tensor(x_sel)
+
+        return x_correct, cache_feature
+
+
 
 
 class CausalSelfAttention(nn.Module):
