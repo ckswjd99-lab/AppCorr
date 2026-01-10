@@ -247,10 +247,11 @@ class DinoVisionTransformer(nn.Module):
     def forward_features_list(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
         # AppCorr-specific forward_features
         if self.appcorr_enabled:
-            if len(self.appcorr_token_res) == 1:
-                return self.forward_features_list_appcorr(x_list, masks_list)
-            else:
-                return self.forward_features_list_appcorr_hier(x_list, masks_list)
+            return self.forward_features_list_appcorr(x_list, masks_list)
+            # if len(self.appcorr_token_res) == 1:
+            #     return self.forward_features_list_appcorr(x_list, masks_list)
+            # else:
+            #     return self.forward_features_list_appcorr_hier(x_list, masks_list)
 
         x = []
         rope = []
@@ -307,9 +308,9 @@ class DinoVisionTransformer(nn.Module):
         x_feature = x_pyramid[0]
         for (op_type, level, layers, group_idx) in self.appcorr_plan:
             # TEST: Measure time
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
+            # start_event = torch.cuda.Event(enable_timing=True)
+            # end_event = torch.cuda.Event(enable_timing=True)
+            # start_event.record()
 
             if op_type == "A":
                 # Approx
@@ -321,7 +322,7 @@ class DinoVisionTransformer(nn.Module):
                 # Correct
                 dmask = (x_groups[level] == group_idx)
                 dmask[:num_pretokens] = True  # Always keep pre-tokens
-                dindice = dmask.nonzero(as_tuple=False).view(-1)
+                dindice = dmask.nonzero(as_tuple=False).view(-1).to(device=x_feature.device)
 
                 x_temp = x_pyramid[level]
                 for lidx in layers:
@@ -333,9 +334,9 @@ class DinoVisionTransformer(nn.Module):
             else:
                 raise NotImplementedError(f"Unknown op_type {op_type} in AppCorr plan.")
         
-            end_event.record()
-            torch.cuda.synchronize()
-            elapsed_time_ms = start_event.elapsed_time(end_event)
+            # end_event.record()
+            # torch.cuda.synchronize()
+            # elapsed_time_ms = start_event.elapsed_time(end_event)
             # print(f"AppCorr block op_type={op_type}, level={level}, layers={list(layers)}, group_idx={group_idx} took {elapsed_time_ms:.2f} ms")
         
         # Post normalization and output formatting
