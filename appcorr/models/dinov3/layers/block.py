@@ -224,10 +224,11 @@ class SelfAttentionBlock(nn.Module):
         x_attn, cache_feature = self.attn.correct(self.norm1(x), dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag)
         x_attn = x + self.ls1(x_attn)
         
-        x_ffn = self.mlp.correct(self.norm2(x_attn), dindice=dindice)
-        x_ffn = x_attn + self.ls2(x_ffn)
+        x_attn_sel = x_attn[:, dindice]
+        x_ffn_sel = x_attn_sel + self.ls2(self.mlp(self.norm2(x_attn_sel)))
+        x_attn[:, dindice] = x_ffn_sel
 
-        return x_ffn, cache_feature
+        return x_attn, cache_feature
 
     def approx_hier(self, x_approx: HierarchicalToken, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
         x_orig_tensor = x_approx.to_tensor()
