@@ -7,11 +7,12 @@ import math
 from typing import List, Tuple, Dict
 
 import torch
+from torch import Tensor, nn
 import torch.nn.functional as F
+
+from ._triton_kernels import apply_rope_partial_triton, apply_rope_full_triton
 from ..utils import cat_keep_shapes, uncat_with_shapes
 from ..utils.hier_token import HierarchicalToken
-from torch import Tensor, nn
-
 
 
 # RoPE-related functions:
@@ -87,30 +88,38 @@ class SelfAttention(nn.Module):
         return q, k
 
     def apply_rope_partial(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor], dindice: Tensor) -> Tuple[Tensor, Tensor]:
-        # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
+        # dindice: [num_alive] (1D Tensor, Shared)
+        
+        sin, cos = rope
         q_dtype = q.dtype
         k_dtype = k.dtype
-        sin, cos = rope
         rope_dtype = sin.dtype
 
-        N = q.shape[-2]
-        prefix = N - sin.shape[-2]
-        dindice_real = dindice[prefix:]
+        N = q.shape[-2]          # Total Seq Len (e.g., 197)
+        grid_size = sin.shape[-2] # RoPE Grid Size (e.g., 196)
+        prefix_len = N - grid_size # e.g., 1 (CLS Token)
 
-        q_sel = q[:, :, dindice_real].to(dtype=rope_dtype)
-        k_sel = k[:, :, dindice_real].to(dtype=rope_dtype)
-
-        assert prefix >= 0
-        q_prefix = q[:, :, :prefix, :]
-        q_sel = rope_apply(q[:, :, dindice_real, :], sin[dindice_real-prefix], cos[dindice_real-prefix])
-        q_sel = torch.cat((q_prefix, q_sel), dim=-2)
+        # 2. Select only Patch Indices (RoPE targets)
+        dindice_patches = dindice[prefix_len:] 
         
-        k_prefix = k[:, :, :prefix, :]
-        k_sel = rope_apply(k[:, :, dindice_real, :], sin[dindice_real-prefix], cos[dindice_real-prefix])
-        k_sel = torch.cat((k_prefix, k_sel), dim=-2)
+        # 3. Get RoPE params for specific positions
+        rope_indices = dindice_patches - prefix_len
+        
+        curr_sin = sin[rope_indices] # [M, D]
+        curr_cos = cos[rope_indices] # [M, D]
 
-        q[:, :, dindice] = q_sel.to(dtype=q_dtype)
-        k[:, :, dindice] = k_sel.to(dtype=k_dtype)
+        # 4. Gather only targets (Avoid touching Prefix/CLS)
+        # q: [B, H, N, D] -> [B, H, M, D]
+        q_target = q[:, :, dindice_patches].to(dtype=rope_dtype)
+        k_target = k[:, :, dindice_patches].to(dtype=rope_dtype)
+        
+        # 5. Apply RoPE
+        q_rotated = rope_apply(q_target, curr_sin, curr_cos)
+        k_rotated = rope_apply(k_target, curr_sin, curr_cos)
+        
+        # 6. Scatter back (In-Place Update)
+        q[:, :, dindice_patches] = q_rotated.to(dtype=q_dtype)
+        k[:, :, dindice_patches] = k_rotated.to(dtype=k_dtype)
         
         return q, k
 
@@ -148,7 +157,10 @@ class SelfAttention(nn.Module):
         x_flat = self.proj(x_flat)
         return uncat_with_shapes(x_flat, shapes, num_tokens)
 
-    def compute_attention(self, qkv: Tensor, attn_bias=None, rope=None) -> Tensor:
+    def compute_attention(
+        self, qkv: Tensor, attn_bias=None, rope=None,
+        cache_feature: Dict = None, tag: str = ""
+    ) -> Tensor:
         assert attn_bias is None
         B, N, _ = qkv.shape
         C = self.qkv.in_features
@@ -158,6 +170,11 @@ class SelfAttention(nn.Module):
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
+        
+        if cache_feature is not None and tag != "":
+            cls_attn_score = q[:, :, 0:1, :] @ k.transpose(-2, -1) * self.scale
+            cache_feature[f"{tag}_cls_attn_prob"] = cls_attn_score.softmax(-1).detach()
+
         x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
@@ -166,37 +183,77 @@ class SelfAttention(nn.Module):
         qkv = self.qkv(x)
         cache_feature[f"{tag}_qkv"] = qkv.detach()
 
-        attn_v = self.compute_attention(qkv=qkv, attn_bias=None, rope=rope)
+        attn_v = self.compute_attention(
+            qkv=qkv, attn_bias=None, rope=rope, cache_feature=cache_feature, tag=tag
+        )
         x = self.proj(attn_v)
         x = self.proj_drop(x)
 
         return x, cache_feature
 
     def correct(self, x: Tensor, dindice: Tensor, rope: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
-        qkv_old = cache_feature[f"{tag}_qkv"]
-        qkv_new = self.qkv(x[:, dindice])
-        qkv = qkv_old
-        qkv[:, dindice] = qkv_new
+        with torch.cuda.nvtx.range("Correct_Attn"):
+            B, N, C = x.shape
+            num_alive = dindice.shape[0]
+            num_pretokens = N - (rope[0].shape[0])
+            
+            # Fetch cached cls_attn_score and qkv
+            cls_attn_score = cache_feature[f"{tag}_cls_attn_prob"].mean(dim=1).squeeze(1) # [B, N]
+            qkv = cache_feature[f"{tag}_qkv"]   # [B, N, 3*D]
 
-        B, N, C = x.shape
-        num_alive = dindice.shape[0]
+            dindice_pre = dindice[:num_pretokens]      # [5] Shared pretokens
+            dindice_patches = dindice[num_pretokens:]  # [M] Shared candidate patches
+            
+            # Get scores for the shared candidate patches
+            # Indexing [B, N] with 1D indices [M] -> [B, M]
+            patch_scores = cls_attn_score[:, dindice_patches]
+            
+            # Select top 20% indices (local to dindice_patches)
+            cls_alive_ratio = 0.2
+            k_refined = int(dindice_patches.shape[0] * cls_alive_ratio)
+            _, topk_local_idx = torch.topk(patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
+            
+            # Map local indices back to global indices
+            # Indexing 1D tensor [M] with 2D tensor [B, k] -> [B, k]
+            selected_patch_indices = dindice_patches[topk_local_idx]
+            
+            # Combine expanded pretokens with selected patches -> [B, 5 + k]
+            final_dindice = torch.cat([dindice_pre.unsqueeze(0).expand(B, -1), selected_patch_indices], dim=1)
+            cache_feature[f"{tag}_final_dindice"] = final_dindice.detach()
 
-        qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
-        q, k, v = torch.unbind(qkv, 2)
-        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
-        if rope is not None:
-            q, k = self.apply_rope_partial(q, k, rope, dindice)
-        
-        attn_out_new = torch.nn.functional.scaled_dot_product_attention(q[:, :, dindice, :], k, v)
-        attn_out_new = attn_out_new.transpose(1, 2).reshape(B, num_alive, C)
+            gather_idx_x = final_dindice.unsqueeze(-1).expand(-1, -1, C)  # [B, num_finalive, C]
+            num_finalive = gather_idx_x.shape[1]
 
-        x_sel = self.proj(attn_out_new)
-        x_sel = self.proj_drop(x_sel)
+            # Select only necessary patches
+            x_sel = torch.gather(x, 1, gather_idx_x)  # [B, num_finalive, C]
+            qkv_new = self.qkv(x_sel)  # [B, num_finalive, 3*D]
 
-        x = x.to(dtype=x_sel.dtype) # TEMP
-        x[:, dindice] = x_sel
+            gather_idx_qkv = final_dindice.unsqueeze(-1).expand(-1, -1, qkv.shape[-1])  # [B, num_finalive, 3*D]
+            qkv.scatter_(1, gather_idx_qkv, qkv_new)  # Update qkv cache
 
-        return x, cache_feature
+            qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
+            q, k, v = torch.unbind(qkv, 2)
+            q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+            if rope is not None:
+                # q, k = self.apply_rope_partial(q, k, rope, dindice)
+                apply_rope_partial_triton(q, k, rope, dindice)
+                # apply_rope_full_triton(q, k, rope)
+            
+            q_sel = q.gather(2, final_dindice.view(B, 1, num_finalive, 1).expand(-1, self.num_heads, -1, C // self.num_heads))
+            q_sel = q_sel.contiguous()
+
+            attn_out_new = torch.nn.functional.scaled_dot_product_attention(q_sel, k, v)
+            attn_out_new = attn_out_new.transpose(1, 2).reshape(B, num_finalive, C)
+
+            x_sel = self.proj(attn_out_new)
+            x_sel = self.proj_drop(x_sel)
+
+            x.fill_(0)
+            x.scatter_(1, gather_idx_x, x_sel.to(x.dtype))
+
+            torch.cuda.synchronize()
+
+            return x, cache_feature
 
     def approx_hier(self, x: HierarchicalToken, rope: Tuple[Tensor], cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
         x_tensor = x.to_tensor()

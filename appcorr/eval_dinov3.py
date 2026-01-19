@@ -34,10 +34,34 @@ PLAN_INTERLEAVED_CORRECT_S4 = [
     ("C", 1, range( 0, 40),    4),
 ]
 
+PLAN_INTERLEAVED_CORRECT_S4_LDROP = [
+    ("A", 0, range( 0, 10), None),
+    ("C", 1, range( 0, 10),    1),
+    ("A", 0, range(10, 20), None),
+    ("C", 1, range( 0, 20),    2),
+    ("A", 0, range(20, 30), None),
+    ("C", 1, [i for i in range( 0, 30) if i % 3 in [0, 1]],    3),
+    ("A", 0, range(30, 40), None),
+    ("C", 1, [i for i in range( 0, 40) if i % 4 in [0, 2]],    4),
+]
+
+PLAN_INTERLEAVED_CORRECT_S4_LDROP_V2 = [
+    ("A", 0, range( 0, 10), None),
+    ("C", 1, [i for i in range( 0, 10) if i % 3 in [0]],    1),     # 4 layers alive, 6 dropped
+    ("A", 0, range(10, 20), None),
+    ("C", 1, [i for i in range( 0, 20) if i % 2 in [0]],    2),     # 10 layers alive, 10 dropped
+    ("A", 0, range(20, 30), None),
+    ("C", 1, [i for i in range( 0, 30) if i % 3 in [0, 1]],    3),  # 20 layers alive, 10 dropped
+    ("A", 0, range(30, 40), None),
+    ("C", 1, [i for i in range( 0, 40) if i % 4 in [0, 1, 2]],    4),   # 30 layers alive, 10 dropped
+]
+
 PLANS = {
     "approx_only": PLAN_APPROX_ONLY,
     "interleaved_correct_s2": PLAN_INTERLEAVED_CORRECT_S2,
     "interleaved_correct_s4": PLAN_INTERLEAVED_CORRECT_S4,
+    "interleaved_correct_s4_ldrop": PLAN_INTERLEAVED_CORRECT_S4_LDROP,
+    "interleaved_correct_s4_ldrop_v2": PLAN_INTERLEAVED_CORRECT_S4_LDROP_V2,
 }
 
 def get_args():
@@ -60,13 +84,14 @@ def get_args():
 
 @torch.inference_mode()
 def eval_classifier(args):
-    print(f"\n>>> CONFIG: Levels={args.levels} | Plan={args.plan} | Groups={args.groups}")
+    print(f"\n>>> CONFIG: Levels={args.levels} | Plan={args.plan} | Groups={args.groups} | Batch Size={args.batch_size}")
     
     model = dinov3_vit7b16_lc(
         pretrained=True,
         weights="~/cjpark/weights/dinov3/dinov3_vit7b16_imagenet1k_linear_head-90d8ed92.pth",
         backbone_weights="~/cjpark/weights/dinov3/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
     )
+    model.eval()
     model = model.to(dtype=PRECISION).to(device=DEVICE)
     print("Model loaded.")
 
@@ -90,7 +115,7 @@ def eval_classifier(args):
             image_size=256, 
             batch_size=args.batch_size, 
             dtype=PRECISION,
-            # max_samples=args.batch_size * 10,  # For quick eval
+            max_samples=args.batch_size * 10,  # For quick eval
         )
     
     print(f"[{args.plan} | Levels {args.levels}] Top-1 Accuracy: {eval_result['top1_accuracy']:.2f}%")

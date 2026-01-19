@@ -7,6 +7,7 @@ from typing import Callable, List, Optional
 
 import torch.nn.functional as F
 from torch import Tensor, nn
+import torch
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 
@@ -71,8 +72,11 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         self.w3 = nn.Linear(swiglu_hidden_features, out_features, bias=bias, device=device)
 
     def forward(self, x: Tensor) -> Tensor:
-        x1 = self.w1(x)
-        x2 = self.w2(x)
-        hidden = F.silu(x1) * x2
-        output = self.w3(hidden)
+        with torch.cuda.nvtx.range("SwiGLUFFN"):
+            x1 = self.w1(x)
+            x2 = self.w2(x)
+            hidden = F.silu(x1) * x2
+            output = self.w3(hidden)
+
+            torch.cuda.synchronize()
         return output
