@@ -10,6 +10,7 @@ from torch import Tensor, nn
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 
+from ._triton_kernels import fused_layerscale_add
 from .attention import CausalSelfAttention, SelfAttention
 from .ffn_layers import Mlp
 from .layer_scale import LayerScale  # , DropPath
@@ -216,13 +217,21 @@ class SelfAttentionBlock(nn.Module):
     def approx(self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
         x_attn, cache_feature = self.attn.approx(self.norm1(x), rope=rope, cache_feature=cache_feature, tag=tag)
         x_attn = x + self.ls1(x_attn)
-        x_ffn = x_attn + self.ls2(self.mlp(self.norm2(x_attn)))
+        mlp_out = self.ls2(self.mlp(self.norm2(x_attn)))  # [B, N, C]
+
+        mlp_norms = torch.norm(mlp_out, dim=-1)  # [B, N]
+        cache_feature[f"{tag}_mlp_norms"] = mlp_norms
+
+        x_ffn = x_attn + mlp_out
 
         return x_ffn, cache_feature
 
     def correct(self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
+        # TODO: Normalize only dindice
+
         x_attn, cache_feature = self.attn.correct(self.norm1(x), dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag)
-        x_attn = x + self.ls1(x_attn)
+        # x_attn = x + self.ls1(x_attn)
+        x_attn = fused_layerscale_add(x, x_attn, self.ls1.gamma)
         
         x_attn_sel = x_attn[:, dindice]
         x_ffn_sel = x_attn_sel + self.ls2(self.mlp(self.norm2(x_attn_sel)))
