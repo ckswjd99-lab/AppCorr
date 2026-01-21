@@ -40,9 +40,9 @@ PLAN_INTERLEAVED_CORRECT_S4_LDROP = [
     ("A", 0, range(10, 20), None),
     ("C", 1, range( 0, 20),    2),
     ("A", 0, range(20, 30), None),
-    ("C", 1, [i for i in range( 0, 30) if i % 3 in [0, 1]],    3),
+    ("C", 1, [i for i in range( 0, 30) if i % 3 in [0, 1]],    3),  # 20 layers alive, 10 dropped
     ("A", 0, range(30, 40), None),
-    ("C", 1, [i for i in range( 0, 40) if i % 4 in [0, 2]],    4),
+    ("C", 1, [i for i in range( 0, 40) if i % 4 in [0, 2]],    4),  # 20 layers alive, 20 dropped
 ]
 
 PLAN_INTERLEAVED_CORRECT_S4_LDROP_V2 = [
@@ -77,6 +77,8 @@ def get_args():
     
     # Groups (for interleaved correct)
     parser.add_argument("--groups", type=int, default=4, help="Number of groups for correction")
+    parser.add_argument("--group-strategy", type=str, default="uniform", choices=["uniform", "grid", "geometric"],
+                        help="Group selection strategy")
     
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     
@@ -102,9 +104,10 @@ def eval_classifier(args):
         enabled=True, 
         update_attn=True, 
         pyramid_levels=args.levels,
-        token_res = [0.5, 1],
+        token_res = [1],
         plan=current_plan,
         num_groups=args.groups,
+        group_strategy=args.group_strategy,        
     )
 
     # Eval
@@ -115,7 +118,7 @@ def eval_classifier(args):
             image_size=256, 
             batch_size=args.batch_size, 
             dtype=PRECISION,
-            max_samples=args.batch_size * 10,  # For quick eval
+            # max_samples=args.batch_size * 20,  # For quick eval
         )
     
     print(f"[{args.plan} | Levels {args.levels}] Top-1 Accuracy: {eval_result['top1_accuracy']:.2f}%")

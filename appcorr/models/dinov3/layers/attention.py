@@ -181,13 +181,15 @@ class SelfAttention(nn.Module):
 
     def approx(self, x: Tensor, rope: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
         qkv = self.qkv(x)
-        cache_feature[f"{tag}_qkv"] = qkv.detach()
+        cache_feature[f"{tag}_qkv"] = qkv.detach().clone()
 
         attn_v = self.compute_attention(
             qkv=qkv, attn_bias=None, rope=rope, cache_feature=cache_feature, tag=tag
         )
         x = self.proj(attn_v)
         x = self.proj_drop(x)
+
+        cache_feature[f"{tag}_attn_out"] = x.detach().clone()
 
         return x, cache_feature
 
@@ -209,7 +211,7 @@ class SelfAttention(nn.Module):
             patch_scores = cls_attn_score[:, dindice_patches]
             
             # Select top 20% indices (local to dindice_patches)
-            cls_alive_ratio = 0.2
+            cls_alive_ratio = 0.12
             k_refined = int(dindice_patches.shape[0] * cls_alive_ratio)
             _, topk_local_idx = torch.topk(patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
             
@@ -248,8 +250,9 @@ class SelfAttention(nn.Module):
             x_sel = self.proj(attn_out_new)
             x_sel = self.proj_drop(x_sel)
 
-            x.fill_(0)
-            x.scatter_(1, gather_idx_x, x_sel.to(x.dtype))
+            attn_out_old = cache_feature[f"{tag}_attn_out"]
+            attn_out_old.scatter_(1, gather_idx_x, x_sel)
+            x = attn_out_old
 
             torch.cuda.synchronize()
 
