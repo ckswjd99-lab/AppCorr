@@ -187,6 +187,7 @@ class DinoVisionTransformer(nn.Module):
         self.appcorr_token_res = [1.0]
         self.appcorr_plan = []
         self.appcorr_group = 0
+        self.appcorr_grouping_strategy = "uniform"
     
     def set_appcorr_mode(
         self,
@@ -196,6 +197,7 @@ class DinoVisionTransformer(nn.Module):
         token_res: List[float] | None = None,
         plan: List[Tuple[str, int, range, Optional[int]]] | None = None,
         num_groups: int | None = None,
+        group_strategy: str | None = None,
     ):
         if enabled is not None: self.appcorr_enabled = enabled
         if update_attn is not None: self.appcorr_update_attn = update_attn
@@ -203,6 +205,7 @@ class DinoVisionTransformer(nn.Module):
         if token_res is not None: self.appcorr_token_res = token_res
         if plan is not None: self.appcorr_plan = plan
         if num_groups is not None: self.appcorr_group = num_groups
+        if group_strategy is not None: self.appcorr_grouping_strategy = group_strategy
 
     def init_weights(self):
         self.rope_embed._init_weights()
@@ -299,8 +302,52 @@ class DinoVisionTransformer(nn.Module):
             x_pyramid.append(t2_x)
             rope_pyramid.append(hw_tuple)
 
-            x_group = torch.randint(1, self.appcorr_group+1, (t2_x.shape[1], ))
-            x_groups.append(x_group)
+            if self.appcorr_grouping_strategy == "uniform":
+                x_group = torch.randint(1, self.appcorr_group+1, (t2_x.shape[1], ))
+                x_groups.append(x_group)
+            elif self.appcorr_grouping_strategy == "grid":
+                # # repeat 1, 2, 3, ..., num_groups
+                # repeats = (t2_x.shape[1] + self.appcorr_group - 1) // self.appcorr_group
+                # x_group = torch.arange(1, self.appcorr_group+1, device=t2_x.device).repeat(repeats)[:t2_x.shape[1]]
+                # x_groups.append(x_group)
+
+                g = self.appcorr_group
+                s = int(g ** 0.5)  # sqrt(g), assumes perfect square
+                H, W = hw_tuple
+                
+                # 1. Create the s x s pattern block
+                # e.g., if g=4: [[1, 2], [3, 4]]
+                pattern = torch.arange(1, g + 1, device=t2_x.device).view(s, s)
+                
+                # 2. Tile the pattern to cover (H, W)
+                rep_h = (H + s - 1) // s
+                rep_w = (W + s - 1) // s
+                # Repeat and crop to exact H, W
+                grid_2d = pattern.repeat(rep_h, rep_w)[:H, :W]
+                
+                # 3. Flatten to match patch sequence
+                patch_groups = grid_2d.flatten()
+                
+                # 4. Handle pretokens (CLS, registers, etc.)
+                # We prepend dummy group IDs (e.g., 1) to match t2_x length
+                total_tokens = t2_x.shape[1]
+                num_pretokens = total_tokens - patch_groups.shape[0]
+                
+                if num_pretokens > 0:
+                    # Assign group 1 to pretokens so they are included in the first batch
+                    pre_groups = torch.full((num_pretokens,), 1, device=t2_x.device, dtype=patch_groups.dtype)
+                    x_group = torch.cat([pre_groups, patch_groups], dim=0)
+                else:
+                    x_group = patch_groups
+                    
+                x_groups.append(x_group)
+            elif self.appcorr_grouping_strategy == "geometric":
+                probs = torch.rand(t2_x.shape[1], device=t2_x.device)
+
+                x_group = torch.floor(-torch.log2(1 - probs)) + 1
+                x_group = torch.clamp(x_group, max=self.appcorr_group).long()
+
+                x_groups.append(x_group)
 
         # Run through transformer blocks
         cache_feature = {}
@@ -315,9 +362,12 @@ class DinoVisionTransformer(nn.Module):
             if op_type == "A":
                 # Approx
                 for lidx in layers:
-                    blk = self.blocks[lidx]
-                    rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
-                    x_feature, cache_feature = blk.approx(x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}")
+                    with torch.cuda.nvtx.range(f"Approx_{lidx}"):
+                        blk = self.blocks[lidx]
+                        rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
+                        x_feature, cache_feature = blk.approx(x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}")
+
+                        torch.cuda.synchronize()
             elif op_type == "C":
                 # Correct
                 dmask = (x_groups[level] == group_idx)
@@ -325,12 +375,17 @@ class DinoVisionTransformer(nn.Module):
                 dindice = dmask.nonzero(as_tuple=False).view(-1).to(device=x_feature.device)
 
                 x_temp = x_pyramid[level]
-                for lidx in layers:
-                    blk = self.blocks[lidx]
-                    rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
-                    x_temp, cache_feature = blk.correct(x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}")
+                rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
                 
-                x_feature[:, dindice] = x_temp[:, dindice].to(x_feature.dtype)
+                for lidx in layers:
+                    with torch.cuda.nvtx.range(f"Correct_{lidx}"):
+                        blk = self.blocks[lidx]
+                        x_temp, cache_feature = blk.correct(x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}")
+
+                        torch.cuda.synchronize()
+                
+                # x_feature[:, dindice] = x_temp[:, dindice].to(x_feature.dtype)
+                x_feature = x_temp.to(x_feature.dtype)
             else:
                 raise NotImplementedError(f"Unknown op_type {op_type} in AppCorr plan.")
         
@@ -415,19 +470,22 @@ class DinoVisionTransformer(nn.Module):
 
         for (op_type, level, layers, group_idx) in self.appcorr_plan:
             # TEST: Measure time
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
+            # start_event = torch.cuda.Event(enable_timing=True)
+            # end_event = torch.cuda.Event(enable_timing=True)
+            # start_event.record()
 
             if op_type == "A":
                 # Approx
                 for lidx in layers:
-                    blk = self.blocks[lidx]
-                    if self.rope_embed is not None:
-                        rope_sincos = (rope_sin_approx.to_tensor(), rope_cos_approx.to_tensor())
-                    else:
-                        rope_sincos = None
-                    x_approx, cache_feature = blk.approx_hier(x_approx, rope_sincos, cache_feature, tag=f"layer{lidx}")
+                    with torch.cuda.nvtx.range(f"Approx_{lidx}"):
+                        blk = self.blocks[lidx]
+                        if self.rope_embed is not None:
+                            rope_sincos = (rope_sin_approx.to_tensor(), rope_cos_approx.to_tensor())
+                        else:
+                            rope_sincos = None
+                        x_approx, cache_feature = blk.approx_hier(x_approx, rope_sincos, cache_feature, tag=f"layer{lidx}")
+
+                        torch.cuda.synchronize()
             elif op_type == "C":
                 # Correct
                 dmask = (x_groups[0] == group_idx)
@@ -442,32 +500,35 @@ class DinoVisionTransformer(nn.Module):
                 rope_cos_approx.split_tokens(dindice)
 
                 for lidx in layers:
-                    blk = self.blocks[lidx]
-                    if self.rope_embed is not None:
-                        rope_sincos_approx = (rope_sin_approx.to_tensor(), rope_cos_approx.to_tensor())
-                        rope_sincos_correct = (
-                            rope_sin_approx.highres_tokens[..., dindice_highres, :],
-                            rope_cos_approx.highres_tokens[..., dindice_highres, :],
+                    with torch.cuda.nvtx.range(f"Correct_{lidx}"):
+                        blk = self.blocks[lidx]
+                        if self.rope_embed is not None:
+                            rope_sincos_approx = (rope_sin_approx.to_tensor(), rope_cos_approx.to_tensor())
+                            rope_sincos_correct = (
+                                rope_sin_approx.highres_tokens[..., dindice_highres, :],
+                                rope_cos_approx.highres_tokens[..., dindice_highres, :],
+                            )
+                        else:
+                            rope_sincos_approx = None
+                            rope_sincos_correct = None
+                        x_correct, cache_feature = blk.correct_hier(
+                            x_approx, 
+                            x_correct, 
+                            rope_sincos_approx, 
+                            rope_sincos_correct,
+                            cache_feature, 
+                            tag=f"layer{lidx}"
                         )
-                    else:
-                        rope_sincos_approx = None
-                        rope_sincos_correct = None
-                    x_correct, cache_feature = blk.correct_hier(
-                        x_approx, 
-                        x_correct, 
-                        rope_sincos_approx, 
-                        rope_sincos_correct,
-                        cache_feature, 
-                        tag=f"layer{lidx}"
-                    )
+
+                        torch.cuda.synchronize()
                 
                 x_approx.highres_tokens[..., dindice_highres, :] = x_correct.highres_tokens[..., dindice_highres, :].to(x_approx.highres_tokens.dtype)
             else:
                 raise NotImplementedError(f"Unknown op_type {op_type} in AppCorr plan.")
         
-            end_event.record()
-            torch.cuda.synchronize()
-            elapsed_time_ms = start_event.elapsed_time(end_event)
+            # end_event.record()
+            # torch.cuda.synchronize()
+            # elapsed_time_ms = start_event.elapsed_time(end_event)
             # print(f"AppCorr block op_type={op_type}, level={level}, layers={list(layers)}, group_idx={group_idx} took {elapsed_time_ms:.2f} ms")
         
         # Post normalization and output formatting

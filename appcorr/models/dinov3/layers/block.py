@@ -218,9 +218,7 @@ class SelfAttentionBlock(nn.Module):
         x_attn, cache_feature = self.attn.approx(self.norm1(x), rope=rope, cache_feature=cache_feature, tag=tag)
         x_attn = x + self.ls1(x_attn)
         mlp_out = self.ls2(self.mlp(self.norm2(x_attn)))  # [B, N, C]
-
-        mlp_norms = torch.norm(mlp_out, dim=-1)  # [B, N]
-        cache_feature[f"{tag}_mlp_norms"] = mlp_norms
+        cache_feature[f"{tag}_mlp_out"] = mlp_out.detach().clone()
 
         x_ffn = x_attn + mlp_out
 
@@ -232,10 +230,15 @@ class SelfAttentionBlock(nn.Module):
         x_attn, cache_feature = self.attn.correct(self.norm1(x), dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag)
         # x_attn = x + self.ls1(x_attn)
         x_attn = fused_layerscale_add(x, x_attn, self.ls1.gamma)
-        
-        x_attn_sel = x_attn[:, dindice]
-        x_ffn_sel = x_attn_sel + self.ls2(self.mlp(self.norm2(x_attn_sel)))
-        x_attn[:, dindice] = x_ffn_sel
+
+        final_dindice = cache_feature[f"{tag}_final_dindice"]
+        x_attn_sel = x_attn.gather(1, final_dindice.unsqueeze(-1).expand(-1, -1, x_attn.shape[-1])).contiguous()
+
+        mlp_out = cache_feature[f"{tag}_mlp_out"]
+        mlp_out_new = self.ls2(self.mlp(self.norm2(x_attn_sel)))
+        mlp_out.scatter_(1, final_dindice.unsqueeze(-1).expand(-1, -1, x_attn.shape[-1]), mlp_out_new)
+
+        x_attn += mlp_out.to(x_attn.dtype)
 
         return x_attn, cache_feature
 

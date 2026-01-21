@@ -243,3 +243,141 @@ def fused_layerscale_add(x, x_attn, gamma):
         BLOCK_SIZE=1024, # Optimized for most GPU architectures
     )
     return output
+
+
+@triton.jit
+def swiglu_quant_kernel(
+    x1_ptr, x2_ptr,       # Inputs (B, N, C)
+    out_ptr, scale_ptr,   # Outputs (FP8 Data, FP32 Scale)
+    n_tokens, n_channels, # Flattened Shapes
+    stride_xm, stride_xk, 
+    stride_om, stride_ok, 
+    BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(0)
+    row_idx = pid 
+    
+    # 포인터 오프셋 계산
+    x1_row_ptr = x1_ptr + row_idx * stride_xm
+    x2_row_ptr = x2_ptr + row_idx * stride_xm
+    out_row_ptr = out_ptr + row_idx * stride_om
+    
+    max_val = 0.0
+    
+    # 1st Pass: SwiGLU 계산 및 Max 값 찾기 (SRAM에서 처리)
+    for off in range(0, n_channels, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask = cols < n_channels
+        
+        # Load inputs (FP16/BF16 -> FP32)
+        x1 = tl.load(x1_row_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+        x2 = tl.load(x2_row_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+        
+        # SwiGLU: SiLU(x1) * x2
+        silu = x1 * tl.sigmoid(x1)
+        val = silu * x2
+        
+        # Max Abs 추적 (Quantization Scale용)
+        max_val = tl.maximum(max_val, tl.max(tl.abs(val), axis=0))
+
+    # Scale 계산 (E4M3 범위: 448)
+    scale = max_val / 448.0
+    tl.store(scale_ptr + row_idx, scale)
+
+    # 2nd Pass: Quantization 및 Store
+    for off in range(0, n_channels, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask = cols < n_channels
+        
+        # Reload (SRAM 히트율 높음)
+        x1 = tl.load(x1_row_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+        x2 = tl.load(x2_row_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+        
+        silu = x1 * tl.sigmoid(x1)
+        val = silu * x2
+        
+        # FP8 Quantization
+        val_fp8 = (val / (scale + 1e-12)).to(tl.float8e4nv)
+        tl.store(out_row_ptr + cols, val_fp8, mask=mask)
+
+def fused_swiglu_quant(x1: torch.Tensor, x2: torch.Tensor):
+    B, N, C = x1.shape
+    x1_flat = x1.view(-1, C)
+    x2_flat = x2.view(-1, C)
+    n_tokens = B * N
+    
+    out_fp8 = torch.empty_like(x1_flat, dtype=torch.float8_e4m3fn)
+    scale = torch.empty((n_tokens, 1), device=x1.device, dtype=torch.float32)
+    
+    BLOCK_SIZE = 2048 if C >= 4096 else 1024
+    grid = (n_tokens, )
+    
+    swiglu_quant_kernel[grid](
+        x1_flat, x2_flat, out_fp8, scale, n_tokens, C,
+        x1_flat.stride(0), x1_flat.stride(1),
+        out_fp8.stride(0), out_fp8.stride(1),
+        BLOCK_SIZE=BLOCK_SIZE
+    )
+    return out_fp8, scale
+
+@triton.jit
+def quantize_input_kernel(
+    x_ptr,           # Input (BF16)
+    out_ptr,         # Output (FP8)
+    scale_ptr,       # Output Scale (FP32)
+    n_elements,      # Total tokens
+    n_channels,      # Hidden Dim
+    stride_xn, stride_xc,
+    stride_on, stride_oc,
+    BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(0)
+    row_idx = pid
+    
+    # Pointers
+    x_row_ptr = x_ptr + row_idx * stride_xn
+    out_row_ptr = out_ptr + row_idx * stride_on
+    
+    max_val = 0.0
+    
+    # 1. Max Finding
+    for off in range(0, n_channels, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask = cols < n_channels
+        val = tl.load(x_row_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+        max_val = tl.maximum(max_val, tl.max(tl.abs(val), axis=0))
+        
+    # Scale Calculation (E4M3: 448.0)
+    scale = max_val / 448.0
+    tl.store(scale_ptr + row_idx, scale)
+    
+    # 2. Quantization
+    for off in range(0, n_channels, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask = cols < n_channels
+        val = tl.load(x_row_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+        val_fp8 = (val / (scale + 1e-12)).to(tl.float8e4nv)
+        tl.store(out_row_ptr + cols, val_fp8, mask=mask)
+
+def quantize_input(x: torch.Tensor):
+    """
+    x: (B, N, C) or (Total_Tokens, C) - BF16
+    Returns: x_fp8 (Total_Tokens, C), x_scale (Total_Tokens, 1)
+    """
+    x_flat = x.view(-1, x.shape[-1])
+    M, K = x_flat.shape
+    
+    out_fp8 = torch.empty_like(x_flat, dtype=torch.float8_e4m3fn)
+    scale = torch.empty((M, 1), device=x.device, dtype=torch.float32)
+    
+    BLOCK_SIZE = 2048 if K >= 4096 else 1024
+    grid = (M, )
+    
+    quantize_input_kernel[grid](
+        x_flat, out_fp8, scale,
+        M, K,
+        x_flat.stride(0), x_flat.stride(1),
+        out_fp8.stride(0), out_fp8.stride(1),
+        BLOCK_SIZE=BLOCK_SIZE
+    )
+    return out_fp8, scale
