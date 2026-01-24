@@ -42,7 +42,7 @@ class SelfAttentionBlock(nn.Module):
         device=None,
     ) -> None:
         super().__init__()
-        # print(f"biases: qkv: {qkv_bias}, proj: {proj_bias}, ffn: {ffn_bias}")
+        
         self.norm1 = norm_layer(dim)
         self.attn = attn_class(
             dim,
@@ -214,63 +214,82 @@ class SelfAttentionBlock(nn.Module):
         else:
             raise AssertionError
     
-    def approx(self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
-        x_attn, cache_feature = self.attn.approx(self.norm1(x), rope=rope, cache_feature=cache_feature, tag=tag)
-        x_attn = x + self.ls1(x_attn)
-        mlp_out = self.ls2(self.mlp(self.norm2(x_attn)))  # [B, N, C]
-        cache_feature[f"{tag}_mlp_out"] = mlp_out.detach().clone()
+    def approx(
+        self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
+        # check debug
+        debug = kwargs.get("debug", False)
 
-        x_ffn = x_attn + mlp_out
+        with torch.cuda.nvtx.range("approx_attn"):
+            x_attn, cache_feature = self.attn.approx(self.norm1(x), rope=rope, cache_feature=cache_feature, tag=tag)
+            x_attn = self.ls1(x_attn)  # [B, N, C]
+            cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
+            
+            x_attn = x + x_attn
+
+            if debug:
+                torch.cuda.synchronize()
+
+        with torch.cuda.nvtx.range("approx_ffn"):
+            mlp_out = self.ls2(self.mlp(self.norm2(x_attn)))  # [B, N, C]
+            cache_feature[f"{tag}_blocks_out_sum"] += mlp_out.detach()
+
+            x_ffn = x_attn + mlp_out
+
+            if debug:
+                torch.cuda.synchronize()
 
         return x_ffn, cache_feature
 
-    def correct(self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
-        # TODO: Normalize only dindice
-
-        x_attn, cache_feature = self.attn.correct(self.norm1(x), dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag)
-        # x_attn = x + self.ls1(x_attn)
-        x_attn = fused_layerscale_add(x, x_attn, self.ls1.gamma)
-
-        final_dindice = cache_feature[f"{tag}_final_dindice"]
-        x_attn_sel = x_attn.gather(1, final_dindice.unsqueeze(-1).expand(-1, -1, x_attn.shape[-1])).contiguous()
-
-        mlp_out = cache_feature[f"{tag}_mlp_out"]
-        mlp_out_new = self.ls2(self.mlp(self.norm2(x_attn_sel)))
-        mlp_out.scatter_(1, final_dindice.unsqueeze(-1).expand(-1, -1, x_attn.shape[-1]), mlp_out_new)
-
-        x_attn += mlp_out.to(x_attn.dtype)
-
-        return x_attn, cache_feature
-
-    def approx_hier(self, x_approx: HierarchicalToken, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str) -> List[Tensor]:
-        x_orig_tensor = x_approx.to_tensor()
-        x_norm = x_approx.from_tensor(self.norm1(x_orig_tensor))
-        x_attn, cache_feature = self.attn.approx_hier(x_norm, rope=rope, cache_feature=cache_feature, tag=tag)
-        
-        x_approx.from_tensor(x_orig_tensor + self.ls1(x_attn.to_tensor()))
-
-        x_approx.from_tensor(x_approx.to_tensor() + self.ls2(self.mlp(self.norm2(x_approx.to_tensor()))))
-
-        return x_approx, cache_feature
-
-    def correct_hier(
-        self, 
-        x_approx: HierarchicalToken, 
-        x_correct: HierarchicalToken, 
-        rope_approx: Tuple[torch.Tensor], 
-        rope_correct: Tuple[torch.Tensor], 
-        cache_feature: Dict, 
-        tag: str
+    def correct(
+            self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
-        x_orig_tensor = x_correct.to_tensor()
-        x_norm = x_correct.from_tensor(self.norm1(x_orig_tensor))
-        x_attn, cache_feature = self.attn.correct_hier(x_approx, x_norm, rope_approx, rope_correct, cache_feature=cache_feature, tag=tag)
+        debug = kwargs.get("debug", False)
+        cls_alive_ratio = kwargs.get("cls_alive_ratio", 0.2)
+
+        # create update index
+        B, N, C = x.shape
+        num_pretokens = N - (rope[0].shape[0])
+        cls_attn_score = cache_feature[f"{tag}_cls_attn_prob"].mean(dim=1).squeeze(1) # [B, N]
+
+        dindice_pre = dindice[:, :num_pretokens]      # [B, 5] Shared pretokens
+        dindice_patches = dindice[:, num_pretokens:]  # [B, M] Shared candidate patches
+
+        patch_scores = cls_attn_score.gather(1, dindice_patches) # [B, M]
         
-        x_correct.from_tensor(x_orig_tensor + self.ls1(x_attn.to_tensor()))
+        k_refined = int(dindice_patches.shape[1] * cls_alive_ratio)
+        _, topk_local_idx = torch.topk(patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
+        selected_patch_indices = dindice_patches.gather(1, topk_local_idx)  # [B, k_refined]
 
-        x_correct.from_tensor(x_correct.to_tensor() + self.ls2(self.mlp(self.norm2(x_correct.to_tensor()))))
+        update_indice = torch.cat([dindice_pre, selected_patch_indices], dim=1)
+        cache_feature[f"{tag}_update_indice"] = update_indice.detach().clone()
+        
+        with torch.cuda.nvtx.range("correct_attn"):
+            gather_idx_x = update_indice.unsqueeze(-1).expand(-1, -1, C)  # [B, num_update, C]
+            x_sel = x.gather(1, gather_idx_x).contiguous()  # [B, num_update, C]
+            x_norm_sel = self.norm1(x_sel)
 
-        return x_correct, cache_feature
+            x_attn_sel, cache_feature = self.attn.correct(
+                x_norm_sel, dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag
+            )
+            x_sel = x_sel + self.ls1(x_attn_sel)
+            
+            if debug:
+                torch.cuda.synchronize()
+
+        with torch.cuda.nvtx.range("correct_ffn"):
+            blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
+
+            mlp_out_new = self.ls2(self.mlp(self.norm2(x_sel)))
+
+            x_sel = x_sel + mlp_out_new
+            x = x + blocks_out_sum.to(x.dtype)
+            x.scatter_(1, gather_idx_x, x_sel)
+
+            if debug:
+                torch.cuda.synchronize()
+
+        return x, cache_feature
 
 
 class CausalSelfAttentionBlock(nn.Module):

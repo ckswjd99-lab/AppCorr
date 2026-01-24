@@ -56,6 +56,63 @@ def init_weights_vit(module: nn.Module, name: str = ""):
     if isinstance(module, RMSNorm):
         module.reset_parameters()
 
+def create_group_index(num_tokens: int, num_groups: int, strategy: str, device: torch.device, **kwargs) -> torch.Tensor:
+    if strategy == "uniform":
+        group_idx = torch.randint(1, num_groups + 1, (num_tokens,), device=device)
+    elif strategy == "grid":
+        s = int(num_groups ** 0.5)  # sqrt(num_groups), assumes perfect square
+        H = W = int((num_tokens) ** 0.5)  # assumes square input
+
+        pattern = torch.arange(1, num_groups + 1, device=device).view(s, s)
+
+        rep_h = (H + s - 1) // s
+        rep_w = (W + s - 1) // s
+        grid_2d = pattern.repeat(rep_h, rep_w)[:H, :W]
+
+        group_idx = grid_2d.flatten()
+    elif strategy == "geometric":
+        probs = torch.rand(num_tokens, device=device)
+
+        group_idx = torch.floor(-torch.log2(1 - probs)) + 1
+        group_idx = torch.clamp(group_idx, max=num_groups).long()
+    elif strategy == "uniform_diff":
+        token_diffs: torch.Tensor = kwargs.get("token_diffs", None)
+        if token_diffs is None:
+            raise ValueError("token_diffs must be provided for 'uniform_diff' grouping strategy.")
+
+        # token_diffs: [B, N, C]
+        diffs_norm = torch.norm(token_diffs, p=1, dim=-1)
+        B, N = diffs_norm.shape
+        
+        # Sort norms independently for each batch -> [B, N]
+        sorted_norms, sorted_indices = torch.sort(diffs_norm, dim=1)
+
+        # Determine Group Split Indices based on AVERAGE distribution
+        avg_sorted_norms = sorted_norms.mean(dim=0)  # [N]
+        
+        cumsum_norms = torch.cumsum(avg_sorted_norms, dim=0)
+        total_norm = cumsum_norms[-1]
+        
+        if total_norm == 0:
+            return torch.randint(1, num_groups + 1, (B * N,), device=device).view(B, N)
+
+        target_sum = total_norm / num_groups
+        boundaries = torch.arange(1, num_groups, device=device, dtype=torch.float32) * target_sum
+
+        # Create a "Template" Group Assignment -> [N]
+        rank_to_group_id = torch.bucketize(cumsum_norms, boundaries) + 1
+
+        # Expand to Batch -> [B, N]
+        batch_group_ids = rank_to_group_id.unsqueeze(0).expand(B, -1)
+
+        # Map back to original token order -> [B, N]
+        group_idx = torch.zeros_like(diffs_norm, dtype=torch.long)
+        group_idx.scatter_(1, sorted_indices, batch_group_ids)
+
+    else:
+        raise NotImplementedError(f"Unknown grouping strategy: {strategy}")
+
+    return group_idx
 
 class DinoVisionTransformer(nn.Module):
     def __init__(
@@ -188,6 +245,9 @@ class DinoVisionTransformer(nn.Module):
         self.appcorr_plan = []
         self.appcorr_group = 0
         self.appcorr_grouping_strategy = "uniform"
+        self.appcorr_cls_alive_ratio = 0.2
+
+        self.appcorr_debug = False
     
     def set_appcorr_mode(
         self,
@@ -198,6 +258,8 @@ class DinoVisionTransformer(nn.Module):
         plan: List[Tuple[str, int, range, Optional[int]]] | None = None,
         num_groups: int | None = None,
         group_strategy: str | None = None,
+        cls_alive_ratio: float | None = None,
+        debug: bool | None = None,
     ):
         if enabled is not None: self.appcorr_enabled = enabled
         if update_attn is not None: self.appcorr_update_attn = update_attn
@@ -206,6 +268,9 @@ class DinoVisionTransformer(nn.Module):
         if plan is not None: self.appcorr_plan = plan
         if num_groups is not None: self.appcorr_group = num_groups
         if group_strategy is not None: self.appcorr_grouping_strategy = group_strategy
+        if cls_alive_ratio is not None: self.appcorr_cls_alive_ratio = cls_alive_ratio
+        if debug is not None: self.appcorr_debug = debug
+
 
     def init_weights(self):
         self.rope_embed._init_weights()
@@ -251,11 +316,7 @@ class DinoVisionTransformer(nn.Module):
         # AppCorr-specific forward_features
         if self.appcorr_enabled:
             return self.forward_features_list_appcorr(x_list, masks_list)
-            # if len(self.appcorr_token_res) == 1:
-            #     return self.forward_features_list_appcorr(x_list, masks_list)
-            # else:
-            #     return self.forward_features_list_appcorr_hier(x_list, masks_list)
-
+            
         x = []
         rope = []
 
@@ -282,6 +343,8 @@ class DinoVisionTransformer(nn.Module):
         if len(x_list) != 1:
             raise NotImplementedError("AppCorr forward_features_list currently only supports single input.")
 
+        B = x_list[0].shape[0]
+
         x_tensor = x_list[0]
         mask = masks_list[0]
 
@@ -302,240 +365,65 @@ class DinoVisionTransformer(nn.Module):
             x_pyramid.append(t2_x)
             rope_pyramid.append(hw_tuple)
 
-            if self.appcorr_grouping_strategy == "uniform":
-                x_group = torch.randint(1, self.appcorr_group+1, (t2_x.shape[1], ))
-                x_groups.append(x_group)
-            elif self.appcorr_grouping_strategy == "grid":
-                # # repeat 1, 2, 3, ..., num_groups
-                # repeats = (t2_x.shape[1] + self.appcorr_group - 1) // self.appcorr_group
-                # x_group = torch.arange(1, self.appcorr_group+1, device=t2_x.device).repeat(repeats)[:t2_x.shape[1]]
-                # x_groups.append(x_group)
-
-                g = self.appcorr_group
-                s = int(g ** 0.5)  # sqrt(g), assumes perfect square
-                H, W = hw_tuple
-                
-                # 1. Create the s x s pattern block
-                # e.g., if g=4: [[1, 2], [3, 4]]
-                pattern = torch.arange(1, g + 1, device=t2_x.device).view(s, s)
-                
-                # 2. Tile the pattern to cover (H, W)
-                rep_h = (H + s - 1) // s
-                rep_w = (W + s - 1) // s
-                # Repeat and crop to exact H, W
-                grid_2d = pattern.repeat(rep_h, rep_w)[:H, :W]
-                
-                # 3. Flatten to match patch sequence
-                patch_groups = grid_2d.flatten()
-                
-                # 4. Handle pretokens (CLS, registers, etc.)
-                # We prepend dummy group IDs (e.g., 1) to match t2_x length
-                total_tokens = t2_x.shape[1]
-                num_pretokens = total_tokens - patch_groups.shape[0]
-                
-                if num_pretokens > 0:
-                    # Assign group 1 to pretokens so they are included in the first batch
-                    pre_groups = torch.full((num_pretokens,), 1, device=t2_x.device, dtype=patch_groups.dtype)
-                    x_group = torch.cat([pre_groups, patch_groups], dim=0)
-                else:
-                    x_group = patch_groups
-                    
-                x_groups.append(x_group)
-            elif self.appcorr_grouping_strategy == "geometric":
-                probs = torch.rand(t2_x.shape[1], device=t2_x.device)
-
-                x_group = torch.floor(-torch.log2(1 - probs)) + 1
-                x_group = torch.clamp(x_group, max=self.appcorr_group).long()
-
-                x_groups.append(x_group)
+            num_tokens = t2_x.shape[1] - num_pretokens  # Exclude pre-tokens
+            group_idx = create_group_index(
+                num_tokens, self.appcorr_group, self.appcorr_grouping_strategy, device=t2_x.device,
+                token_diffs=(x_pyramid[0]-t2_x)[:, num_pretokens:, :]
+            )   # [N] or [B, N]
+            if len(group_idx.shape) == 1:
+                group_idx = group_idx.unsqueeze(0).expand(B, -1)  # [B, N]
+            
+            pre_groups = torch.zeros(B, num_pretokens, device=t2_x.device, dtype=group_idx.dtype)
+            full_group_idx = torch.cat([pre_groups, group_idx], dim=1)
+            x_groups.append(full_group_idx)
 
         # Run through transformer blocks
         cache_feature = {}
 
         x_feature = x_pyramid[0]
         for (op_type, level, layers, group_idx) in self.appcorr_plan:
-            # TEST: Measure time
-            # start_event = torch.cuda.Event(enable_timing=True)
-            # end_event = torch.cuda.Event(enable_timing=True)
-            # start_event.record()
-
             if op_type == "A":
                 # Approx
                 for lidx in layers:
-                    with torch.cuda.nvtx.range(f"Approx_{lidx}"):
+                    with torch.cuda.nvtx.range(f"approx_{lidx}"):
                         blk = self.blocks[lidx]
                         rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
-                        x_feature, cache_feature = blk.approx(x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}")
+                        x_feature, cache_feature = blk.approx(
+                            x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}",
+                            debug=self.appcorr_debug
+                        )
 
-                        torch.cuda.synchronize()
+                        if self.appcorr_debug:
+                            torch.cuda.synchronize()
             elif op_type == "C":
                 # Correct
-                dmask = (x_groups[level] == group_idx)
-                dmask[:num_pretokens] = True  # Always keep pre-tokens
-                dindice = dmask.nonzero(as_tuple=False).view(-1).to(device=x_feature.device)
+                dmask = (x_groups[level] == group_idx)  # [B, N]
+                dmask[:, :num_pretokens] = True  # Always keep pre-tokens
+                dindice = torch.where(dmask)[1].view(B, -1)
 
                 x_temp = x_pyramid[level]
                 rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
                 
                 for lidx in layers:
-                    with torch.cuda.nvtx.range(f"Correct_{lidx}"):
+                    with torch.cuda.nvtx.range(f"correct_{lidx}"):
                         blk = self.blocks[lidx]
-                        x_temp, cache_feature = blk.correct(x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}")
+                        x_temp, cache_feature = blk.correct(
+                            x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}",
+                            cls_alive_ratio=self.appcorr_cls_alive_ratio,
+                            debug=self.appcorr_debug
+                        )
 
-                        torch.cuda.synchronize()
+                        if self.appcorr_debug:
+                            torch.cuda.synchronize()
                 
-                # x_feature[:, dindice] = x_temp[:, dindice].to(x_feature.dtype)
                 x_feature = x_temp.to(x_feature.dtype)
             else:
                 raise NotImplementedError(f"Unknown op_type {op_type} in AppCorr plan.")
-        
-            # end_event.record()
-            # torch.cuda.synchronize()
-            # elapsed_time_ms = start_event.elapsed_time(end_event)
-            # print(f"AppCorr block op_type={op_type}, level={level}, layers={list(layers)}, group_idx={group_idx} took {elapsed_time_ms:.2f} ms")
-        
+
         # Post normalization and output formatting
         output = self.post_features_list([x_feature], masks_list)
         return output
     
-    def forward_features_list_appcorr_hier(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
-        if len(x_list) != 1:
-            raise NotImplementedError("AppCorr forward_features_list currently only supports single input.")
-
-        x_tensor = x_list[0]
-        mask = masks_list[0]
-
-        num_pretokens = 1 + self.n_storage_tokens  # CLS + storage tokens
-
-        x_pyramid = []
-        x_groups = []
-        rope_pyramid = []
-
-        # Prepare pyramid of inputs
-        for level, tres in zip(self.appcorr_pyramid_levels, self.appcorr_token_res):
-            # downsample and upsample
-            x_temp = x_tensor
-            x_temp = nn.functional.interpolate(x_temp, scale_factor=2**(-level), mode='bicubic', align_corners=False)
-            
-            # x_temp = nn.functional.interpolate(x_temp, scale_factor=2**level*tres, mode='bicubic', align_corners=False)
-            # t2_x, hw_tuple = self.prepare_tokens_with_masks(x_temp, mask)
-
-            x_temp = nn.functional.interpolate(x_temp, scale_factor=2**level, mode='bicubic', align_corners=False)  # Tensor[B, C, H, W]
-            t2_x, hw_tuple = self.prepare_tokens_with_masks(x_temp, mask)
-            # t2_x: Tensor[B, N, C]
-            t2_x_pretokens = t2_x[..., :num_pretokens, :]
-            B, _, C = t2_x.shape
-            H, W = hw_tuple
-            t2_x_patches = t2_x[..., num_pretokens:, :].reshape(B, H, W, C).permute(0, 3, 1, 2)  # Tensor[B, C, H, W]
-            new_H = int(H * tres)
-            new_W = int(W * tres)
-            t2_x_patches = nn.functional.interpolate(t2_x_patches, size=(new_H, new_W), mode='area')
-            t2_x_patches = t2_x_patches.permute(0, 2, 3, 1).reshape(B, new_H * new_W, C)  # Tensor[B, N', C]
-            t2_x = torch.cat([t2_x_pretokens, t2_x_patches], dim=-2)  # Tensor[B, N'+num_pretokens, C]
-            hw_tuple = (new_H, new_W)
-
-            x_pyramid.append(t2_x)
-            rope_sincos = self.rope_embed(H=hw_tuple[0], W=hw_tuple[1]) if self.rope_embed is not None else None
-            rope_pyramid.append(rope_sincos)
-
-            # x_group = torch.randint(1, self.appcorr_group+1, (t2_x.shape[1], ))
-            # x_groups.append(x_group)
-
-            B, N_tokens, _ = t2_x.shape
-            
-            probs = torch.rand((N_tokens, ), device=t2_x.device)
-            x_group = torch.ones((N_tokens, ), dtype=torch.long, device=t2_x.device)
-            
-            for i in range(1, self.appcorr_group):
-                threshold = 1.0 - (0.5 ** i)
-                x_group += (probs > threshold).long()
-            
-            x_groups.append(x_group)
-
-        # Run through transformer blocks
-        cache_feature = {}
-
-        x_approx = HierarchicalToken(
-            lowres_tokens=x_pyramid[0], highres_tokens=x_pyramid[1], num_pretokens=num_pretokens
-        )
-        x_correct = x_approx.clone()
-        x_correct.lowres_alive.fill_(False)
-        rope_sin_approx = HierarchicalToken(
-            lowres_tokens=rope_pyramid[0][0], highres_tokens=rope_pyramid[1][0], num_pretokens=0
-        )
-        rope_cos_approx = HierarchicalToken(
-            lowres_tokens=rope_pyramid[0][1], highres_tokens=rope_pyramid[1][1], num_pretokens=0
-        )
-
-
-        for (op_type, level, layers, group_idx) in self.appcorr_plan:
-            # TEST: Measure time
-            # start_event = torch.cuda.Event(enable_timing=True)
-            # end_event = torch.cuda.Event(enable_timing=True)
-            # start_event.record()
-
-            if op_type == "A":
-                # Approx
-                for lidx in layers:
-                    with torch.cuda.nvtx.range(f"Approx_{lidx}"):
-                        blk = self.blocks[lidx]
-                        if self.rope_embed is not None:
-                            rope_sincos = (rope_sin_approx.to_tensor(), rope_cos_approx.to_tensor())
-                        else:
-                            rope_sincos = None
-                        x_approx, cache_feature = blk.approx_hier(x_approx, rope_sincos, cache_feature, tag=f"layer{lidx}")
-
-                        torch.cuda.synchronize()
-            elif op_type == "C":
-                # Correct
-                dmask = (x_groups[0] == group_idx)
-                dmask = dmask[num_pretokens:]
-                dindice = dmask.nonzero(as_tuple=False).view(-1)
-                dindice_highres = x_correct.get_highres_indices(dindice)
-                
-                x_approx.split_tokens(dindice)
-                x_correct.highres_alive.fill_(False)
-                x_correct.split_tokens(dindice)
-                rope_sin_approx.split_tokens(dindice)
-                rope_cos_approx.split_tokens(dindice)
-
-                for lidx in layers:
-                    with torch.cuda.nvtx.range(f"Correct_{lidx}"):
-                        blk = self.blocks[lidx]
-                        if self.rope_embed is not None:
-                            rope_sincos_approx = (rope_sin_approx.to_tensor(), rope_cos_approx.to_tensor())
-                            rope_sincos_correct = (
-                                rope_sin_approx.highres_tokens[..., dindice_highres, :],
-                                rope_cos_approx.highres_tokens[..., dindice_highres, :],
-                            )
-                        else:
-                            rope_sincos_approx = None
-                            rope_sincos_correct = None
-                        x_correct, cache_feature = blk.correct_hier(
-                            x_approx, 
-                            x_correct, 
-                            rope_sincos_approx, 
-                            rope_sincos_correct,
-                            cache_feature, 
-                            tag=f"layer{lidx}"
-                        )
-
-                        torch.cuda.synchronize()
-                
-                x_approx.highres_tokens[..., dindice_highres, :] = x_correct.highres_tokens[..., dindice_highres, :].to(x_approx.highres_tokens.dtype)
-            else:
-                raise NotImplementedError(f"Unknown op_type {op_type} in AppCorr plan.")
-        
-            # end_event.record()
-            # torch.cuda.synchronize()
-            # elapsed_time_ms = start_event.elapsed_time(end_event)
-            # print(f"AppCorr block op_type={op_type}, level={level}, layers={list(layers)}, group_idx={group_idx} took {elapsed_time_ms:.2f} ms")
-        
-        # Post normalization and output formatting
-        x_feature = x_approx.to_tensor()
-        output = self.post_features_list([x_feature], masks_list)
-        return output
-
     def post_features_list(self, x: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
         # Post normalization and output formatting
         all_x = x
