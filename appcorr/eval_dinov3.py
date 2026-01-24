@@ -10,10 +10,12 @@ PRECISION = torch.bfloat16 if DEVICE == "cuda:0" else torch.float32
 # --- PLANS DEFINITION ---
 PLAN_APPROX_ONLY = [
     # op_type, level, layers, group_idx
-    ("A", 0, range( 0, 10), None),
-    ("A", 0, range(10, 20), None),
-    ("A", 0, range(20, 30), None),
-    ("A", 0, range(30, 40), None),
+    ("A", 0, range( 0, 40), None),
+]
+
+PLAN_SEQUENTIAL = [
+    ("A", 0, range( 0, 40), None),
+    ("C", 1, range( 0, 40),    1),
 ]
 
 PLAN_INTERLEAVED_CORRECT_S2 = [
@@ -58,6 +60,7 @@ PLAN_INTERLEAVED_CORRECT_S4_LDROP_V2 = [
 
 PLANS = {
     "approx_only": PLAN_APPROX_ONLY,
+    "sequential": PLAN_SEQUENTIAL,
     "interleaved_correct_s2": PLAN_INTERLEAVED_CORRECT_S2,
     "interleaved_correct_s4": PLAN_INTERLEAVED_CORRECT_S4,
     "interleaved_correct_s4_ldrop": PLAN_INTERLEAVED_CORRECT_S4_LDROP,
@@ -74,13 +77,17 @@ def get_args():
     # Plan selection
     parser.add_argument("--plan", type=str, required=True, choices=PLANS.keys(),
                         help="Plan key from PLANS dict")
+    parser.add_argument("--update-ratio", type=float, default=0.2, help="Update ratio for correction")
     
     # Groups (for interleaved correct)
     parser.add_argument("--groups", type=int, default=4, help="Number of groups for correction")
-    parser.add_argument("--group-strategy", type=str, default="uniform", choices=["uniform", "grid", "geometric"],
+    parser.add_argument("--group-strategy", type=str, default="uniform", choices=["uniform", "grid", "geometric", "uniform_diff"],
                         help="Group selection strategy")
     
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+
+    # Debug
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     
     return parser.parse_args()
 
@@ -107,7 +114,9 @@ def eval_classifier(args):
         token_res = [1],
         plan=current_plan,
         num_groups=args.groups,
-        group_strategy=args.group_strategy,        
+        group_strategy=args.group_strategy,
+        cls_alive_ratio=args.update_ratio,
+        debug=args.debug,
     )
 
     # Eval
@@ -118,7 +127,6 @@ def eval_classifier(args):
             image_size=256, 
             batch_size=args.batch_size, 
             dtype=PRECISION,
-            # max_samples=args.batch_size * 20,  # For quick eval
         )
     
     print(f"[{args.plan} | Levels {args.levels}] Top-1 Accuracy: {eval_result['top1_accuracy']:.2f}%")
