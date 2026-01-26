@@ -28,13 +28,15 @@ def load_imagenet1k_val(root, image_size=256, batch_size=32, num_workers=4):
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=False 
     )
     return val_loader
 
 class SourceModule(multiprocessing.Process):
     """
-    Experiment Loop: Request Batch -> Wait Batch Response -> Calculate Accuracy.
+    Experiment Loop: Request Batch -> Wait Response -> Calculate Metrics.
+    Handles partial batches via padding and tracks data transfer size.
     """
 
     def __init__(self, output_queue, feedback_queue, config: ExperimentConfig, data_root: str, loader_batch_size: int):
@@ -46,8 +48,9 @@ class SourceModule(multiprocessing.Process):
         self.loader_batch_size = loader_batch_size
 
     def run(self):
-        print(f"[Source] Loading ImageNet from {self.data_root} (Batch: {self.loader_batch_size})...")
+        print(f"[Source] Loading ImageNet from {self.data_root} (Loader Batch: {self.loader_batch_size})...")
         try:
+            # Assuming load_imagenet1k_val is defined above in the file
             loader = load_imagenet1k_val(self.data_root, batch_size=self.loader_batch_size)
         except Exception as e:
             print(f"[Source] Failed to load ImageNet: {e}")
@@ -58,57 +61,68 @@ class SourceModule(multiprocessing.Process):
         time.sleep(1)
 
         policy = get_transmission(self.config.transmission_policy_name)
-        total_correct = 0
+        
+        # Initialize metrics
+        total_top1 = 0
+        total_top5 = 0
         total_samples = 0
+        total_bytes = 0 
+
+        # Constants for padding
+        SERVER_BATCH_SIZE = self.config.batch_size
+        IMG_H, IMG_W, IMG_C = self.config.image_shape
 
         print("[Source] Starting Batch Evaluation Loop...")
 
         for batch_idx, (images, labels) in enumerate(loader):
-            # images: (B, 3, H, W), labels: (B)
             curr_bs = images.size(0)
             
-            # --- Step A: Send Phase (Request Batch) ---
-            # Optimize: Convert entire batch to numpy at once
-            images_np = (images.permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
+            # --- Step A: Send Phase ---
+            # 1. Prepare Full Batch Container (Pad with zeros)
+            full_batch_np = np.zeros((SERVER_BATCH_SIZE, IMG_H, IMG_W, IMG_C), dtype=np.uint8)
             
-            # Encode entire batch
-            all_patches = policy.encode(images_np, self.config)
+            # 2. Fill with real data
+            real_imgs_np = (images.permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
+            full_batch_np[:curr_bs] = real_imgs_np
             
-            # Send all patches
+            # 3. Encode the full batch
+            all_patches = policy.encode(full_batch_np, self.config)
+            
+            # 4. Measure payload size
+            batch_bytes = sum(len(p.data) for p in all_patches)
+            total_bytes += batch_bytes
+            batch_kb = batch_bytes / 1024.0
+
+            # 5. Send patches
             for p in all_patches:
                 self.output_queue.put(p)
             
-            # --- Step B: Wait Phase (Response Batch) ---
+            # --- Step B: Wait Phase ---
             result = self.feedback_queue.get()
             
-            # Output is expected to be an array/list of predictions of size (Batch_Size,)
-            preds = result.output 
+            # --- Step C: Calculate Metrics ---
+            # Slice results to ignore padding
+            valid_preds = result.output[:curr_bs]
+            valid_labels = labels.tolist()
             
-            # Calculate accuracy for this batch
-            batch_correct = 0
-            
-            # Iterate through the batch predictions locally
-            for i in range(curr_bs):
-                label = labels[i].item()
-                
-                # Safe access in case partial batch returned (though not expected in Mock)
-                if i < len(preds):
-                    pred = preds[i]
-                    if pred == label:
-                        batch_correct += 1
+            # Calculate Top-1 and Top-5 using list comprehension
+            batch_top1 = sum(p[0] == l for p, l in zip(valid_preds, valid_labels))
+            batch_top5 = sum(l in p for p, l in zip(valid_preds, valid_labels))
             
             latency = time.time() - result.timestamp
 
-            # --- Step C: Update Metrics ---
-            total_correct += batch_correct
+            # Update globals
+            total_top1 += batch_top1
+            total_top5 += batch_top5
             total_samples += curr_bs
             
-            acc = total_correct / total_samples * 100
-            print(f"[Source] Batch {batch_idx} Done. Batch Acc: {batch_correct}/{curr_bs}, Global Acc: {acc:.2f}% | Latency: {latency:.4f}s")
+            acc1 = total_top1 / total_samples * 100
+            acc5 = total_top5 / total_samples * 100
+            
+            if (batch_idx+1) % 100 == 0:
+                print(f"[Source] Batch {(batch_idx+1)}/{len(loader)} | Acc@1: {acc1:.2f}% | Acc@5: {acc5:.2f}% | Latency: {latency:.4f}s")
+                break # TEMP
 
-            if total_samples >= 128: 
-                print("[Source] Test limit reached.")
-                break
-
-        print(f"[Source] Final Accuracy: {total_correct}/{total_samples} ({total_correct/total_samples*100:.2f}%)")
+        print(f"[Source] Final | Top-1: {acc1:.2f}% | Top-5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
         self.output_queue.put('STOP')
+            

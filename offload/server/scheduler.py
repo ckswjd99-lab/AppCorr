@@ -4,6 +4,7 @@ import time
 from typing import List
 from offload.common import Patch, Task, ExperimentConfig
 from offload.policies import get_scheduler
+from offload.common.utils import calculate_total_patches
 
 class SchedulerModule(multiprocessing.Process):
     """Buffers patches and triggers Worker based on Policy."""
@@ -23,7 +24,6 @@ class SchedulerModule(multiprocessing.Process):
         print("[Scheduler] Started.")
         
         while True:
-            # 1. Handle Configuration Updates
             if not self.control_queue.empty():
                 cmd, data = self.control_queue.get()
                 if cmd == 'CONFIG':
@@ -34,8 +34,7 @@ class SchedulerModule(multiprocessing.Process):
                     self.task_counter = itertools.count()
                     print(f"[Scheduler] Configured with {self.config.scheduler_policy_name}")
 
-            # 2. Process Incoming Patches
-            # Drain queue to batch process incoming patches
+            # Drain queue
             while not self.input_queue.empty():
                 try:
                     patch = self.input_queue.get_nowait()
@@ -43,23 +42,21 @@ class SchedulerModule(multiprocessing.Process):
                 except:
                     break
             
-            # 3. Consult Policy (Loop until buffer is drained)
             if self.policy and self.config:
                 while True:
-                    # Decide task based on buffer (does not modify buffer yet)
+                    # Policy decides Task
                     task = self.policy.decide(self.buffer, self.config, self.task_counter)
                     
                     if task:
-                        # [CRITICAL] Consume based on TOTAL patches in a batch request
-                        # Config defines how many patches constitute one 'Request'
-                        consume_count = self.config.batch_size * self.config.patches_per_image
+                        # Remove used patches from buffer
+                        patches_per_img = calculate_total_patches(self.config)
+                        consume_count = self.config.batch_size * patches_per_img
                         
-                        # Remove processed patches from buffer
+                        # Remove processed patches
                         self.buffer = self.buffer[consume_count:]
                         
                         self.worker_queue.put(('TASK', task))
                     else:
-                        # No more tasks can be formed
                         break
             
-            time.sleep(0.001) # Yield CPU
+            time.sleep(0.001)

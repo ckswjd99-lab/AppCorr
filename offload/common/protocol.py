@@ -1,13 +1,12 @@
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Dict
 
 @dataclass
 class ExperimentConfig:
     """Experiment settings."""
     # Batch Settings
     batch_size: int = 32        # Number of images per request (e.g., 32)
-    patches_per_image: int = 256 # Total patches per image (16x16 grid)
     
     # Image Settings
     image_shape: Tuple[int, int, int] = (256, 256, 3)
@@ -15,7 +14,9 @@ class ExperimentConfig:
     
     # Policy Names
     scheduler_policy_name: str = "BatchCountBased"
+    
     transmission_policy_name: str = "BatchRaw"
+    transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class Patch:
@@ -23,10 +24,14 @@ class Patch:
     Unit of data.
     - image_idx: Index of the image within the batch (0 ~ batch_size-1)
     - spatial_idx: Index of the patch within the image (0 ~ patches_per_image-1)
+    - data: Raw bytes of the patch
+    - res_level: Resolution level (0 = original, higher = more downsampled)
     """
     image_idx: int
     spatial_idx: int
     data: bytes
+
+    res_level: int = 0
 
 @dataclass
 class Task:
