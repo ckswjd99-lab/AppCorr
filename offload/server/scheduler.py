@@ -44,15 +44,11 @@ class SchedulerModule(multiprocessing.Process):
             
             if self.policy and self.config:
                 while True:
-                    # Policy decides Task
                     task = self.policy.decide(self.buffer, self.config, self.task_counter)
                     
                     if task:
-                        # Remove used patches from buffer
-                        patches_per_img = calculate_total_patches(self.config)
-                        consume_count = self.config.batch_size * patches_per_img
+                        consume_count = len(task.payload)
                         
-                        # Remove processed patches
                         self.buffer = self.buffer[consume_count:]
                         
                         self.worker_queue.put(('TASK', task))

@@ -115,7 +115,8 @@ class SelfAttention(nn.Module):
 
         # Caching and shaping
         qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
-        cache_feature[f"{tag}_kv"] = qkv[:, :, 1:].detach().clone()  # Only k, v, [B, N, 2, H, D//H]
+        if cache_feature is not None and tag != "":
+            cache_feature[f"{tag}_kv"] = qkv[:, :, 1:].detach().clone()  # Only k, v, [B, N, 2, H, D//H]
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
         
@@ -123,10 +124,9 @@ class SelfAttention(nn.Module):
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
 
-        # Update k in cache
-        cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
-        
+        # Update k cache and cls attn prob
         if cache_feature is not None and tag != "":
+            cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
             cls_attn_score = q[:, :, 0:1, :] @ k.transpose(-2, -1) * self.scale
             cache_feature[f"{tag}_cls_attn_prob"] = cls_attn_score.softmax(-1).detach()
 
