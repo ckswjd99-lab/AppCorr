@@ -1,6 +1,6 @@
 from .interface import ISchedulingPolicy, ITransmissionPolicy
 from .scheduling import BatchCountBasedPolicy
-from .transmission import RawTransmissionPolicy
+from .transmission import RawTransmissionPolicy, ZlibTransmissionPolicy, LaplacianPyramidPolicy
 
 # Registry for dynamic instantiation
 SCHEDULER_REGISTRY = {
@@ -9,6 +9,8 @@ SCHEDULER_REGISTRY = {
 
 TRANSMISSION_REGISTRY = {
     "Raw": RawTransmissionPolicy,
+    "Zlib": ZlibTransmissionPolicy,
+    "Laplacian": LaplacianPyramidPolicy,
 }
 
 def get_scheduler(name: str) -> ISchedulingPolicy:

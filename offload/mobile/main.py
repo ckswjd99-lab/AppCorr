@@ -20,12 +20,15 @@ def run_mobile(server_ip, recv_port, send_port, data_root, img_batch_size):
     # Configure experiment settings
     # 256 patches = 1 Image (16x16 patch size, 256x256 image size)
     config = ExperimentConfig(
-        batch_size=img_batch_size,    
-        patches_per_image=256,
+        batch_size=img_batch_size,
         image_shape=(256, 256, 3),
         patch_size=(16, 16),
         scheduler_policy_name="BatchCountBased",
-        transmission_policy_name="Raw"
+        transmission_policy_name="Laplacian",   # Options: 'Raw', 'Zlib', 'Laplacian'
+        transmission_kwargs={
+            'pyramid_levels': [2, 0],   # For Laplacian Pyramid
+            'compression_level': 1      # For Zlib
+        }
     )
 
     # IPC Queues
