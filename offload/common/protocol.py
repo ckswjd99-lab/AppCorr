@@ -1,52 +1,68 @@
-import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Tuple, Any, Dict
+from enum import Enum, auto
+
 
 @dataclass
 class ExperimentConfig:
     """Experiment settings."""
-    # Batch Settings
-    batch_size: int = 32        # Number of images per request (e.g., 32)
+    exp_id: str = "default_exp"
     
-    # Image Settings
+    # Model Settings [NEW]
+    model_name: str = "resnet18"  # "resnet18", "dinov3_custom", etc.
+    
+    # Batch Settings
+    batch_size: int = 32
+    
+    # Image/Patch Specs
     image_shape: Tuple[int, int, int] = (256, 256, 3)
     patch_size: Tuple[int, int] = (16, 16)
     
-    # Policy Names
+    # Policies
     scheduler_policy_name: str = "BatchCountBased"
+    transmission_policy_name: str = "Raw"
     
-    transmission_policy_name: str = "BatchRaw"
+    # Dynamic arguments
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
+@dataclass
 class Patch:
-    """
-    Unit of data.
-    - image_idx: Index of the image within the batch (0 ~ batch_size-1)
-    - spatial_idx: Index of the patch within the image (0 ~ patches_per_image-1)
-    - data: Raw bytes of the patch
-    - res_level: Resolution level (0 = original, higher = more downsampled)
-    """
     image_idx: int
     spatial_idx: int
     data: bytes
-
+    
     res_level: int = 0
+    group_id: int = 0
+    batch_group_total: int = 0
+
+class OpType(Enum):
+    # --- Computation Ops ---
+    FULL_INFERENCE = auto()   
+    APPROX_FORWARD = auto()   
+    CORRECT_FORWARD = auto()  
+    HEAD_INFERENCE = auto()   
+    
+    # --- Control Ops ---
+    LOAD_INPUT = auto()
+    SEND_RESPONSE = auto()
+    FREE_SESSION = auto()
+
+@dataclass
+class Instruction:
+    op_type: OpType
+    params: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class Task:
-    """
-    Instruction + Payload for the Worker.
-    Now carries the actual patch objects to allow sparse processing.
-    """
     task_id: int
-    mode: str               # 'APPROX' or 'CORRECT'
-    payload: List[Patch]    # The actual patches to process
-    layer_range: Tuple[int, int]
+    request_id: int
+    payload: List['Patch']
+    instructions: List[Instruction]
 
 @dataclass
 class InferenceResult:
     """Final result sent from Server to Mobile."""
     task_id: int
     timestamp: float
-    output: Any             # Expecting (Batch_Size, ...) format
+    output: Any

@@ -3,6 +3,8 @@ import time
 import torch
 from torchvision import datasets, transforms
 import numpy as np
+from tqdm import tqdm
+
 from offload.common import ExperimentConfig
 from offload.policies import get_transmission
 
@@ -74,7 +76,8 @@ class SourceModule(multiprocessing.Process):
 
         print("[Source] Starting Batch Evaluation Loop...")
 
-        for batch_idx, (images, labels) in enumerate(loader):
+        pbar = tqdm(enumerate(loader), total=len(loader), leave=False)
+        for batch_idx, (images, labels) in pbar:
             curr_bs = images.size(0)
             
             # --- Step A: Send Phase ---
@@ -119,9 +122,10 @@ class SourceModule(multiprocessing.Process):
             acc1 = total_top1 / total_samples * 100
             acc5 = total_top5 / total_samples * 100
             
-            if (batch_idx+1) % 100 == 0:
-                print(f"[Source] Batch {(batch_idx+1)}/{len(loader)} | Acc@1: {acc1:.2f}% | Acc@5: {acc5:.2f}% | Latency: {latency:.4f}s")
-                break # TEMP
+            pbar.set_description(f"Acc@1: {acc1:.2f}% | Acc@5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
+            
+            # if (batch_idx+1) % 10 == 0:
+            #     break # TEMP
 
         print(f"[Source] Final | Top-1: {acc1:.2f}% | Top-5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
         self.output_queue.put('STOP')

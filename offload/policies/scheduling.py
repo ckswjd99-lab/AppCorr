@@ -1,11 +1,12 @@
 from typing import List, Optional, Any
-from offload.common.protocol import Patch, Task, ExperimentConfig
+from offload.common.protocol import Patch, Task, ExperimentConfig, Instruction, OpType
 from .interface import ISchedulingPolicy
 
 class BatchCountBasedPolicy(ISchedulingPolicy):
     """
-    Waits for a full batch of patches, then creates a task with ALL patches.
-    Dynamically calculates expected patch count based on transmission policy.
+    Waits for a full batch of patches, then triggers a standard FULL_INFERENCE task.
+    - Dynamically calculates patch count (e.g., for Laplacian).
+    - Instructs the worker to perform a standard forward pass.
     """
 
     def decide(
@@ -15,40 +16,48 @@ class BatchCountBasedPolicy(ISchedulingPolicy):
         task_id_gen: Any
     ) -> Optional[Task]:
         
-        # Calculate the exact number of patches required per image
+        # 1. Calculate dynamic patch count based on transmission policy
         patches_per_img = self._get_patches_per_image(config)
         total_expected = config.batch_size * patches_per_img
         
-        # Check if buffer has enough data for a full batch
+        # 2. Check Trigger Condition
         if len(buffer) >= total_expected:
             t_id = next(task_id_gen)
             
             # Extract the full batch
             current_batch_patches = buffer[:total_expected]
             
-            # Create Task with all patches (Pass-Through)
+            # 3. Generate Instruction (Simple Pass-Through)
+            instructions = [
+                Instruction(OpType.LOAD_INPUT),
+                Instruction(OpType.FULL_INFERENCE),
+                Instruction(OpType.SEND_RESPONSE),
+                Instruction(OpType.FREE_SESSION)
+            ]
+            
+            # Create Task
             task = Task(
                 task_id=t_id,
-                mode='APPROX',
+                request_id=t_id,
                 payload=current_batch_patches, 
-                layer_range=(0, 12)
+                instructions=instructions
             )
             return task
             
         return None
 
     def _get_patches_per_image(self, config: ExperimentConfig) -> int:
-        """Calculates total patches per image based on current policy."""
+        """Calculates total patches per image based on transmission policy."""
         H, W = config.image_shape[:2]
         ph, pw = config.patch_size
 
         if config.transmission_policy_name == "Laplacian":
-            # Sum patches for all active levels defined in kwargs
+            # Sum patches for all active levels
             levels = config.transmission_kwargs.get('pyramid_levels', [2, 1, 0])
             total = 0
             for lvl in levels:
                 scale = 2 ** lvl
-                # Ceil division to account for edge patches
+                # Ceil division to cover edges
                 gh = (H // scale + ph - 1) // ph
                 gw = (W // scale + pw - 1) // pw
                 total += gh * gw
@@ -59,3 +68,97 @@ class BatchCountBasedPolicy(ISchedulingPolicy):
             gh = (H + ph - 1) // ph
             gw = (W + pw - 1) // pw
             return gh * gw
+
+class GroupTriggerPolicy(ISchedulingPolicy):
+    """
+    Pipelined Scheduling.
+    Triggers task when a transmission group is collected.
+    Dynamically generates pipeline instructions.
+    """
+
+    def __init__(self):
+        self.current_request_id = None
+
+    def decide(
+        self, 
+        buffer: List[Patch], 
+        config: ExperimentConfig, 
+        task_id_gen: Any
+    ) -> Optional[Task]:
+        
+        if not buffer:
+            return None
+        
+        # 1. Peek header
+        head_patch = buffer[0]
+        current_group = head_patch.group_id
+        target_count = head_patch.batch_group_total
+        
+        # 2. Check trigger condition
+        if len(buffer) >= target_count:
+            t_id = next(task_id_gen)
+            
+            # Manage Request ID (New for Group 0, reuse for others)
+            if current_group == 0 or self.current_request_id is None:
+                self.current_request_id = t_id
+            
+            # Extract patches
+            current_batch_patches = buffer[:target_count]
+            
+            # 3. Generate instructions
+            instructions = self._get_pipeline_instructions(current_group, config)
+            
+            task = Task(
+                task_id=t_id,
+                request_id=self.current_request_id,
+                payload=current_batch_patches,
+                instructions=instructions
+            )
+            return task
+            
+        return None
+
+    def _get_pipeline_instructions(self, group_id: int, config: ExperimentConfig) -> List[Instruction]:
+        """
+        Maps Group ID to pipeline steps dynamically.
+        Splits layers uniformly across groups.
+        """
+        total_layers = config.transmission_kwargs.get('total_layers', 40)
+        num_res_groups = config.transmission_kwargs.get('num_groups', 4)
+        
+        # Total stages = Base(1) + Residual Groups
+        total_stages = num_res_groups + 1
+        chunk_size = total_layers // total_stages
+        
+        # Calculate layer range for current group
+        current_chunk_start = group_id * chunk_size
+        current_chunk_end = (group_id + 1) * chunk_size
+        
+        # Adjust last group to cover remaining layers
+        if group_id == total_stages - 1:
+            current_chunk_end = total_layers
+
+        instructions = [Instruction(OpType.LOAD_INPUT)]
+
+        # 1. [Correct Phase] Correct up to previous chunks
+        if group_id > 0:
+            instructions.append(
+                Instruction(OpType.CORRECT_FORWARD, {'layers': (0, current_chunk_start)})
+            )
+
+        # 2. [Next Phase] Process current chunk
+        if group_id < total_stages - 1:
+            # Intermediate stage: Approx
+            instructions.append(
+                Instruction(OpType.APPROX_FORWARD, {'layers': (current_chunk_start, current_chunk_end)})
+            )
+        else:
+            # Final stage: Correct current chunk and finalize
+            instructions.append(
+                Instruction(OpType.CORRECT_FORWARD, {'layers': (current_chunk_start, current_chunk_end)})
+            )
+            instructions.append(Instruction(OpType.HEAD_INFERENCE))
+            instructions.append(Instruction(OpType.SEND_RESPONSE))
+            instructions.append(Instruction(OpType.FREE_SESSION))
+
+        return instructions

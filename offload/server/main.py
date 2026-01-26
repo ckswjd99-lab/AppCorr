@@ -36,7 +36,6 @@ def run_server(recv_port, send_port):
         for p in procs:
             p.start()
         
-        # [FIX] Wait until shutdown signal is received
         while not shutdown_event.is_set():
             time.sleep(1)
             
@@ -53,6 +52,11 @@ def run_server(recv_port, send_port):
         print("Server Stopped.")
 
 if __name__ == "__main__":
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+    
     parser = argparse.ArgumentParser(description="AppCorr Server")
     parser.add_argument("--recv-port", type=int, default=9998)
     parser.add_argument("--send-port", type=int, default=9999)
