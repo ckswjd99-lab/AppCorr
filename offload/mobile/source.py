@@ -8,6 +8,41 @@ from tqdm import tqdm
 from offload.common import ExperimentConfig
 from offload.policies import get_transmission
 
+import os
+import json
+import datetime
+
+def perform_time_sync(output_queue, feedback_queue, rounds=10):
+    """
+    Perform multiple rounds of ping-pong to estimate clock offset.
+    Offset = ServerTime - LocalTime
+    """
+    print(f"[Source] Synchronizing time with server ({rounds} rounds)...")
+    
+    # Warm-up round (ignore result)
+    print("[Source] Sending warm-up ping...")
+    output_queue.put(('TIME_SYNC', None))
+    feedback_queue.get()
+    
+    offsets = []
+    
+    for _ in range(rounds):
+        t1 = time.time()
+        output_queue.put(('TIME_SYNC', None))
+        
+        t_server = feedback_queue.get()
+        t2 = time.time()
+        
+        rtt = t2 - t1
+        # Assumes symmetric network delay
+        estimated_server_time_at_t1 = t_server - (rtt / 2)
+        offset = estimated_server_time_at_t1 - t1
+        offsets.append(offset)
+        
+    avg_offset = sum(offsets) / len(offsets)
+    print(f"[Source] Time Sync Complete. Avg Offset: {avg_offset*1000:.2f} ms")
+    return avg_offset
+
 def load_imagenet1k_val(root, image_size=256, batch_size=32, num_workers=4):
     """Load ImageNet with specified batch size."""
     if image_size == 256:
@@ -58,9 +93,30 @@ class SourceModule(multiprocessing.Process):
             print(f"[Source] Failed to load ImageNet: {e}")
             return
 
-        # 1. Handshake
-        self.output_queue.put(self.config)
-        time.sleep(1)
+        # Generate Timestamp: YYYYMMDD_HHMMSS
+        now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if self.config.exp_id is None:
+            self.config.exp_id = f"exp_{now_str}"
+        else:
+            self.config.exp_id = f"{self.config.exp_id}_{now_str}"
+
+        # Setup Logging
+        log_dir = os.path.join("logs", self.config.exp_id)
+        os.makedirs(log_dir, exist_ok=True)
+        events_log_path = os.path.join(log_dir, "events.jsonl")
+        summary_log_path = os.path.join(log_dir, "summary.json")
+        
+        print(f"[Source] Logs will be saved to {log_dir}")
+        events_file = open(events_log_path, "w")
+
+        # Handshake
+        self.output_queue.put(('CONFIG', self.config))
+        time.sleep(1) # Wait for worker to load model
+
+        # Time Synchronization
+        time_offset = perform_time_sync(self.output_queue, self.feedback_queue)
+
 
         policy = get_transmission(self.config.transmission_policy_name)
         
@@ -69,6 +125,7 @@ class SourceModule(multiprocessing.Process):
         total_top5 = 0
         total_samples = 0
         total_bytes = 0 
+        total_latency = 0.0 
 
         # Constants for padding
         SERVER_BATCH_SIZE = self.config.batch_size
@@ -80,53 +137,126 @@ class SourceModule(multiprocessing.Process):
         for batch_idx, (images, labels) in pbar:
             curr_bs = images.size(0)
             
-            # --- Step A: Send Phase ---
-            # 1. Prepare Full Batch Container (Pad with zeros)
+            # Send Phase
+            t_load_start = time.time()
+            # Prepare Full Batch Container (Pad with zeros)
             full_batch_np = np.zeros((SERVER_BATCH_SIZE, IMG_H, IMG_W, IMG_C), dtype=np.uint8)
             
-            # 2. Fill with real data
             real_imgs_np = (images.permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
             full_batch_np[:curr_bs] = real_imgs_np
+            t_load_end = time.time()
             
-            # 3. Encode the full batch
+            # Encode data
+            t_encode_start = time.time()
             all_patches = policy.encode(full_batch_np, self.config)
+            t_encode_end = time.time()
             
-            # 4. Measure payload size
             batch_bytes = sum(len(p.data) for p in all_patches)
             total_bytes += batch_bytes
             batch_kb = batch_bytes / 1024.0
 
-            # 5. Send patches
+            t_send_start = time.time()
+            
+            # Send Patches
             for p in all_patches:
                 self.output_queue.put(p)
             
-            # --- Step B: Wait Phase ---
+            t_send_end = time.time()
+            
+            # Wait for Response
             result = self.feedback_queue.get()
             
-            # --- Step C: Calculate Metrics ---
-            # Slice results to ignore padding
+            # Calculate Metrics
+            t_result_recv = time.time()
+            
+            # Server Events
+            server_events = result.server_events
+            # Adjust timestamps
+            for e in server_events:
+                e['timestamp'] = e['start'] - time_offset # Map to Mobile Time
+                e['duration'] = e['end'] - e['start']
+                del e['start'], e['end']
+            
+            # Prepare Local Events
+            local_events = [
+                {'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start},
+                {'type': 'MOBILE_ENCODE', 'timestamp': t_encode_start, 'duration': t_encode_end - t_encode_start},
+                {'type': 'MOBILE_SEND', 'timestamp': t_send_start, 'duration': t_send_end - t_send_start},
+                {'type': 'MOBILE_RECEIVE', 'timestamp': t_result_recv, 'duration': 0}
+            ]
+            
+            # Combine
+            all_events = local_events + server_events
+            all_events.sort(key=lambda x: x.get('timestamp', 0))
+            
+            # Log Line
+            log_entry = {
+                'req_id': batch_idx,
+                'acc1': 0, # Calc below
+                'acc5': 0,
+                'bytes': batch_bytes,
+                'events': all_events
+            }
+            
+            # Calculate metrics
             valid_preds = result.output[:curr_bs]
             valid_labels = labels.tolist()
             
-            # Calculate Top-1 and Top-5 using list comprehension
-            batch_top1 = sum(p[0] == l for p, l in zip(valid_preds, valid_labels))
-            batch_top5 = sum(l in p for p, l in zip(valid_preds, valid_labels))
-            
-            latency = time.time() - result.timestamp
+            latency = time.time() - result.timestamp # Note: result.timestamp is server time.
+            # We should use local measurements.
+            latency = t_result_recv - t_send_start # End-to-End approximation
 
+            # Calculate accuracy
+            batch_top1 = 0
+            batch_top5 = 0
+            for i in range(curr_bs):
+                label = valid_labels[i]
+                preds = valid_preds[i]
+                if not preds: continue # skip empty results logic
+                
+                if preds[0] == label:
+                    batch_top1 += 1
+                if label in preds:
+                    batch_top5 += 1
+
+            # Update globals
             # Update globals
             total_top1 += batch_top1
             total_top5 += batch_top5
             total_samples += curr_bs
+            total_latency += latency
             
             acc1 = total_top1 / total_samples * 100
             acc5 = total_top5 / total_samples * 100
             
+            # Update Log Entry
+            log_entry['acc1'] = batch_top1 / curr_bs * 100
+            log_entry['acc5'] = batch_top5 / curr_bs * 100
+            log_entry['latency'] = latency
+            events_file.write(json.dumps(log_entry) + "\n")
+            events_file.flush()
+            
             pbar.set_description(f"Acc@1: {acc1:.2f}% | Acc@5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
             
-            # if (batch_idx+1) % 10 == 0:
+            # if (batch_idx+1) == 10:
             #     break # TEMP
 
         print(f"[Source] Final | Top-1: {acc1:.2f}% | Top-5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
-        self.output_queue.put('STOP')
+        
+        # Write Summary
+        summary = {
+            'exp_id': self.config.exp_id,
+            'total_samples': total_samples,
+            'top1_acc': acc1,
+            'top5_acc': acc5,
+            'avg_bytes_per_sample': total_bytes / total_samples,
+            'avg_latency_per_batch': total_latency / (batch_idx + 1),
+            'time_offset_ms': time_offset * 1000,
+            'config': asdict(self.config)
+        }
+        with open(summary_log_path, "w") as f:
+            json.dump(summary, f, indent=4)
+            
+        events_file.close()
+        self.output_queue.put(('STOP', None))
             

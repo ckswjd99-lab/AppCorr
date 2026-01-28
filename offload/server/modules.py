@@ -28,11 +28,14 @@ class ServerReceiver(multiprocessing.Process):
             with conn:
                 print(f"[ServerReceiver] Connected by {addr}")
                 
-                # 1. Handshake
-                config = recv_msg(conn)
-                if isinstance(config, ExperimentConfig):
+                # Handshake
+                msg = recv_msg(conn)
+                if isinstance(msg, tuple) and msg[0] == 'CONFIG':
+                    config = msg[1]
                     print(f"[ServerReceiver] Handshake success. Policy: {config.scheduler_policy_name}")
-                    self.control_queue.put(('CONFIG', config))
+                    self.control_queue.put(msg)
+                else:
+                    print(f"[ServerReceiver] Handshake failed or invalid format: {type(msg)}")
                 
                 # 2. Data Loop
                 while True:
@@ -42,7 +45,10 @@ class ServerReceiver(multiprocessing.Process):
                         print("[ServerReceiver] Received STOP signal or Client disconnected.")
                         break
                     
-                    self.sched_queue.put(msg)
+                    if isinstance(msg, tuple) and msg[0] == 'TIME_SYNC':
+                        self.control_queue.put(msg)
+                    else:
+                        self.sched_queue.put(msg)
                     
         print("[ServerReceiver] Triggering Server Shutdown...")
         self.shutdown_event.set() # Signal Main process to exit

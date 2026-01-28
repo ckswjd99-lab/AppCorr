@@ -3,6 +3,7 @@ import sys
 import os
 import multiprocessing
 import time
+import json
 
 # Add current directory to path
 sys.path.append(os.getcwd())
@@ -11,28 +12,26 @@ from offload.mobile.modules import MobileSender, MobileReceiver
 from offload.mobile.source import SourceModule
 from offload.common import ExperimentConfig
 
-def run_mobile(server_ip, recv_port, send_port, data_root, img_batch_size):
+def run_mobile(server_ip, recv_port, send_port, data_root, config_path):
     print(f"=== Starting AppCorr Mobile Client ===")
     print(f"[*] Target Server: {server_ip}")
     print(f"[*] ImageNet Root: {data_root}")
-    print(f"[*] Batch Size (Images): {img_batch_size}")
+    print(f"[*] Config Path: {config_path}")
 
-    # Configure experiment settings
-    # 256 patches = 1 Image (16x16 patch size, 256x256 image size)
-    config = ExperimentConfig(
-        exp_id="mobile_test_exp",
-        model_name="dinov3_classifier",
-        batch_size=img_batch_size,
-        image_shape=(256, 256, 3),
-        patch_size=(16, 16),
-        scheduler_policy_name="GroupTrigger",    # Options: 'BatchCountBased', 'GroupTrigger'
-        transmission_policy_name="ProgressiveLaplacian",   # Options: 'Raw', 'Zlib', 'Laplacian', 'ProgressiveLaplacian'
-        transmission_kwargs={
-            'pyramid_levels': [2, 0],   # For Laplacian Pyramid
-            'num_groups': 4,            # For Progressive Laplacian Pyramid
-            'compression_level': 9      # For Zlib
-        }
-    )
+    # Load Configuration
+    with open(config_path, 'r') as f:
+        config_data = json.load(f)
+    
+    # Check and convert types (Lists to Tuples for shapes)
+    if 'image_shape' in config_data:
+        config_data['image_shape'] = tuple(config_data['image_shape'])
+    if 'patch_size' in config_data:
+        config_data['patch_size'] = tuple(config_data['patch_size'])
+
+    # Create ExperimentConfig
+    config = ExperimentConfig(**config_data)
+
+    print(f"[*] Batch Size (Images): {config.batch_size}")
 
     # IPC Queues
     send_queue = multiprocessing.Queue()
@@ -41,7 +40,7 @@ def run_mobile(server_ip, recv_port, send_port, data_root, img_batch_size):
     # Initialize processes
     sender = MobileSender(server_ip, recv_port, send_queue)
     receiver = MobileReceiver(server_ip, send_port, feedback_queue)
-    source = SourceModule(send_queue, feedback_queue, config, data_root, img_batch_size)
+    source = SourceModule(send_queue, feedback_queue, config, data_root, config.batch_size)
 
     procs = [sender, receiver, source]
 
@@ -68,8 +67,8 @@ if __name__ == "__main__":
     parser.add_argument("--recv-port", type=int, default=9998, help="Uplink port")
     parser.add_argument("--send-port", type=int, default=9999, help="Downlink port")
     parser.add_argument("--data", type=str, default="~/data/imagenet_val", help="Path to ImageNet")
-    parser.add_argument("--batch-size", type=int, default=32, help="DataLoader batch size (images)")
+    parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
     
     args = parser.parse_args()
     
-    run_mobile(args.ip, args.recv_port, args.send_port, args.data, args.batch_size)
+    run_mobile(args.ip, args.recv_port, args.send_port, args.data, args.config)
