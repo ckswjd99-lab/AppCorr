@@ -6,9 +6,9 @@ from enum import Enum, auto
 @dataclass
 class ExperimentConfig:
     """Experiment settings."""
-    exp_id: str = "default_exp"
+    exp_id: str = "exp"
     
-    # Model Settings [NEW]
+    # Model Settings
     model_name: str = "resnet18"  # "resnet18", "dinov3_custom", etc.
     
     # Batch Settings
@@ -24,6 +24,7 @@ class ExperimentConfig:
     
     # Dynamic arguments
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
+    appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 @dataclass
@@ -45,8 +46,10 @@ class OpType(Enum):
     
     # --- Control Ops ---
     LOAD_INPUT = auto()
+    PREPARE_TOKENS = auto()
     SEND_RESPONSE = auto()
     FREE_SESSION = auto()
+    TIME_SYNC = auto()
 
 @dataclass
 class Instruction:
@@ -66,3 +69,4 @@ class InferenceResult:
     task_id: int
     timestamp: float
     output: Any
+    server_events: List[Dict[str, Any]] = field(default_factory=list)

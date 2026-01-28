@@ -60,7 +60,7 @@ class MobileReceiver(multiprocessing.Process):
         with s:
             while True:
                 result = recv_msg(s)
-                if isinstance(result, InferenceResult):
+                if isinstance(result, InferenceResult) or isinstance(result, float):
                     self.feedback_queue.put(result)
                 elif result is None:
                     break

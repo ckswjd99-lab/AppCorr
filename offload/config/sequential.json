@@ -1,0 +1,12 @@
+{
+    "exp_id": "sequential",
+    "model_name": "dinov3_classifier",
+    "batch_size": 32,
+    "image_shape": [256, 256, 3],
+    "patch_size": [16, 16],
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "Zlib",
+    "transmission_kwargs": {
+        "compression_level": 1
+    }
+}

@@ -32,13 +32,17 @@ class SchedulerModule(multiprocessing.Process):
                     self.worker_queue.put(('CONFIG', data))
                     self.buffer = []
                     self.task_counter = itertools.count()
+
                     print(f"[Scheduler] Configured with {self.config.scheduler_policy_name}")
+                
+                elif cmd == 'TIME_SYNC':
+                     self.worker_queue.put(('TIME_SYNC', data))
 
             # Drain queue
             while not self.input_queue.empty():
                 try:
-                    patch = self.input_queue.get_nowait()
-                    self.buffer.append(patch)
+                    item = self.input_queue.get_nowait()
+                    self.buffer.append(item)
                 except:
                     break
             

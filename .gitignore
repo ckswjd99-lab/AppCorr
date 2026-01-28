@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+logs
+appcorr/datasets
+appcorr/weights
+*.nsys-rep
+*.qdstrm
+.vscode

@@ -34,11 +34,11 @@ class WorkerModule(multiprocessing.Process):
     def run(self):
         print("[Worker] Started.")
         
-        # 1. Init CUDA
+        # Init CUDA
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"[Worker] Running on {self.device}")
         
-        # 2. Pre-load normalization tensors
+        # Pre-load normalization tensors
         self.norm_mean = torch.tensor(self.normalize_avg).view(1, 3, 1, 1).to(self.device).float()
         self.norm_std = torch.tensor(self.normalize_std).view(1, 3, 1, 1).to(self.device).float()
 
@@ -61,6 +61,11 @@ class WorkerModule(multiprocessing.Process):
                             print("!!! [Worker] Warning: Model not loaded.")
                             continue
                         self.execute_pipeline(payload)
+
+                    elif msg_type == 'TIME_SYNC':
+                        # Echo back with server timestamp
+                        self.output_queue.put(time.time())
+
                         
                 except Exception as e:
                     print(f"!!! [Worker] Main Loop Error: {e}")
@@ -90,9 +95,16 @@ class WorkerModule(multiprocessing.Process):
                 backbone_weights="~/cjpark/weights/dinov3/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
             )
 
-            self.model.backbone.set_appcorr_mode(
-                enabled=False,
-            )
+            # Configure AppCorr Mode via Config
+            appcorr_kwargs = self.config.appcorr_kwargs.copy()
+            # Remove non-argument keys if any
+            appcorr_kwargs.pop('generated_from_client', None)
+            
+            if appcorr_kwargs:
+                print(f"[Worker] Enabling AppCorr Mode: {appcorr_kwargs}")
+                self.model.backbone.set_appcorr_mode(**appcorr_kwargs)
+            else:
+                self.model.backbone.set_appcorr_mode(enabled=False)
 
             self.model.to(dtype=torch.bfloat16)
             self.model.to(self.device)
@@ -107,12 +119,23 @@ class WorkerModule(multiprocessing.Process):
         req_id = task.request_id
         
         if req_id not in self.sessions:
-            self.sessions[req_id] = {}
+            self.sessions[req_id] = {'events': []}
         context = self.sessions[req_id]
 
         try:
             for instr in task.instructions:
+                t_start = time.time()
                 self._dispatch(instr, task, context)
+                t_end = time.time()
+                
+                # Record Event
+                if 'events' in context:
+                    context['events'].append({
+                        'type': instr.op_type.name,
+                        'start': t_start,
+                        'end': t_end,
+                        'params': instr.params
+                    })
         except Exception as e:
             print(f"!!! [Worker] Pipeline Error (Req {req_id}): {e}")
             traceback.print_exc()
@@ -122,26 +145,55 @@ class WorkerModule(multiprocessing.Process):
     def _dispatch(self, instr: Instruction, task: Task, context: Dict[str, Any]):
         op = instr.op_type
         params = instr.params
+        backbone = self.model.backbone
 
         # --- Control Ops ---
         if op == OpType.LOAD_INPUT:
             if not task.payload: return
             
-            # [CRITICAL] Accumulate patches for progressive decoding
+            # Accumulate patches for progressive decoding
             if 'patch_buffer' not in context:
                 context['patch_buffer'] = []
             context['patch_buffer'].extend(task.payload)
             
+            # Track spatial indices per group for AppCorr
+            if 'group_indices' not in context:
+                # { group_id: { batch_idx: [spatial_idx, ...] } }
+                context['group_indices'] = {}
+            
+            for p in task.payload:
+                if p.group_id not in context['group_indices']:
+                    context['group_indices'][p.group_id] = {b: [] for b in range(self.config.batch_size)}
+                
+                if p.image_idx < self.config.batch_size:
+                    context['group_indices'][p.group_id][p.image_idx].append(p.spatial_idx)
+            
             # Decode using accumulated buffer
-            batch_np = self.policy.decode(context['patch_buffer'], self.config)
+            batch_np = self.policy.decode(context['patch_buffer'], self.config) # [B, H, W, C]
             
             # Preprocess
-            tensor = torch.from_numpy(batch_np).permute(0, 3, 1, 2).float().to(self.device)
+            tensor = torch.from_numpy(batch_np).to(self.device).permute(0, 3, 1, 2).float()
             tensor = tensor / 255.0
             tensor = (tensor - self.norm_mean) / self.norm_std
             
-            context['input'] = tensor
-            context['current_feat'] = tensor 
+            context['input_tensor'] = tensor
+
+        elif op == OpType.PREPARE_TOKENS:
+            if 'input_tensor' not in context: return
+
+            tensor = context['input_tensor']
+             
+            if hasattr(backbone, 'prepare_tokens_with_masks'):
+                t2_x, hw_tuple = backbone.prepare_tokens_with_masks(tensor, None)
+                context['input_tokens'] = t2_x
+                context['hw_tuple'] = hw_tuple
+                
+                if 'current_feature' not in context:
+                    context['current_feature'] = t2_x
+
+                if self.model.backbone.rope_embed is not None and 'rope_sincos' not in context:
+                    rope_sincos = self.model.backbone.rope_embed(H=hw_tuple[0], W=hw_tuple[1])
+                    context['rope_sincos'] = rope_sincos
 
         elif op == OpType.SEND_RESPONSE:
             if 'output' in context:
@@ -151,7 +203,9 @@ class WorkerModule(multiprocessing.Process):
             else:
                 preds = []
             
-            result = InferenceResult(task.task_id, time.time(), preds)
+            # Include accumulated server events
+            server_events = context.get('events', [])
+            result = InferenceResult(task.task_id, time.time(), preds, server_events)
             self.output_queue.put(result)
 
         elif op == OpType.FREE_SESSION:
@@ -160,21 +214,105 @@ class WorkerModule(multiprocessing.Process):
 
         # --- Computation Ops ---
         elif op == OpType.FULL_INFERENCE:
-            inp = context.get('input')
+            inp = context.get('input_tensor')
             context['output'] = self.model(inp)
 
         elif op == OpType.APPROX_FORWARD:
-            pass
+            # Get params
+            layers = params.get('layers', range(0, 40))
+
+            # Approx Loop
+            x_feature = context['current_feature']
+            rope_sincos = context['rope_sincos']
+            cache = context.get('cache_feature', {})
+            
+            start_l, end_l = layers[0], layers[1]
+            
+            # Ensure proper input if starting from 0
+            if start_l == 0:
+                x_feature = context['input_tokens']
+
+            for lidx in range(start_l, end_l):
+                blk = self.model.backbone.blocks[lidx]
+                
+                x_feature, cache = blk.approx(
+                    x_feature, rope_sincos, cache, tag=f"layer{lidx}",
+                    debug=False
+                )
+            
+            # Update Context
+            context['current_feature'] = x_feature
+            context['cache_feature'] = cache
 
         elif op == OpType.CORRECT_FORWARD:
-            pass
+            # Get params
+            layers = params.get('layers', range(0, 40))
+            group_id = params.get('group_id', 1)
+            
+            start_l, end_l = layers[0], layers[1]
+
+            # Prepare Update Indices
+            # Note: We must include Pre-tokens (CLS) + Patch Tokens
+            num_pretokens = 1 + self.model.backbone.n_storage_tokens
+            B = context['current_feature'].shape[0]
+
+            # Retrieve spatial indices for this group
+            # Structure: context['group_indices'][group_id][batch_idx] -> list of ints
+            batch_indices = context['group_indices'][group_id]
+            
+            # Convert to tensor [B, N_group]
+            patch_indices_list = []
+            for b in range(B):
+                p_idxs = sorted(batch_indices.get(b, []))
+                if not p_idxs: # Fallback if empty group for this batch item
+                        p_idxs = [] 
+                patch_indices_list.append(torch.tensor(p_idxs, device=self.device, dtype=torch.long))
+            
+            patch_indices = torch.stack(patch_indices_list) 
+            
+            # Add offset for pretokens
+            patch_indices = patch_indices + num_pretokens
+            
+            # Always include pretokens (0..num_pretokens-1)
+            pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
+            
+            dindice = torch.cat([pre_indices, patch_indices], dim=1) # [B, N_group + num_pre]
+            
+
+            # Correct Loop
+            cache = context.get('cache_feature', {})
+            rope_sincos = context['rope_sincos']
+            
+            x_temp = context['input_tokens']
+            
+            # Get ratio from model config
+            alive_ratio = getattr(self.model.backbone, 'appcorr_cls_alive_ratio', 0.2)
+
+            for lidx in range(start_l, end_l):
+                blk = self.model.backbone.blocks[lidx]
+                
+                x_temp, cache = blk.correct(
+                    x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
+                    cls_alive_ratio=alive_ratio,
+                    debug=False
+                )
+            
+            # Update Context
+            context['current_feature'] = x_temp
+            context['cache_feature'] = cache
 
         elif op == OpType.HEAD_INFERENCE:
-            input = context.get('input')
-            context['output'] = self.model(input)
-
-            # feat = context.get('current_feat')
-            # if hasattr(self.model, 'forward_head'):
-            #     context['output'] = self.model.forward_head(feat)
-            # else:
-            #     context['output'] = self.model(feat)
+            # Final Feature to Head
+            feat = context.get('current_feature')
+            
+            # Apply Norm
+            x_norm = backbone.norm(feat)
+            x_norm_clstoken = x_norm[:, 0]
+            x_norm_patchtokens = x_norm[:, backbone.n_storage_tokens + 1 :]
+            
+            # Simulating Classifier Wrapper
+            linear_input = torch.cat(
+                [x_norm_clstoken, x_norm_patchtokens.mean(dim=1)],
+                dim=1,
+            )
+            context['output'] = self.model.linear_head(linear_input)
