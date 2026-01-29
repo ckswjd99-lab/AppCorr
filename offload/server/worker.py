@@ -438,6 +438,9 @@ class WorkerModule(multiprocessing.Process):
             output_logits = context['output']
             probs = torch.softmax(output_logits, dim=1)
             
+            # Compute Top-5 for potential exits
+            _, top5 = torch.topk(output_logits, k=5, dim=1)
+            
             # Identify Exits
             if metric == 'max_prob':
                 max_probs, _ = torch.max(probs, dim=1)
