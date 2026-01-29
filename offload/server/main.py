@@ -21,7 +21,7 @@ def run_server(recv_port, send_port):
     result_q = multiprocessing.Queue()
     control_q = multiprocessing.Queue()
     
-    # [FIX] Shutdown Event
+    # Shutdown Event
     shutdown_event = multiprocessing.Event()
 
     # Pass shutdown_event to Receiver

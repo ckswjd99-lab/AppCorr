@@ -5,7 +5,7 @@ from offload.common import send_msg, recv_msg, ExperimentConfig
 class ServerReceiver(multiprocessing.Process):
     """Receives Config and Patches from Mobile."""
     
-    # [FIX] Accept shutdown_event
+    # Accept shutdown_event
     def __init__(self, port, sched_queue, control_queue, shutdown_event):
         super().__init__()
         self.port = port

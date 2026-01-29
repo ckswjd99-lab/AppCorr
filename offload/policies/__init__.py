@@ -1,11 +1,12 @@
 from .interface import ISchedulingPolicy, ITransmissionPolicy
-from .scheduling import BatchCountBasedPolicy, GroupTriggerPolicy
+from .scheduling import BatchCountBasedPolicy, GroupTriggerPolicy, GroupTriggerEarlyExitPolicy
 from .transmission import RawTransmissionPolicy, ZlibTransmissionPolicy, LaplacianPyramidPolicy, ProgressiveLPyramidPolicy, FullImageCompressionPolicy
 
 # Registry for dynamic instantiation
 SCHEDULER_REGISTRY = {
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
+    "GroupTriggerEarlyExit": GroupTriggerEarlyExitPolicy,
 }
 
 TRANSMISSION_REGISTRY = {

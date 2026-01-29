@@ -5,8 +5,6 @@ from .interface import ISchedulingPolicy
 class BatchCountBasedPolicy(ISchedulingPolicy):
     """
     Waits for a full batch of patches, then triggers a standard FULL_INFERENCE task.
-    - Dynamically calculates patch count (e.g., for Laplacian).
-    - Instructs the worker to perform a standard forward pass.
     """
 
     def decide(
@@ -119,6 +117,48 @@ class GroupTriggerPolicy(ISchedulingPolicy):
         return None
 
     def _get_pipeline_instructions(self, group_id: int, config: ExperimentConfig) -> List[Instruction]:
+        total_layers = config.transmission_kwargs.get('total_layers', 40)
+        num_res_groups = config.transmission_kwargs.get('num_groups', 4)
+        
+        chunk_size = total_layers // num_res_groups
+        instructions = [Instruction(OpType.LOAD_INPUT), Instruction(OpType.PREPARE_TOKENS)]
+
+        if group_id < num_res_groups:
+            # Correct valid history -> Approx next chunk
+            current_chunk_start = group_id * chunk_size
+            current_chunk_end = (group_id + 1) * chunk_size
+            
+            if current_chunk_start > 0:
+                instructions.append(
+                    Instruction(OpType.CORRECT_FORWARD, {
+                        'layers': (0, current_chunk_start),
+                        'group_id': group_id
+                    })
+                )
+            
+            instructions.append(
+                Instruction(OpType.APPROX_FORWARD, {
+                    'layers': (current_chunk_start, current_chunk_end)
+                })
+            )
+
+        else:
+            # Final Phase: Correct entire model & Inference
+            instructions.append(
+                Instruction(OpType.CORRECT_FORWARD, {
+                    'layers': (0, total_layers),
+                    'group_id': group_id
+                })
+            )
+            instructions.append(Instruction(OpType.HEAD_INFERENCE))
+            instructions.append(Instruction(OpType.EXIT_ALL))
+            instructions.append(Instruction(OpType.SEND_RESPONSE))
+            instructions.append(Instruction(OpType.FREE_SESSION))
+            
+        return instructions
+
+class GroupTriggerEarlyExitPolicy(GroupTriggerPolicy):
+    def _get_pipeline_instructions(self, group_id: int, config: ExperimentConfig) -> List[Instruction]:
         """
         Maps Group IDs to pipeline steps.
         """
@@ -147,6 +187,9 @@ class GroupTriggerPolicy(ISchedulingPolicy):
                 })
             )
 
+            instructions.append(Instruction(OpType.HEAD_INFERENCE))
+            instructions.append(Instruction(OpType.DECIDE_EXIT))
+
         else:
             # Final Phase: Correct entire model & Inference
             instructions.append(
@@ -156,6 +199,7 @@ class GroupTriggerPolicy(ISchedulingPolicy):
                 })
             )
             instructions.append(Instruction(OpType.HEAD_INFERENCE))
+            instructions.append(Instruction(OpType.EXIT_ALL))
             instructions.append(Instruction(OpType.SEND_RESPONSE))
             instructions.append(Instruction(OpType.FREE_SESSION))
             

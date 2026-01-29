@@ -203,19 +203,26 @@ class SourceModule(multiprocessing.Process):
                 group_stats[gid]['count'] += 1
                 group_stats[gid]['bytes'] += len(p.data)
 
-            # Aggregate Event Stats
+            # Aggregate Event Stats (Per Request)
+            request_latency_map = {}
             for event in all_events:
                 etype = event['type']
                 dur_ms = event.get('duration', 0) * 1000.0 # Convert to ms
                 
+                if etype not in request_latency_map:
+                    request_latency_map[etype] = 0.0
+                request_latency_map[etype] += dur_ms
+                
+            # Update Global Accumulator with Per-Request Total
+            for etype, total_dur_ms in request_latency_map.items():
                 if etype not in event_stats_accumulator:
                     event_stats_accumulator[etype] = {'count': 0, 'sum': 0.0, 'min': float('inf'), 'max': float('-inf')}
                 
                 stats = event_stats_accumulator[etype]
                 stats['count'] += 1
-                stats['sum'] += dur_ms
-                stats['min'] = min(stats['min'], dur_ms)
-                stats['max'] = max(stats['max'], dur_ms)
+                stats['sum'] += total_dur_ms
+                stats['min'] = min(stats['min'], total_dur_ms)
+                stats['max'] = max(stats['max'], total_dur_ms)
 
             # Log Line
             log_entry = {
