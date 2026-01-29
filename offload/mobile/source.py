@@ -4,6 +4,7 @@ import torch
 from torchvision import datasets, transforms
 import numpy as np
 from tqdm import tqdm
+from dataclasses import asdict
 
 from offload.common import ExperimentConfig
 from offload.policies import get_transmission
@@ -126,6 +127,10 @@ class SourceModule(multiprocessing.Process):
         total_samples = 0
         total_bytes = 0 
         total_latency = 0.0 
+        
+        # Event Statistics Accumulator
+        # { type: { count, sum, min, max } }
+        event_stats_accumulator = {}
 
         # Constants for padding
         SERVER_BATCH_SIZE = self.config.batch_size
@@ -189,12 +194,36 @@ class SourceModule(multiprocessing.Process):
             all_events = local_events + server_events
             all_events.sort(key=lambda x: x.get('timestamp', 0))
             
+            # Group Stats Calculation
+            group_stats = {}
+            for p in all_patches:
+                gid = p.group_id
+                if gid not in group_stats:
+                    group_stats[gid] = {'count': 0, 'bytes': 0}
+                group_stats[gid]['count'] += 1
+                group_stats[gid]['bytes'] += len(p.data)
+
+            # Aggregate Event Stats
+            for event in all_events:
+                etype = event['type']
+                dur_ms = event.get('duration', 0) * 1000.0 # Convert to ms
+                
+                if etype not in event_stats_accumulator:
+                    event_stats_accumulator[etype] = {'count': 0, 'sum': 0.0, 'min': float('inf'), 'max': float('-inf')}
+                
+                stats = event_stats_accumulator[etype]
+                stats['count'] += 1
+                stats['sum'] += dur_ms
+                stats['min'] = min(stats['min'], dur_ms)
+                stats['max'] = max(stats['max'], dur_ms)
+
             # Log Line
             log_entry = {
                 'req_id': batch_idx,
                 'acc1': 0, # Calc below
                 'acc5': 0,
                 'bytes': batch_bytes,
+                'group_stats': group_stats,
                 'events': all_events
             }
             
@@ -220,7 +249,6 @@ class SourceModule(multiprocessing.Process):
                     batch_top5 += 1
 
             # Update globals
-            # Update globals
             total_top1 += batch_top1
             total_top5 += batch_top5
             total_samples += curr_bs
@@ -243,6 +271,25 @@ class SourceModule(multiprocessing.Process):
 
         print(f"[Source] Final | Top-1: {acc1:.2f}% | Top-5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
         
+        # Calculate Latency Breakdown
+        latency_breakdown = {}
+        print("\n=== Latency Breakdown (ms) ===")
+        print(f"{'Event Type':<25} | {'Avg':<8} | {'Min':<8} | {'Max':<8} | {'Count':<6}")
+        print("-" * 65)
+        
+        sorted_stats = sorted(event_stats_accumulator.items(), key=lambda x: x[1]['sum'], reverse=True)
+        
+        for etype, stats in sorted_stats:
+            avg = stats['sum'] / stats['count'] if stats['count'] > 0 else 0
+            latency_breakdown[etype] = {
+                'avg_ms': avg,
+                'min_ms': stats['min'],
+                'max_ms': stats['max'],
+                'count': stats['count']
+            }
+            print(f"{etype:<25} | {avg:<8.2f} | {stats['min']:<8.2f} | {stats['max']:<8.2f} | {stats['count']:<6}")
+        print("=" * 65 + "\n")
+        
         # Write Summary
         summary = {
             'exp_id': self.config.exp_id,
@@ -252,11 +299,12 @@ class SourceModule(multiprocessing.Process):
             'avg_bytes_per_sample': total_bytes / total_samples,
             'avg_latency_per_batch': total_latency / (batch_idx + 1),
             'time_offset_ms': time_offset * 1000,
+            'latency_breakdown': latency_breakdown,
             'config': asdict(self.config)
         }
         with open(summary_log_path, "w") as f:
             json.dump(summary, f, indent=4)
             
         events_file.close()
-        self.output_queue.put(('STOP', None))
+        self.output_queue.put('STOP')
             

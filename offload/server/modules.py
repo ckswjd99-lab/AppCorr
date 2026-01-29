@@ -45,8 +45,11 @@ class ServerReceiver(multiprocessing.Process):
                         print("[ServerReceiver] Received STOP signal or Client disconnected.")
                         break
                     
-                    if isinstance(msg, tuple) and msg[0] == 'TIME_SYNC':
-                        self.control_queue.put(msg)
+                    if isinstance(msg, tuple):
+                         if msg[0] == 'TIME_SYNC':
+                             self.control_queue.put(msg)
+                         else:
+                             print(f"[ServerReceiver] Ignoring unknown control tuple: {msg[0]}")
                     else:
                         self.sched_queue.put(msg)
                     
