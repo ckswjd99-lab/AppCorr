@@ -125,17 +125,22 @@ class WorkerModule(multiprocessing.Process):
         try:
             for instr in task.instructions:
                 t_start = time.time()
-                self._dispatch(instr, task, context)
+                meta = self._dispatch(instr, task, context)
+                torch.cuda.synchronize()
                 t_end = time.time()
                 
                 # Record Event
                 if 'events' in context:
-                    context['events'].append({
+                    event_data = {
                         'type': instr.op_type.name,
                         'start': t_start,
                         'end': t_end,
-                        'params': instr.params
-                    })
+                        'params': instr.params.copy()
+                    }
+                    if meta:
+                        event_data['meta'] = meta
+                    
+                    context['events'].append(event_data)
         except Exception as e:
             print(f"!!! [Worker] Pipeline Error (Req {req_id}): {e}")
             traceback.print_exc()
@@ -143,9 +148,25 @@ class WorkerModule(multiprocessing.Process):
                 del self.sessions[req_id]
 
     def _dispatch(self, instr: Instruction, task: Task, context: Dict[str, Any]):
+        # Helper for batch slicing
+        if 'active_indices' not in context:
+             # Identity mapping initially: [0, 1, 2, ... B-1]
+             context['active_indices'] = torch.arange(self.config.batch_size, device=self.device)
+        
         op = instr.op_type
         params = instr.params
         backbone = self.model.backbone
+
+        # --- Optimize: Skip Logic if All Exited ---
+        # If active_indices is empty, we only run Finalization Ops
+        if len(context['active_indices']) == 0:
+            SKIPPABLE_OPS = {
+                OpType.LOAD_INPUT, OpType.PREPARE_TOKENS,
+                OpType.FULL_INFERENCE, OpType.APPROX_FORWARD, OpType.CORRECT_FORWARD,
+                OpType.HEAD_INFERENCE, OpType.DECIDE_EXIT
+            }
+            if op in SKIPPABLE_OPS:
+                return {'skipped': True}
 
         # --- Control Ops ---
         if op == OpType.LOAD_INPUT:
@@ -176,14 +197,18 @@ class WorkerModule(multiprocessing.Process):
             tensor = tensor / 255.0
             tensor = (tensor - self.norm_mean) / self.norm_std
 
+            # --- Sliced Update Handling ---
+            if 'active_indices' in context and len(context['active_indices']) < self.config.batch_size:
+                active_indices = context['active_indices']
+                tensor = tensor[active_indices]
+
             context['input_tensor'] = tensor
 
             # Optimization: Vectorized dindice construction with group_map
             if 'cached_dindices' not in context:
                 context['cached_dindices'] = {}
 
-            # Initialize or Retrieve group_map: [B, Max_Tokens]
-            # Max tokens = (H//ph) * (W//pw)
+            # Initialize or Retrieve group_map: [CurrentBatch, Max_Tokens]
             if 'group_map' not in context:
                 H, W = self.config.image_shape[:2]
                 if isinstance(self.config.patch_size, int):
@@ -192,28 +217,49 @@ class WorkerModule(multiprocessing.Process):
                     ph, pw = self.config.patch_size
                 num_patches = (H // ph) * (W // pw)
                 # Init with -1 (no group)
-                context['group_map'] = torch.full((self.config.batch_size, num_patches), -1, device=self.device, dtype=torch.long)
+                curr_B = tensor.shape[0]
+                context['group_map'] = torch.full((curr_B, num_patches), -1, device=self.device, dtype=torch.long)
             
             group_map = context['group_map']
             
             # Vectorized Update of Group Map
-            # Extract lists (still python, but fast for <10k ints)
-            b_list = [p.image_idx for p in task.payload]
-            s_list = [p.spatial_idx for p in task.payload]
-            g_list = [p.group_id for p in task.payload]
-            
-            if b_list:
-                b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
-                s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
-                g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
+            # Map Original Index -> Local Index if sliced
+            if 'active_indices' in context and len(context['active_indices']) < self.config.batch_size:
+                # Build lookup: { original_idx : local_idx }
+                active_list = context['active_indices'].tolist()
+                idx_map = { orig: local for local, orig in enumerate(active_list) }
                 
-                # Scatter update: group_map[b, s] = g
-                group_map[b_t, s_t] = g_t
+                # Filter payload
+                valid_payload = [p for p in task.payload if p.image_idx in idx_map]
+                
+                if valid_payload:
+                    b_list = [idx_map[p.image_idx] for p in valid_payload]
+                    s_list = [p.spatial_idx for p in valid_payload]
+                    g_list = [p.group_id for p in valid_payload]
+                    
+                    b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+                    s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+                    g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
+                    
+                    group_map[b_t, s_t] = g_t
+            else:
+                # Standard full-batch update (Identity mapping)
+                b_list = [p.image_idx for p in task.payload]
+                s_list = [p.spatial_idx for p in task.payload]
+                g_list = [p.group_id for p in task.payload]
+                
+                if b_list:
+                    b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+                    s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+                    g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
+                    
+                    group_map[b_t, s_t] = g_t
             
             # Update Cached Dindices for involved groups
             involved_groups = set(g_list)
             num_pretokens = 1 + self.model.backbone.n_storage_tokens
-            B = self.config.batch_size
+            # B = self.config.batch_size # <--- BUG: This is static 32
+            B = group_map.shape[0]       # <--- FIX: Use dynamic active batch size
             
             for gid in involved_groups:
                  # Mask: [B, N] boolean
@@ -255,7 +301,13 @@ class WorkerModule(multiprocessing.Process):
                     context['rope_sincos'] = rope_sincos
 
         elif op == OpType.SEND_RESPONSE:
-            if 'output' in context:
+            if 'final_results' in context:
+                 # Reconstruct ordered list
+                 final_map = context['final_results']
+                 preds = []
+                 for i in range(self.config.batch_size):
+                     preds.append(final_map.get(i, [])) # Return empty list if missing (fallback)
+            elif 'output' in context:
                 output_logits = context['output']
                 _, top5 = torch.topk(output_logits, k=5, dim=1)
                 preds = top5.cpu().numpy().tolist()
@@ -375,3 +427,122 @@ class WorkerModule(multiprocessing.Process):
                 dim=1,
             )
             context['output'] = self.model.linear_head(linear_input)
+
+        elif op == OpType.DECIDE_EXIT:
+            if 'output' not in context: return
+
+            # Get Criteria
+            metric = self.config.early_exit_kwargs.get('metric', 'max_prob')
+            threshold = self.config.early_exit_kwargs.get('threshold', 0.9)
+            
+            output_logits = context['output']
+            probs = torch.softmax(output_logits, dim=1)
+            
+            # Identify Exits
+            if metric == 'max_prob':
+                max_probs, _ = torch.max(probs, dim=1)
+                exit_mask = max_probs >= threshold
+            elif metric == 'entropy':
+                entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
+                exit_mask = entropy <= threshold
+            else:
+                # Default/Fallback
+                max_probs, _ = torch.max(probs, dim=1)
+                exit_mask = torch.zeros_like(max_probs, dtype=torch.bool)
+                
+            num_exits = exit_mask.sum().item()
+            if num_exits > 0:
+                print(f"[Worker] exiting {num_exits} samples (metric {metric}, thresh {threshold})")
+                
+                # Store Results for Exited Samples
+                if 'final_results' not in context:
+                    context['final_results'] = {}
+                
+                # Map active index to original request index
+                current_active_indices = context['active_indices']
+                
+                exited_original_indices = current_active_indices[exit_mask]
+                exited_preds = top5[exit_mask].cpu().numpy().tolist()
+                
+                for orig_idx, pred_list in zip(exited_original_indices.cpu().numpy(), exited_preds):
+                    context['final_results'][int(orig_idx)] = pred_list
+                    
+                # Slice State
+                keep_mask = ~exit_mask
+                
+                # Check if all exited
+                if keep_mask.sum() == 0:
+                    context['active_indices'] = torch.empty(0, device=self.device, dtype=torch.long)
+                    if 'current_feature' in context: del context['current_feature']
+                    if 'input_tokens' in context: del context['input_tokens']
+                else:
+                    self._slice_state(context, keep_mask)
+            
+            return {
+                'num_exits': num_exits,
+                'threshold': threshold
+            }
+
+        elif op == OpType.EXIT_ALL:
+             # Flush everything remaining to final_results
+             if 'output' in context and 'active_indices' in context:
+                output_logits = context['output']
+                # Get Top-5
+                _, top5 = torch.topk(output_logits, k=5, dim=1)
+                
+                current_active_indices = context['active_indices']
+                
+                if 'final_results' not in context:
+                    context['final_results'] = {}
+                    
+                preds_list = top5.cpu().numpy().tolist()
+                for orig_idx, pred_list in zip(current_active_indices.cpu().numpy(), preds_list):
+                    context['final_results'][int(orig_idx)] = pred_list
+            
+             # Clear state
+             context['active_indices'] = torch.empty(0, device=self.device, dtype=torch.long)
+
+    def _slice_state(self, context: Dict[str, Any], keep_mask: torch.Tensor):
+        """Slices all relevant tensors in context based on keep_mask."""
+        
+        # Metadata
+        context['active_indices'] = context['active_indices'][keep_mask]
+        
+        # Group Map
+        if 'group_map' in context:
+            context['group_map'] = context['group_map'][keep_mask]
+            
+        # Input Tensors
+        if 'input_tokens' in context:
+            context['input_tokens'] = context['input_tokens'][keep_mask]
+            
+        if 'input_tensor' in context:
+            context['input_tensor'] = context['input_tensor'][keep_mask]
+            
+        # Current Feature
+        if 'current_feature' in context:
+            context['current_feature'] = context['current_feature'][keep_mask]
+            
+        # Cache (KV Cache)
+        # Update in-place to save memory
+        if 'cache_feature' in context:
+            cache = context['cache_feature']
+            for k in list(cache.keys()):
+                v = cache[k]
+                if isinstance(v, tuple):
+                    new_val = tuple(x[keep_mask] if isinstance(x, torch.Tensor) else x for x in v)
+                    cache[k] = new_val
+                elif isinstance(v, torch.Tensor):
+                    cache[k] = v[keep_mask]
+                
+                del v
+                
+        # Clear derived structures that depend on batch index/size
+        if 'cached_dindices' in context:
+            context['cached_dindices'] = {}
+
+        # Output (Logits)
+        if 'output' in context:
+            context['output'] = context['output'][keep_mask]
+
+        

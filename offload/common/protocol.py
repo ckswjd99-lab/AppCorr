@@ -25,8 +25,8 @@ class ExperimentConfig:
     # Dynamic arguments
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
     appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
+    early_exit_kwargs: Dict[str, Any] = field(default_factory=dict)
 
-@dataclass
 @dataclass
 class Patch:
     image_idx: int
@@ -50,6 +50,8 @@ class OpType(Enum):
     SEND_RESPONSE = auto()
     FREE_SESSION = auto()
     TIME_SYNC = auto()
+    DECIDE_EXIT = auto()
+    EXIT_ALL = auto()
 
 @dataclass
 class Instruction:
