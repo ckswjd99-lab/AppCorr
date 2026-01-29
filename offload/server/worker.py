@@ -175,8 +175,67 @@ class WorkerModule(multiprocessing.Process):
             tensor = torch.from_numpy(batch_np).to(self.device).permute(0, 3, 1, 2).float()
             tensor = tensor / 255.0
             tensor = (tensor - self.norm_mean) / self.norm_std
-            
+
             context['input_tensor'] = tensor
+
+            # Optimization: Vectorized dindice construction with group_map
+            if 'cached_dindices' not in context:
+                context['cached_dindices'] = {}
+
+            # Initialize or Retrieve group_map: [B, Max_Tokens]
+            # Max tokens = (H//ph) * (W//pw)
+            if 'group_map' not in context:
+                H, W = self.config.image_shape[:2]
+                if isinstance(self.config.patch_size, int):
+                    ph = pw = self.config.patch_size
+                else:
+                    ph, pw = self.config.patch_size
+                num_patches = (H // ph) * (W // pw)
+                # Init with -1 (no group)
+                context['group_map'] = torch.full((self.config.batch_size, num_patches), -1, device=self.device, dtype=torch.long)
+            
+            group_map = context['group_map']
+            
+            # Vectorized Update of Group Map
+            # Extract lists (still python, but fast for <10k ints)
+            b_list = [p.image_idx for p in task.payload]
+            s_list = [p.spatial_idx for p in task.payload]
+            g_list = [p.group_id for p in task.payload]
+            
+            if b_list:
+                b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+                s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+                g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
+                
+                # Scatter update: group_map[b, s] = g
+                group_map[b_t, s_t] = g_t
+            
+            # Update Cached Dindices for involved groups
+            involved_groups = set(g_list)
+            num_pretokens = 1 + self.model.backbone.n_storage_tokens
+            B = self.config.batch_size
+            
+            for gid in involved_groups:
+                 # Mask: [B, N] boolean
+                 mask = (group_map == gid)
+
+                 # Vectorized Extraction
+                 nonzero_indices = torch.nonzero(mask) # [Total_K, 2]
+
+                 # Reshape to [B, K]
+                 try:
+                     spatial_indices = nonzero_indices[:, 1].view(B, -1)
+                 except RuntimeError:
+                     print(f"!!! [Worker] Non-uniform group {gid} size detected. Fallback to ragged construction.")
+                     # Fallback to naive
+                     continue
+
+                 # Add Offset & Pre-tokens
+                 patch_indices = spatial_indices + num_pretokens
+                 pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
+                 dindice = torch.cat([pre_indices, patch_indices], dim=1)
+                 
+                 context['cached_dindices'][gid] = dindice
 
         elif op == OpType.PREPARE_TOKENS:
             if 'input_tensor' not in context: return
@@ -252,31 +311,31 @@ class WorkerModule(multiprocessing.Process):
             start_l, end_l = layers[0], layers[1]
 
             # Prepare Update Indices
-            # Note: We must include Pre-tokens (CLS) + Patch Tokens
-            num_pretokens = 1 + self.model.backbone.n_storage_tokens
-            B = context['current_feature'].shape[0]
-
-            # Retrieve spatial indices for this group
-            # Structure: context['group_indices'][group_id][batch_idx] -> list of ints
-            batch_indices = context['group_indices'][group_id]
-            
-            # Convert to tensor [B, N_group]
-            patch_indices_list = []
-            for b in range(B):
-                p_idxs = sorted(batch_indices.get(b, []))
-                if not p_idxs: # Fallback if empty group for this batch item
-                        p_idxs = [] 
-                patch_indices_list.append(torch.tensor(p_idxs, device=self.device, dtype=torch.long))
-            
-            patch_indices = torch.stack(patch_indices_list) 
-            
-            # Add offset for pretokens
-            patch_indices = patch_indices + num_pretokens
-            
-            # Always include pretokens (0..num_pretokens-1)
-            pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
-            
-            dindice = torch.cat([pre_indices, patch_indices], dim=1) # [B, N_group + num_pre]
+            # Optimization: Retrieve cached dindice
+            if 'cached_dindices' in context and group_id in context['cached_dindices']:
+                dindice = context['cached_dindices'][group_id]
+            else:
+                 # Fallback (Should typically be cached)
+                 # Reconstruct from group_map if possible or error out
+                 print(f"!!! [Worker] Warning: dindice cache miss for group {group_id}. Recomputing...")
+                 # Attempt to compute from group_map if available
+                 if 'group_map' in context:
+                      mask = (context['group_map'] == group_id)
+                      nonzero_indices = torch.nonzero(mask)
+                      num_pretokens = 1 + self.model.backbone.n_storage_tokens
+                      B = context['current_feature'].shape[0]
+                      try:
+                          spatial_indices = nonzero_indices[:, 1].view(B, -1)
+                          patch_indices = spatial_indices + num_pretokens
+                          pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
+                          dindice = torch.cat([pre_indices, patch_indices], dim=1)
+                          # Cache it for next time
+                          if 'cached_dindices' not in context: context['cached_dindices'] = {}
+                          context['cached_dindices'][group_id] = dindice
+                      except:
+                          print("!!! [Worker] Failed to recompute dindice from map. Using expensive fallback.")
+                          # Original fallback...
+                          pass
             
 
             # Correct Loop

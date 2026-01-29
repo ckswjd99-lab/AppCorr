@@ -5,8 +5,9 @@
     "image_shape": [256, 256, 3],
     "patch_size": [16, 16],
     "scheduler_policy_name": "BatchCountBased",
-    "transmission_policy_name": "Zlib",
+    "transmission_policy_name": "FullImageCompression",
     "transmission_kwargs": {
-        "compression_level": 1
+        "format": "png",
+        "quality": 6
     }
 }
