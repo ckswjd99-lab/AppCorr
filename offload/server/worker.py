@@ -426,7 +426,20 @@ class WorkerModule(multiprocessing.Process):
                 [x_norm_clstoken, x_norm_patchtokens.mean(dim=1)],
                 dim=1,
             )
-            context['output'] = self.model.linear_head(linear_input)
+            output_logits = self.model.linear_head(linear_input)
+            context['output'] = output_logits
+            
+            # --- Analysis Logging ---
+            probs = torch.softmax(output_logits, dim=1)
+            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
+            top5_probs, top5_indices = torch.topk(probs, k=5, dim=1)
+            
+            return {
+                'entropy': entropy.cpu().numpy().tolist(),
+                'top5_probs': top5_probs.cpu().numpy().tolist(),
+                'top5_indices': top5_indices.cpu().numpy().tolist(),
+                'active_indices': context.get('active_indices', torch.arange(len(probs))).cpu().numpy().tolist()
+            }
 
         elif op == OpType.DECIDE_EXIT:
             if 'output' not in context: return
@@ -445,6 +458,10 @@ class WorkerModule(multiprocessing.Process):
             if metric == 'max_prob':
                 max_probs, _ = torch.max(probs, dim=1)
                 exit_mask = max_probs >= threshold
+            elif metric == 'top2_margin':
+                top2_vals, _ = torch.topk(probs, k=2, dim=1)
+                margin = top2_vals[:, 0] - top2_vals[:, 1]
+                exit_mask = margin >= threshold
             elif metric == 'entropy':
                 entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
                 exit_mask = entropy <= threshold
