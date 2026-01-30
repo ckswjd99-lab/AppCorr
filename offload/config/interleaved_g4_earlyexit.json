@@ -20,6 +20,6 @@
     },
     "early_exit_kwargs": {
         "metric": "max_prob",
-        "threshold": 0.5
+        "threshold": 1.0
     }
 }
