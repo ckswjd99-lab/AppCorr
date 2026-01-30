@@ -1,0 +1,6 @@
+python=3.11
+torch
+torchvision
+numpy
+tqdm
+opencv-python

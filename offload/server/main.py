@@ -58,8 +58,8 @@ if __name__ == "__main__":
         pass
     
     parser = argparse.ArgumentParser(description="AppCorr Server")
-    parser.add_argument("--recv-port", type=int, default=9998)
-    parser.add_argument("--send-port", type=int, default=9999)
+    parser.add_argument("--recv-port", type=int, default=39998)
+    parser.add_argument("--send-port", type=int, default=39999)
     
     args = parser.parse_args()
     run_server(args.recv_port, args.send_port)
