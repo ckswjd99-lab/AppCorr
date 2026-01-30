@@ -231,7 +231,8 @@ class SourceModule(multiprocessing.Process):
                 'acc5': 0,
                 'bytes': batch_bytes,
                 'group_stats': group_stats,
-                'events': all_events
+                'events': all_events,
+                'labels': labels.tolist()
             }
             
             # Calculate metrics
