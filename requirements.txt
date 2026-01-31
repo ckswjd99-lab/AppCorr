@@ -4,3 +4,5 @@ torchvision
 numpy
 tqdm
 opencv-python
+fiftyone
+pycocotools

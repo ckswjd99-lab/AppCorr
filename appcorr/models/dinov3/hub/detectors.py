@@ -8,9 +8,9 @@ from enum import Enum
 
 import torch
 
-from dinov3.eval.detection.config import DetectionHeadConfig
-from dinov3.eval.detection.models.detr import PostProcess, build_model
-from dinov3.eval.detection.models.position_encoding import PositionEncoding
+from ..eval.detection.config import DetectionHeadConfig
+from ..eval.detection.models.detr import PostProcess, build_model
+from ..eval.detection.models.position_encoding import PositionEncoding
 
 from .backbones import Weights as BackboneWeights, dinov3_vit7b16, dinov3_vitl16plus, convert_path_or_url_to_url
 from .utils import DINOV3_BASE_URL
