@@ -8,6 +8,7 @@ from dataclasses import asdict
 
 from offload.common import ExperimentConfig
 from offload.policies import get_transmission
+from offload.mobile.dataset import get_dataset_loader
 
 import os
 import json
@@ -86,12 +87,27 @@ class SourceModule(multiprocessing.Process):
         self.loader_batch_size = loader_batch_size
 
     def run(self):
-        print(f"[Source] Loading ImageNet from {self.data_root} (Loader Batch: {self.loader_batch_size})...")
+        dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
+        print(f"[Source] Loading {dataset_name} from {self.data_root} (Loader Batch: {self.loader_batch_size})...")
+        
         try:
-            # Assuming load_imagenet1k_val is defined above in the file
-            loader = load_imagenet1k_val(self.data_root, batch_size=self.loader_batch_size)
+            # Initialize Dataset Loader
+            dataset_kwargs = getattr(self.config, 'dataset_kwargs', {})
+            # Determine image size from config if possible, or default
+            image_size = self.config.image_shape[0] if self.config.image_shape else 256
+            
+            self.dataset_loader = get_dataset_loader(
+                dataset_name, 
+                self.data_root, 
+                batch_size=self.loader_batch_size, 
+                image_size=image_size,
+                **dataset_kwargs
+            )
+            loader = self.dataset_loader.get_loader()
         except Exception as e:
-            print(f"[Source] Failed to load ImageNet: {e}")
+            print(f"[Source] Failed to load dataset {dataset_name}: {e}")
+            import traceback
+            traceback.print_exc()
             return
 
         # Generate Timestamp: YYYYMMDD_HHMMSS
@@ -118,13 +134,9 @@ class SourceModule(multiprocessing.Process):
         # Time Synchronization
         time_offset = perform_time_sync(self.output_queue, self.feedback_queue)
 
-
         policy = get_transmission(self.config.transmission_policy_name)
         
         # Initialize metrics
-        total_top1 = 0
-        total_top5 = 0
-        total_samples = 0
         total_bytes = 0 
         total_latency = 0.0 
         
@@ -224,60 +236,40 @@ class SourceModule(multiprocessing.Process):
                 stats['min'] = min(stats['min'], total_dur_ms)
                 stats['max'] = max(stats['max'], total_dur_ms)
 
-            # Log Line
-            log_entry = {
-                'req_id': batch_idx,
-                'acc1': 0, # Calc below
-                'acc5': 0,
-                'bytes': batch_bytes,
-                'group_stats': group_stats,
-                'events': all_events,
-                'labels': labels.tolist()
-            }
-            
-            # Calculate metrics
+            # Calculate metrics via DatasetLoader
             valid_preds = result.output[:curr_bs]
             valid_labels = labels.tolist()
             
-            latency = time.time() - result.timestamp # Note: result.timestamp is server time.
-            # We should use local measurements.
             latency = t_result_recv - t_send_start # End-to-End approximation
-
-            # Calculate accuracy
-            batch_top1 = 0
-            batch_top5 = 0
-            for i in range(curr_bs):
-                label = valid_labels[i]
-                preds = valid_preds[i]
-                if not preds: continue # skip empty results logic
-                
-                if preds[0] == label:
-                    batch_top1 += 1
-                if label in preds:
-                    batch_top5 += 1
-
-            # Update globals
-            total_top1 += batch_top1
-            total_top5 += batch_top5
-            total_samples += curr_bs
             total_latency += latency
             
-            acc1 = total_top1 / total_samples * 100
-            acc5 = total_top5 / total_samples * 100
-            
-            # Update Log Entry
-            log_entry['acc1'] = batch_top1 / curr_bs * 100
-            log_entry['acc5'] = batch_top5 / curr_bs * 100
+            batch_metrics = self.dataset_loader.evaluate_batch(valid_preds, valid_labels)
+
+            # Log Line
+            log_entry = {
+                'req_id': batch_idx,
+                'metrics': batch_metrics,
+                'bytes': batch_bytes,
+                'group_stats': group_stats,
+                'events': all_events,
+                'labels': valid_labels
+            }
             log_entry['latency'] = latency
             events_file.write(json.dumps(log_entry) + "\n")
             events_file.flush()
             
-            pbar.set_description(f"Acc@1: {acc1:.2f}% | Acc@5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
+            # Update pbar description
+            summary_stats = self.dataset_loader.get_summary()
+            desc_parts = [f"{k}: {v:.2f}" if isinstance(v, float) else f"{k}: {v}" for k, v in summary_stats.items() if 'acc' in k]
+            desc_str = " | ".join(desc_parts)
+            avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
+            pbar.set_description(f"{desc_str} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            # if (batch_idx+1) == 10:
-            #     break # TEMP
+            if (batch_idx+1) == 10:
+                break # TEMP
 
-        print(f"[Source] Final | Top-1: {acc1:.2f}% | Top-5: {acc5:.2f}% | Avg. Transfer: {total_bytes/1024/total_samples:.2f} KB/image")
+        final_summary = self.dataset_loader.get_summary()
+        print(f"[Source] Final Summary: {final_summary}")
         
         # Calculate Latency Breakdown
         latency_breakdown = {}
@@ -301,10 +293,8 @@ class SourceModule(multiprocessing.Process):
         # Write Summary
         summary = {
             'exp_id': self.config.exp_id,
-            'total_samples': total_samples,
-            'top1_acc': acc1,
-            'top5_acc': acc5,
-            'avg_bytes_per_sample': total_bytes / total_samples,
+            'dataset_summary': final_summary,
+            'avg_bytes_per_sample': total_bytes / final_summary.get('total_samples', 1),
             'avg_latency_per_batch': total_latency / (batch_idx + 1),
             'time_offset_ms': time_offset * 1000,
             'latency_breakdown': latency_breakdown,
