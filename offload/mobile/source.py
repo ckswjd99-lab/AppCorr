@@ -1,7 +1,6 @@
 import multiprocessing
 import time
 import torch
-from torchvision import datasets, transforms
 import numpy as np
 from tqdm import tqdm
 from dataclasses import asdict
@@ -45,32 +44,6 @@ def perform_time_sync(output_queue, feedback_queue, rounds=10):
     print(f"[Source] Time Sync Complete. Avg Offset: {avg_offset*1000:.2f} ms")
     return avg_offset
 
-def load_imagenet1k_val(root, image_size=256, batch_size=32, num_workers=4):
-    """Load ImageNet with specified batch size."""
-    if image_size == 256:
-        val_transforms = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(256),
-            transforms.ToTensor(),
-        ])
-    else:
-        val_transforms = transforms.Compose([
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
-            transforms.ToTensor(),
-        ])
-
-    val_dataset = datasets.ImageFolder(root=root, transform=val_transforms)
-    
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False 
-    )
-    return val_loader
 
 class SourceModule(multiprocessing.Process):
     """
@@ -159,7 +132,7 @@ class SourceModule(multiprocessing.Process):
             # Prepare Full Batch Container (Pad with zeros)
             full_batch_np = np.zeros((SERVER_BATCH_SIZE, IMG_H, IMG_W, IMG_C), dtype=np.uint8)
             
-            real_imgs_np = (images.permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
+            real_imgs_np = images.permute(0, 2, 3, 1).numpy()
             full_batch_np[:curr_bs] = real_imgs_np
             t_load_end = time.time()
             
@@ -259,11 +232,9 @@ class SourceModule(multiprocessing.Process):
             events_file.flush()
             
             # Update pbar description
-            summary_stats = self.dataset_loader.get_summary()
-            desc_parts = [f"{k}: {v:.2f}" if isinstance(v, float) else f"{k}: {v}" for k, v in summary_stats.items() if 'acc' in k]
-            desc_str = " | ".join(desc_parts)
+            pbar_desc = self.dataset_loader.get_pbar_desc()
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
-            pbar.set_description(f"{desc_str} | Avg. Transfer: {avg_kb:.2f} KB/image")
+            pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
             if (batch_idx+1) == 10:
                 break # TEMP
