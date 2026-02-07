@@ -433,9 +433,106 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         if 'output' in context:
             context['output'] = context['output'][keep_mask]
 
+class DINOv3DetectorExecutor(ModelExecutor):
+    def __init__(self, device: torch.device):
+        super().__init__(device)
+        self.normalize_avg = np.array([0.485, 0.456, 0.406])
+        self.normalize_std = np.array([0.229, 0.224, 0.225])
+        self.norm_mean = torch.tensor(self.normalize_avg).view(1, 3, 1, 1).to(self.device).float()
+        self.norm_std = torch.tensor(self.normalize_std).view(1, 3, 1, 1).to(self.device).float()
+
+    def load_model(self, model_name: str, config: Any):
+        print(f"[Executor] Loading Detector Model: {model_name}...")
+        if self.model is not None:
+             del self.model
+             torch.cuda.empty_cache()
+
+        from appcorr.models.dinov3.hub.detectors import dinov3_vit7b16_de
+        
+        # Using hardcoded paths as per user's eval script
+        self.model = dinov3_vit7b16_de(
+            pretrained=True,
+            weights="~/cjpark/weights/dinov3/dinov3_vit7b16_coco_detr_head-b0235ff7.pth",
+            backbone_weights="~/cjpark/weights/dinov3/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
+        )
+        
+        self.model.to(dtype=torch.bfloat16)
+        self.model.to(self.device)
+        self.model.eval()
+
+    def preprocess(self, batch_np: np.ndarray, task: Task, context: Dict[str, Any], config: Any):
+        # Normalization logic same as Classifier mostly
+        tensor = torch.from_numpy(batch_np).to(self.device).permute(0, 3, 1, 2).float()
+        tensor = tensor / 255.0
+        tensor = (tensor - self.norm_mean) / self.norm_std
+        
+        if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
+             active_indices = context['active_indices']
+             tensor = tensor[active_indices]
+
+        context['input_tensor'] = tensor
+
+    def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
+        pass
+
+    def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        pass
+
+    def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        pass
+
+    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
+        # reuse head_inference dummy logic
+        self.head_inference(task, context, config)
+
+    def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
+        """
+        Runs the actual detector model on the input_tensor.
+        """
+        if 'input_tensor' not in context:
+            return {}
+
+        input_tensor = context['input_tensor']
+        
+        # Inference
+        with torch.inference_mode():
+            outputs = self.model(input_tensor)
+            
+        # Store for get_final_results
+        context['det_outputs'] = outputs
+        
+        return {}
+
+    def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
+        results = {}
+        if 'det_outputs' in context and 'active_indices' in context:
+             outputs = context['det_outputs']
+             current_active_indices = context['active_indices']
+             
+             cpu_indices = current_active_indices.cpu().numpy()
+             
+             for i, orig_idx in enumerate(cpu_indices):
+                 if i < len(outputs):
+                     pred = outputs[i]
+                     serializable_pred = {
+                         'scores': pred['scores'].float().cpu().tolist(),
+                         'labels': pred['labels'].long().cpu().tolist(),
+                         'boxes': pred['boxes'].float().cpu().tolist()
+                     }
+                     results[int(orig_idx)] = serializable_pred
+                     
+        return results
+
+    def decide_exit(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
+        return {'num_exits': 0}
+
 
 def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
-    if "dinov3" in name:
+    if "dinov3_classifier" in name:
         return DINOv3ClassifierExecutor(device)
+    elif "dinov3_detector" in name:
+        return DINOv3DetectorExecutor(device)
     else:
+        if "dinov3" in name:
+             return DINOv3ClassifierExecutor(device)
         raise ValueError(f"Unknown model executor for: {name}")

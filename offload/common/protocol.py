@@ -12,7 +12,7 @@ class ExperimentConfig:
     model_name: str = "dinov3_classifier"  # "dinov3_classifier", etc.
     
     # Dataset Settings
-    dataset_name: str = "imagenet"
+    dataset_name: str = "imagenet-1k"
     dataset_kwargs: Dict[str, Any] = field(default_factory=dict)
     
     # Batch Settings
