@@ -9,7 +9,11 @@ class ExperimentConfig:
     exp_id: str = "exp"
     
     # Model Settings
-    model_name: str = "resnet18"  # "resnet18", "dinov3_custom", etc.
+    model_name: str = "dinov3_classifier"  # "dinov3_classifier", etc.
+    
+    # Dataset Settings
+    dataset_name: str = "imagenet"
+    dataset_kwargs: Dict[str, Any] = field(default_factory=dict)
     
     # Batch Settings
     batch_size: int = 32
