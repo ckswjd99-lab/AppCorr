@@ -1,9 +1,15 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
 import torch
+import torch.nn.functional as F
+import torchvision.transforms.v2 as v2
+import math
 import numpy as np
 from offload.common import Task
 from .base import ModelExecutor
 from .utils import load_weight_mmap
+
+from appcorr.models.dinov3.eval.detection.util.misc import nested_tensor_from_tensor_list, NestedTensor
+from appcorr.models.dinov3.eval.detection.util import box_ops
 
 class DINOv3DetectorExecutor(ModelExecutor):
     def __init__(self, device: torch.device):
@@ -83,37 +89,293 @@ class DINOv3DetectorExecutor(ModelExecutor):
         tensor = tensor / 255.0
         tensor = (tensor - self.norm_mean) / self.norm_std
         
-        if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
-             active_indices = context['active_indices']
-             tensor = tensor[active_indices]
+        if 'active_indices' in context and len(context.get('active_indices')) < config.batch_size:
+            active_indices = context.get('active_indices')
+            tensor = tensor[active_indices]
 
         context['input_tensor'] = tensor
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
-        pass
+        if 'input_tensor' not in context:
+            return {}
+
+        input_tensor = context.get('input_tensor')
+
+        detector = self.model.detector
+
+        sizes_tensor = torch.tensor([sample.shape[1:] for sample in input_tensor], device=input_tensor[0].device)  # N * [3, H, W]
+        context['sizes_tensor'] = sizes_tensor
+        
+        if not isinstance(input_tensor, NestedTensor):
+            input_tensor = nested_tensor_from_tensor_list(input_tensor)
+        context['input_tensor_mask'] = input_tensor.mask
+            
+        windows_wrapper = detector.backbone[0]
+        tensors = input_tensor.tensors
+        original_h, original_w = tensors.shape[2], tensors.shape[3]
+        # Get height and width of the windows, such that it is a multiple of the patch size
+        window_h = math.ceil((original_h // windows_wrapper._n_windows_h) / windows_wrapper._patch_size) * windows_wrapper._patch_size
+        window_w = math.ceil((original_w // windows_wrapper._n_windows_w) / windows_wrapper._patch_size) * windows_wrapper._patch_size
+        all_h = [window_h] * (windows_wrapper._n_windows_h - 1) + [original_h - window_h * (windows_wrapper._n_windows_h - 1)]
+        all_w = [window_w] * (windows_wrapper._n_windows_w - 1) + [original_w - window_w * (windows_wrapper._n_windows_w - 1)]
+        all_h_cumsum = [0] + list(np.cumsum(all_h))
+        all_w_cumsum = [0] + list(np.cumsum(all_w))
+        window_patch_tensors = [[0 for _ in range(windows_wrapper._n_windows_w)] for _ in range(windows_wrapper._n_windows_h)]
+        window_patch_masks = [[0 for _ in range(windows_wrapper._n_windows_w)] for _ in range(windows_wrapper._n_windows_h)]
+        window_patch_tokens = [[0 for _ in range(windows_wrapper._n_windows_w)] for _ in range(windows_wrapper._n_windows_h)]
+        window_patch_features = [[0 for _ in range(windows_wrapper._n_windows_w)] for _ in range(windows_wrapper._n_windows_h)]
+
+        for ih in range(windows_wrapper._n_windows_h):
+            for iw in range(windows_wrapper._n_windows_w):
+                window_tensor = v2.functional.crop(
+                    tensors, top=all_h_cumsum[ih], left=all_w_cumsum[iw], height=all_h[ih], width=all_w[iw]
+                )
+                window_mask = v2.functional.crop(
+                    input_tensor.mask, top=all_h_cumsum[ih], left=all_w_cumsum[iw], height=all_h[ih], width=all_w[iw]
+                )
+
+                window_patch_tensors[ih][iw] = window_tensor
+                window_patch_masks[ih][iw] = window_mask
+                window_patch_tokens[ih][iw] = NestedTensor(tensors=window_tensor, mask=window_mask).tensors
+        
+        context['window_patch_tensors'] = window_patch_tensors
+        context['window_patch_masks'] = window_patch_masks
+        context['window_patch_tokens'] = window_patch_tokens
+        context['window_patch_features'] = window_patch_features
+
+        resized_global_tensor = v2.functional.resize(tensors, size=(window_h, window_w))
+        context['resized_global_tensor'] = resized_global_tensor
 
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         pass
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
-        pass
+        """
+        TEMPORARILY: RUN EVERY BLOCKS
+        """
+        detector = self.model.detector
+        windows_wrapper = detector.backbone[0]
+        dino_backbone = windows_wrapper._backbone
 
-    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
-        # reuse head_inference dummy logic
-        self.head_inference(task, context, config)
+        window_patch_tensors = context.get('window_patch_tensors')
+        window_patch_masks = context.get('window_patch_masks')
+        window_patch_tokens = context.get('window_patch_tokens')
+        window_patch_features = context.get('window_patch_features')
+        resized_global_tensor = context.get('resized_global_tensor')
+
+        for ih in range(windows_wrapper._n_windows_h):
+            for iw in range(windows_wrapper._n_windows_w):
+                window_tensor = window_patch_tensors[ih][iw]
+                window_mask = window_patch_masks[ih][iw]
+
+                x = window_patch_tokens[ih][iw]
+                n = dino_backbone.layers_to_use
+
+                x_backbone = x
+                x_backbone, (H, W) = dino_backbone.backbone.prepare_tokens_with_masks(x_backbone)
+                # If n is an int, take the n last blocks. If it's a list, take them
+                output, total_block_len = [], len(dino_backbone.backbone.blocks)
+                blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
+                for i, blk in enumerate(dino_backbone.backbone.blocks):
+                    if dino_backbone.backbone.rope_embed is not None:
+                        rope_sincos = dino_backbone.backbone.rope_embed(H=H, W=W)
+                    else:
+                        rope_sincos = None
+                    x_backbone = blk(x_backbone, rope_sincos)
+                    if i in blocks_to_take:
+                        output.append(x_backbone)
+                assert len(output) == len(blocks_to_take), f"only {len(output)} / {len(blocks_to_take)} blocks found"
+                outputs = output
+
+                outputs_normed = []
+                for out in outputs:
+                    if dino_backbone.backbone.untie_cls_and_patch_norms:
+                        x_norm_cls_reg = dino_backbone.backbone.cls_norm(out[:, : dino_backbone.backbone.n_storage_tokens + 1])
+                        x_norm_patch = dino_backbone.backbone.norm(out[:, dino_backbone.backbone.n_storage_tokens + 1 :])
+                        outputs_normed.append(torch.cat((x_norm_cls_reg, x_norm_patch), dim=1))
+                    else:
+                        outputs_normed.append(dino_backbone.backbone.norm(out))
+                outputs = [out[:, dino_backbone.backbone.n_storage_tokens + 1 :] for out in outputs_normed]
+
+                B, _, h, w = x.shape
+                xs = [
+                    out.reshape(B, h // dino_backbone.backbone.patch_size, w // dino_backbone.backbone.patch_size, -1).permute(0, 3, 1, 2).contiguous()
+                    for out in outputs
+                ]
+
+                if dino_backbone.use_layernorm:
+                    xs = [ln(x).contiguous() for ln, x in zip(dino_backbone.layer_norms, xs)]
+
+                x = torch.cat(xs, axis=1)
+
+                m = NestedTensor(tensors=window_tensor, mask=window_mask).mask
+                assert m is not None
+                mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
+                window_patch_features[ih][iw] = NestedTensor(x, mask)
+
+        window_features = torch.cat(
+            [
+                torch.cat([el.tensors for el in window_patch_features[ih]], dim=-1)  # type: ignore
+                for ih in range(len(window_patch_features))
+            ],
+            dim=-2,
+        )
+
+        input_tensor_mask = context.get('input_tensor_mask')
+        global_features = windows_wrapper._backbone(
+            NestedTensor(tensors=resized_global_tensor, mask=input_tensor_mask)
+        )
+        
+        context['window_features'] = window_features
+        context['global_features'] = global_features
 
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
+        """
+        Runs the actual detector model on the input_tensor.
+        """
+        detector = self.model.detector
+
+        window_features = context.get('window_features')
+        global_features = context.get('global_features')
+        input_tensor_mask = context.get('input_tensor_mask')
+
+        concat_tensors = torch.cat(
+            [v2.functional.resize(global_features[0].tensors, size=window_features.shape[-2:]), window_features], dim=1
+        )
+        global_mask = F.interpolate(input_tensor_mask[None].float(), size=concat_tensors.shape[-2:]).to(torch.bool)[0]
+        features = [NestedTensor(tensors=concat_tensors, mask=global_mask)]
+
+        pos = [detector.backbone[1][idx](x).to(x.tensors.dtype) for idx, x in enumerate(features)]
+
+        srcs = []
+        masks = []
+        for layer, feat in enumerate(features):
+            src, mask = feat.decompose()
+            srcs.append(detector.input_proj[layer](src))
+            masks.append(mask)
+            assert mask is not None
+
+        query_embeds = None
+        if not detector.two_stage or detector.mixed_selection:
+            query_embeds = detector.query_embed.weight[0 : detector.num_queries, :]
+
+        # make attn mask
+        """ attention mask to prevent information leakage
+        """
+        self_attn_mask = torch.zeros(
+            [
+                detector.num_queries,
+                detector.num_queries,
+            ],
+            dtype=bool,
+            device=src.device,
+        )
+        self_attn_mask[
+            detector.num_queries_one2one :,
+            0 : detector.num_queries_one2one,
+        ] = True
+        self_attn_mask[
+            0 : detector.num_queries_one2one,
+            detector.num_queries_one2one :,
+        ] = True
+
+        (
+            hs,
+            init_reference,
+            inter_references,
+            enc_outputs_class,
+            enc_outputs_coord_unact,
+            enc_outputs_delta,
+            output_proposals,
+            max_shape,
+        ) = detector.transformer(srcs, masks, pos, query_embeds, self_attn_mask)
+
+        outputs_classes_one2one = []
+        outputs_coords_one2one = []
+        outputs_classes_one2many = []
+        outputs_coords_one2many = []
+
+        outputs_coords_old_one2one = []
+        outputs_deltas_one2one = []
+        outputs_coords_old_one2many = []
+        outputs_deltas_one2many = []
+
+        for lvl in range(hs.shape[0]):
+            if lvl == 0:
+                reference = init_reference
+            else:
+                reference = inter_references[lvl - 1]
+            outputs_class = detector.class_embed[lvl](hs[lvl])
+            tmp = detector.bbox_embed[lvl](hs[lvl])
+            if reference.shape[-1] == 4:
+                outputs_coord = box_ops.box_xyxy_to_cxcywh(box_ops.delta2bbox(reference, tmp, max_shape))
+            else:
+                raise NotImplementedError
+
+            outputs_classes_one2one.append(outputs_class[:, 0 : detector.num_queries_one2one])
+            outputs_classes_one2many.append(outputs_class[:, detector.num_queries_one2one :])
+
+            outputs_coords_one2one.append(outputs_coord[:, 0 : detector.num_queries_one2one])
+            outputs_coords_one2many.append(outputs_coord[:, detector.num_queries_one2one :])
+
+            outputs_coords_old_one2one.append(reference[:, : detector.num_queries_one2one])
+            outputs_coords_old_one2many.append(reference[:, detector.num_queries_one2one :])
+            outputs_deltas_one2one.append(tmp[:, : detector.num_queries_one2one])
+            outputs_deltas_one2many.append(tmp[:, detector.num_queries_one2one :])
+
+        outputs_classes_one2one = torch.stack(outputs_classes_one2one)
+        outputs_coords_one2one = torch.stack(outputs_coords_one2one)
+
+        outputs_classes_one2many = torch.stack(outputs_classes_one2many)
+        outputs_coords_one2many = torch.stack(outputs_coords_one2many)
+
+        out = {
+            "pred_logits": outputs_classes_one2one[-1],
+            "pred_boxes": outputs_coords_one2one[-1],
+            "pred_logits_one2many": outputs_classes_one2many[-1],
+            "pred_boxes_one2many": outputs_coords_one2many[-1],
+            "pred_boxes_old": outputs_coords_old_one2one[-1],
+            "pred_deltas": outputs_deltas_one2one[-1],
+            "pred_boxes_old_one2many": outputs_coords_old_one2many[-1],
+            "pred_deltas_one2many": outputs_deltas_one2many[-1],
+        }
+
+        if detector.aux_loss:
+            out["aux_outputs"] = detector._set_aux_loss(
+                outputs_classes_one2one, outputs_coords_one2one, outputs_coords_old_one2one, outputs_deltas_one2one
+            )
+            out["aux_outputs_one2many"] = detector._set_aux_loss(
+                outputs_classes_one2many, outputs_coords_one2many, outputs_coords_old_one2many, outputs_deltas_one2many
+            )
+
+        if detector.two_stage:
+            out["enc_outputs"] = {
+                "pred_logits": enc_outputs_class,
+                "pred_boxes": enc_outputs_coord_unact,
+                "pred_boxes_old": output_proposals,
+                "pred_deltas": enc_outputs_delta,
+            }
+        
+        sizes_tensor = context.get('sizes_tensor')
+        outputs = self.model.postprocessor(out, target_sizes=sizes_tensor, original_target_sizes=sizes_tensor)
+            
+        # Store for get_final_results
+        context['det_outputs'] = outputs
+        
+        return {}
+
+    @torch.inference_mode()
+    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
         """
         Runs the actual detector model on the input_tensor.
         """
         if 'input_tensor' not in context:
             return {}
 
-        input_tensor = context['input_tensor']
+        input_tensor = context.get('input_tensor')
         
         # Inference
-        with torch.inference_mode():
-            outputs = self.model(input_tensor)
+        outputs = self._full_inference_analyzed(input_tensor)
             
         # Store for get_final_results
         context['det_outputs'] = outputs
@@ -123,8 +385,8 @@ class DINOv3DetectorExecutor(ModelExecutor):
     def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
         results = {}
         if 'det_outputs' in context and 'active_indices' in context:
-             outputs = context['det_outputs']
-             current_active_indices = context['active_indices']
+             outputs = context.get('det_outputs')
+             current_active_indices = context.get('active_indices')
              
              cpu_indices = current_active_indices.cpu().numpy()
              
@@ -142,3 +404,212 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
     def decide_exit(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
         return {'num_exits': 0}
+
+    def _full_inference_analyzed(self, input_tensor: list[torch.Tensor]):
+        detector = self.model.detector
+
+        sizes_tensor = torch.tensor([sample.shape[1:] for sample in input_tensor], device=input_tensor[0].device)  # N * [3, H, W]
+        
+        if not isinstance(input_tensor, NestedTensor):
+            input_tensor = nested_tensor_from_tensor_list(input_tensor)
+            
+        windows_wrapper = detector.backbone[0]
+        tensors = input_tensor.tensors
+        original_h, original_w = tensors.shape[2], tensors.shape[3]
+        # Get height and width of the windows, such that it is a multiple of the patch size
+        window_h = math.ceil((original_h // windows_wrapper._n_windows_h) / windows_wrapper._patch_size) * windows_wrapper._patch_size
+        window_w = math.ceil((original_w // windows_wrapper._n_windows_w) / windows_wrapper._patch_size) * windows_wrapper._patch_size
+        all_h = [window_h] * (windows_wrapper._n_windows_h - 1) + [original_h - window_h * (windows_wrapper._n_windows_h - 1)]
+        all_w = [window_w] * (windows_wrapper._n_windows_w - 1) + [original_w - window_w * (windows_wrapper._n_windows_w - 1)]
+        all_h_cumsum = [0] + list(np.cumsum(all_h))
+        all_w_cumsum = [0] + list(np.cumsum(all_w))
+        window_patch_features = [[0 for _ in range(windows_wrapper._n_windows_w)] for _ in range(windows_wrapper._n_windows_h)]
+
+        for ih in range(windows_wrapper._n_windows_h):
+            for iw in range(windows_wrapper._n_windows_w):
+                window_tensor = v2.functional.crop(
+                    tensors, top=all_h_cumsum[ih], left=all_w_cumsum[iw], height=all_h[ih], width=all_w[iw]
+                )
+                window_mask = v2.functional.crop(
+                    input_tensor.mask, top=all_h_cumsum[ih], left=all_w_cumsum[iw], height=all_h[ih], width=all_w[iw]
+                )
+
+                dino_backbone = windows_wrapper._backbone
+                x = NestedTensor(tensors=window_tensor, mask=window_mask).tensors
+                n = dino_backbone.layers_to_use
+
+                x_backbone = x
+                x_backbone, (H, W) = dino_backbone.backbone.prepare_tokens_with_masks(x_backbone)
+                # If n is an int, take the n last blocks. If it's a list, take them
+                output, total_block_len = [], len(dino_backbone.backbone.blocks)
+                blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
+                for i, blk in enumerate(dino_backbone.backbone.blocks):
+                    if dino_backbone.backbone.rope_embed is not None:
+                        rope_sincos = dino_backbone.backbone.rope_embed(H=H, W=W)
+                    else:
+                        rope_sincos = None
+                    x_backbone = blk(x_backbone, rope_sincos)
+                    if i in blocks_to_take:
+                        output.append(x_backbone)
+                assert len(output) == len(blocks_to_take), f"only {len(output)} / {len(blocks_to_take)} blocks found"
+                outputs = output
+
+                outputs_normed = []
+                for out in outputs:
+                    if dino_backbone.backbone.untie_cls_and_patch_norms:
+                        x_norm_cls_reg = dino_backbone.backbone.cls_norm(out[:, : dino_backbone.backbone.n_storage_tokens + 1])
+                        x_norm_patch = dino_backbone.backbone.norm(out[:, dino_backbone.backbone.n_storage_tokens + 1 :])
+                        outputs_normed.append(torch.cat((x_norm_cls_reg, x_norm_patch), dim=1))
+                    else:
+                        outputs_normed.append(dino_backbone.backbone.norm(out))
+                outputs = [out[:, dino_backbone.backbone.n_storage_tokens + 1 :] for out in outputs_normed]
+
+                B, _, h, w = x.shape
+                xs = [
+                    out.reshape(B, h // dino_backbone.backbone.patch_size, w // dino_backbone.backbone.patch_size, -1).permute(0, 3, 1, 2).contiguous()
+                    for out in outputs
+                ]
+
+                if dino_backbone.use_layernorm:
+                    xs = [ln(x).contiguous() for ln, x in zip(dino_backbone.layer_norms, xs)]
+
+                x = torch.cat(xs, axis=1)
+
+                m = NestedTensor(tensors=window_tensor, mask=window_mask).mask
+                assert m is not None
+                mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
+                window_patch_features[ih][iw] = NestedTensor(x, mask)
+
+        window_tensors = torch.cat(
+            [
+                torch.cat([el.tensors for el in window_patch_features[ih]], dim=-1)  # type: ignore
+                for ih in range(len(window_patch_features))
+            ],
+            dim=-2,
+        )
+        # Also compute the global features in a "preferential" setting, of lower resolution
+        resized_global_tensor = v2.functional.resize(tensors, size=(window_h, window_w))
+        global_features = windows_wrapper._backbone(
+            NestedTensor(tensors=resized_global_tensor, mask=input_tensor.mask)
+        )  # mask is not used
+
+        concat_tensors = torch.cat(
+            [v2.functional.resize(global_features[0].tensors, size=window_tensors.shape[-2:]), window_tensors], dim=1
+        )
+        global_mask = F.interpolate(input_tensor.mask[None].float(), size=concat_tensors.shape[-2:]).to(torch.bool)[0]
+        features = [NestedTensor(tensors=concat_tensors, mask=global_mask)]
+
+        pos = [detector.backbone[1][idx](x).to(x.tensors.dtype) for idx, x in enumerate(features)]
+
+        srcs = []
+        masks = []
+        for layer, feat in enumerate(features):
+            src, mask = feat.decompose()
+            srcs.append(detector.input_proj[layer](src))
+            masks.append(mask)
+            assert mask is not None
+
+        query_embeds = None
+        if not detector.two_stage or detector.mixed_selection:
+            query_embeds = detector.query_embed.weight[0 : detector.num_queries, :]
+
+        # make attn mask
+        """ attention mask to prevent information leakage
+        """
+        self_attn_mask = torch.zeros(
+            [
+                detector.num_queries,
+                detector.num_queries,
+            ],
+            dtype=bool,
+            device=src.device,
+        )
+        self_attn_mask[
+            detector.num_queries_one2one :,
+            0 : detector.num_queries_one2one,
+        ] = True
+        self_attn_mask[
+            0 : detector.num_queries_one2one,
+            detector.num_queries_one2one :,
+        ] = True
+
+        (
+            hs,
+            init_reference,
+            inter_references,
+            enc_outputs_class,
+            enc_outputs_coord_unact,
+            enc_outputs_delta,
+            output_proposals,
+            max_shape,
+        ) = detector.transformer(srcs, masks, pos, query_embeds, self_attn_mask)
+
+        outputs_classes_one2one = []
+        outputs_coords_one2one = []
+        outputs_classes_one2many = []
+        outputs_coords_one2many = []
+
+        outputs_coords_old_one2one = []
+        outputs_deltas_one2one = []
+        outputs_coords_old_one2many = []
+        outputs_deltas_one2many = []
+
+        for lvl in range(hs.shape[0]):
+            if lvl == 0:
+                reference = init_reference
+            else:
+                reference = inter_references[lvl - 1]
+            outputs_class = detector.class_embed[lvl](hs[lvl])
+            tmp = detector.bbox_embed[lvl](hs[lvl])
+            if reference.shape[-1] == 4:
+                outputs_coord = box_ops.box_xyxy_to_cxcywh(box_ops.delta2bbox(reference, tmp, max_shape))
+            else:
+                raise NotImplementedError
+
+            outputs_classes_one2one.append(outputs_class[:, 0 : detector.num_queries_one2one])
+            outputs_classes_one2many.append(outputs_class[:, detector.num_queries_one2one :])
+
+            outputs_coords_one2one.append(outputs_coord[:, 0 : detector.num_queries_one2one])
+            outputs_coords_one2many.append(outputs_coord[:, detector.num_queries_one2one :])
+
+            outputs_coords_old_one2one.append(reference[:, : detector.num_queries_one2one])
+            outputs_coords_old_one2many.append(reference[:, detector.num_queries_one2one :])
+            outputs_deltas_one2one.append(tmp[:, : detector.num_queries_one2one])
+            outputs_deltas_one2many.append(tmp[:, detector.num_queries_one2one :])
+
+        outputs_classes_one2one = torch.stack(outputs_classes_one2one)
+        outputs_coords_one2one = torch.stack(outputs_coords_one2one)
+
+        outputs_classes_one2many = torch.stack(outputs_classes_one2many)
+        outputs_coords_one2many = torch.stack(outputs_coords_one2many)
+
+        out = {
+            "pred_logits": outputs_classes_one2one[-1],
+            "pred_boxes": outputs_coords_one2one[-1],
+            "pred_logits_one2many": outputs_classes_one2many[-1],
+            "pred_boxes_one2many": outputs_coords_one2many[-1],
+            "pred_boxes_old": outputs_coords_old_one2one[-1],
+            "pred_deltas": outputs_deltas_one2one[-1],
+            "pred_boxes_old_one2many": outputs_coords_old_one2many[-1],
+            "pred_deltas_one2many": outputs_deltas_one2many[-1],
+        }
+
+        if detector.aux_loss:
+            out["aux_outputs"] = detector._set_aux_loss(
+                outputs_classes_one2one, outputs_coords_one2one, outputs_coords_old_one2one, outputs_deltas_one2one
+            )
+            out["aux_outputs_one2many"] = detector._set_aux_loss(
+                outputs_classes_one2many, outputs_coords_one2many, outputs_coords_old_one2many, outputs_deltas_one2many
+            )
+
+        if detector.two_stage:
+            out["enc_outputs"] = {
+                "pred_logits": enc_outputs_class,
+                "pred_boxes": enc_outputs_coord_unact,
+                "pred_boxes_old": output_proposals,
+                "pred_deltas": enc_outputs_delta,
+            }
+        
+        outputs = self.model.postprocessor(out, target_sizes=sizes_tensor, original_target_sizes=sizes_tensor)
+        return outputs
+        

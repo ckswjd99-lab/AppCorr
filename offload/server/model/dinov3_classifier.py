@@ -252,11 +252,6 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         context['current_feature'] = x_temp
         context['cache_feature'] = cache
 
-    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
-        inp = context.get('input_tensor')
-        if inp is not None:
-            context['output'] = self.model(inp)
-
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
         feat = context.get('current_feature')
         backbone = self.model.backbone
@@ -285,6 +280,11 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             'top5_indices': top5_indices.cpu().numpy().tolist(),
             'active_indices': context.get('active_indices', torch.arange(len(probs), device=self.device)).cpu().numpy().tolist()
         }
+
+    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
+        inp = context.get('input_tensor')
+        if inp is not None:
+            context['output'] = self.model(inp)
 
     def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
         """Extracts Top-5 predictions from context['output'] for all active indices."""

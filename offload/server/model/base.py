@@ -34,13 +34,13 @@ class ModelExecutor(ABC):
         pass
 
     @abstractmethod
-    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
-        """Handles OpType.FULL_INFERENCE"""
+    def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
+        """Handles OpType.HEAD_INFERENCE"""
         pass
 
     @abstractmethod
-    def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
-        """Handles OpType.HEAD_INFERENCE"""
+    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
+        """Handles OpType.FULL_INFERENCE"""
         pass
 
     @abstractmethod
