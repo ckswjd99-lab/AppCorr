@@ -19,5 +19,6 @@
         "pyramid_levels": [2, 0],
         "num_groups": 1,
         "cls_alive_ratio": 1.0
-    }
+    },
+    "device": "cuda:1"
 }

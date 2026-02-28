@@ -10,6 +10,7 @@ class ExperimentConfig:
     
     # Model Settings
     model_name: str = "dinov3_classifier"  # "dinov3_classifier", etc.
+    device: str = None  # User can specify "cuda:0", "cpu", etc. Default is None (auto-detect)
     
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
