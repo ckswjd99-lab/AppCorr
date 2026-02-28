@@ -31,9 +31,9 @@ class WorkerModule(multiprocessing.Process):
     def run(self):
         print("[Worker] Started.")
         
-        # Init CUDA
+        # Default to whatever is available first; will be overridden if CONFIG says otherwise
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"[Worker] Running on {self.device}")
+        print(f"[Worker] Started with default device: {self.device}")
         
         with torch.no_grad():
             while True:
@@ -43,10 +43,16 @@ class WorkerModule(multiprocessing.Process):
                     if msg_type == 'CONFIG':
                         self.config = payload
                         self.sessions = {} # Clear sessions
+                        
+                        # Apply device override if specified in config
+                        if hasattr(self.config, 'device') and self.config.device is not None:
+                            self.device = torch.device(self.config.device)
+                            print(f"[Worker] Device overridden by Config: {self.device}")
+                            
                         self.policy = get_transmission(self.config.transmission_policy_name)
                         
                         self._load_model(self.config.model_name)
-                        print(f"[Worker] Configured. Policy: {self.config.transmission_policy_name}, Model: {self.config.model_name}")
+                        print(f"[Worker] Configured. Policy: {self.config.transmission_policy_name}, Model: {self.config.model_name}, Device: {self.device}")
                         continue
                     
                     if msg_type == 'TASK':
