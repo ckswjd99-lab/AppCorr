@@ -23,7 +23,7 @@ def make_transform(resize_size: int | list[int] = 768):
 
 @torch.inference_mode()
 def run_evaluation():
-    # 1. Setup Dataset
+    # Setup Dataset
     # Using small max_samples for testing
     dataset = foz.load_zoo_dataset(
         "coco-2017",
@@ -35,7 +35,7 @@ def run_evaluation():
     ann_file = os.path.expanduser("~/fiftyone/coco-2017/raw/instances_val2017.json")
     print(f"Using annotation file: {ann_file}")
 
-    # 2. Load Model (DINOv3 7B)
+    # Load Model (DINOv3 7B)
     print("Loading model...")
     model_detector = dinov3_vit7b16_de(
         pretrained=True,
@@ -46,7 +46,7 @@ def run_evaluation():
     img_size = 1024
     transform = make_transform(img_size)
     
-    # 3. Optimized Inference Loop
+    # Optimized Inference Loop
     coco_results = []
     processed_ids = []
     
@@ -99,7 +99,7 @@ def run_evaluation():
                 # Manual memory cleanup
                 del batch_img, outputs, preds
 
-    # 5. Run COCO Evaluation
+    # Run COCO Evaluation
     print("Running COCO evaluation...")
     
     coco_gt = COCO(ann_file)

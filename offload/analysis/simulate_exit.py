@@ -36,7 +36,7 @@ def simulate_early_exit(events_data, metric, threshold):
         bs = len(labels)
         total_samples += bs
         
-        # 1. Parse Timing Info
+        # Parse Timing Info
         t_send = 0
         t_recv = 0
         
@@ -52,7 +52,7 @@ def simulate_early_exit(events_data, metric, threshold):
         # We look for the max timestamp among server events
         t_server_end = 0
         for e in batch['events']:
-            if e['type'] not in ['MOBILE_LOAD', 'MOBILE_ENCODE', 'MOBILE_SEND', 'MOBILE_RECEIVE']:
+            if e['type'] not in ['MOBILE_LOAD', 'MOBILE_ENCODE', 'MOBILE_SEND', 'MOBILE_RECEIVE', 'SERVER_RECEIVE']:
                 end_time = e.get('timestamp', 0) + e.get('duration', 0)
                 t_server_end = max(t_server_end, end_time)
                 
@@ -112,18 +112,7 @@ def simulate_early_exit(events_data, metric, threshold):
             for global_idx in active_indices:
                 # Check if we have data for this sample in this stage
                 if global_idx not in stage_data_map:
-                    # Real Run exited this sample, but Simulation kept it.
-                    # We are missing data to make a decision.
-                    # Force exit (Conservatice: Exit at previous stage?) 
-                    # Or treat as exit at current stage with "Unknown"?
-                    # We'll mark as exited but we might lack prediction if we strictly need it from this stage.
-                    # Best effort: use last known prediction? Or just ignore/fail sample?
-                    # Let's count it as an "Forced Exit due to Missing Data" -> Exit Stage = current
-                    # Pred = ?? (We don't have it).
-                    # Actually, if Real Run exited, it should have high confidence.
-                    # We mark exited, and assume Correct? No, that biases results.
-                    # We Mark exited, and try to find prediction from 'final_results' if available?
-                    # Simplify: Just mark exited. Pred -1 (Incorrect).
+                    # If data is missing for this sample, force exit and mark as incorrect.
                     sample_status[global_idx]['exited'] = True
                     sample_status[global_idx]['exit_stage'] = stage_idx
                     sample_status[global_idx]['latency'] = (t_stage_end - t_send + downlink_delay) * 1000.0
@@ -227,11 +216,11 @@ def main():
     plt.figure(figsize=(10, 6))
     plt.plot(lats, accs, marker='o', linestyle='-', label=f'{args.metric}', zorder=1)
     
-    # 1. Baseline Line
+    # Baseline Line
     BASELINE_ACC = 88.11
     plt.axhline(y=BASELINE_ACC, color='gray', linestyle='--', label=f'Baseline ({BASELINE_ACC}%)', zorder=0)
     
-    # 2. Highlight Optimal Point (Max Aggression with <1% Loss)
+    # Highlight Optimal Point (Max Aggression with <1% Loss)
     # Target: Accuracy >= Baseline - 1.0 (87.11%)
     # Goal: Minimize Latency (or Maximize Speedup)
     

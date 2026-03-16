@@ -68,87 +68,95 @@ class DINOv3ClassifierExecutor(ModelExecutor):
 
     def preprocess(self, batch_np: np.ndarray, task: Task, context: Dict[str, Any], config: Any):
         # Preprocess
-        tensor = torch.from_numpy(batch_np).to(self.device).permute(0, 3, 1, 2).float()
-        tensor = tensor / 255.0
-        tensor = (tensor - self.norm_mean) / self.norm_std
+        with torch.cuda.nvtx.range("Preprocess::PinMemory"):
+            tensor = torch.from_numpy(batch_np)
+            if hasattr(tensor, 'pin_memory'):
+                tensor = tensor.pin_memory()
+                
+        with torch.cuda.nvtx.range("Preprocess::ToDevice"):
+            tensor = tensor.to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float()
+            tensor = tensor / 255.0
+            tensor = (tensor - self.norm_mean) / self.norm_std
 
         # Sliced Update Handling
-        if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
-            active_indices = context['active_indices']
-            tensor = tensor[active_indices]
+        with torch.cuda.nvtx.range("Preprocess::Slicing"):
+            if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
+                active_indices = context['active_indices']
+                tensor = tensor[active_indices]
+            context['input_tensor'] = tensor
 
-        context['input_tensor'] = tensor
+        with torch.cuda.nvtx.range("Preprocess::GroupMap"):
+            # Optimization: Vectorized dindice construction with group_map
+            if 'cached_dindices' not in context:
+                context['cached_dindices'] = {}
 
-        # Optimization: Vectorized dindice construction with group_map
-        if 'cached_dindices' not in context:
-            context['cached_dindices'] = {}
-
-        # Initialize or Retrieve group_map: [CurrentBatch, Max_Tokens]
-        if 'group_map' not in context:
-            H, W = config.image_shape[:2]
-            if isinstance(config.patch_size, int):
-                ph = pw = config.patch_size
+            # Initialize or Retrieve group_map: [CurrentBatch, Max_Tokens]
+            if 'group_map' not in context:
+                H, W = config.image_shape[:2]
+                if isinstance(config.patch_size, int):
+                    ph = pw = config.patch_size
+                else:
+                    ph, pw = config.patch_size
+                num_patches = (H // ph) * (W // pw)
+                # Init with -1 (no group)
+                curr_B = tensor.shape[0]
+                context['group_map'] = torch.full((curr_B, num_patches), -1, device=self.device, dtype=torch.long)
+            
+            group_map = context['group_map']
+            
+            # Vectorized Update of Group Map - Map Original Index -> Local Index if sliced
+            if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
+                # Build lookup: { original_idx : local_idx }
+                active_list = context['active_indices'].tolist()
+                idx_map = { orig: local for local, orig in enumerate(active_list) }
+                
+                # Filter payload
+                valid_payload = [p for p in task.payload if p.image_idx in idx_map]
+                
+                if valid_payload:
+                    b_list = [idx_map[p.image_idx] for p in valid_payload]
+                    s_list = [p.spatial_idx for p in valid_payload]
+                    g_list = [p.group_id for p in valid_payload]
+                    
+                    b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+                    s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+                    g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
+                    
+                    group_map[b_t, s_t] = g_t
             else:
-                ph, pw = config.patch_size
-            num_patches = (H // ph) * (W // pw)
-            # Init with -1 (no group)
-            curr_B = tensor.shape[0]
-            context['group_map'] = torch.full((curr_B, num_patches), -1, device=self.device, dtype=torch.long)
-        
-        group_map = context['group_map']
-        
-        # Vectorized Update of Group Map - Map Original Index -> Local Index if sliced
-        if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
-            # Build lookup: { original_idx : local_idx }
-            active_list = context['active_indices'].tolist()
-            idx_map = { orig: local for local, orig in enumerate(active_list) }
-            
-            # Filter payload
-            valid_payload = [p for p in task.payload if p.image_idx in idx_map]
-            
-            if valid_payload:
-                b_list = [idx_map[p.image_idx] for p in valid_payload]
-                s_list = [p.spatial_idx for p in valid_payload]
-                g_list = [p.group_id for p in valid_payload]
+                # Standard full-batch update (Identity mapping)
+                b_list = [p.image_idx for p in task.payload]
+                s_list = [p.spatial_idx for p in task.payload]
+                g_list = [p.group_id for p in task.payload]
                 
-                b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
-                s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
-                g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
-                
-                group_map[b_t, s_t] = g_t
-        else:
-            # Standard full-batch update (Identity mapping)
-            b_list = [p.image_idx for p in task.payload]
-            s_list = [p.spatial_idx for p in task.payload]
-            g_list = [p.group_id for p in task.payload]
-            
-            if b_list:
-                b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
-                s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
-                g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
-                
-                group_map[b_t, s_t] = g_t
-        
-        # Update Cached Dindices for involved groups
-        if b_list: # Check if we had any updates
-             involved_groups = set(g_list)
-             num_pretokens = 1 + self.model.backbone.n_storage_tokens
-             B = group_map.shape[0]
-             
-             for gid in involved_groups:
-                  mask = (group_map == gid)
-                  try:
-                      nonzero_indices = torch.nonzero(mask) # [Total_K, 2]
-                      spatial_indices = nonzero_indices[:, 1].view(B, -1)
-                  except RuntimeError:
-                      print(f"!!! [Executor] Non-uniform group {gid} size detected. Fallback skip.")
-                      continue
+                if b_list:
+                    b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+                    s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+                    g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
+                    
+                    group_map[b_t, s_t] = g_t
+                    
+        with torch.cuda.nvtx.range("Preprocess::Dindices"):
+            # Update Cached Dindices for involved groups
+            if b_list: # Check if we had any updates
+                 involved_groups = set(g_list)
+                 num_pretokens = 1 + self.model.backbone.n_storage_tokens
+                 B = group_map.shape[0]
+                 
+                 for gid in involved_groups:
+                      mask = (g_t == gid)
+                      if not mask.any(): continue
+                      try:
+                          # Directly use the known spatial indices for this group from s_t (and b_t if needed)
+                          # Since s_t is the list of spatial indices for patches of this group
+                          spatial_indices = s_t[mask].view(B, -1)
+                      except RuntimeError:
+                          print(f"!!! [Executor] Non-uniform group {gid} size detected. Fallback skip.")
+                          continue
 
-                  patch_indices = spatial_indices + num_pretokens
-                  pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
-                  dindice = torch.cat([pre_indices, patch_indices], dim=1)
-                  
-                  context['cached_dindices'][gid] = dindice
+                      patch_indices = spatial_indices + num_pretokens
+                      pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
+                      context['cached_dindices'][gid] = torch.cat([pre_indices, patch_indices], dim=1)
     
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):

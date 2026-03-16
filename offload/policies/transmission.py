@@ -34,7 +34,7 @@ class RawTransmissionPolicy(ITransmissionPolicy):
                 
         return patches
 
-    def decode(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
+    def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
         """
         Input: List of Patch objects (sparse).
         Output: Reconstructed Tensor (B, H, W, C).
@@ -44,8 +44,11 @@ class RawTransmissionPolicy(ITransmissionPolicy):
         ph, pw = config.patch_size
         gw = W // pw
         
-        # Initialize canvas
-        batch_tensor = np.zeros((B, H, W, C), dtype=np.uint8)
+        # Initialize canvas if not provided
+        if canvas is None:
+            batch_tensor = np.zeros((B, H, W, C), dtype=np.uint8)
+        else:
+            batch_tensor = canvas
         
         for p in patches:
             # Calculate grid coordinates
@@ -78,14 +81,14 @@ class ZlibTransmissionPolicy(ITransmissionPolicy):
 
         compression_level = config.transmission_kwargs.get('compression_level', 1)
         
-        # 1. Vectorized Patchify (Same as Raw)
+        # Vectorized Patchify (Same as Raw)
         reshaped = images.reshape(B, gh, ph, gw, pw, C)
         transposed = reshaped.transpose(0, 1, 3, 2, 4, 5)
         patch_tensor = transposed.reshape(B, gh * gw, ph, pw, C)
         
         num_patches = gh * gw
         
-        # 2. Compress and Wrap
+        # Compress and Wrap
         for b in range(B):
             for i in range(num_patches):
                 raw_bytes = patch_tensor[b, i].tobytes()
@@ -94,7 +97,7 @@ class ZlibTransmissionPolicy(ITransmissionPolicy):
                 
         return patches
 
-    def decode(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
+    def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
         """
         Input: List of compressed Patch objects.
         Output: Reconstructed Tensor (B, H, W, C).
@@ -104,21 +107,23 @@ class ZlibTransmissionPolicy(ITransmissionPolicy):
         ph, pw = config.patch_size
         gw = W // pw
         
-        batch_tensor = np.zeros((B, H, W, C), dtype=np.uint8)
+        if canvas is None:
+            batch_tensor = np.zeros((B, H, W, C), dtype=np.uint8)
+        else:
+            batch_tensor = canvas
         
-        for p in patches:
-            # 1. Decompress
+        def _decompress_patch(p):
             try:
                 raw_bytes = zlib.decompress(p.data)
                 chunk = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(ph, pw, C)
-                
-                # 2. Place on canvas
                 r, c = divmod(p.spatial_idx, gw)
                 y, x = r * ph, c * pw
-                
                 batch_tensor[p.image_idx, y:y+ph, x:x+pw] = chunk
             except Exception as e:
                 print(f"!!! [ZlibPolicy] Decompression failed for patch {p.spatial_idx}: {e}")
+
+        with ThreadPoolExecutor() as executor:
+            executor.map(_decompress_patch, patches)
             
         return batch_tensor
 
@@ -149,14 +154,14 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
             encode_params = [cv2.IMWRITE_PNG_COMPRESSION, quality]
             
         for b in range(B):
-            # 1. Encode Full Image
+            # Encode Full Image
             success, encoded_img = cv2.imencode(ext, images[b], encode_params)
             if not success:
                 raise RuntimeError(f"Failed to encode full image {b} with format {fmt}")
             
             full_data = encoded_img.tobytes()
             
-            # 2. Create Patches
+            # Create Patches
             # Patch 0 carries data
             patches.append(Patch(image_idx=b, spatial_idx=0, data=full_data))
             
@@ -167,11 +172,14 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
                 
         return patches
 
-    def decode(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
+    def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
         B = config.batch_size
         H, W, C = config.image_shape
         
-        batch_tensor = np.zeros((B, H, W, C), dtype=np.uint8)
+        if canvas is None:
+            batch_tensor = np.zeros((B, H, W, C), dtype=np.uint8)
+        else:
+            batch_tensor = canvas
         
         # We expect patches to come in any order, but we only need spatial_idx=0
         # Group by image_idx
@@ -223,7 +231,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
         return patches
 
-    def decode(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
+    def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
         B = config.batch_size
         H, W, C = config.image_shape
         
@@ -232,7 +240,10 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
         for p in patches:
             layer_data_per_batch[p.image_idx].append(p)
             
-        final_images = np.zeros((B, H, W, C), dtype=np.uint8)
+        if canvas is None:
+            final_images = np.zeros((B, H, W, C), dtype=np.uint8)
+        else:
+            final_images = canvas
 
         # Per-image reconstruction
         with ThreadPoolExecutor() as executor:
@@ -626,11 +637,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             for i in range(N):
                 sizes_matrix[b, i] = batch_candidates[b][i]['size']
 
-        # 1. Sort norms (sizes) independently for each batch -> [B, N]
+        # Sort norms (sizes) independently for each batch -> [B, N]
         sorted_indices = np.argsort(sizes_matrix, axis=1)
         sorted_sizes = np.take_along_axis(sizes_matrix, sorted_indices, axis=1)
 
-        # 2. Determine Group Splits based on AVERAGE distribution
+        # Determine Group Splits based on AVERAGE distribution
         avg_sorted_sizes = np.mean(sorted_sizes, axis=0)
         
         cumsum_sizes = np.cumsum(avg_sorted_sizes)
@@ -645,10 +656,10 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         target_sum = total_size / num_groups
         boundaries = np.arange(1, num_groups) * target_sum
         
-        # 3. Rank -> Group ID
+        # Rank -> Group ID
         rank_to_group_id = np.searchsorted(boundaries, cumsum_sizes) + 1
         
-        # 4. Map back and create patches
+        # Map back and create patches
         for b in range(B):
             for rank in range(N):
                 spatial_idx_at_rank = sorted_indices[b, rank]
