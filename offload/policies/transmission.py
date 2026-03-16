@@ -411,50 +411,145 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
 
         yield base_patches # Yield Group 0 (Base Layer) Immediately!
 
-        # Compute remaining residuals
-        batch_candidates = [[] for _ in range(B)]
-        with ThreadPoolExecutor() as executor:
-            futures = [
-                executor.submit(self._process_image_residuals, b, gaussians_batch[b], config)
-                for b in range(B)
-            ]
-            for b, f in enumerate(futures):
-                batch_candidates[b] = f.result()
-                 
-        residual_patches = []
-        # Group residuals
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
-        
-        if any(batch_candidates):
-            if grouping_strategy == 'uniform_diff':
-                self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
-            elif grouping_strategy == 'random':
-                self._apply_random_grouping(residual_patches, batch_candidates, num_groups)
-            elif grouping_strategy == 'grid':
-                self._apply_grid_grouping(residual_patches, batch_candidates, num_groups)
-            elif grouping_strategy == 'geometric':
-                self._apply_geometric_grouping(residual_patches, batch_candidates, num_groups)
-            else:
-                print(f"!!! [Transmission] Unknown strategy '{grouping_strategy}'. Fallback to uniform_diff.")
+
+        if grouping_strategy == 'uniform_diff':
+            # Collect all then group (Non-pipelined fallback)
+            batch_candidates = [[] for _ in range(B)]
+            with ThreadPoolExecutor() as executor:
+                futures = [
+                    executor.submit(self._process_image_residuals, b, gaussians_batch[b], config)
+                    for b in range(B)
+                ]
+                for b, f in enumerate(futures):
+                    batch_candidates[b] = f.result()
+                    
+            residual_patches = []
+            if any(batch_candidates):
                 self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
 
-        # Add metadata to residuals
-        group_counts = {}
-        for p in residual_patches:
-            group_counts[p.group_id] = group_counts.get(p.group_id, 0) + 1
+            group_counts = {}
+            for p in residual_patches:
+                group_counts[p.group_id] = group_counts.get(p.group_id, 0) + 1
+            for p in residual_patches:
+                p.batch_group_total = group_counts[p.group_id]
+
+            grouped = {}
+            for p in residual_patches:
+                grouped.setdefault(p.group_id, []).append(p)
+            for g in sorted(grouped.keys()):
+                if grouped[g]:
+                    yield grouped[g]
+        else:
+            # Pipelined transmission for data-independent strategies
+            # Pre-calculate group assignments
+            residual_structure = self._collect_residual_metadata(gaussians_batch[0], config)
+            N = len(residual_structure)
+            group_assignments = self._precompute_group_assignments(grouping_strategy, N, num_groups)
             
-        for p in residual_patches:
-            p.batch_group_total = group_counts[p.group_id]
+            # Compress and yield group-by-group
+            for g_id in range(1, num_groups + 1):
+                group_patches = []
+                with ThreadPoolExecutor() as executor:
+                    futures = [
+                        executor.submit(self._process_image_group_residuals, b, gaussians_batch[b], residual_structure, group_assignments, g_id, config)
+                        for b in range(B)
+                    ]
+                    for f in futures:
+                        group_patches.extend(f.result())
+                
+                if group_patches:
+                    total_in_group = len(group_patches)
+                    for p in group_patches:
+                        p.batch_group_total = total_in_group
+                    yield group_patches
 
-        # Group residuals into lists and yield
-        grouped = {}
-        for p in residual_patches:
-             grouped.setdefault(p.group_id, []).append(p)
-             
-        # Yield groups sequentially by ID
-        for g in sorted(grouped.keys()):
-             if grouped[g]:
-                  yield grouped[g]
+    def _collect_residual_metadata(self, gaussians, config):
+        """Map pyramid structure to get spatial_idx and res_level."""
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
+        H, W = config.image_shape[:2]
+        ph, pw = config.patch_size
+        
+        structure = []
+        for lvl in levels[1:]:
+            scale = 2 ** lvl
+            lh, lw = H // scale, W // scale
+            gh, gw = lh // ph, lw // pw
+            num_crops = gh * gw
+            for i in range(num_crops):
+                structure.append({'spatial_idx': i, 'res_level': lvl})
+        return structure
+
+    def _precompute_group_assignments(self, strategy, N, num_groups):
+        """Pre-calculate group ID for N items based on strategy."""
+        if strategy == 'grid':
+            # Simplified grid: side of total tokens
+            s = int(num_groups ** 0.5)
+            side = int(N ** 0.5)
+            pattern = np.arange(1, num_groups + 1).reshape(s, s)
+            rep_h = (side + s - 1) // s
+            rep_w = (side + s - 1) // s
+            grid_2d = np.tile(pattern, (rep_h, rep_w))[:side, :side]
+            group_ids = grid_2d.flatten()
+            if len(group_ids) < N:
+                 group_ids = np.resize(group_ids, N)
+            elif len(group_ids) > N:
+                 group_ids = group_ids[:N]
+            return group_ids
+            
+        elif strategy == 'random':
+            return np.random.randint(1, num_groups + 1, size=N)
+            
+        elif strategy == 'geometric':
+            probs = np.random.rand(N)
+            group_ids = np.floor(-np.log2(1 - probs)) + 1
+            return np.clip(group_ids, 1, num_groups).astype(int)
+            
+        else:
+            # Fallback to group 1
+            return np.ones(N, dtype=int)
+
+    def _process_image_group_residuals(self, b_idx, gaussians, structure, group_assignments, target_group, config):
+        """Compress only patches belonging to target_group for one image."""
+        H, W = config.image_shape[:2]
+        comp_lvl = config.transmission_kwargs.get('compression_level', 1)
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
+        local_patches = []
+        
+        # Up-sample sequentially and collect group members
+        
+        prev_lvl = levels[0]
+        prev_img = gaussians[prev_lvl]
+        
+        struct_idx = 0
+        for lvl in levels[1:]:
+            curr_g = gaussians[lvl]
+            pred = self._iterative_upsample(prev_img, prev_lvl, lvl, H, W)
+            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+            
+            # Identify patches in this level
+            ph, pw = config.patch_size
+            rh, rw = residual.shape[:2]
+            gh, gw = rh // ph, rw // pw
+            num_crops = gh * gw
+            
+            # Check which patches in this level belong to target_group
+            for i in range(num_crops):
+                if group_assignments[struct_idx] == target_group:
+                    # Compress
+                    y = (i // gw) * ph
+                    x = (i % gw) * pw
+                    crop = residual[y:y+ph, x:x+pw]
+                    data = crop.astype(np.int16).tobytes()
+                    compressed = zlib.compress(data, level=comp_lvl)
+                    local_patches.append(Patch(b_idx, i, compressed, lvl, target_group))
+                struct_idx += 1
+            
+            prev_img = curr_g
+            prev_lvl = lvl
+            
+        return local_patches
+
 
     def _process_image_base_layer(self, b_idx, image, config):
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
