@@ -5,7 +5,7 @@ import numpy as np
 from offload.common.protocol import Patch, Task, ExperimentConfig
 
 class ISchedulingPolicy(ABC):
-    """Interface for server-side scheduling logic."""
+    """Scheduling logic interface."""
     
     @abstractmethod
     def decide(
@@ -14,18 +14,18 @@ class ISchedulingPolicy(ABC):
         config: ExperimentConfig,
         task_id_gen: Any
     ) -> Optional[Task]:
-        """Determine if a task should be dispatched based on buffer status."""
+        """Check if task dispatch is ready."""
         pass
 
 class ITransmissionPolicy(ABC):
-    """Interface for image codec and packetization."""
+    """Codec and packetization interface."""
     
     @abstractmethod
-    def encode(self, image: np.ndarray, config: ExperimentConfig) -> List[Patch]:
-        """[Mobile] Compress/Split image into patches."""
+    def encode(self, image: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
+        """Compress and split image into patches."""
         pass
 
     @abstractmethod
     def decode(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
-        """[Server] Reconstruct image/tensor from patches."""
+        """Reconstruct image from patches."""
         pass

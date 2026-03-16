@@ -5,36 +5,40 @@ import argparse
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from collections import defaultdict
+import re
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Visualize offload events timeline")
     parser.add_argument("log_dir", type=str, help="Directory containing events.jsonl")
+    parser.add_argument("--max_sessions", type=int, default=10, help="Maximum number of sessions to analyze (default: 10)")
     return parser.parse_args()
 
 def classify_event(event_name):
     # Known server events
-    server_events = {
+    server_gpu_events = {
         'LOAD_INPUT', 'PREPARE_TOKENS', 'FULL_INFERENCE', 
         'APPROX_FORWARD', 'CORRECT_FORWARD', 'HEAD_INFERENCE', 'DECIDE_EXIT',
-        'Decode', 'Preprocess', 'Preprocess::PinMemory', 'Preprocess::ToDevice',
+        'Preprocess', 'Preprocess::PinMemory', 'Preprocess::ToDevice',
         'Preprocess::Slicing', 'Preprocess::GroupMap', 'Preprocess::Dindices'
     }
     
     # Prefix matchers
     if event_name.startswith('MOBILE_'):
-        if event_name == 'MOBILE_SEND' or event_name == 'MOBILE_RECV':
+        if event_name.startswith('MOBILE_SEND') or event_name == 'MOBILE_RECV' or event_name == 'MOBILE_RECEIVE':
             return 'Network' # Treated specially later, but base is Network
         return 'Mobile'
     elif event_name == 'SERVER_RECEIVE' or event_name == 'SERVER_SEND':
         return 'Network'
-    elif event_name in server_events or event_name.startswith('Preprocess::') or event_name.startswith('Decode'):
-        return 'Server'
+    elif event_name == 'Decode':
+        return 'Server (CPU)'
+    elif event_name in server_gpu_events or event_name.startswith('Preprocess::'):
+        return 'Server (GPU)'
     
     # Default fallback
     parts = event_name.split('_')
     if parts[0] == 'MOBILE': return 'Mobile'
-    if parts[0] == 'SERVER': return 'Server'
-    return 'Server' # Most generic ops are server side
+    if parts[0] == 'SERVER': return 'Server (GPU)'
+    return 'Server (GPU)' # Most generic ops are server GPU side
 
 def read_events(file_path):
     requests = []
@@ -61,8 +65,7 @@ def get_color(event_name, color_map):
     return color_map[event_name]
 
 def plot_timeline(request_index, request_data, output_dir, color_map):
-    # request_data is expected to be a dict containing 'events': [...] (if coming from worker directly)
-    # usually source.py outputs a list of events per line
+    # Extract events array
     events = request_data if isinstance(request_data, list) else request_data.get('events', [])
     if not events: return
     
@@ -93,16 +96,15 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         print(f"Warning: No valid events found in request {request_index}")
         return
     
-    # Pre-process Network spans: Connect MOBILE_SEND to SERVER_RECEIVE
-    # Find sending and receiving pairs to create a 'Transmission' block
+    # Draw transmission lines between send and receive events
     network_spans = []
     
     # Sort events by start time
     valid_events.sort(key=lambda x: x['start'])
     base_time = valid_events[0]['start']
     
-    # Group by category
-    categories = ['Mobile', 'Network', 'Server']
+    # Y-axis position (highest index = top)
+    categories = ['Server (GPU)', 'Server (CPU)', 'Network', 'Mobile']
     y_pos = {cat: i for i, cat in enumerate(categories)}
     
     fig, ax = plt.subplots(figsize=(15, 6))
@@ -114,35 +116,78 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         duration = max(end - start, 0.0001) # Minimum visible duration
         
         category = classify_event(name)
-        color = get_color(name, color_map)
+        
+        # Extract base name for color assignment and legend grouping
+        base_name = re.sub(r'_G\d+$', '', name)
+        color = get_color(base_name, color_map)
         
         y = y_pos[category]
         
-        # Small vertical offset to prevent exact overlap if events happen concurrently
-        # We will just plot them on the exact line for now, alpha=0.8 helps
-        ax.barh(y, width=duration, left=start, height=0.6, align='center', 
+        # Shorten text for display if needed
+        display_name = name.replace('Preprocess::', 'Prep:').replace('MOBILE_', '').replace('SERVER_', '')
+        
+        # Plot event block
+        bar = ax.barh(y, width=duration, left=start, height=0.6, align='center', 
                 color=color, alpha=0.8, edgecolor='black', linewidth=0.5)
         
-        # Optional: Add text if duration is large enough
-        if duration > 0.01:
-            ax.text(start + duration/2, y, name, 
+        # Add label if duration is large enough, and clip it within the Axes
+        if duration > 0.005:
+            # We can use the bounding box of the bar to clip the text
+            # But the simplest way in matplotlib is to just add it and set `clip_on=True` 
+            # and `clip_box=bar[0].get_bbox()` so it doesn't escape the rectangle.
+            t = ax.text(start + duration/2, y, display_name, 
                     ha='center', va='center', rotation=0, fontsize=8, color='black')
+            t.set_clip_path(bar[0])
+            t.set_clip_on(True)
             
-    # Draw Network connections manually if exact pair exists
-    send_starts = {e['type']: e['start']-base_time for e in valid_events if 'SEND' in e['type']}
-    recv_ends = {e['type']: e['end']-base_time for e in valid_events if 'RECEIVE' in e['type'] or 'RECV' in e['type']}
+    # Ensure SERVER_RECEIVE events are sorted sequentially by start time
+    server_recvs = sorted([e for e in valid_events if e['type'] == 'SERVER_RECEIVE'], key=lambda x: x['start'])
     
-    if 'MOBILE_SEND' in send_starts and 'SERVER_RECEIVE' in recv_ends:
-        net_start = send_starts['MOBILE_SEND']
-        net_end = recv_ends['SERVER_RECEIVE']
-        net_dur = net_end - net_start
-        if net_dur > 0:
-            ax.barh(y_pos['Network'], width=net_dur, left=net_start, height=0.3, align='center',
-                   color='gray', alpha=0.3, edgecolor='black', linestyle='--')
-            ax.text(net_start + net_dur/2, y_pos['Network'] - 0.2, "Uplink", ha='center', fontsize=8)
+    # We will identify MOBILE_SEND_G0, G1, ... and match them to SERVER_RECEIVE chronologically
+    mobile_sends = {}
+    for e in valid_events:
+        if e['type'].startswith('MOBILE_SEND'):
+            mobile_sends[e['type']] = e['start'] - base_time
+            
+    # Draw Uplink spans
+    prev_server_recv_time = None
+    
+    # Try to match G0, G1, G2.. to sequential SERVER_RECEIVE events
+    # Or fallback to generic MOBILE_SEND if not progressive
+    idx = 0
+    while True:
+        send_key = f'MOBILE_SEND_G{idx}'
+        if send_key not in mobile_sends:
+            # Fallback to single SEND if it exists and idx==0
+            if idx == 0 and 'MOBILE_SEND' in mobile_sends:
+                send_key = 'MOBILE_SEND'
+            else:
+                break # No more groups
+                
+        if idx < len(server_recvs):
+            mobile_tx_start = mobile_sends[send_key]
+            server_rx_end = server_recvs[idx]['end'] - base_time
+            
+            # Constraint: Transmission start is max(mobile_tx_start, prev_server_recv_time)
+            tx_start_eff = mobile_tx_start
+            if prev_server_recv_time is not None:
+                tx_start_eff = max(mobile_tx_start, prev_server_recv_time)
+                
+            net_dur = server_rx_end - tx_start_eff
+            if net_dur > 0 and tx_start_eff <= server_rx_end:
+                label = f"UL {idx}" if 'G' in send_key else "UL"
+                ax.barh(y_pos['Network'], width=net_dur, left=tx_start_eff, height=0.3, align='center',
+                       color='gray', alpha=0.3, edgecolor='black', linestyle='--')
+                
+                # Add text label if wide enough
+                if net_dur > 0.01:
+                    ax.text(tx_start_eff + net_dur/2, y_pos['Network'] - 0.25, label, ha='center', fontsize=7)
+                
+            prev_server_recv_time = server_rx_end
+        idx += 1
 
     # Formatting
-    ax.set_yticks([0, 1, 2])
+    ax.set_yticks(range(len(categories)))
     ax.set_yticklabels(categories)
     ax.set_xlabel("Time (seconds)")
     ax.set_title(f"Request {request_index} Timeline Breakdown")
@@ -150,16 +195,17 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
     
     # Create unified legend
     patches = [mpatches.Patch(color=color_map[k], label=k) for k in sorted(color_map.keys())]
-    box = ax.get_position()
-    ax.set_position([box.x0, box.y0 + box.height * 0.2, box.width, box.height * 0.8])
+    
+    # Place legend below the axes
     ax.legend(handles=patches, loc='upper center', bbox_to_anchor=(0.5, -0.15),
-              fancybox=True, shadow=True, ncol=5, fontsize='small')
+              fancybox=True, shadow=True, ncol=8, fontsize='small')
 
-    plt.tight_layout()
     # Ensure dir exists
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"request_{request_index:04d}_timeline.png")
-    plt.savefig(out_path, dpi=150)
+    
+    # Use bbox_inches='tight' so the legend block is fully enclosed in the saved image
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved: {out_path}")
 
@@ -173,7 +219,9 @@ def main():
         sys.exit(1)
         
     requests = read_events(events_file)
-    print(f"Loaded {len(requests)} requests from {events_file}")
+    original_count = len(requests)
+    requests = requests[:args.max_sessions]
+    print(f"Loaded {original_count} requests, analyzing first {len(requests)} from {events_file}")
     
     color_map = {}
     

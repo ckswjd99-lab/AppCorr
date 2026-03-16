@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List
+from typing import List, Generator
 import zlib, cv2
 from concurrent.futures import ThreadPoolExecutor
 
@@ -9,12 +9,8 @@ from .interface import ITransmissionPolicy
 class RawTransmissionPolicy(ITransmissionPolicy):
     """Encodes/Decodes patches with Batch dimension support using vectorized ops."""
 
-    def encode(self, images: np.ndarray, config: ExperimentConfig) -> List[Patch]:
-        """
-        Input: images (B, H, W, C)
-        Output: Flattened list of patches.
-        Optimization: Uses numpy reshape/transpose to avoid nested slicing loops.
-        """
+    def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
+        """Encode images to patches using vectorized operations."""
         patches = []
         B, H, W, C = images.shape
         ph, pw = config.patch_size
@@ -32,13 +28,10 @@ class RawTransmissionPolicy(ITransmissionPolicy):
                 data = patch_tensor[b, i].tobytes()
                 patches.append(Patch(image_idx=b, spatial_idx=i, data=data))
                 
-        return patches
+        yield patches
 
     def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
-        """
-        Input: List of Patch objects (sparse).
-        Output: Reconstructed Tensor (B, H, W, C).
-        """
+        """Decode patches into image canvas."""
         B = config.batch_size
         H, W, C = config.image_shape
         ph, pw = config.patch_size
@@ -69,11 +62,8 @@ class ZlibTransmissionPolicy(ITransmissionPolicy):
     Compresses each patch using zlib (DEFLATE = LZ77 + Huffman).
     """
 
-    def encode(self, images: np.ndarray, config: ExperimentConfig) -> List[Patch]:
-        """
-        Input: images (B, H, W, C)
-        Output: List of compressed patches.
-        """
+    def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
+        """Encode images into zlib compressed patches."""
         patches = []
         B, H, W, C = images.shape
         ph, pw = config.patch_size
@@ -88,20 +78,18 @@ class ZlibTransmissionPolicy(ITransmissionPolicy):
         
         num_patches = gh * gw
         
+        all_patches = []
         # Compress and Wrap
         for b in range(B):
             for i in range(num_patches):
                 raw_bytes = patch_tensor[b, i].tobytes()
                 compressed_data = zlib.compress(raw_bytes, level=compression_level)
-                patches.append(Patch(image_idx=b, spatial_idx=i, data=compressed_data))
+                all_patches.append(Patch(image_idx=b, spatial_idx=i, data=compressed_data))
                 
-        return patches
+        yield all_patches
 
     def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
-        """
-        Input: List of compressed Patch objects.
-        Output: Reconstructed Tensor (B, H, W, C).
-        """
+        """Decode zlib compressed patches."""
         B = config.batch_size
         H, W, C = config.image_shape
         ph, pw = config.patch_size
@@ -135,7 +123,7 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
     Forces sequential processing but high compression efficiency.
     """
 
-    def encode(self, images: np.ndarray, config: ExperimentConfig) -> List[Patch]:
+    def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
         patches = []
         B, H, W, C = images.shape
         ph, pw = config.patch_size
@@ -153,6 +141,7 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
         elif fmt == 'png':
             encode_params = [cv2.IMWRITE_PNG_COMPRESSION, quality]
             
+        all_patches = []
         for b in range(B):
             # Encode Full Image
             success, encoded_img = cv2.imencode(ext, images[b], encode_params)
@@ -163,14 +152,14 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
             
             # Create Patches
             # Patch 0 carries data
-            patches.append(Patch(image_idx=b, spatial_idx=0, data=full_data))
+            all_patches.append(Patch(image_idx=b, spatial_idx=0, data=full_data))
             
             # Patches 1..N-1 carry empty data (metadata only)
             empty_data = b''
             for i in range(1, num_patches):
-                patches.append(Patch(image_idx=b, spatial_idx=i, data=empty_data))
+                all_patches.append(Patch(image_idx=b, spatial_idx=i, data=empty_data))
                 
-        return patches
+        yield all_patches
 
     def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
         B = config.batch_size
@@ -181,8 +170,7 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
         else:
             batch_tensor = canvas
         
-        # We expect patches to come in any order, but we only need spatial_idx=0
-        # Group by image_idx
+        # Extract full image data from spatial_idx=0
         data_patches = {}
         
         for p in patches:
@@ -198,8 +186,7 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
                      raise ValueError(f"imdecode returned None for image {b}")
                 
                 if img.shape != (H, W, C):
-                     # Resize or warn? Best effort resize if dimension mismatch (e.g. padding issues)
-                     # But strict policy assumes matching config. 
+                     # Best effort resize if dimension mismatch
                      if img.shape[:2] != (H, W):
                          img = cv2.resize(img, (W, H))
                          
@@ -218,18 +205,19 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> List[Patch]:
         B = images.shape[0]
-        patches = []
+        # Yield patches layer by layer
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
         
-        # Optimize: Parallelize per-image processing
-        with ThreadPoolExecutor() as executor:
-            futures = [
-                executor.submit(self._process_image_encode, b, images[b], config)
-                for b in range(B)
-            ]
-            for f in futures:
-                patches.extend(f.result())
-
-        return patches
+        for tgt_lvl_idx, tgt_lvl in enumerate(levels):
+            layer_patches = []
+            with ThreadPoolExecutor() as executor:
+                futures = [
+                    executor.submit(self._process_image_encode_single_layer, b, images[b], tgt_lvl_idx, levels, config)
+                    for b in range(B)
+                ]
+                for f in futures:
+                    layer_patches.extend(f.result())
+            yield layer_patches
 
     def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
         B = config.batch_size
@@ -270,41 +258,30 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             curr = curr.astype(np.uint8) 
         return curr
 
-    def _process_image_encode(self, b_idx, image, config):
-        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
+    def _process_image_encode_single_layer(self, b_idx, image, tgt_lvl_idx, levels, config):
         max_lvl = max(levels)
         H, W = image.shape[:2]
-        
         local_patches = []
         
-        # Build Pyramid
         gaussians = {0: image}
         curr = image
         for i in range(1, max_lvl + 1):
             curr = cv2.pyrDown(curr)
             gaussians[i] = curr
-        
-        prev_img = None
-        prev_lvl = -1
-        
-        for lvl in levels:
-            curr_g = gaussians[lvl]
             
-            if prev_img is None:
-                # Base Layer (uint8)
-                self._create_patches_vectorized(local_patches, curr_g, b_idx, lvl, config, np.uint8)
-                prev_img = curr_g
-                prev_lvl = lvl
-            else:
-                # Residual Layer (int16)
-                pred = self._iterative_upsample(prev_img, prev_lvl, lvl, H, W)
-                residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-                
-                self._create_patches_vectorized(local_patches, residual, b_idx, lvl, config, np.int16)
-                
-                prev_img = curr_g
-                prev_lvl = lvl
-                
+        tgt_lvl = levels[tgt_lvl_idx]
+        curr_g = gaussians[tgt_lvl]
+        
+        if tgt_lvl_idx == 0:
+            # Base Layer
+            self._create_patches_vectorized(local_patches, curr_g, b_idx, tgt_lvl, config, np.uint8)
+        else:
+            prev_lvl = levels[tgt_lvl_idx - 1]
+            prev_g = gaussians[prev_lvl]
+            pred = self._iterative_upsample(prev_g, prev_lvl, tgt_lvl, H, W)
+            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+            self._create_patches_vectorized(local_patches, residual, b_idx, tgt_lvl, config, np.int16)
+            
         return local_patches
 
     def _process_image_decode(self, b_idx, patches, config):
@@ -361,18 +338,17 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
         H, W, C = image.shape
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
 
-        # Vectorized crop extraction: (gh, gw, ph, pw, C)
-        # Assumes strict divisibility.
+        # Extract crops using vectorized operations, assuming strict divisibility
         assert H % ph == 0 and W % pw == 0, f"Image shape {(H, W)} must be divisible by patch size {(ph, pw)}"
         gh, gw = H // ph, W // pw
         
         crops = image.reshape(gh, ph, gw, pw, C).transpose(0, 2, 1, 3, 4).reshape(-1, ph, pw, C)
         
-        # Sequential Compression (ThreadPool handles parallel images)
+        # Compress sequentially
         num_crops = crops.shape[0]
 
         for i in range(num_crops):
-             # To ensure index matches original logic (row-major), we loop sequentially
+             # Loop sequentially to match row-major indexing
              data = crops[i].astype(dtype).tobytes()
              compressed = zlib.compress(data, level=comp_lvl)
              
@@ -390,7 +366,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
         if th <= 0 or tw <= 0: return
 
         try:
-            # Optimization: Cache decompressed bytes
+            # Use cached decompressed bytes if available
             if hasattr(patch, '_decompressed_cache'):
                 raw = patch._decompressed_cache
             else:
@@ -401,7 +377,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             canvas[y:y+th, x:x+tw] = chunk
 
         except Exception as e:
-            # Silent fail or log if strictly needed
+            # Handle decompression error
             print(f"!!! [Laplacian] Decompress Error Lvl{patch.res_level}: {e}")
 
 class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
@@ -410,106 +386,125 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
     Includes debug stats for group capacity.
     """
 
-    def encode(self, images: np.ndarray, config: ExperimentConfig) -> List[Patch]:
-        patches = []
+    def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
         B = images.shape[0]
         num_groups = config.transmission_kwargs.get('num_groups', 4)
 
-        batch_candidates = [[] for _ in range(B)]
+        base_patches = []
+        gaussians_batch = [None] * B
 
-        # Generate Candidates (Parallel per Image)
+        # Generate base layers
         with ThreadPoolExecutor() as executor:
             futures = [
-                executor.submit(self._process_image_encode_progressive, b, images[b], config)
+                executor.submit(self._process_image_base_layer, b, images[b], config)
                 for b in range(B)
             ]
-            for b, (local_patches, local_candidates) in enumerate([f.result() for f in futures]):
-                 # local_patches are Base layers (always group 0)
-                 patches.extend(local_patches)
-                 # local_candidates are Residuals waiting for grouping
-                 batch_candidates[b] = local_candidates
+            for b, f in enumerate(futures):
+                local_patches, gaussians = f.result()
+                base_patches.extend(local_patches)
+                gaussians_batch[b] = gaussians
+                
+        # Add metadata to group 0
+        g0_total = len(base_patches)
+        for p in base_patches:
+            p.batch_group_total = g0_total
 
-        # Apply Grouping (Batch-Wise) based on Strategy
+        yield base_patches # Yield Group 0 (Base Layer) Immediately!
+
+        # Compute remaining residuals
+        batch_candidates = [[] for _ in range(B)]
+        with ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(self._process_image_residuals, b, gaussians_batch[b], config)
+                for b in range(B)
+            ]
+            for b, f in enumerate(futures):
+                batch_candidates[b] = f.result()
+                 
+        residual_patches = []
+        # Group residuals
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
         
         if any(batch_candidates):
             if grouping_strategy == 'uniform_diff':
-                self._apply_uniform_diff_grouping(patches, batch_candidates, num_groups)
+                self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
             elif grouping_strategy == 'random':
-                self._apply_random_grouping(patches, batch_candidates, num_groups)
+                self._apply_random_grouping(residual_patches, batch_candidates, num_groups)
             elif grouping_strategy == 'grid':
-                self._apply_grid_grouping(patches, batch_candidates, num_groups)
+                self._apply_grid_grouping(residual_patches, batch_candidates, num_groups)
             elif grouping_strategy == 'geometric':
-                self._apply_geometric_grouping(patches, batch_candidates, num_groups)
+                self._apply_geometric_grouping(residual_patches, batch_candidates, num_groups)
             else:
                 print(f"!!! [Transmission] Unknown strategy '{grouping_strategy}'. Fallback to uniform_diff.")
-                self._apply_uniform_diff_grouping(patches, batch_candidates, num_groups)
+                self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
 
-        # Inject Metadata & Calculate Stats
+        # Add metadata to residuals
         group_counts = {}
-        group_bytes = {}
-
-        for p in patches:
-            # Count patches per group
+        for p in residual_patches:
             group_counts[p.group_id] = group_counts.get(p.group_id, 0) + 1
-            # Sum bytes per group
-            p_size = len(p.data)
-            group_bytes[p.group_id] = group_bytes.get(p.group_id, 0) + p_size
             
-        for p in patches:
+        for p in residual_patches:
             p.batch_group_total = group_counts[p.group_id]
 
-        # Sort by Group ID
-        patches.sort(key=lambda x: x.group_id)
-        
-        return patches
+        # Group residuals into lists and yield
+        grouped = {}
+        for p in residual_patches:
+             grouped.setdefault(p.group_id, []).append(p)
+             
+        # Yield groups sequentially by ID
+        for g in sorted(grouped.keys()):
+             if grouped[g]:
+                  yield grouped[g]
 
-    def _process_image_encode_progressive(self, b_idx, image, config):
+    def _process_image_base_layer(self, b_idx, image, config):
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
         max_lvl = max(levels)
-        H, W = image.shape[:2]
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
         
-        local_patches = []
-        local_candidates = []
-        
-        # Build Pyramid
         gaussians = {0: image}
         curr = image
         for i in range(1, max_lvl + 1):
             curr = cv2.pyrDown(curr)
             gaussians[i] = curr
+            
+        local_patches = []
+        base_lvl = levels[0] # Highest level index is the base layer
         
-        prev_img = None
-        prev_lvl = -1
+        # Use vectorized creation
+        self._create_patches_with_group_vectorized(
+            local_patches, gaussians[base_lvl], b_idx, base_lvl, config, np.uint8, 
+            group_id=0, compression=comp_lvl
+        )
+        return local_patches, gaussians
+
+    def _process_image_residuals(self, b_idx, gaussians, config):
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
+        H, W = config.image_shape[:2]
+        comp_lvl = config.transmission_kwargs.get('compression_level', 1)
         
-        for lvl in levels:
+        local_candidates = []
+        
+        # Start from base layer and upsample
+        prev_lvl = levels[0]
+        prev_img = gaussians[prev_lvl]
+        
+        for lvl in levels[1:]:
             curr_g = gaussians[lvl]
             
-            if prev_img is None:
-                # Group 0: Base Layer (Always Group 0)
-                # Use vectorized creation
-                self._create_patches_with_group_vectorized(
-                    local_patches, curr_g, b_idx, lvl, config, np.uint8, 
-                    group_id=0, compression=comp_lvl
-                )
-                prev_img = curr_g
-                prev_lvl = lvl
-            else:
-                # Residual Layer: Collect
-                pred = self._iterative_upsample(prev_img, prev_lvl, lvl, H, W)
-                residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-                
-                # Use vectorized collection
-                self._collect_residual_candidates_vectorized(
-                    local_candidates, residual, b_idx, lvl, config, 
-                    dtype=np.int16, compression=comp_lvl
-                )
-                
-                prev_img = curr_g
-                prev_lvl = lvl
+            # Residual Layer: Collect
+            pred = self._iterative_upsample(prev_img, prev_lvl, lvl, H, W)
+            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+            
+            # Use vectorized collection
+            self._collect_residual_candidates_vectorized(
+                local_candidates, residual, b_idx, lvl, config, 
+                dtype=np.int16, compression=comp_lvl
+            )
+            
+            prev_img = curr_g
+            prev_lvl = lvl
         
-        return local_patches, local_candidates
+        return local_candidates
 
     # --- Vectorized Helpers for Progressive ---
 
@@ -517,15 +512,13 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         ph, pw = config.patch_size
         H, W, C = image.shape
 
-        # Strict divisibility check
+        # Verify exact divisibility
         if H % ph != 0 or W % pw != 0:
             raise ValueError(f"[ProgressiveLPyramidPolicy] Image shape {(H, W)} not divisible by patch {(ph, pw)}")
             
         gh, gw = H // ph, W // pw
         
-        # Vectorized crop
-        
-        # Vectorized crop
+        # Extract crops via reshaping
         crops = image.reshape(gh, ph, gw, pw, C).transpose(0, 2, 1, 3, 4).reshape(-1, ph, pw, C)
         num_crops = crops.shape[0]
 
@@ -540,8 +533,6 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
 
         # Strict divisibility check
         if H % ph != 0 or W % pw != 0:
-             # Just return or error? 
-             # Residuals should match base resolution if pyramid ops are consistent.
              raise ValueError(f"[Residual] Image shape {(H, W)} not divisible by patch {(ph, pw)}")
 
         gh, gw = H // ph, W // pw
@@ -558,12 +549,12 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             })
 
     def _apply_random_grouping(self, final_patch_list, batch_candidates, num_groups):
-        """Random assignment of patches to groups."""
+        """Assign patches to random groups."""
         for b_idx, candidates in enumerate(batch_candidates):
             if not candidates: continue
             
             num_tokens = len(candidates)
-            # Random group IDs: 1..num_groups
+            # Generate random group IDs
             group_ids = np.random.randint(1, num_groups + 1, size=num_tokens)
             
             for i, cand in enumerate(candidates):
@@ -573,7 +564,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 )
 
     def _apply_grid_grouping(self, final_patch_list, batch_candidates, num_groups):
-        """Grid-based deterministic assignment."""
+        """Assign patches based on a grid pattern."""
         s = int(num_groups ** 0.5)
         
         for b_idx, candidates in enumerate(batch_candidates):
@@ -581,8 +572,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             
             num_tokens = len(candidates)
             side = int(num_tokens ** 0.5)
-            
-            # Pattern: 1..num_groups mapped to s x s grid
+            # Create grid assignment pattern
             pattern = np.arange(1, num_groups + 1).reshape(s, s)
             
             rep_h = (side + s - 1) // s
@@ -591,7 +581,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             grid_2d = np.tile(pattern, (rep_h, rep_w))[:side, :side]
             group_ids = grid_2d.flatten()
             
-            # Best effort for non-square or mismatches
+            # Resize array for mismatches
             if len(group_ids) < num_tokens:
                  group_ids = np.resize(group_ids, num_tokens)
             elif len(group_ids) > num_tokens:
@@ -604,14 +594,14 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 )
 
     def _apply_geometric_grouping(self, final_patch_list, batch_candidates, num_groups):
-        """Geometric distribution based assignment."""
+        """Assign patches based on geometric distribution."""
         for b_idx, candidates in enumerate(batch_candidates):
             if not candidates: continue
             
             num_tokens = len(candidates)
             probs = np.random.rand(num_tokens)
             
-            # floor(-log2(1 - p)) + 1
+            # Calculate group ID
             group_ids = np.floor(-np.log2(1 - probs)) + 1
             group_ids = np.clip(group_ids, 1, num_groups).astype(int)
             
@@ -622,26 +612,23 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 )
 
     def _apply_uniform_diff_grouping(self, final_patch_list, batch_candidates, num_groups):
-        """
-        Implements 'uniform_diff' strategy using NumPy.
-        Assigns Group IDs based on the AVERAGE size distribution of the batch.
-        """
+        """Assign group IDs based on average batch size distribution."""
         B = len(batch_candidates)
         if B == 0: return
         N = len(batch_candidates[0])
         if N == 0: return
 
-        # Extract sizes -> [B, N]
+        # Extract patch sizes
         sizes_matrix = np.zeros((B, N), dtype=np.int32)
         for b in range(B):
             for i in range(N):
                 sizes_matrix[b, i] = batch_candidates[b][i]['size']
 
-        # Sort norms (sizes) independently for each batch -> [B, N]
+        # Sort patch sizes per batch
         sorted_indices = np.argsort(sizes_matrix, axis=1)
         sorted_sizes = np.take_along_axis(sizes_matrix, sorted_indices, axis=1)
 
-        # Determine Group Splits based on AVERAGE distribution
+        # Calculate group splits using average sizes
         avg_sorted_sizes = np.mean(sorted_sizes, axis=0)
         
         cumsum_sizes = np.cumsum(avg_sorted_sizes)
@@ -656,10 +643,10 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         target_sum = total_size / num_groups
         boundaries = np.arange(1, num_groups) * target_sum
         
-        # Rank -> Group ID
+        # Map rank to group ID
         rank_to_group_id = np.searchsorted(boundaries, cumsum_sizes) + 1
         
-        # Map back and create patches
+        # Assign groups to patches
         for b in range(B):
             for rank in range(N):
                 spatial_idx_at_rank = sorted_indices[b, rank]
