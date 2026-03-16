@@ -14,10 +14,7 @@ import json
 import datetime
 
 def perform_time_sync(output_queue, feedback_queue, rounds=10):
-    """
-    Perform multiple rounds of ping-pong to estimate clock offset.
-    Offset = ServerTime - LocalTime
-    """
+    """Estimate clock offset via ping-pong."""
     print(f"[Source] Synchronizing time with server ({rounds} rounds)...")
     
     # Warm-up round (ignore result)
@@ -46,10 +43,7 @@ def perform_time_sync(output_queue, feedback_queue, rounds=10):
 
 
 class SourceModule(multiprocessing.Process):
-    """
-    Experiment Loop: Request Batch -> Wait Response -> Calculate Metrics.
-    Handles partial batches via padding and tracks data transfer size.
-    """
+    """Run experiment loop, handle partial batches, track metrics."""
 
     def __init__(self, output_queue, feedback_queue, config: ExperimentConfig, data_root: str, loader_batch_size: int):
         super().__init__()
@@ -113,8 +107,7 @@ class SourceModule(multiprocessing.Process):
         total_bytes = 0 
         total_latency = 0.0 
         
-        # Event Statistics Accumulator
-        # { type: { count, sum, min, max } }
+        # Track event statistics
         event_stats_accumulator = {}
 
         # Constants for padding
@@ -129,7 +122,7 @@ class SourceModule(multiprocessing.Process):
             
             # Send Phase
             t_load_start = time.time()
-            # Prepare Full Batch Container (Pad with zeros)
+            # Prepare padded batch container
             full_batch_np = np.zeros((SERVER_BATCH_SIZE, IMG_H, IMG_W, IMG_C), dtype=np.uint8)
             
             real_imgs_np = images.permute(0, 2, 3, 1).numpy()
@@ -137,21 +130,37 @@ class SourceModule(multiprocessing.Process):
             t_load_end = time.time()
             
             # Encode data
-            t_encode_start = time.time()
-            all_patches = policy.encode(full_batch_np, self.config)
-            t_encode_end = time.time()
+            batch_bytes = 0
+            all_patches = []
+            local_events = [{'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start}]
             
-            batch_bytes = sum(len(p.data) for p in all_patches)
+            # Execute generator pipeline
+            encode_gen = policy.encode(full_batch_np, self.config)
+            
+            group_idx = 0
+            t_pipeline_start = time.time()
+            t_send_start = t_pipeline_start # Transmission block start
+            
+            for group_patches in encode_gen:
+                t_decode_end = time.time()
+                local_events.append({'type': f'MOBILE_ENCODE_G{group_idx}', 'timestamp': t_pipeline_start, 'duration': t_decode_end - t_pipeline_start})
+                
+                # Send Patches immediately
+                t_tx_start = time.time()
+                for p in group_patches:
+                    self.output_queue.put(p)
+                t_tx_end = time.time()
+                
+                local_events.append({'type': f'MOBILE_SEND_G{group_idx}', 'timestamp': t_tx_start, 'duration': t_tx_end - t_tx_start})
+                
+                all_patches.extend(group_patches)
+                batch_bytes += sum(len(p.data) for p in group_patches)
+                
+                group_idx += 1
+                t_pipeline_start = time.time() # Start timing next group's encode
+                
             total_bytes += batch_bytes
             batch_kb = batch_bytes / 1024.0
-
-            t_send_start = time.time()
-            
-            # Send Patches
-            for p in all_patches:
-                self.output_queue.put(p)
-            
-            t_send_end = time.time()
             
             # Wait for Response
             result = self.feedback_queue.get()
@@ -167,13 +176,8 @@ class SourceModule(multiprocessing.Process):
                 e['duration'] = e['end'] - e['start']
                 del e['start'], e['end']
             
-            # Prepare Local Events
-            local_events = [
-                {'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start},
-                {'type': 'MOBILE_ENCODE', 'timestamp': t_encode_start, 'duration': t_encode_end - t_encode_start},
-                {'type': 'MOBILE_SEND', 'timestamp': t_send_start, 'duration': t_send_end - t_send_start},
-                {'type': 'MOBILE_RECEIVE', 'timestamp': t_result_recv, 'duration': 0}
-            ]
+            # Final local event addition
+            local_events.append({'type': 'MOBILE_RECEIVE', 'timestamp': t_result_recv, 'duration': 0})
             
             # Combine
             all_events = local_events + server_events
@@ -236,8 +240,8 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if (batch_idx+1) == 10:
-                break # TEMP
+            # if (batch_idx+1) == 10:
+            #     break # TEMP
 
         final_summary = self.dataset_loader.get_summary()
         print(f"[Source] Final Summary: {final_summary}")

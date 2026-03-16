@@ -16,10 +16,10 @@
         "generated_from_client": true,
         "pyramid_levels": [2, 0],
         "num_groups": 4,
-        "cls_alive_ratio": 0.5
+        "cls_alive_ratio": 0.4
     },
     "early_exit_kwargs": {
         "metric": "max_prob",
-        "threshold": 1.0
+        "threshold": 0.6
     }
 }
