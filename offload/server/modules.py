@@ -1,5 +1,6 @@
 import multiprocessing
 import socket
+import time
 from offload.common import send_msg, recv_msg, ExperimentConfig
 
 class ServerReceiver(multiprocessing.Process):
@@ -37,13 +38,16 @@ class ServerReceiver(multiprocessing.Process):
                 else:
                     print(f"[ServerReceiver] Handshake failed or invalid format: {type(msg)}")
                 
-                # 2. Data Loop
+                # Data Loop
                 while True:
                     msg = recv_msg(conn)
                     
                     if msg is None or msg == 'STOP':
                         print("[ServerReceiver] Received STOP signal or Client disconnected.")
                         break
+                        
+                    if hasattr(msg, 'arrival_time'):
+                        msg.arrival_time = time.time()
                     
                     if isinstance(msg, tuple):
                          if msg[0] == 'TIME_SYNC':

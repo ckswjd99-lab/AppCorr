@@ -51,12 +51,20 @@ class DINOv3DetectorExecutor(ModelExecutor):
         return inner._backbone.backbone if hasattr(inner, "_backbone") else inner.backbone
 
     def preprocess(self, batch_np: np.ndarray, task: Task, context: Dict[str, Any], config: Any):
-        tensor = torch.from_numpy(batch_np).to(self.device).permute(0, 3, 1, 2).float() / 255.0
-        tensor = (tensor - self.norm_mean) / self.norm_std
-        idx = context.get('active_indices')
-        if idx is not None and len(idx) < config.batch_size:
-            tensor = tensor[idx]
-        context['input_tensor'] = tensor
+        with torch.cuda.nvtx.range("Preprocess::PinMemory"):
+            tensor = torch.from_numpy(batch_np)
+            if hasattr(tensor, 'pin_memory'):
+                tensor = tensor.pin_memory()
+                
+        with torch.cuda.nvtx.range("Preprocess::ToDevice"):
+            tensor = tensor.to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float() / 255.0
+            tensor = (tensor - self.norm_mean) / self.norm_std
+            
+        with torch.cuda.nvtx.range("Preprocess::Slicing"):
+            idx = context.get('active_indices')
+            if idx is not None and len(idx) < config.batch_size:
+                tensor = tensor[idx]
+            context['input_tensor'] = tensor
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
         if 'input_tensor' not in context: return {}

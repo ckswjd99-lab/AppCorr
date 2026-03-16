@@ -92,7 +92,8 @@ class WorkerModule(multiprocessing.Process):
         try:
             for instr in task.instructions:
                 t_start = time.time()
-                meta = self._dispatch(instr, task, context)
+                with torch.cuda.nvtx.range(instr.op_type.name):
+                    meta = self._dispatch(instr, task, context)
                 torch.cuda.synchronize()
                 t_end = time.time()
                 
@@ -136,16 +137,24 @@ class WorkerModule(multiprocessing.Process):
         if op == OpType.LOAD_INPUT:
             if not task.payload: return
             
+            # Record SERVER_RECEIVE event based on maximum arrival time
+            max_arrival_time = max((p.arrival_time for p in task.payload if hasattr(p, 'arrival_time')), default=0.0)
+            if max_arrival_time > 0 and 'events' in context:
+                context['events'].append({
+                    'type': 'SERVER_RECEIVE',
+                    'start': max_arrival_time,
+                    'end': max_arrival_time,
+                    'params': {}
+                })
+            
             # Decode (Transmission Policy)
-            if 'patch_buffer' not in context:
-                context['patch_buffer'] = []
-            context['patch_buffer'].extend(task.payload)
+            # Only decode the new payload patches and apply them to the existing canvas
+            with torch.cuda.nvtx.range("Decode"):
+                context['canvas_np'] = self.policy.decode(task.payload, self.config, canvas=context.get('canvas_np'))
             
-            # Decode
-            batch_np = self.policy.decode(context['patch_buffer'], self.config) # [B, H, W, C]
-            
-            # Preprocess (Model Executor)
-            self.executor.preprocess(batch_np, task, context, self.config)
+            # Preprocess (Model Executor) - Still Needs the Full Canvas
+            with torch.cuda.nvtx.range("Preprocess"):
+                self.executor.preprocess(context['canvas_np'], task, context, self.config)
 
         elif op == OpType.PREPARE_TOKENS:
             self.executor.prepare_tokens(task, context, self.config)

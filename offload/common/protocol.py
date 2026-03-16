@@ -41,6 +41,7 @@ class Patch:
     res_level: int = 0
     group_id: int = 0
     batch_group_total: int = 0
+    arrival_time: float = 0.0
 
 class OpType(Enum):
     # --- Computation Ops ---

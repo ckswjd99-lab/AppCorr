@@ -17,14 +17,14 @@ def send_msg(sock: socket.socket, data: Any) -> None:
 def recv_msg(sock: socket.socket) -> Optional[Any]:
     """Receive length-prefixed data and unpickle it."""
     try:
-        # 1. Read length (4 bytes)
+        # Read length (4 bytes)
         raw_len = _recv_all(sock, 4)
         if not raw_len:
             return None
         
         msg_len = struct.unpack('>I', raw_len)[0]
         
-        # 2. Read payload
+        # Read payload
         raw_data = _recv_all(sock, msg_len)
         if not raw_data:
             return None
