@@ -12,7 +12,8 @@ class ISchedulingPolicy(ABC):
         self, 
         buffer: List[Patch], 
         config: ExperimentConfig,
-        task_id_gen: Any
+        task_id_gen: Any,
+        **kwargs
     ) -> Optional[Task]:
         """Check if task dispatch is ready."""
         pass

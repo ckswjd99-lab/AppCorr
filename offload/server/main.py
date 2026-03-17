@@ -20,14 +20,15 @@ def run_server(recv_port, send_port):
     worker_q = multiprocessing.Queue()
     result_q = multiprocessing.Queue()
     control_q = multiprocessing.Queue()
+    feedback_q = multiprocessing.Queue()
     
     # Shutdown Event
     shutdown_event = multiprocessing.Event()
 
     # Pass shutdown_event to Receiver
     receiver = ServerReceiver(recv_port, sched_q, control_q, shutdown_event)
-    scheduler = SchedulerModule(sched_q, worker_q, control_q)
-    worker = WorkerModule(worker_q, result_q)
+    scheduler = SchedulerModule(sched_q, worker_q, control_q, feedback_q)
+    worker = WorkerModule(worker_q, result_q, feedback_q)
     sender = ServerSender(send_port, result_q)
     
     procs = [receiver, scheduler, worker, sender]

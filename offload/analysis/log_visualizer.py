@@ -109,6 +109,9 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
     
     fig, ax = plt.subplots(figsize=(15, 6))
     
+    # Sequential counters for DEC
+    decode_idx = 0
+    
     for event in valid_events:
         name = event['type']
         start = event['start'] - base_time
@@ -123,8 +126,29 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         
         y = y_pos[category]
         
-        # Shorten text for display if needed
+        # Display labels
         display_name = name.replace('Preprocess::', 'Prep:').replace('MOBILE_', '').replace('SERVER_', '')
+        
+        if name == 'APPROX_FORWARD':
+            layers = event.get('params', {}).get('layers', (0, 0))
+            if layers[1] == layers[0] + 1:
+                display_name = f"AP\n{layers[0]}"
+            else:
+                display_name = f"AP\n({layers[0]}, {layers[1]})"
+        elif name == 'CORRECT_FORWARD':
+            layers = event.get('params', {}).get('layers', (0, 0))
+            gid = event.get('params', {}).get('group_id', '?')
+            if layers[1] == layers[0] + 1:
+                display_name = f"CO\nG{gid}\n{layers[0]}"
+            else:
+                display_name = f"CO\nG{gid}\n({layers[0]}, {layers[1]})"
+        elif 'Decode' in name:
+            display_name = f"DEC\nG{decode_idx}"
+            decode_idx += 1
+        elif 'ENCODE' in name or name.startswith('MOBILE_SEND'):
+            match = re.search(r'[G_](\d+)$', name)
+            gid = match.group(1) if match else event.get('params', {}).get('group_id', '?')
+            display_name = f"ENC\nG{gid}"
         
         # Plot event block
         bar = ax.barh(y, width=duration, left=start, height=0.6, align='center', 

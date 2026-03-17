@@ -1,5 +1,5 @@
 from .interface import ISchedulingPolicy, ITransmissionPolicy
-from .scheduling import BatchCountBasedPolicy, GroupTriggerPolicy, GroupTriggerEarlyExitPolicy
+from .scheduling import BatchCountBasedPolicy, GroupTriggerPolicy, GroupTriggerEarlyExitPolicy, DynamicGroupTriggerPolicy, DynamicGroupTriggerEarlyExitPolicy
 from .transmission import (
     RawTransmissionPolicy, 
     ZlibTransmissionPolicy, 
@@ -13,6 +13,8 @@ SCHEDULER_REGISTRY = {
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "GroupTriggerEarlyExit": GroupTriggerEarlyExitPolicy,
+    "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
+    "DynamicGroupTriggerEarlyExit": DynamicGroupTriggerEarlyExitPolicy,
 }
 
 TRANSMISSION_REGISTRY = {
