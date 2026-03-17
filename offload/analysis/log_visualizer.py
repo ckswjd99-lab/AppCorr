@@ -150,9 +150,9 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
             gid = match.group(1) if match else event.get('params', {}).get('group_id', '?')
             display_name = f"ENC\nG{gid}"
         
-        # Plot event block
+        # Plot event block (zorder=2 to be on top)
         bar = ax.barh(y, width=duration, left=start, height=0.6, align='center', 
-                color=color, alpha=0.8, edgecolor='black', linewidth=0.5)
+                color=color, alpha=0.8, edgecolor='black', linewidth=0.5, zorder=2)
         
         # Add label if duration is large enough, and clip it within the Axes
         if duration > 0.005:
@@ -201,7 +201,7 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
             if net_dur > 0 and tx_start_eff <= server_rx_end:
                 label = f"UL {idx}" if 'G' in send_key else "UL"
                 ax.barh(y_pos['Network'], width=net_dur, left=tx_start_eff, height=0.3, align='center',
-                       color='gray', alpha=0.3, edgecolor='black', linestyle='--')
+                       color='gray', alpha=0.3, edgecolor='black', linestyle='--', zorder=1)
                 
                 # Add text label if wide enough
                 if net_dur > 0.01:
@@ -209,6 +209,50 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
                 
             prev_server_recv_time = server_rx_end
         idx += 1
+
+    # Sequential Simulation Baseline
+    total_mobile = sum(e['end'] - e['start'] for e in valid_events if classify_event(e['type']) == 'Mobile')
+    total_cpu = sum(e['end'] - e['start'] for e in valid_events if classify_event(e['type']) == 'Server (CPU)')
+    total_gpu_no_correct = sum(e['end'] - e['start'] for e in valid_events 
+                               if classify_event(e['type']) == 'Server (GPU)' and 'CORRECT_FORWARD' not in e['type'])
+    
+    # Calculate UL durations
+    total_ul = 0
+    idx = 0
+    prev_rx_end = None
+    # We re-run the matching logic to get durations precisely
+    while True:
+        send_key = f'MOBILE_SEND_G{idx}'
+        if send_key not in mobile_sends:
+            if idx == 0 and 'MOBILE_SEND' in mobile_sends: send_key = 'MOBILE_SEND'
+            else: break
+        if idx < len(server_recvs):
+            start_eff = mobile_sends[send_key]
+            if prev_rx_end is not None: start_eff = max(start_eff, prev_rx_end)
+            rx_end = server_recvs[idx]['end'] - base_time
+            if rx_end > start_eff: total_ul += (rx_end - start_eff)
+            prev_rx_end = rx_end
+        idx += 1
+
+    sequential_time = total_mobile + total_ul + total_cpu + total_gpu_no_correct
+    actual_time = max(e['end'] for e in valid_events) - base_time
+    total_mobile_load = sum(e['end'] - e['start'] for e in valid_events if e['type'] == 'MOBILE_LOAD')
+    ideal_time = total_mobile_load + total_gpu_no_correct
+    
+    # Plot Baseline
+    ax.axvline(x=sequential_time, color='red', linestyle='--', linewidth=2, label='Sequential Baseline', zorder=0)
+    ax.text(sequential_time - 0.005, len(categories) - 0.7, f'Sequential baseline: {sequential_time:.3f}s', 
+            color='red', fontweight='bold', ha='right', va='top')
+
+    # Plot AppCorr (Ours)
+    ax.axvline(x=actual_time, color='blue', linestyle='--', linewidth=2, label='AppCorr (Ours)', zorder=0)
+    ax.text(actual_time - 0.005, len(categories) - 1.2, f'AppCorr (Ours): {actual_time:.3f}s', 
+            color='blue', fontweight='bold', ha='right', va='top')
+
+    # Plot Ideal
+    ax.axvline(x=ideal_time, color='green', linestyle='--', linewidth=2, label='Ideal', zorder=0)
+    ax.text(ideal_time - 0.005, len(categories) - 1.7, f'Ideal: {ideal_time:.3f}s', 
+            color='green', fontweight='bold', ha='right', va='top')
 
     # Formatting
     ax.set_yticks(range(len(categories)))
