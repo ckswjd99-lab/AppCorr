@@ -18,10 +18,11 @@ class WorkerModule(multiprocessing.Process):
     Maintains session context and delegates model execution to ModelExecutor.
     """
 
-    def __init__(self, input_queue, output_queue):
+    def __init__(self, input_queue, output_queue, feedback_queue=None):
         super().__init__()
         self.input_queue = input_queue
         self.output_queue = output_queue
+        self.feedback_queue = feedback_queue
         
         # Track session contexts
         self.sessions: Dict[int, Dict[str, Any]] = {}
@@ -205,6 +206,11 @@ class WorkerModule(multiprocessing.Process):
                         event_data['meta'] = meta
                     
                     context['events'].append(event_data)
+                
+                if instr.op_type == OpType.APPROX_FORWARD and self.feedback_queue is not None:
+                    end_layer = instr.params.get('layers', (0, 0))[1]
+                    self.feedback_queue.put(('APPROX_DONE', req_id, end_layer))
+
         except Exception as e:
             print(f"!!! [Worker] Pipeline Error (Req {req_id}): {e}")
             traceback.print_exc()
