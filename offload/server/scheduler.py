@@ -29,7 +29,7 @@ class SchedulerModule(multiprocessing.Process):
                 cmd, data = self.control_queue.get()
                 if cmd == 'CONFIG':
                     self.config = data
-                    self.policy = get_scheduler(self.config.scheduler_policy_name)
+                    self.policy = get_scheduler(self.config.scheduler_policy_name, self.config)
                     self.worker_queue.put(('CONFIG', data))
                     self.buffer = []
                     self.task_counter = itertools.count()

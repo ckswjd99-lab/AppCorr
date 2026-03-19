@@ -25,8 +25,8 @@ TRANSMISSION_REGISTRY = {
     "FullImageCompression": FullImageCompressionPolicy,
 }
 
-def get_scheduler(name: str) -> ISchedulingPolicy:
-    return SCHEDULER_REGISTRY.get(name, BatchCountBasedPolicy)()
+def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:
+    return SCHEDULER_REGISTRY.get(name, BatchCountBasedPolicy)(config=config)
 
 def get_transmission(name: str) -> ITransmissionPolicy:
     return TRANSMISSION_REGISTRY.get(name, RawTransmissionPolicy)()

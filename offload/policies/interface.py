@@ -6,6 +6,9 @@ from offload.common.protocol import Patch, Task, ExperimentConfig
 
 class ISchedulingPolicy(ABC):
     """Scheduling logic interface."""
+
+    def __init__(self, config: Optional[ExperimentConfig] = None):
+        pass
     
     @abstractmethod
     def decide(
