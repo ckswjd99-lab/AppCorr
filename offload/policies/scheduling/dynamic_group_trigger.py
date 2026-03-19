@@ -8,11 +8,14 @@ class DynamicGroupTriggerPolicy(ISchedulingPolicy):
     Interleaves correct and approx dynamically layer by layer.
     """
 
-    def __init__(self):
+    def __init__(self, config: Optional[ExperimentConfig] = None):
         self.current_request_id = None
         self.latest_approx_layer_queued = 0
         self.current_group_id = -1
         self.ahead_layers = 2  # Proactive approx depth
+        
+        if config:
+            self.ahead_layers = config.transmission_kwargs.get("ahead_layers", self.ahead_layers)
 
     def decide(
         self, 

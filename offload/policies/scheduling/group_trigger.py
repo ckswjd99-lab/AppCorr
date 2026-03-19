@@ -9,7 +9,7 @@ class GroupTriggerPolicy(ISchedulingPolicy):
     Dynamically generates pipeline instructions.
     """
 
-    def __init__(self):
+    def __init__(self, config: Optional[ExperimentConfig] = None):
         self.current_request_id = None
 
     def decide(
