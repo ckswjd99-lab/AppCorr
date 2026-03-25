@@ -12,6 +12,7 @@ from offload.common import Task, InferenceResult
 from offload.common.protocol import OpType, Instruction
 from offload.policies import get_transmission
 from offload.server.model import get_model_executor
+from offload.server.sr import create_lowres_sr_engine
 
 
 @dataclass
@@ -47,6 +48,7 @@ class WorkerModule(multiprocessing.Process):
         self.config = None
         self.policy = None
         self.executor = None
+        self.sr_engine = None
 
     def run(self):
         print("[Worker] Started.")
@@ -106,12 +108,13 @@ class WorkerModule(multiprocessing.Process):
                     req_id = task.request_id
 
                     if req_id not in self.sessions:
-                        self.sessions[req_id] = {'events': [], 'canvas_np': None}
+                        self.sessions[req_id] = self._create_session_context()
 
                     context = self.sessions[req_id]
                     if task.payload:
                         for instr in task.instructions:
                             if instr.op_type == OpType.LOAD_INPUT:
+                                group_id = task.payload[0].group_id
                                 max_arrival_time = max(
                                     (p.arrival_time for p in task.payload if hasattr(p, 'arrival_time')),
                                     default=0.0
@@ -129,10 +132,13 @@ class WorkerModule(multiprocessing.Process):
                                 context['patch_buffer'].extend(task.payload)
 
                                 t_decode_start = time.time()
-                                context['canvas_np'] = self.policy.decode(
+                                context['input_hr_np'] = self.policy.decode(
                                     context['patch_buffer'], self.config,
-                                    canvas=context.get('canvas_np')
+                                    canvas=context.get('input_hr_np')
                                 )
+                                if group_id == 0 and self.config.lowres_sr_enabled():
+                                    context['input_lr_native_np'] = self.policy.decode_lowres(task.payload, self.config)
+                                    context['input_sr_tensor'] = None
                                 t_decode_end = time.time()
 
                                 if 'events' in context:
@@ -144,11 +150,8 @@ class WorkerModule(multiprocessing.Process):
                                     })
                                 break
 
-                    canvas_ref = None
-                    if context.get('canvas_np') is not None:
-                        canvas_ref = context['canvas_np'].copy()
-
-                    self.gpu_queue.put(('TASK', (task, canvas_ref)))
+                    input_state_ref = self._snapshot_input_state(context)
+                    self.gpu_queue.put(('TASK', (task, input_state_ref)))
 
             except Exception as e:
                 print(f"!!! [Decoder] Error: {e}")
@@ -177,20 +180,22 @@ class WorkerModule(multiprocessing.Process):
                         self.device = torch.device(self.config.device)
                         print(f"[Worker] Device overridden by Config: {self.device}")
                     self.policy = get_transmission(self.config.transmission_policy_name)
+                    self._validate_lowres_sr_config()
+                    self._load_sr_engine()
                     self._load_model(self.config.model_name)
                     print(f"[Worker] Configured. Policy: {self.config.transmission_policy_name}, "
                           f"Model: {self.config.model_name}, Device: {self.device}")
                     continue
 
                 if msg_type == 'TASK':
-                    task, decoded_canvas = payload
+                    task, input_state = payload
                     if self.executor is None:
                         print("!!! [Worker] Warning: Model Executor not loaded.")
                         continue
                     req_id = task.request_id
                     if req_id not in self.sessions:
-                        self.sessions[req_id] = {'events': []}
-                    self.sessions[req_id]['canvas_np'] = decoded_canvas
+                        self.sessions[req_id] = self._create_session_context()
+                    self.sessions[req_id].update(input_state)
                     self.execute_pipeline(task)
 
                 elif msg_type == 'TIME_SYNC':
@@ -276,6 +281,29 @@ class WorkerModule(multiprocessing.Process):
             self.executor = None
             raise e
 
+    def _load_sr_engine(self):
+        self.sr_engine = None
+        if not self.config.lowres_sr_enabled():
+            return
+
+        sr_config = self.config.get_lowres_sr_config()
+        print(
+            f"[Worker] Loading low-res SR engine: {sr_config['model']} "
+            f"from {sr_config['weights_dir']}"
+        )
+        self.sr_engine = create_lowres_sr_engine(sr_config, self.device)
+
+    def _validate_lowres_sr_config(self):
+        if not self.config.lowres_sr_enabled():
+            return
+
+        supported_transmissions = {'Laplacian', 'ProgressiveLaplacian'}
+        if self.config.transmission_policy_name not in supported_transmissions:
+            raise ValueError(
+                "lowres_sr requires Laplacian or ProgressiveLaplacian transmission, "
+                f"got {self.config.transmission_policy_name}"
+            )
+
     # ------------------------------------------------------------------ #
     #  Pipeline Execution                                                  #
     # ------------------------------------------------------------------ #
@@ -284,7 +312,7 @@ class WorkerModule(multiprocessing.Process):
     def execute_pipeline(self, task: Task):
         req_id = task.request_id
         if req_id not in self.sessions:
-            self.sessions[req_id] = {'events': []}
+            self.sessions[req_id] = self._create_session_context()
         context = self.sessions[req_id]
 
         try:
@@ -331,10 +359,26 @@ class WorkerModule(multiprocessing.Process):
 
         # Control Ops
         if op == OpType.LOAD_INPUT:
-            if context.get('canvas_np') is None:
+            if context.get('input_hr_np') is None:
                 return
+            group_id = self._get_task_group_id(task)
+            batch_np = context['input_hr_np']
+
+            if group_id == 0 and self.config.lowres_sr_enabled():
+                if context.get('input_lr_native_np') is None:
+                    raise RuntimeError("Missing low-resolution input for SR-enabled LOAD_INPUT.")
+                if self.sr_engine is None:
+                    raise RuntimeError("Low-resolution SR engine is not loaded.")
+                if context.get('input_sr_tensor') is None:
+                    with torch.cuda.nvtx.range("LowResSR"):
+                        with torch.autocast('cuda', enabled=False):
+                            context['input_sr_tensor'] = self.sr_engine.upscale_tensor(
+                                context['input_lr_native_np'],
+                                target_hw=self.config.image_shape[:2],
+                            )
+                batch_np = context['input_sr_tensor']
             with torch.cuda.nvtx.range("Preprocess"):
-                self.executor.preprocess(context['canvas_np'], task, context, self.config)
+                self.executor.preprocess(batch_np, task, context, self.config)
 
         elif op == OpType.PREPARE_TOKENS:
             self.executor.prepare_tokens(task, context, self.config)
@@ -385,3 +429,24 @@ class WorkerModule(multiprocessing.Process):
                 context['final_results'] = {}
             context['final_results'].update(final_batch_results)
             context['active_indices'] = torch.empty(0, device=self.device, dtype=torch.long)
+
+    def _create_session_context(self) -> Dict[str, Any]:
+        return {
+            'events': [],
+            'patch_buffer': [],
+            'input_hr_np': None,
+            'input_lr_native_np': None,
+            'input_sr_tensor': None,
+        }
+
+    def _snapshot_input_state(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        snapshot = {}
+        for key in ('input_hr_np', 'input_lr_native_np'):
+            value = context.get(key)
+            snapshot[key] = value.copy() if value is not None else None
+        return snapshot
+
+    def _get_task_group_id(self, task: Task) -> Optional[int]:
+        if task.payload:
+            return task.payload[0].group_id
+        return None

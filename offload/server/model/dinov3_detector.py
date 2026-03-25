@@ -50,15 +50,30 @@ class DINOv3DetectorExecutor(ModelExecutor):
         inner = self.model.detector.backbone[0]
         return inner._backbone.backbone if hasattr(inner, "_backbone") else inner.backbone
 
-    def preprocess(self, batch_np: np.ndarray, task: Task, context: Dict[str, Any], config: Any):
-        with torch.cuda.nvtx.range("Preprocess::PinMemory"):
-            tensor = torch.from_numpy(batch_np)
-            if hasattr(tensor, 'pin_memory'):
-                tensor = tensor.pin_memory()
-                
-        with torch.cuda.nvtx.range("Preprocess::ToDevice"):
-            tensor = tensor.to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float() / 255.0
-            tensor = (tensor - self.norm_mean) / self.norm_std
+    def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
+        if isinstance(batch_data, torch.Tensor):
+            with torch.cuda.nvtx.range("Preprocess::ToDevice"):
+                tensor = batch_data.to(device=self.device, non_blocking=True)
+                if tensor.ndim != 4:
+                    raise ValueError(f"Expected 4D tensor input, got {tensor.shape}")
+                if tensor.shape[1] != 3:
+                    if tensor.shape[-1] == 3:
+                        tensor = tensor.permute(0, 3, 1, 2)
+                    else:
+                        raise ValueError(f"Expected channel dimension of size 3, got {tensor.shape}")
+                tensor = tensor.float()
+                if batch_data.dtype == torch.uint8:
+                    tensor = tensor / 255.0
+                tensor = (tensor - self.norm_mean) / self.norm_std
+        else:
+            with torch.cuda.nvtx.range("Preprocess::PinMemory"):
+                tensor = torch.from_numpy(batch_data)
+                if hasattr(tensor, 'pin_memory'):
+                    tensor = tensor.pin_memory()
+                    
+            with torch.cuda.nvtx.range("Preprocess::ToDevice"):
+                tensor = tensor.to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float() / 255.0
+                tensor = (tensor - self.norm_mean) / self.norm_std
             
         with torch.cuda.nvtx.range("Preprocess::Slicing"):
             idx = context.get('active_indices')
