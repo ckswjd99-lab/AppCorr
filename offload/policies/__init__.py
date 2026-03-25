@@ -1,5 +1,8 @@
+from typing import Optional
+
+from offload.common.protocol import ExperimentConfig
 from .interface import ISchedulingPolicy, ITransmissionPolicy
-from .scheduling import BatchCountBasedPolicy, GroupTriggerPolicy, GroupTriggerEarlyExitPolicy, DynamicGroupTriggerPolicy, DynamicGroupTriggerEarlyExitPolicy
+from .scheduling import BatchCountBasedPolicy, GroupTriggerPolicy, DynamicGroupTriggerPolicy
 from .transmission import (
     RawTransmissionPolicy, 
     ZlibTransmissionPolicy, 
@@ -12,9 +15,7 @@ from .transmission import (
 SCHEDULER_REGISTRY = {
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
-    "GroupTriggerEarlyExit": GroupTriggerEarlyExitPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
-    "DynamicGroupTriggerEarlyExit": DynamicGroupTriggerEarlyExitPolicy,
 }
 
 TRANSMISSION_REGISTRY = {
@@ -26,7 +27,13 @@ TRANSMISSION_REGISTRY = {
 }
 
 def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:
-    return SCHEDULER_REGISTRY.get(name, BatchCountBasedPolicy)(config=config)
+    policy_cls = SCHEDULER_REGISTRY.get(name)
+    if policy_cls is None:
+        raise ValueError(f"Unknown scheduler policy: {name}")
+    return policy_cls(config=config)
 
 def get_transmission(name: str) -> ITransmissionPolicy:
-    return TRANSMISSION_REGISTRY.get(name, RawTransmissionPolicy)()
+    policy_cls = TRANSMISSION_REGISTRY.get(name)
+    if policy_cls is None:
+        raise ValueError(f"Unknown transmission policy: {name}")
+    return policy_cls()
