@@ -8,6 +8,7 @@ setup(
     install_requires=[
         "numpy",
         "torch",
-        "triton"
+        "triton",
+        "realesrgan",
     ],
 )

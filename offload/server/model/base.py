@@ -14,8 +14,8 @@ class ModelExecutor(ABC):
         pass
 
     @abstractmethod
-    def preprocess(self, batch_np: np.ndarray, task: Task, context: Dict[str, Any], config: Any):
-        """Handles OpType.LOAD_INPUT logic (decoding done by listener, normalization here)"""
+    def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
+        """Handles OpType.LOAD_INPUT logic for decoded numpy batches or precomputed tensors."""
         pass
 
     @abstractmethod

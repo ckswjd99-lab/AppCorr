@@ -33,3 +33,7 @@ class ITransmissionPolicy(ABC):
     def decode(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
         """Reconstruct image from patches."""
         pass
+
+    def decode_lowres(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray | None:
+        """Optionally reconstruct the native low-resolution base image."""
+        return None

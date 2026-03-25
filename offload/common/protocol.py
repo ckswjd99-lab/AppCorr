@@ -39,7 +39,20 @@ class ExperimentConfig:
         return {
             key: value
             for key, value in self.scheduler_kwargs.items()
-            if key != 'early_exit'
+            if key in {'metric', 'threshold'}
+        }
+
+    def lowres_sr_enabled(self) -> bool:
+        return bool(self.scheduler_kwargs.get('lowres_sr', False))
+
+    def get_lowres_sr_config(self) -> Dict[str, Any]:
+        return {
+            'model': self.scheduler_kwargs.get('lowres_sr_model', 'realesrgan_x4plus'),
+            'dtype': self.scheduler_kwargs.get('lowres_sr_dtype', 'fp16'),
+            'weights_dir': self.scheduler_kwargs.get('lowres_sr_weights_dir', '~/cjpark/weights/realesrgan'),
+            'tile': self.scheduler_kwargs.get('lowres_sr_tile', 0),
+            'tile_pad': self.scheduler_kwargs.get('lowres_sr_tile_pad', 10),
+            'pre_pad': self.scheduler_kwargs.get('lowres_sr_pre_pad', 0),
         }
 
 @dataclass

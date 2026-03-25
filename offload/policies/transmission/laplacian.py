@@ -54,6 +54,26 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
         return final_images
 
+    def decode_lowres(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
+        B = config.batch_size
+        H, W, C = config.image_shape
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
+        base_lvl = levels[0]
+        base_h = H // (2 ** base_lvl)
+        base_w = W // (2 ** base_lvl)
+
+        lowres_images = np.zeros((B, base_h, base_w, C), dtype=np.uint8)
+        base_patches_per_batch = {b: [] for b in range(B)}
+        for patch in patches:
+            if patch.res_level == base_lvl:
+                base_patches_per_batch[patch.image_idx].append(patch)
+
+        for b_idx, batch_patches in base_patches_per_batch.items():
+            for patch in batch_patches:
+                self._place_patch(lowres_images[b_idx], patch, config, np.uint8)
+
+        return lowres_images
+
     # --- Helpers for Parallel Execution ---
 
     def _iterative_upsample(self, img, start_lvl, end_lvl, H, W):

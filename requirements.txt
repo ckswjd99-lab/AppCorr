@@ -6,3 +6,4 @@ opencv-python
 fiftyone
 pycocotools
 einops
+realesrgan

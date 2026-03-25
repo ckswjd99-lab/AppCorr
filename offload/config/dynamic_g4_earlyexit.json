@@ -8,7 +8,9 @@
     "scheduler_kwargs": {
         "early_exit": true,
         "metric": "max_prob",
-        "threshold": 0.6
+        "threshold": 0.6,
+        "lowres_sr": false,
+        "lowres_sr_model": "realesrgan_x4plus"
     },
     "transmission_policy_name": "ProgressiveLaplacian",
     "transmission_kwargs": {
