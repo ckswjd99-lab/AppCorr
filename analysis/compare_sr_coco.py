@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import torch
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--weights-dir", type=str, default="~/cjpark/weights/realesrgan", help="Directory with Real-ESRGAN checkpoints.")
     parser.add_argument("--dtype", type=str, default="fp16", help="SR dtype: fp16, bf16, or fp32.")
     parser.add_argument("--device", type=str, default=None, help="Torch device, default: cuda if available else cpu.")
-    parser.add_argument("--out-dir", type=str, default=None, help="Output directory. Default: logs/sr_compare_<timestamp>.")
+    parser.add_argument("--out-dir", type=str, default=None, help="Output directory. Default: logs/analysis/sr_compare_<timestamp>.")
     return parser.parse_args()
 
 
@@ -32,7 +32,7 @@ def resolve_output_dir(out_dir: str | None) -> Path:
         path = Path(out_dir).expanduser()
     else:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = Path("logs") / f"sr_compare_{stamp}"
+        path = Path("logs") / "analysis" / f"sr_compare_{stamp}"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

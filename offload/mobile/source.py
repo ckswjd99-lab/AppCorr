@@ -86,7 +86,7 @@ class SourceModule(multiprocessing.Process):
             self.config.exp_id = f"{self.config.exp_id}_{now_str}"
 
         # Setup Logging
-        log_dir = os.path.join("logs", self.config.exp_id)
+        log_dir = os.path.join("logs", "offload", self.config.exp_id)
         os.makedirs(log_dir, exist_ok=True)
         events_log_path = os.path.join(log_dir, "events.jsonl")
         summary_log_path = os.path.join(log_dir, "summary.json")
