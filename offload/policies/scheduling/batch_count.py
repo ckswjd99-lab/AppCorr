@@ -11,7 +11,8 @@ class BatchCountBasedPolicy(ISchedulingPolicy):
         self, 
         buffer: List[Patch], 
         config: ExperimentConfig, 
-        task_id_gen: Any
+        task_id_gen: Any,
+        **kwargs
     ) -> Optional[Task]:
         
         # Calculate dynamic patch count based on transmission policy

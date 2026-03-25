@@ -28,9 +28,19 @@ class ExperimentConfig:
     transmission_policy_name: str = "Raw"
     
     # Dynamic arguments
+    scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
     appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
-    early_exit_kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def early_exit_enabled(self) -> bool:
+        return bool(self.scheduler_kwargs.get('early_exit', False))
+
+    def get_early_exit_config(self) -> Dict[str, Any]:
+        return {
+            key: value
+            for key, value in self.scheduler_kwargs.items()
+            if key != 'early_exit'
+        }
 
 @dataclass
 class Patch:

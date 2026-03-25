@@ -312,8 +312,9 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         if 'output' not in context: return {}
 
         # Get Criteria
-        metric = config.early_exit_kwargs.get('metric', 'max_prob')
-        threshold = config.early_exit_kwargs.get('threshold', 0.9)
+        early_exit_config = config.get_early_exit_config()
+        metric = early_exit_config.get('metric', 'max_prob')
+        threshold = early_exit_config.get('threshold', 0.9)
         
         output_logits = context['output']
         probs = torch.softmax(output_logits, dim=1)

@@ -16,7 +16,8 @@ class GroupTriggerPolicy(ISchedulingPolicy):
         self, 
         buffer: List[Patch], 
         config: ExperimentConfig, 
-        task_id_gen: Any
+        task_id_gen: Any,
+        **kwargs
     ) -> Optional[Task]:
         
         if not buffer:
@@ -54,6 +55,7 @@ class GroupTriggerPolicy(ISchedulingPolicy):
     def _get_pipeline_instructions(self, group_id: int, config: ExperimentConfig) -> List[Instruction]:
         total_layers = config.transmission_kwargs.get('total_layers', 40)
         num_res_groups = config.transmission_kwargs.get('num_groups', 4)
+        early_exit = config.early_exit_enabled()
         
         chunk_size = total_layers // num_res_groups
         instructions = [Instruction(OpType.LOAD_INPUT), Instruction(OpType.PREPARE_TOKENS)]
@@ -76,6 +78,10 @@ class GroupTriggerPolicy(ISchedulingPolicy):
                     'layers': (current_chunk_start, current_chunk_end)
                 })
             )
+
+            if early_exit:
+                instructions.append(Instruction(OpType.HEAD_INFERENCE))
+                instructions.append(Instruction(OpType.DECIDE_EXIT))
 
         else:
             # Final Phase: Correct entire model & Inference

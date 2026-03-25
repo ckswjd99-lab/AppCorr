@@ -15,7 +15,10 @@ class DynamicGroupTriggerPolicy(ISchedulingPolicy):
         self.ahead_layers = 2  # Proactive approx depth
         
         if config:
-            self.ahead_layers = config.transmission_kwargs.get("ahead_layers", self.ahead_layers)
+            self.ahead_layers = config.scheduler_kwargs.get(
+                "ahead_layers",
+                config.transmission_kwargs.get("ahead_layers", self.ahead_layers)
+            )
 
     def decide(
         self, 
@@ -71,7 +74,9 @@ class DynamicGroupTriggerPolicy(ISchedulingPolicy):
                                 )
                                 self.latest_approx_layer_queued += 1
                     
-                    self._append_extra_decide_instructions(instructions)
+                    if config.early_exit_enabled():
+                        instructions.append(Instruction(OpType.HEAD_INFERENCE))
+                        instructions.append(Instruction(OpType.DECIDE_EXIT))
                 else:
                     # Final Phase:
                     # 1. Correct up to what we approximated
@@ -137,12 +142,3 @@ class DynamicGroupTriggerPolicy(ISchedulingPolicy):
                         instructions=instructions
                     )
         return None
-
-    def _append_extra_decide_instructions(self, instructions: List[Instruction]):
-        """Hook for subclasses to add extra instructions like early exit checks."""
-        pass
-
-class DynamicGroupTriggerEarlyExitPolicy(DynamicGroupTriggerPolicy):
-    def _append_extra_decide_instructions(self, instructions: List[Instruction]):
-        instructions.append(Instruction(OpType.HEAD_INFERENCE))
-        instructions.append(Instruction(OpType.DECIDE_EXIT))
