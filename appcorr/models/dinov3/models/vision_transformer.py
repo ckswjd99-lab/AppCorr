@@ -246,6 +246,8 @@ class DinoVisionTransformer(nn.Module):
         self.appcorr_group = 0
         self.appcorr_grouping_strategy = "uniform"
         self.appcorr_cls_alive_ratio = 0.2
+        self.appcorr_attn_col_alive_ratio = 1.0
+        self.appcorr_method = "partial_token"
 
         self.appcorr_debug = False
     
@@ -259,6 +261,8 @@ class DinoVisionTransformer(nn.Module):
         num_groups: int | None = None,
         group_strategy: str | None = None,
         cls_alive_ratio: float | None = None,
+        attn_col_alive_ratio: float | None = None,
+        method: str | None = None,
         debug: bool | None = None,
     ):
         if enabled is not None: self.appcorr_enabled = enabled
@@ -269,7 +273,13 @@ class DinoVisionTransformer(nn.Module):
         if num_groups is not None: self.appcorr_group = num_groups
         if group_strategy is not None: self.appcorr_grouping_strategy = group_strategy
         if cls_alive_ratio is not None: self.appcorr_cls_alive_ratio = cls_alive_ratio
+        if attn_col_alive_ratio is not None: self.appcorr_attn_col_alive_ratio = attn_col_alive_ratio
+        if method is not None: self.appcorr_method = method
         if debug is not None: self.appcorr_debug = debug
+
+        for blk in self.blocks:
+            if hasattr(blk, "set_appcorr_method"):
+                blk.set_appcorr_method(method=self.appcorr_method)
 
 
     def init_weights(self):
@@ -379,6 +389,13 @@ class DinoVisionTransformer(nn.Module):
 
         # Run through transformer blocks
         cache_feature = {}
+        attn_cache_candidates = {}
+        for (op_type, level, layers, group_idx) in self.appcorr_plan:
+            if op_type != "C":
+                continue
+            dmask = (x_groups[level] == group_idx)
+            dmask[:, :num_pretokens] = True
+            attn_cache_candidates[(level, group_idx)] = torch.where(dmask)[1].view(B, -1)
 
         x_feature = x_pyramid[0]
         for (op_type, level, layers, group_idx) in self.appcorr_plan:
@@ -390,6 +407,8 @@ class DinoVisionTransformer(nn.Module):
                         rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
                         x_feature, cache_feature = blk.approx(
                             x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}",
+                            attn_cache_candidates=attn_cache_candidates if self.appcorr_method == "partial_channel" else None,
+                            attn_col_alive_ratio=self.appcorr_attn_col_alive_ratio,
                             debug=self.appcorr_debug
                         )
 
@@ -410,6 +429,8 @@ class DinoVisionTransformer(nn.Module):
                         x_temp, cache_feature = blk.correct(
                             x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}",
                             cls_alive_ratio=self.appcorr_cls_alive_ratio,
+                            attn_col_alive_ratio=self.appcorr_attn_col_alive_ratio,
+                            attn_cache_key=(level, group_idx),
                             debug=self.appcorr_debug
                         )
 

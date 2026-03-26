@@ -101,3 +101,7 @@ class InferenceResult:
     timestamp: float
     output: Any
     server_events: List[Dict[str, Any]] = field(default_factory=list)
+    cache_size_bytes: int = 0
+    cache_breakdown_bytes: Dict[str, int] = field(default_factory=dict)
+    attn_prob_mass_used: float = 0.0
+    attn_prob_mass_full: float = 0.0

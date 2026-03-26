@@ -4,6 +4,7 @@ import numpy as np
 from offload.common import Task
 from .base import ModelExecutor
 from .utils import load_weight_mmap
+from appcorr.models.dinov3.models.vision_transformer import create_group_index
 
 class DINOv3ClassifierExecutor(ModelExecutor):
     def __init__(self, device: torch.device):
@@ -152,26 +153,44 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                     group_map[b_t, s_t] = g_t
                     
         with torch.cuda.nvtx.range("Preprocess::Dindices"):
-            # Update Cached Dindices for involved groups
-            if b_list: # Check if we had any updates
-                 involved_groups = set(g_list)
-                 num_pretokens = 1 + self.model.backbone.n_storage_tokens
-                 B = group_map.shape[0]
-                 
-                 for gid in involved_groups:
-                      mask = (g_t == gid)
-                      if not mask.any(): continue
-                      try:
-                          # Directly use the known spatial indices for this group from s_t (and b_t if needed)
-                          # Since s_t is the list of spatial indices for patches of this group
-                          spatial_indices = s_t[mask].view(B, -1)
-                      except RuntimeError:
-                          print(f"!!! [Executor] Non-uniform group {gid} size detected. Fallback skip.")
-                          continue
+            num_pretokens = 1 + self.model.backbone.n_storage_tokens
+            B = group_map.shape[0]
+            appcorr_method = getattr(self.model.backbone, 'appcorr_method', None)
+            grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
+            num_groups = config.transmission_kwargs.get('num_groups', 4)
 
-                      patch_indices = spatial_indices + num_pretokens
-                      pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
-                      context['cached_dindices'][gid] = torch.cat([pre_indices, patch_indices], dim=1)
+            if appcorr_method == 'partial_channel' and grouping_strategy in {'grid', 'uniform', 'geometric'}:
+                num_tokens = group_map.shape[1]
+                group_idx = create_group_index(
+                    num_tokens,
+                    num_groups,
+                    grouping_strategy,
+                    device=self.device,
+                )
+                if group_idx.ndim == 1:
+                    group_idx = group_idx.unsqueeze(0).expand(B, -1)
+
+                pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
+                for gid in range(1, num_groups + 1):
+                    spatial_indices = torch.where(group_idx == gid)[1].view(B, -1)
+                    patch_indices = spatial_indices + num_pretokens
+                    context['cached_dindices'][gid] = torch.cat([pre_indices, patch_indices], dim=1)
+
+            elif b_list:  # Fallback for payload-dependent grouping.
+                involved_groups = set(g_list)
+                for gid in involved_groups:
+                    mask = (g_t == gid)
+                    if not mask.any():
+                        continue
+                    try:
+                        spatial_indices = s_t[mask].view(B, -1)
+                    except RuntimeError:
+                        print(f"!!! [Executor] Non-uniform group {gid} size detected. Fallback skip.")
+                        continue
+
+                    patch_indices = spatial_indices + num_pretokens
+                    pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
+                    context['cached_dindices'][gid] = torch.cat([pre_indices, patch_indices], dim=1)
     
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
@@ -215,6 +234,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             blk = self.model.backbone.blocks[lidx]
             x_feature, cache = blk.approx(
                 x_feature, rope_sincos, cache, tag=f"layer{lidx}",
+                attn_cache_candidates=context.get('cached_dindices') if getattr(self.model.backbone, 'appcorr_method', None) == 'partial_channel' else None,
+                attn_col_alive_ratio=getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0),
                 debug=False
             )
         
@@ -259,6 +280,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         x_temp = context.get('input_tokens')
         
         alive_ratio = getattr(self.model.backbone, 'appcorr_cls_alive_ratio', 0.2)
+        attn_col_alive_ratio = getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0)
         
         # dindice must be passed to correct()
         if 'dindice' not in locals(): 
@@ -269,6 +291,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             x_temp, cache = blk.correct(
                 x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
                 cls_alive_ratio=alive_ratio,
+                attn_col_alive_ratio=attn_col_alive_ratio,
+                attn_cache_key=group_id,
                 debug=False
             )
         
@@ -410,13 +434,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         if 'cache_feature' in context:
             cache = context['cache_feature']
             for k in list(cache.keys()):
-                v = cache[k]
-                if isinstance(v, tuple):
-                    new_val = tuple(x[keep_mask] if isinstance(x, torch.Tensor) else x for x in v)
-                    cache[k] = new_val
-                elif isinstance(v, torch.Tensor):
-                    cache[k] = v[keep_mask]
-                del v
+                cache[k] = self._slice_cache_value(cache[k], keep_mask)
                 
         # Clear derived structures
         if 'cached_dindices' in context:
@@ -425,3 +443,22 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         # Output (Logits)
         if 'output' in context:
             context['output'] = context['output'][keep_mask]
+
+    def _slice_cache_value(self, value, keep_mask):
+        if isinstance(value, torch.Tensor):
+            if value.ndim > 0 and value.shape[0] == keep_mask.shape[0]:
+                return value[keep_mask]
+            if value.ndim > 1 and value.shape[1] == keep_mask.shape[0]:
+                return value[:, keep_mask]
+            return value
+
+        if isinstance(value, tuple):
+            return tuple(self._slice_cache_value(v, keep_mask) for v in value)
+
+        if isinstance(value, list):
+            return [self._slice_cache_value(v, keep_mask) for v in value]
+
+        if isinstance(value, dict):
+            return {k: self._slice_cache_value(v, keep_mask) for k, v in value.items()}
+
+        return value
