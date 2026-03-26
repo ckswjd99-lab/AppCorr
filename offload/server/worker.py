@@ -3,6 +3,7 @@ import time
 import torch
 import numpy as np
 import traceback
+import re
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 import threading
@@ -264,8 +265,61 @@ class WorkerModule(multiprocessing.Process):
         """Called by Reaper Thread after GPU is done and all events are logged."""
         server_events = context.get('events', [])
         preds = context.get('_pending_preds', [])
-        result = InferenceResult(task.task_id, time.time(), preds, server_events)
+        cache_feature = context.get('cache_feature')
+        cache_size_bytes = self._estimate_cache_size_bytes(cache_feature)
+        cache_breakdown_bytes = self._estimate_cache_breakdown_bytes(cache_feature)
+        attn_prob_mass_used = 0.0
+        attn_prob_mass_full = 0.0
+        if isinstance(cache_feature, dict):
+            attn_prob_mass_used = float(cache_feature.get('_attn_prob_mass_used_total', 0.0))
+            attn_prob_mass_full = float(cache_feature.get('_attn_prob_mass_full_total', 0.0))
+        result = InferenceResult(
+            task.task_id,
+            time.time(),
+            preds,
+            server_events,
+            cache_size_bytes=cache_size_bytes,
+            cache_breakdown_bytes=cache_breakdown_bytes,
+            attn_prob_mass_used=attn_prob_mass_used,
+            attn_prob_mass_full=attn_prob_mass_full,
+        )
         self.output_queue.put(result)
+
+    def _estimate_cache_size_bytes(self, obj: Any, seen: Optional[set[int]] = None) -> int:
+        if obj is None:
+            return 0
+        if seen is None:
+            seen = set()
+
+        obj_id = id(obj)
+        if obj_id in seen:
+            return 0
+        seen.add(obj_id)
+
+        if isinstance(obj, torch.Tensor):
+            return obj.numel() * obj.element_size()
+        if isinstance(obj, dict):
+            return sum(self._estimate_cache_size_bytes(v, seen) for v in obj.values())
+        if isinstance(obj, (list, tuple, set)):
+            return sum(self._estimate_cache_size_bytes(v, seen) for v in obj)
+        return 0
+
+    def _estimate_cache_breakdown_bytes(self, cache_feature: Any) -> Dict[str, int]:
+        if not isinstance(cache_feature, dict):
+            return {}
+
+        breakdown: Dict[str, int] = {}
+        seen: set[int] = set()
+        layer_prefix = re.compile(r"^layer\d+_")
+
+        for key, value in cache_feature.items():
+            normalized_key = layer_prefix.sub("", key) if isinstance(key, str) else str(key)
+            size_bytes = self._estimate_cache_size_bytes(value, seen)
+            if size_bytes == 0:
+                continue
+            breakdown[normalized_key] = breakdown.get(normalized_key, 0) + size_bytes
+
+        return dict(sorted(breakdown.items(), key=lambda item: item[1], reverse=True))
 
     # ------------------------------------------------------------------ #
     #  Model Loading                                                       #

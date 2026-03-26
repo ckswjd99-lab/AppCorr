@@ -106,6 +106,11 @@ class SourceModule(multiprocessing.Process):
         # Initialize metrics
         total_bytes = 0 
         total_latency = 0.0 
+        total_cache_size_bytes = 0
+        max_cache_size_bytes = 0
+        total_attn_prob_mass_used = 0.0
+        total_attn_prob_mass_full = 0.0
+        cache_breakdown_accumulator = {}
         
         # Track event statistics
         event_stats_accumulator = {}
@@ -219,6 +224,18 @@ class SourceModule(multiprocessing.Process):
             
             latency = t_result_recv - t_send_start # End-to-End approximation
             total_latency += latency
+            cache_size_bytes = getattr(result, 'cache_size_bytes', 0)
+            cache_breakdown_bytes = getattr(result, 'cache_breakdown_bytes', {})
+            attn_prob_mass_used = getattr(result, 'attn_prob_mass_used', 0.0)
+            attn_prob_mass_full = getattr(result, 'attn_prob_mass_full', 0.0)
+            total_cache_size_bytes += cache_size_bytes
+            max_cache_size_bytes = max(max_cache_size_bytes, cache_size_bytes)
+            total_attn_prob_mass_used += attn_prob_mass_used
+            total_attn_prob_mass_full += attn_prob_mass_full
+            for key, value in cache_breakdown_bytes.items():
+                stats = cache_breakdown_accumulator.setdefault(key, {'sum': 0, 'max': 0})
+                stats['sum'] += value
+                stats['max'] = max(stats['max'], value)
             
             batch_metrics = self.dataset_loader.evaluate_batch(valid_preds, valid_labels)
 
@@ -227,6 +244,10 @@ class SourceModule(multiprocessing.Process):
                 'req_id': batch_idx,
                 'metrics': batch_metrics,
                 'bytes': batch_bytes,
+                'cache_size_bytes': cache_size_bytes,
+                'cache_breakdown_bytes': cache_breakdown_bytes,
+                'attn_prob_mass_used': attn_prob_mass_used,
+                'attn_prob_mass_full': attn_prob_mass_full,
                 'group_stats': group_stats,
                 'events': all_events,
                 'labels': valid_labels
@@ -240,8 +261,8 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            # if (batch_idx+1) == 10:
-            #     break # TEMP
+            if (batch_idx+1) == 40:
+                break # TEMP
 
         final_summary = self.dataset_loader.get_summary()
         print(f"[Source] Final Summary: {final_summary}")
@@ -264,6 +285,44 @@ class SourceModule(multiprocessing.Process):
             }
             print(f"{etype:<25} | {avg:<8.2f} | {stats['min']:<8.2f} | {stats['max']:<8.2f} | {stats['count']:<6}")
         print("=" * 65 + "\n")
+
+        avg_cache_size_bytes = total_cache_size_bytes / (batch_idx + 1)
+        avg_attn_prob_coverage_pct = (
+            100.0 * total_attn_prob_mass_used / total_attn_prob_mass_full
+            if total_attn_prob_mass_full > 0 else 0.0
+        )
+        print("=== Cache Usage ===")
+        print(f"Avg cache size per offload: {avg_cache_size_bytes / (1024 ** 2):.2f} MB")
+        print(f"Max cache size per offload: {max_cache_size_bytes / (1024 ** 2):.2f} MB")
+        if cache_breakdown_accumulator:
+            print("Cache breakdown by property:")
+            sorted_cache_breakdown = sorted(
+                cache_breakdown_accumulator.items(),
+                key=lambda item: item[1]['sum'],
+                reverse=True,
+            )
+            for key, stats in sorted_cache_breakdown:
+                avg_value = stats['sum'] / (batch_idx + 1)
+                print(
+                    f"{key:<25} | Avg {avg_value / (1024 ** 2):>7.2f} MB"
+                    f" | Max {stats['max'] / (1024 ** 2):>7.2f} MB"
+                )
+        print("")
+        print("=== Attention Stats ===")
+        print(f"Avg attention mass covered during V correction: {avg_attn_prob_coverage_pct:.2f}%")
+        print("")
+
+        cache_breakdown_summary = {
+            key: {
+                'avg_bytes': stats['sum'] / (batch_idx + 1),
+                'max_bytes': stats['max'],
+            }
+            for key, stats in sorted(
+                cache_breakdown_accumulator.items(),
+                key=lambda item: item[1]['sum'],
+                reverse=True,
+            )
+        }
         
         # Write Summary
         summary = {
@@ -271,6 +330,10 @@ class SourceModule(multiprocessing.Process):
             'dataset_summary': final_summary,
             'avg_bytes_per_sample': total_bytes / final_summary.get('total_samples', 1),
             'avg_latency_per_batch': total_latency / (batch_idx + 1),
+            'avg_cache_size_bytes_per_offload': avg_cache_size_bytes,
+            'max_cache_size_bytes_per_offload': max_cache_size_bytes,
+            'avg_attn_prob_coverage_pct': avg_attn_prob_coverage_pct,
+            'cache_breakdown_bytes_per_offload': cache_breakdown_summary,
             'time_offset_ms': time_offset * 1000,
             'latency_breakdown': latency_breakdown,
             'config': asdict(self.config)

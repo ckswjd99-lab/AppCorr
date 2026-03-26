@@ -3,7 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Dict, Tuple
 
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -77,3 +77,20 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         output = self.w3(hidden)
 
         return output
+    
+    def approx_partial_channel(self, x: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+        x1 = self.w1(x)
+        x2 = self.w2(x)
+        hidden = F.silu(x1) * x2
+        output = self.w3(hidden)
+
+        return output, cache_feature
+    
+    def correct_partial_channel(self, x: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+        x1 = self.w1(x)
+        x2 = self.w2(x)
+        hidden = F.silu(x1) * x2
+        output = self.w3(hidden)
+
+        return output, cache_feature
+

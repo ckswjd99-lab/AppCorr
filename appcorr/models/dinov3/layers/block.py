@@ -3,7 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
-from typing import Callable, List, Optional, Tuple, Dict
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -12,7 +12,7 @@ from ..utils import cat_keep_shapes, uncat_with_shapes
 
 from ._triton_kernels import fused_layerscale_add
 from .attention import CausalSelfAttention, SelfAttention
-from .ffn_layers import Mlp
+from .ffn_layers import Mlp, SwiGLUFFN
 from .layer_scale import LayerScale  # , DropPath
 
 from ..utils.hier_token import HierarchicalToken
@@ -37,14 +37,14 @@ class SelfAttentionBlock(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         attn_class: Callable[..., nn.Module] = SelfAttention,
-        ffn_layer: Callable[..., nn.Module] = Mlp,
+        ffn_layer: Callable[..., nn.Module] = SwiGLUFFN,
         mask_k_bias: bool = False,
         device=None,
     ) -> None:
         super().__init__()
         
         self.norm1 = norm_layer(dim)
-        self.attn = attn_class(
+        self.attn: SelfAttention = attn_class(
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -58,7 +58,7 @@ class SelfAttentionBlock(nn.Module):
 
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * ffn_ratio)
-        self.mlp = ffn_layer(
+        self.mlp: SwiGLUFFN = ffn_layer(
             in_features=dim,
             hidden_features=mlp_hidden_dim,
             act_layer=act_layer,
@@ -69,6 +69,13 @@ class SelfAttentionBlock(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
 
         self.sample_drop_ratio = drop_path
+        self.appcorr_method = "partial_token"
+
+    def set_appcorr_method(self, method: str | None = None) -> None:
+        if method is not None:
+            self.appcorr_method = method
+        if hasattr(self.attn, "set_appcorr_method"):
+            self.attn.set_appcorr_method(method=method)
 
     @staticmethod
     def _maybe_index_rope(rope: tuple[Tensor, Tensor] | None, indices: Tensor) -> tuple[Tensor, Tensor] | None:
@@ -217,6 +224,30 @@ class SelfAttentionBlock(nn.Module):
     def approx(
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
+        if self.appcorr_method == "partial_token":
+            return self.approx_partial_token(x, rope, cache_feature, tag, **kwargs)
+        if self.appcorr_method == "partial_channel":
+            return self.approx_partial_channel(x, rope, cache_feature, tag, **kwargs)
+        raise ValueError(
+            f"Unknown SelfAttentionBlock.approx method '{self.appcorr_method}'. "
+            "Available methods: partial_channel, partial_token"
+        )
+    
+    def correct(
+            self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
+        if self.appcorr_method == "partial_token":
+            return self.correct_partial_token(x, dindice, rope, cache_feature, tag, **kwargs)
+        if self.appcorr_method == "partial_channel":
+            return self.correct_partial_channel(x, dindice, rope, cache_feature, tag, **kwargs)
+        raise ValueError(
+            f"Unknown SelfAttentionBlock.correct method '{self.appcorr_method}'. "
+            "Available methods: partial_channel, partial_token"
+        )
+
+    def approx_partial_token(
+        self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
         # check debug
         debug = kwargs.get("debug", False)
 
@@ -241,7 +272,7 @@ class SelfAttentionBlock(nn.Module):
 
         return x_ffn, cache_feature
 
-    def correct(
+    def correct_partial_token(
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         debug = kwargs.get("debug", False)
@@ -288,6 +319,85 @@ class SelfAttentionBlock(nn.Module):
 
             if debug:
                 torch.cuda.synchronize()
+
+        return x, cache_feature
+
+    def approx_partial_channel(
+        self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
+        attn_cache_candidates = kwargs.get("attn_cache_candidates")
+        attn_col_alive_ratio = kwargs.get("attn_col_alive_ratio", 1.0)
+
+        with torch.cuda.nvtx.range("approx_attn"):
+            shortcut1 = x
+            x_norm1 = self.norm1(x)
+
+            cache_feature[f"{tag}_x_norm1"] = x_norm1.detach().clone()
+
+            x_attn, cache_feature = self.attn.approx_partial_channel(
+                x_norm1,
+                rope,
+                cache_feature,
+                tag,
+                attn_cache_candidates=attn_cache_candidates,
+                attn_col_alive_ratio=attn_col_alive_ratio,
+            )
+            x_ls1 = self.ls1(x_attn)
+            
+            cache_feature[f"{tag}_x_ls1"] = x_ls1.detach().clone()
+            cache_feature[f"{tag}_blocks_out_sum"] = x_ls1.detach().clone()
+
+            x = shortcut1 + x_ls1
+
+        with torch.cuda.nvtx.range("approx_ffn"):
+            shortcut2 = x
+            x_norm2 = self.norm2(x)
+            x_mlp, cache_feature = self.mlp.approx_partial_channel(x_norm2, cache_feature, tag)
+            x_ls2 = self.ls2(x_mlp)
+            cache_feature[f"{tag}_blocks_out_sum"] += x_ls2.detach()
+            x = shortcut2 + x_ls2
+
+        return x, cache_feature
+    
+    def correct_partial_channel(
+            self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
+        B, _, C = x.shape
+        gather_idx_x = dindice.unsqueeze(-1).expand(-1, -1, C)
+        attn_col_alive_ratio = kwargs.get("attn_col_alive_ratio", 1.0)
+        attn_cache_key = kwargs.get("attn_cache_key")
+
+        with torch.cuda.nvtx.range("correct_attn"):
+            blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
+            x_base = x + blocks_out_sum.to(x.dtype)
+
+            x_sel = x.gather(1, gather_idx_x).contiguous()
+            x_norm1_sel = self.norm1(x_sel)
+            x_norm1_old = cache_feature[f"{tag}_x_norm1"]
+            x_norm1_sel_old = x_norm1_old.gather(1, gather_idx_x)
+            dx_norm1 = x_norm1_sel - x_norm1_sel_old
+
+            dx_attn, cache_feature = self.attn.correct_partial_channel(
+                dx_norm1,
+                dindice,
+                rope,
+                cache_feature,
+                tag,
+                attn_col_alive_ratio=attn_col_alive_ratio,
+                attn_cache_key=attn_cache_key,
+            )
+            dx_ls1 = self.ls1(dx_attn)
+
+            x_ls1_old = cache_feature[f"{tag}_x_ls1"]
+            x_ls1_sel_old = x_ls1_old.gather(1, gather_idx_x)
+            x_attn_sel = x_sel + x_ls1_sel_old.to(x_sel.dtype) + dx_ls1
+
+        with torch.cuda.nvtx.range("correct_ffn"):
+            x_norm2_sel = self.norm2(x_attn_sel)
+            x_mlp, cache_feature = self.mlp.correct_partial_channel(x_norm2_sel, cache_feature, tag)
+            x_ls2 = self.ls2(x_mlp)
+            x_sel_out = x_attn_sel + x_ls2
+            x = x_base.scatter(1, gather_idx_x, x_sel_out.to(x_base.dtype))
 
         return x, cache_feature
 
