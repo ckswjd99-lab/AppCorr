@@ -67,7 +67,7 @@ if __name__ == "__main__":
     parser.add_argument("--recv-port", type=int, default=39998, help="Uplink port")
     parser.add_argument("--send-port", type=int, default=39999, help="Downlink port")
     parser.add_argument("--data", type=str, default="~/data/imagenet_val", help="Path to ImageNet")
-    parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
+    parser.add_argument("--config", type=str, default="offload/config/coco_detector_sequential_test.json", help="Path to Config JSON")
     
     args = parser.parse_args()
     
