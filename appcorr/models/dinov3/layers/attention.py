@@ -148,26 +148,10 @@ class SelfAttention(nn.Module):
         }
 
     def _consume_packed_sparse_attn_cache(self, sparse_cache: Dict, attn_cache_key) -> Dict | None:
-        slot = sparse_cache["key_to_slot"].pop(attn_cache_key)
-        remaining = sparse_cache["query_count"].shape[0] - 1
-        if remaining == 0:
+        sparse_cache["key_to_slot"].pop(attn_cache_key)
+        if not sparse_cache["key_to_slot"]:
             return None
-
-        keep = torch.ones(remaining + 1, device=sparse_cache["query_count"].device, dtype=torch.bool)
-        keep[slot] = False
-
-        compact_cache = {
-            "key_to_slot": {},
-            "query_idx": sparse_cache["query_idx"][keep].contiguous(),
-            "query_count": sparse_cache["query_count"][keep].contiguous(),
-            "col_idx": sparse_cache["col_idx"][keep].contiguous() if sparse_cache["col_idx"] is not None else None,
-            "attn_prob_sel": sparse_cache["attn_prob_sel"][keep].contiguous(),
-        }
-
-        for key, old_slot in sparse_cache["key_to_slot"].items():
-            compact_cache["key_to_slot"][key] = old_slot if old_slot < slot else old_slot - 1
-
-        return compact_cache
+        return sparse_cache
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
         # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
