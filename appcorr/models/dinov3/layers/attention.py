@@ -378,6 +378,8 @@ class SelfAttention(nn.Module):
         tag: str,
         attn_col_alive_ratio: float = 1.0,
         attn_cache_key=None,
+        query_pos_idx: Tensor | None = None,
+        query_valid_mask: Tensor | None = None,
     ) -> Tuple[Tensor, dict]:
         B, num_toksel, C = dx_sel.shape
         head_dim = C // self.num_heads
@@ -397,8 +399,14 @@ class SelfAttention(nn.Module):
             raise KeyError(f"Sparse attention cache miss for key {attn_cache_key!r}")
 
         slot = sparse_cache["key_to_slot"][attn_cache_key]
-        num_query = int(sparse_cache["query_count"][slot].item())
-        attn_prob_sel = sparse_cache["attn_prob_sel"][slot, :, :, :num_query, :].to(dtype=dv_cache.dtype)
+        num_query_full = int(sparse_cache["query_count"][slot].item())
+        attn_prob_full = sparse_cache["attn_prob_sel"][slot, :, :, :num_query_full, :].to(dtype=dv_cache.dtype)  # [B,H,Qf,K]
+        if query_pos_idx is not None:
+            K = attn_prob_full.shape[-1]
+            gather_idx_q = query_pos_idx.view(B, 1, num_toksel, 1).expand(-1, self.num_heads, -1, K)
+            attn_prob_sel = attn_prob_full.gather(2, gather_idx_q).contiguous()  # [B,H,Qsel,K]
+        else:
+            attn_prob_sel = attn_prob_full[:, :, :num_toksel, :]
         col_idx = sparse_cache["col_idx"]
         if col_idx is not None:
             col_idx_sel = col_idx[slot]  # [B, K]
@@ -407,15 +415,20 @@ class SelfAttention(nn.Module):
         else:
             dv_sub = dv_cache
 
-        cache_feature["_attn_prob_mass_used_total"] = cache_feature.get("_attn_prob_mass_used_total", 0.0) + float(
-            attn_prob_sel.float().sum().item()
-        )
-        cache_feature["_attn_prob_mass_full_total"] = cache_feature.get("_attn_prob_mass_full_total", 0.0) + float(
-            B * self.num_heads * num_query
-        )
+        if query_valid_mask is not None:
+            qmask = query_valid_mask.view(B, 1, num_toksel, 1).to(dtype=attn_prob_sel.dtype)
+            attn_prob_sel = attn_prob_sel * qmask
+            valid_count = float(query_valid_mask.sum().item())
+        else:
+            valid_count = float(B * num_toksel)
+
+        cache_feature["_attn_prob_mass_used_total"] = cache_feature.get("_attn_prob_mass_used_total", 0.0) + float(attn_prob_sel.float().sum().item())
+        cache_feature["_attn_prob_mass_full_total"] = cache_feature.get("_attn_prob_mass_full_total", 0.0) + float(self.num_heads * valid_count)
 
         dattn_v = attn_prob_sel @ dv_sub    # [B, H, num_toksel, Dh]
         dattn_v = dattn_v.transpose(1, 2).reshape(B, num_toksel, C)
+        if query_valid_mask is not None:
+            dattn_v = dattn_v * query_valid_mask.unsqueeze(-1).to(dtype=dattn_v.dtype)
         
         dx = F.linear(dattn_v, self.proj.weight, bias=None)
         dx = self.proj_drop(dx)

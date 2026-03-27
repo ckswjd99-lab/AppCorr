@@ -281,6 +281,9 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         
         alive_ratio = getattr(self.model.backbone, 'appcorr_cls_alive_ratio', 0.2)
         attn_col_alive_ratio = getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0)
+        token_prune_enabled = getattr(self.model.backbone, 'appcorr_token_prune_enabled', False)
+        token_prune_threshold = getattr(self.model.backbone, 'appcorr_token_prune_threshold', 0.0)
+        token_prune_min_keep = getattr(self.model.backbone, 'appcorr_token_prune_min_keep', 1)
         
         # dindice must be passed to correct()
         if 'dindice' not in locals(): 
@@ -292,6 +295,9 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
                 cls_alive_ratio=alive_ratio,
                 attn_col_alive_ratio=attn_col_alive_ratio,
+                token_prune_enabled=token_prune_enabled,
+                token_prune_threshold=token_prune_threshold,
+                token_prune_min_keep=token_prune_min_keep,
                 attn_cache_key=group_id,
                 debug=False
             )
@@ -445,6 +451,24 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             context['output'] = context['output'][keep_mask]
 
     def _slice_cache_value(self, value, keep_mask):
+        if isinstance(value, dict):
+            sliced = {}
+            for key, item in value.items():
+                if key == 'key_to_slot':
+                    sliced[key] = item.copy()
+                elif key == 'query_count':
+                    # Packed sparse-cache metadata is indexed by group slot, not batch.
+                    sliced[key] = item
+                elif key in {'query_idx', 'col_idx', 'attn_prob_sel'} and isinstance(item, torch.Tensor):
+                    # Packed sparse attention caches use shape [G, B, ...]; slice only the batch axis.
+                    if item.ndim > 1 and item.shape[1] == keep_mask.shape[0]:
+                        sliced[key] = item[:, keep_mask].contiguous()
+                    else:
+                        sliced[key] = self._slice_cache_value(item, keep_mask)
+                else:
+                    sliced[key] = self._slice_cache_value(item, keep_mask)
+            return sliced
+
         if isinstance(value, torch.Tensor):
             if value.ndim > 0 and value.shape[0] == keep_mask.shape[0]:
                 return value[keep_mask]

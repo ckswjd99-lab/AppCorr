@@ -247,6 +247,9 @@ class DinoVisionTransformer(nn.Module):
         self.appcorr_grouping_strategy = "uniform"
         self.appcorr_cls_alive_ratio = 0.2
         self.appcorr_attn_col_alive_ratio = 1.0
+        self.appcorr_token_prune_enabled = False
+        self.appcorr_token_prune_threshold = 0.0
+        self.appcorr_token_prune_min_keep = 1
         self.appcorr_method = "partial_token"
 
         self.appcorr_debug = False
@@ -262,6 +265,9 @@ class DinoVisionTransformer(nn.Module):
         group_strategy: str | None = None,
         cls_alive_ratio: float | None = None,
         attn_col_alive_ratio: float | None = None,
+        token_prune_enabled: bool | None = None,
+        token_prune_threshold: float | None = None,
+        token_prune_min_keep: int | None = None,
         method: str | None = None,
         debug: bool | None = None,
     ):
@@ -274,6 +280,9 @@ class DinoVisionTransformer(nn.Module):
         if group_strategy is not None: self.appcorr_grouping_strategy = group_strategy
         if cls_alive_ratio is not None: self.appcorr_cls_alive_ratio = cls_alive_ratio
         if attn_col_alive_ratio is not None: self.appcorr_attn_col_alive_ratio = attn_col_alive_ratio
+        if token_prune_enabled is not None: self.appcorr_token_prune_enabled = token_prune_enabled
+        if token_prune_threshold is not None: self.appcorr_token_prune_threshold = token_prune_threshold
+        if token_prune_min_keep is not None: self.appcorr_token_prune_min_keep = token_prune_min_keep
         if method is not None: self.appcorr_method = method
         if debug is not None: self.appcorr_debug = debug
 
@@ -430,6 +439,9 @@ class DinoVisionTransformer(nn.Module):
                             x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}",
                             cls_alive_ratio=self.appcorr_cls_alive_ratio,
                             attn_col_alive_ratio=self.appcorr_attn_col_alive_ratio,
+                            token_prune_enabled=self.appcorr_token_prune_enabled,
+                            token_prune_threshold=self.appcorr_token_prune_threshold,
+                            token_prune_min_keep=self.appcorr_token_prune_min_keep,
                             attn_cache_key=(level, group_idx),
                             debug=self.appcorr_debug
                         )
