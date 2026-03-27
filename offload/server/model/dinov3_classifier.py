@@ -249,7 +249,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
 
         # Prepare Update Indices
         if 'cached_dindices' in context and group_id in context['cached_dindices']:
-            dindice = context['cached_dindices'][group_id]
+            dindice = context['cached_dindices'][group_id].to(device=self.device, non_blocking=True)
+            context['cached_dindices'][group_id] = dindice
         else:
              # Fallback recompute
              print(f"!!! [Executor] Warning: dindice cache miss for group {group_id}. Recomputing...")
@@ -263,6 +264,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                       patch_indices = spatial_indices + num_pretokens
                       pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
                       dindice = torch.cat([pre_indices, patch_indices], dim=1)
+                      dindice = dindice.to(device=self.device, non_blocking=True)
                       # Cache it
                       if 'cached_dindices' not in context: context['cached_dindices'] = {}
                       context['cached_dindices'][group_id] = dindice

@@ -399,8 +399,7 @@ class SelfAttention(nn.Module):
             raise KeyError(f"Sparse attention cache miss for key {attn_cache_key!r}")
 
         slot = sparse_cache["key_to_slot"][attn_cache_key]
-        num_query_full = int(sparse_cache["query_count"][slot].item())
-        attn_prob_full = sparse_cache["attn_prob_sel"][slot, :, :, :num_query_full, :].to(dtype=dv_cache.dtype)  # [B,H,Qf,K]
+        attn_prob_full = sparse_cache["attn_prob_sel"][slot].to(dtype=dv_cache.dtype)  # [B,H,Qmax,K]
         if query_pos_idx is not None:
             K = attn_prob_full.shape[-1]
             gather_idx_q = query_pos_idx.view(B, 1, num_toksel, 1).expand(-1, self.num_heads, -1, K)
@@ -418,12 +417,18 @@ class SelfAttention(nn.Module):
         if query_valid_mask is not None:
             qmask = query_valid_mask.view(B, 1, num_toksel, 1).to(dtype=attn_prob_sel.dtype)
             attn_prob_sel = attn_prob_sel * qmask
-            valid_count = float(query_valid_mask.sum().item())
+            valid_count = query_valid_mask.sum(dtype=torch.float32)
         else:
-            valid_count = float(B * num_toksel)
+            valid_count = dx_sel.new_tensor(B * num_toksel, dtype=torch.float32)
 
-        cache_feature["_attn_prob_mass_used_total"] = cache_feature.get("_attn_prob_mass_used_total", 0.0) + float(attn_prob_sel.float().sum().item())
-        cache_feature["_attn_prob_mass_full_total"] = cache_feature.get("_attn_prob_mass_full_total", 0.0) + float(self.num_heads * valid_count)
+        cache_feature["_attn_prob_mass_used_total"] = (
+            cache_feature.get("_attn_prob_mass_used_total", dx_sel.new_zeros((), dtype=torch.float32))
+            + attn_prob_sel.float().sum()
+        )
+        cache_feature["_attn_prob_mass_full_total"] = (
+            cache_feature.get("_attn_prob_mass_full_total", dx_sel.new_zeros((), dtype=torch.float32))
+            + valid_count * float(self.num_heads)
+        )
 
         dattn_v = attn_prob_sel @ dv_sub    # [B, H, num_toksel, Dh]
         dattn_v = dattn_v.transpose(1, 2).reshape(B, num_toksel, C)

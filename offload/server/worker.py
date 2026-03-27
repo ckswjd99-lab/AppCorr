@@ -273,10 +273,10 @@ class WorkerModule(multiprocessing.Process):
         token_prune_kept_patch = 0.0
         token_prune_full_patch = 0.0
         if isinstance(cache_feature, dict):
-            attn_prob_mass_used = float(cache_feature.get('_attn_prob_mass_used_total', 0.0))
-            attn_prob_mass_full = float(cache_feature.get('_attn_prob_mass_full_total', 0.0))
-            token_prune_kept_patch = float(cache_feature.get('_token_prune_kept_patch_total', 0.0))
-            token_prune_full_patch = float(cache_feature.get('_token_prune_full_patch_total', 0.0))
+            attn_prob_mass_used = self._as_float(cache_feature.get('_attn_prob_mass_used_total', 0.0))
+            attn_prob_mass_full = self._as_float(cache_feature.get('_attn_prob_mass_full_total', 0.0))
+            token_prune_kept_patch = self._as_float(cache_feature.get('_token_prune_kept_patch_total', 0.0))
+            token_prune_full_patch = self._as_float(cache_feature.get('_token_prune_full_patch_total', 0.0))
         result = InferenceResult(
             task.task_id,
             time.time(),
@@ -290,6 +290,12 @@ class WorkerModule(multiprocessing.Process):
             token_prune_full_patch=token_prune_full_patch,
         )
         self.output_queue.put(result)
+
+    @staticmethod
+    def _as_float(value: Any) -> float:
+        if torch.is_tensor(value):
+            return float(value.detach().cpu())
+        return float(value)
 
     def _estimate_cache_size_bytes(self, obj: Any, seen: Optional[set[int]] = None) -> int:
         if obj is None:
