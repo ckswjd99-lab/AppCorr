@@ -170,27 +170,235 @@ def fused_layerscale_add(x, x_attn, gamma):
 
 
 @triton.jit
+def _masked_residual_add_kernel(
+    out_ptr,
+    x_sel_ptr,
+    x_old_ptr,
+    dx_ptr,
+    valid_ptr,
+    stride_out_b, stride_out_m, stride_out_c,
+    stride_xsel_b, stride_xsel_m, stride_xsel_c,
+    stride_xold_b, stride_xold_m, stride_xold_c,
+    stride_dx_b, stride_dx_m, stride_dx_c,
+    stride_valid_b, stride_valid_m,
+    num_tokens_sel,
+    dim_c,
+    BLOCK_C: tl.constexpr,
+):
+    pid_b = tl.program_id(0)
+    pid_m = tl.program_id(1)
+    pid_c = tl.program_id(2)
+
+    if pid_m >= num_tokens_sel:
+        return
+
+    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    c_mask = offs_c < dim_c
+
+    x_sel = tl.load(
+        x_sel_ptr + pid_b * stride_xsel_b + pid_m * stride_xsel_m + offs_c * stride_xsel_c,
+        mask=c_mask,
+    )
+    x_old = tl.load(
+        x_old_ptr + pid_b * stride_xold_b + pid_m * stride_xold_m + offs_c * stride_xold_c,
+        mask=c_mask,
+    )
+    dx = tl.load(
+        dx_ptr + pid_b * stride_dx_b + pid_m * stride_dx_m + offs_c * stride_dx_c,
+        mask=c_mask,
+    )
+    is_valid = tl.load(valid_ptr + pid_b * stride_valid_b + pid_m * stride_valid_m)
+    dx = tl.where(is_valid != 0, dx, 0.0)
+    out = x_sel + x_old + dx
+    tl.store(
+        out_ptr + pid_b * stride_out_b + pid_m * stride_out_m + offs_c * stride_out_c,
+        out,
+        mask=c_mask,
+    )
+
+
+def masked_residual_add_triton(
+    x_sel: torch.Tensor,
+    x_old: torch.Tensor,
+    dx: torch.Tensor,
+    query_valid_mask: torch.Tensor,
+) -> torch.Tensor:
+    if (
+        not x_sel.is_cuda
+        or not x_old.is_cuda
+        or not dx.is_cuda
+        or not query_valid_mask.is_cuda
+    ):
+        valid = query_valid_mask.unsqueeze(-1).to(dtype=dx.dtype)
+        return x_sel + x_old.to(dtype=x_sel.dtype) + dx.to(dtype=x_sel.dtype) * valid
+
+    out = torch.empty_like(x_sel)
+    x_old = x_old.to(dtype=x_sel.dtype).contiguous()
+    dx = dx.to(dtype=x_sel.dtype).contiguous()
+    query_valid_mask = query_valid_mask.contiguous()
+    x_sel = x_sel.contiguous()
+
+    B, num_tokens_sel, dim_c = x_sel.shape
+    block_c = 128
+    grid = (B, num_tokens_sel, triton.cdiv(dim_c, block_c))
+
+    with torch.cuda.device(x_sel.device):
+        _masked_residual_add_kernel[grid](
+            out,
+            x_sel,
+            x_old,
+            dx,
+            query_valid_mask,
+            out.stride(0), out.stride(1), out.stride(2),
+            x_sel.stride(0), x_sel.stride(1), x_sel.stride(2),
+            x_old.stride(0), x_old.stride(1), x_old.stride(2),
+            dx.stride(0), dx.stride(1), dx.stride(2),
+            query_valid_mask.stride(0), query_valid_mask.stride(1),
+            num_tokens_sel,
+            dim_c,
+            BLOCK_C=block_c,
+        )
+
+    return out
+
+
+@triton.jit
+def _masked_token_update_kernel(
+    x_out_ptr,
+    x_attn_ptr,
+    x_delta_ptr,
+    dindice_ptr,
+    valid_ptr,
+    stride_xout_b, stride_xout_n, stride_xout_c,
+    stride_xattn_b, stride_xattn_m, stride_xattn_c,
+    stride_xdelta_b, stride_xdelta_m, stride_xdelta_c,
+    stride_dindice_b, stride_dindice_m,
+    stride_valid_b, stride_valid_m,
+    num_tokens_sel,
+    dim_c,
+    BLOCK_C: tl.constexpr,
+):
+    pid_b = tl.program_id(0)
+    pid_m = tl.program_id(1)
+    pid_c = tl.program_id(2)
+
+    if pid_m >= num_tokens_sel:
+        return
+
+    is_valid = tl.load(valid_ptr + pid_b * stride_valid_b + pid_m * stride_valid_m)
+    if is_valid == 0:
+        return
+
+    token_idx = tl.load(dindice_ptr + pid_b * stride_dindice_b + pid_m * stride_dindice_m)
+    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    c_mask = offs_c < dim_c
+
+    x_attn = tl.load(
+        x_attn_ptr + pid_b * stride_xattn_b + pid_m * stride_xattn_m + offs_c * stride_xattn_c,
+        mask=c_mask,
+    )
+    x_delta = tl.load(
+        x_delta_ptr + pid_b * stride_xdelta_b + pid_m * stride_xdelta_m + offs_c * stride_xdelta_c,
+        mask=c_mask,
+    )
+    tl.store(
+        x_out_ptr + pid_b * stride_xout_b + token_idx * stride_xout_n + offs_c * stride_xout_c,
+        x_attn + x_delta,
+        mask=c_mask,
+    )
+
+
+def masked_token_update_triton(
+    x_base: torch.Tensor,
+    dindice_sel: torch.Tensor,
+    x_attn_sel: torch.Tensor,
+    x_delta: torch.Tensor,
+    query_valid_mask: torch.Tensor,
+) -> torch.Tensor:
+    if (
+        not x_base.is_cuda
+        or not dindice_sel.is_cuda
+        or not x_attn_sel.is_cuda
+        or not x_delta.is_cuda
+        or not query_valid_mask.is_cuda
+    ):
+        x_out = x_base.clone()
+        for b in range(x_base.shape[0]):
+            valid = query_valid_mask[b]
+            if not torch.any(valid):
+                continue
+            idx = dindice_sel[b, valid]
+            x_out[b, idx] = (x_attn_sel[b, valid] + x_delta[b, valid]).to(dtype=x_out.dtype)
+        return x_out
+
+    x_out = x_base.clone()
+    dindice_sel = dindice_sel.contiguous()
+    x_attn_sel = x_attn_sel.to(dtype=x_out.dtype).contiguous()
+    x_delta = x_delta.to(dtype=x_out.dtype).contiguous()
+    query_valid_mask = query_valid_mask.contiguous()
+
+    B, num_tokens_sel, dim_c = x_attn_sel.shape
+    block_c = 128
+    grid = (B, num_tokens_sel, triton.cdiv(dim_c, block_c))
+
+    with torch.cuda.device(x_base.device):
+        _masked_token_update_kernel[grid](
+            x_out,
+            x_attn_sel,
+            x_delta,
+            dindice_sel,
+            query_valid_mask,
+            x_out.stride(0), x_out.stride(1), x_out.stride(2),
+            x_attn_sel.stride(0), x_attn_sel.stride(1), x_attn_sel.stride(2),
+            x_delta.stride(0), x_delta.stride(1), x_delta.stride(2),
+            dindice_sel.stride(0), dindice_sel.stride(1),
+            query_valid_mask.stride(0), query_valid_mask.stride(1),
+            num_tokens_sel,
+            dim_c,
+            BLOCK_C=block_c,
+        )
+
+    return x_out
+
+
+@triton.jit
 def _token_prune_select_compact_kernel(
-    scores_ptr, dindice_ptr,
+    dx_ptr, dindice_ptr,
     out_dindice_sel_ptr, out_query_pos_idx_ptr, out_query_valid_mask_ptr, out_kept_patch_count_ptr,
-    stride_scores_b, stride_scores_m,
+    stride_dx_b, stride_dx_m, stride_dx_c,
     stride_dindice_b, stride_dindice_m,
     stride_out_dindice_b, stride_out_dindice_m,
     stride_out_qpos_b, stride_out_qpos_m,
     stride_out_valid_b, stride_out_valid_m,
     stride_out_count_b,
     num_tokens_sel,
+    dim_c,
     num_pretokens,
     token_prune_threshold,
     token_prune_min_keep,
     BLOCK_M: tl.constexpr,
+    BLOCK_C: tl.constexpr,
     TOPK_MAX: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     offs = tl.arange(0, BLOCK_M)
     token_mask = offs < num_tokens_sel
 
-    scores = tl.load(scores_ptr + pid_b * stride_scores_b + offs * stride_scores_m, mask=token_mask, other=float("-inf"))
+    score_acc = tl.zeros([BLOCK_M], dtype=tl.float32)
+    for c_start in tl.range(0, dim_c, BLOCK_C):
+        offs_c = c_start + tl.arange(0, BLOCK_C)
+        c_mask = offs_c < dim_c
+        dx = tl.load(
+            dx_ptr
+            + pid_b * stride_dx_b
+            + offs[:, None] * stride_dx_m
+            + offs_c[None, :] * stride_dx_c,
+            mask=token_mask[:, None] & c_mask[None, :],
+            other=0.0,
+        )
+        score_acc += tl.sum(tl.abs(dx), axis=1)
+    scores = score_acc / dim_c
+    scores = tl.where(token_mask, scores, float("-inf"))
     dindice = tl.load(dindice_ptr + pid_b * stride_dindice_b + offs * stride_dindice_m, mask=token_mask, other=0)
 
     patch_mask = (offs >= num_pretokens) & token_mask
@@ -238,12 +446,13 @@ def _token_prune_select_compact_kernel(
 
 
 def _token_prune_select_compact_torch(
-    scores: torch.Tensor,
+    dx: torch.Tensor,
     dindice: torch.Tensor,
     num_pretokens: int,
     token_prune_threshold: float,
     token_prune_min_keep: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    scores = dx.abs().mean(dim=-1)
     B, num_tokens_sel = scores.shape
     dindice_sel = torch.zeros_like(dindice)
     query_pos_idx = torch.zeros_like(dindice)
@@ -281,35 +490,36 @@ def _token_prune_select_compact_torch(
 
 
 def token_prune_select_compact_triton(
-    scores: torch.Tensor,
+    dx: torch.Tensor,
     dindice: torch.Tensor,
     num_pretokens: int,
     token_prune_threshold: float,
     token_prune_min_keep: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    scores = scores.contiguous()
-    dindice = dindice.to(device=scores.device, dtype=torch.long, non_blocking=True).contiguous()
+    dx = dx.contiguous()
+    dindice = dindice.to(device=dx.device, dtype=torch.long, non_blocking=True).contiguous()
 
     if (
-        not scores.is_cuda
+        not dx.is_cuda
         or not dindice.is_cuda
-        or scores.ndim != 2
+        or dx.ndim != 3
         or dindice.ndim != 2
-        or scores.shape != dindice.shape
+        or dx.shape[:2] != dindice.shape
     ):
         raise RuntimeError(
-            "token_prune_select_compact_triton requires matching 2D CUDA tensors for "
-            f"`scores` and `dindice`, but got scores(shape={tuple(scores.shape)}, cuda={scores.is_cuda}) "
+            "token_prune_select_compact_triton requires CUDA tensors `dx[B, M, C]` and "
+            f"`dindice[B, M]`, but got dx(shape={tuple(dx.shape)}, cuda={dx.is_cuda}) "
             f"and dindice(shape={tuple(dindice.shape)}, cuda={dindice.is_cuda})."
         )
 
-    B, num_tokens_sel = scores.shape
+    B, num_tokens_sel, dim_c = dx.shape
     if num_tokens_sel == 0:
         empty_mask = torch.zeros_like(dindice, dtype=torch.bool)
-        empty_count = torch.zeros((B,), device=scores.device, dtype=torch.int32)
+        empty_count = torch.zeros((B,), device=dx.device, dtype=torch.int32)
         return torch.zeros_like(dindice), torch.zeros_like(dindice), empty_mask, empty_count
 
     block_m = triton.next_power_of_2(num_tokens_sel)
+    block_c = 128
     topk_max = 16
     if block_m > 128 or token_prune_min_keep > topk_max:
         raise RuntimeError(
@@ -320,24 +530,26 @@ def token_prune_select_compact_triton(
 
     dindice_sel = torch.zeros_like(dindice)
     query_pos_idx = torch.zeros_like(dindice)
-    query_valid_mask_i8 = torch.zeros((B, num_tokens_sel), device=scores.device, dtype=torch.int8)
-    kept_patch_count = torch.zeros((B,), device=scores.device, dtype=torch.int32)
+    query_valid_mask_i8 = torch.zeros((B, num_tokens_sel), device=dx.device, dtype=torch.int8)
+    kept_patch_count = torch.zeros((B,), device=dx.device, dtype=torch.int32)
 
-    with torch.cuda.device(scores.device):
+    with torch.cuda.device(dx.device):
         _token_prune_select_compact_kernel[(B,)](
-            scores, dindice,
+            dx, dindice,
             dindice_sel, query_pos_idx, query_valid_mask_i8, kept_patch_count,
-            scores.stride(0), scores.stride(1),
+            dx.stride(0), dx.stride(1), dx.stride(2),
             dindice.stride(0), dindice.stride(1),
             dindice_sel.stride(0), dindice_sel.stride(1),
             query_pos_idx.stride(0), query_pos_idx.stride(1),
             query_valid_mask_i8.stride(0), query_valid_mask_i8.stride(1),
             kept_patch_count.stride(0),
             num_tokens_sel,
+            dim_c,
             num_pretokens,
             token_prune_threshold,
             token_prune_min_keep,
             BLOCK_M=block_m,
+            BLOCK_C=block_c,
             TOPK_MAX=topk_max,
         )
 

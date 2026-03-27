@@ -10,7 +10,12 @@ from torch import Tensor, nn
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 
-from ._triton_kernels import fused_layerscale_add, token_prune_select_compact_triton
+from ._triton_kernels import (
+    fused_layerscale_add,
+    masked_residual_add_triton,
+    masked_token_update_triton,
+    token_prune_select_compact_triton,
+)
 from .attention import CausalSelfAttention, SelfAttention
 from .ffn_layers import Mlp, SwiGLUFFN
 from .layer_scale import LayerScale  # , DropPath
@@ -391,9 +396,8 @@ class SelfAttentionBlock(nn.Module):
                 num_pretokens = int(pretoken_prefix.sum().item())
 
             if token_prune_enabled and num_tokens_sel > 0:
-                scores = dx_norm1_full.abs().mean(dim=-1)  # [B, M]
                 dindice_sel, query_pos_idx, query_valid_mask, kept_patch_count = token_prune_select_compact_triton(
-                    scores,
+                    dx_norm1_full,
                     dindice,
                     num_pretokens=num_pretokens,
                     token_prune_threshold=token_prune_threshold,
@@ -416,11 +420,16 @@ class SelfAttentionBlock(nn.Module):
                 + full_patch_total
             )
 
+            if token_prune_enabled and num_tokens_sel > 0:
+                gather_idx_qpos = query_pos_idx.unsqueeze(-1).expand(-1, -1, C)
+                x_sel = x_sel_full.gather(1, gather_idx_qpos).contiguous()
+                dx_norm1 = dx_norm1_full.gather(1, gather_idx_qpos).contiguous()
+            else:
+                x_sel = x_sel_full
+                dx_norm1 = dx_norm1_full
+
+            dx_norm1 = dx_norm1 * query_valid_mask.unsqueeze(-1).to(dtype=dx_norm1.dtype)
             gather_idx_x = dindice_sel.unsqueeze(-1).expand(-1, -1, C)
-            x_sel = x.gather(1, gather_idx_x).contiguous()
-            x_norm1_sel = self.norm1(x_sel)
-            x_norm1_sel_old = x_norm1_old.gather(1, gather_idx_x)
-            dx_norm1 = (x_norm1_sel - x_norm1_sel_old) * query_valid_mask.unsqueeze(-1).to(dtype=x_norm1_sel.dtype)
 
             dx_attn, cache_feature = self.attn.correct_partial_channel(
                 dx_norm1,
@@ -433,24 +442,17 @@ class SelfAttentionBlock(nn.Module):
                 query_pos_idx=query_pos_idx,
                 query_valid_mask=query_valid_mask,
             )
-            dx_ls1 = self.ls1(dx_attn) * query_valid_mask.unsqueeze(-1).to(dtype=dx_attn.dtype)
+            dx_ls1 = self.ls1(dx_attn)
 
             x_ls1_old = cache_feature[f"{tag}_x_ls1"]
             x_ls1_sel_old = x_ls1_old.gather(1, gather_idx_x)
-            x_attn_sel = x_sel + x_ls1_sel_old.to(x_sel.dtype) + dx_ls1
+            x_attn_sel = masked_residual_add_triton(x_sel, x_ls1_sel_old, dx_ls1, query_valid_mask)
 
         with torch.cuda.nvtx.range("correct_ffn"):
             x_norm2_sel = self.norm2(x_attn_sel)
             x_mlp, cache_feature = self.mlp.correct_partial_channel(x_norm2_sel, cache_feature, tag)
-            x_ls2 = self.ls2(x_mlp) * query_valid_mask.unsqueeze(-1).to(dtype=x_mlp.dtype)
-            x_sel_out = x_attn_sel + x_ls2
-
-            x_updates = torch.where(
-                query_valid_mask.unsqueeze(-1),
-                x_sel_out.to(x_base.dtype),
-                x_base.gather(1, gather_idx_x),
-            )
-            x = x_base.scatter(1, gather_idx_x, x_updates)
+            x_ls2 = self.ls2(x_mlp)
+            x = masked_token_update_triton(x_base, dindice_sel, x_attn_sel, x_ls2, query_valid_mask)
 
         return x, cache_feature
 
