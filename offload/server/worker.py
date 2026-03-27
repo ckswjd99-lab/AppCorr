@@ -270,9 +270,13 @@ class WorkerModule(multiprocessing.Process):
         cache_breakdown_bytes = self._estimate_cache_breakdown_bytes(cache_feature)
         attn_prob_mass_used = 0.0
         attn_prob_mass_full = 0.0
+        token_prune_kept_patch = 0.0
+        token_prune_full_patch = 0.0
         if isinstance(cache_feature, dict):
             attn_prob_mass_used = float(cache_feature.get('_attn_prob_mass_used_total', 0.0))
             attn_prob_mass_full = float(cache_feature.get('_attn_prob_mass_full_total', 0.0))
+            token_prune_kept_patch = float(cache_feature.get('_token_prune_kept_patch_total', 0.0))
+            token_prune_full_patch = float(cache_feature.get('_token_prune_full_patch_total', 0.0))
         result = InferenceResult(
             task.task_id,
             time.time(),
@@ -282,6 +286,8 @@ class WorkerModule(multiprocessing.Process):
             cache_breakdown_bytes=cache_breakdown_bytes,
             attn_prob_mass_used=attn_prob_mass_used,
             attn_prob_mass_full=attn_prob_mass_full,
+            token_prune_kept_patch=token_prune_kept_patch,
+            token_prune_full_patch=token_prune_full_patch,
         )
         self.output_queue.put(result)
 

@@ -105,3 +105,5 @@ class InferenceResult:
     cache_breakdown_bytes: Dict[str, int] = field(default_factory=dict)
     attn_prob_mass_used: float = 0.0
     attn_prob_mass_full: float = 0.0
+    token_prune_kept_patch: float = 0.0
+    token_prune_full_patch: float = 0.0

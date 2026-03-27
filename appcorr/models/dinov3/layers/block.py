@@ -363,30 +363,87 @@ class SelfAttentionBlock(nn.Module):
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         B, _, C = x.shape
-        gather_idx_x = dindice.unsqueeze(-1).expand(-1, -1, C)
         attn_col_alive_ratio = kwargs.get("attn_col_alive_ratio", 1.0)
         attn_cache_key = kwargs.get("attn_cache_key")
+        token_prune_enabled = kwargs.get("token_prune_enabled", False)
+        token_prune_threshold = float(kwargs.get("token_prune_threshold", 0.0))
+        token_prune_min_keep = int(kwargs.get("token_prune_min_keep", 1))
 
         with torch.cuda.nvtx.range("correct_attn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
             x_base = x + blocks_out_sum.to(x.dtype)
 
+            x_norm1_old = cache_feature[f"{tag}_x_norm1"]
+            gather_idx_x_full = dindice.unsqueeze(-1).expand(-1, -1, C)
+            x_sel_full = x.gather(1, gather_idx_x_full).contiguous()
+            x_norm1_sel_full = self.norm1(x_sel_full)
+            x_norm1_sel_old_full = x_norm1_old.gather(1, gather_idx_x_full)
+            dx_norm1_full = x_norm1_sel_full - x_norm1_sel_old_full
+
+            # Detect shared pretoken prefix (typically CLS/storage tokens).
+            num_pretokens = 0
+            for j in range(dindice.shape[1]):
+                if torch.all(dindice[:, j] == j):
+                    num_pretokens += 1
+                else:
+                    break
+
+            if token_prune_enabled and dindice.shape[1] > 0:
+                scores = dx_norm1_full.abs().mean(dim=-1)  # [B, M]
+                selected_pos = []
+                for b in range(B):
+                    keep_prefix = torch.arange(num_pretokens, device=x.device, dtype=torch.long)
+                    patch_scores = scores[b, num_pretokens:]
+                    keep_patch = torch.where(patch_scores >= token_prune_threshold)[0] + num_pretokens
+                    if keep_patch.numel() < token_prune_min_keep and patch_scores.numel() > 0:
+                        k = min(token_prune_min_keep, patch_scores.numel())
+                        keep_patch = torch.topk(patch_scores, k=k, dim=0, largest=True).indices + num_pretokens
+                    keep_patch, _ = torch.sort(keep_patch)
+                    selected_pos.append(torch.cat([keep_prefix, keep_patch], dim=0))
+
+                maxlen = max(int(pos.shape[0]) for pos in selected_pos)
+                query_pos_idx = torch.zeros(B, maxlen, dtype=torch.long, device=x.device)
+                query_valid_mask = torch.zeros(B, maxlen, dtype=torch.bool, device=x.device)
+                for b, pos in enumerate(selected_pos):
+                    n = int(pos.shape[0])
+                    query_pos_idx[b, :n] = pos
+                    query_valid_mask[b, :n] = True
+                dindice_sel = dindice.gather(1, query_pos_idx)
+                kept_patch_total = int(
+                    sum(max(int(pos.shape[0]) - num_pretokens, 0) for pos in selected_pos)
+                )
+            else:
+                dindice_sel = dindice
+                query_pos_idx = torch.arange(dindice.shape[1], device=x.device, dtype=torch.long).unsqueeze(0).expand(B, -1)
+                query_valid_mask = torch.ones(B, dindice.shape[1], dtype=torch.bool, device=x.device)
+                kept_patch_total = int(B * max(dindice.shape[1] - num_pretokens, 0))
+
+            full_patch_total = int(B * max(dindice.shape[1] - num_pretokens, 0))
+            cache_feature["_token_prune_kept_patch_total"] = (
+                cache_feature.get("_token_prune_kept_patch_total", 0.0) + float(kept_patch_total)
+            )
+            cache_feature["_token_prune_full_patch_total"] = (
+                cache_feature.get("_token_prune_full_patch_total", 0.0) + float(full_patch_total)
+            )
+
+            gather_idx_x = dindice_sel.unsqueeze(-1).expand(-1, -1, C)
             x_sel = x.gather(1, gather_idx_x).contiguous()
             x_norm1_sel = self.norm1(x_sel)
-            x_norm1_old = cache_feature[f"{tag}_x_norm1"]
             x_norm1_sel_old = x_norm1_old.gather(1, gather_idx_x)
-            dx_norm1 = x_norm1_sel - x_norm1_sel_old
+            dx_norm1 = (x_norm1_sel - x_norm1_sel_old) * query_valid_mask.unsqueeze(-1).to(dtype=x_norm1_sel.dtype)
 
             dx_attn, cache_feature = self.attn.correct_partial_channel(
                 dx_norm1,
-                dindice,
+                dindice_sel,
                 rope,
                 cache_feature,
                 tag,
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 attn_cache_key=attn_cache_key,
+                query_pos_idx=query_pos_idx,
+                query_valid_mask=query_valid_mask,
             )
-            dx_ls1 = self.ls1(dx_attn)
+            dx_ls1 = self.ls1(dx_attn) * query_valid_mask.unsqueeze(-1).to(dtype=dx_attn.dtype)
 
             x_ls1_old = cache_feature[f"{tag}_x_ls1"]
             x_ls1_sel_old = x_ls1_old.gather(1, gather_idx_x)
@@ -395,9 +452,17 @@ class SelfAttentionBlock(nn.Module):
         with torch.cuda.nvtx.range("correct_ffn"):
             x_norm2_sel = self.norm2(x_attn_sel)
             x_mlp, cache_feature = self.mlp.correct_partial_channel(x_norm2_sel, cache_feature, tag)
-            x_ls2 = self.ls2(x_mlp)
+            x_ls2 = self.ls2(x_mlp) * query_valid_mask.unsqueeze(-1).to(dtype=x_mlp.dtype)
             x_sel_out = x_attn_sel + x_ls2
-            x = x_base.scatter(1, gather_idx_x, x_sel_out.to(x_base.dtype))
+
+            x_out = x_base.clone()
+            for b in range(B):
+                n = int(query_valid_mask[b].sum().item())
+                if n <= 0:
+                    continue
+                idx_b = dindice_sel[b, :n].unsqueeze(-1).expand(-1, C)
+                x_out[b].scatter_(0, idx_b, x_sel_out[b, :n].to(x_out.dtype))
+            x = x_out
 
         return x, cache_feature
 
