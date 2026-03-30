@@ -4,7 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Protocol, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -40,6 +40,14 @@ class LinearKMaskedBias(nn.Linear):
     def forward(self, input: Tensor) -> Tensor:
         masked_bias = self.bias * self.bias_mask.to(self.bias.dtype) if self.bias is not None else None
         return F.linear(input, self.weight, masked_bias)
+
+
+class QueryStateLike(Protocol):
+    active_batch_idx: Tensor
+    active_token_idx: Tensor
+    active_query_pos_padded: Tensor
+    active_query_mask: Tensor
+    all_valid: bool
 
 
 class SelfAttention(nn.Module):
@@ -364,32 +372,23 @@ class SelfAttention(nn.Module):
     def correct_partial_channel(
         self,
         dx_active: Tensor,
-        active_token_idx: Tensor,
         rope: Tensor,
         cache_feature: Dict,
         tag: str,
+        fixed_query_state: QueryStateLike,
         attn_col_alive_ratio: float = 1.0,
         attn_cache_key=None,
-        active_batch_idx: Tensor | None = None,
-        active_query_pos: Tensor | None = None,
-        active_query_pos_padded: Tensor | None = None,
-        active_query_mask: Tensor | None = None,
-        **kwargs
+        all_valid_queries: bool = False,
     ) -> Tuple[Tensor, dict]:
-        if (
-            active_batch_idx is None
-            or active_query_pos is None
-            or active_query_pos_padded is None
-            or active_query_mask is None
-        ):
-            raise ValueError(
-                "partial_channel correction requires active_batch_idx, active_query_pos, active_query_pos_padded, and active_query_mask"
-            )
-
+        # The block has already compacted tokens across the batch. At this point we only
+        # need to map those active updates back into the cached sparse-attention layout.
         B = cache_feature[f"{tag}_dv_cache"].shape[0]
         num_active, C = dx_active.shape
         head_dim = C // self.num_heads
-        all_valid_queries = kwargs.get("all_valid_queries", False)
+        active_batch_idx = fixed_query_state.active_batch_idx
+        active_token_idx = fixed_query_state.active_token_idx
+        active_query_pos_padded = fixed_query_state.active_query_pos_padded
+        active_query_mask = fixed_query_state.active_query_mask
 
         if num_active == 0:
             sparse_cache = cache_feature.get(f"{tag}_attn_sparse_cache")
@@ -426,6 +425,8 @@ class SelfAttention(nn.Module):
             dv_sub = dv_cache
 
         T_max = active_query_pos_padded.shape[1]
+        # When every slot is valid we can slice the packed cache directly; otherwise we
+        # gather only the valid query rows and mask padded positions back out.
         if all_valid_queries:
             attn_prob_packed = attn_prob_full[:, :, :T_max, :].contiguous()
         else:

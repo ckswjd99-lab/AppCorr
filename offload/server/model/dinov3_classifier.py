@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any, Dict
 import torch
 import numpy as np
@@ -5,6 +6,30 @@ from offload.common import Task
 from .base import ModelExecutor
 from .utils import load_weight_mmap
 from appcorr.models.dinov3.models.vision_transformer import create_group_index
+
+
+@dataclass
+class QueryState:
+    query_pos_idx: torch.Tensor
+    query_valid_mask: torch.Tensor
+    active_batch_idx: torch.Tensor
+    active_pos_idx: torch.Tensor
+    active_token_idx: torch.Tensor
+    active_query_pos: torch.Tensor
+    active_query_pos_padded: torch.Tensor
+    active_query_mask: torch.Tensor
+    all_valid: bool
+
+
+@dataclass
+class GroupCorrectionPlan:
+    full_dindice: torch.Tensor
+    pruned_dindice: torch.Tensor
+    query_state: QueryState
+    kept_patch_count: torch.Tensor
+    full_patch_count: torch.Tensor
+    kept_residual_mass: torch.Tensor
+    full_residual_mass: torch.Tensor
 
 class DINOv3ClassifierExecutor(ModelExecutor):
     def __init__(self, device: torch.device):
@@ -105,7 +130,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         dindice: torch.Tensor,
         kept_patch_count: torch.Tensor,
         num_pretokens: int,
-    ) -> Dict[str, torch.Tensor | bool]:
+    ) -> QueryState:
         B, q = dindice.shape
         device = dindice.device
         query_pos_idx = torch.arange(q, device=device, dtype=torch.long).unsqueeze(0).expand(B, -1)
@@ -120,17 +145,57 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         else:
             active_query_pos_padded = torch.empty((B, 0), device=device, dtype=torch.long)
             active_query_mask = torch.empty((B, 0), device=device, dtype=torch.bool)
-        return {
-            "query_pos_idx": query_pos_idx,
-            "query_valid_mask": query_valid_mask,
-            "active_batch_idx": active_batch_idx,
-            "active_pos_idx": active_pos_idx,
-            "active_token_idx": active_token_idx,
-            "active_query_pos": active_pos_idx,
-            "active_query_pos_padded": active_query_pos_padded,
-            "active_query_mask": active_query_mask,
-            "all_valid": bool(torch.all(valid_lengths == q).item()) if valid_lengths.numel() > 0 else True,
-        }
+        return QueryState(
+            query_pos_idx=query_pos_idx,
+            query_valid_mask=query_valid_mask,
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            active_query_pos=active_pos_idx,
+            active_query_pos_padded=active_query_pos_padded,
+            active_query_mask=active_query_mask,
+            all_valid=bool(torch.all(valid_lengths == q).item()) if valid_lengths.numel() > 0 else True,
+        )
+
+    def _build_group_plan(
+        self,
+        dindice: torch.Tensor,
+        spatial_indices: torch.Tensor,
+        patch_residual_rms: torch.Tensor | None,
+        num_pretokens: int,
+        token_prune_enabled: bool,
+        token_prune_threshold: float,
+        token_prune_min_keep: int,
+    ) -> GroupCorrectionPlan:
+        B = spatial_indices.shape[0]
+        kept_patch_count = torch.full((B,), spatial_indices.shape[1], device=self.device, dtype=torch.int32)
+        full_patch_count = kept_patch_count.clone()
+        kept_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
+        full_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
+        pruned_dindice = dindice
+        if token_prune_enabled:
+            pruned_dindice, kept_patch_count, full_patch_count, kept_residual_mass, full_residual_mass = (
+                self._apply_image_residual_token_pruning(
+                    dindice,
+                    spatial_indices,
+                    patch_residual_rms,
+                    token_prune_threshold,
+                    token_prune_min_keep,
+                )
+            )
+        return GroupCorrectionPlan(
+            full_dindice=dindice,
+            pruned_dindice=pruned_dindice,
+            query_state=self._build_fixed_query_state(pruned_dindice, kept_patch_count, num_pretokens),
+            kept_patch_count=kept_patch_count,
+            full_patch_count=full_patch_count,
+            kept_residual_mass=kept_residual_mass,
+            full_residual_mass=full_residual_mass,
+        )
+
+    @staticmethod
+    def _get_group_plans(context: Dict[str, Any]) -> Dict[int, GroupCorrectionPlan]:
+        return context.setdefault('group_plans', {})
 
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Model (MMap): {model_name}...")
@@ -213,17 +278,17 @@ class DINOv3ClassifierExecutor(ModelExecutor):
 
         # Sliced Update Handling
         with torch.cuda.nvtx.range("Preprocess::Slicing"):
+            # Early-exit may shrink the active batch. We slice the decoded image batch first so
+            # every downstream tensor uses the same compact batch indexing.
             if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
                 active_indices = context['active_indices']
                 tensor = tensor[active_indices]
             context['input_tensor'] = tensor
 
         with torch.cuda.nvtx.range("Preprocess::GroupMap"):
-            # Optimization: Vectorized dindice construction with group_map
-            if 'cached_dindices' not in context:
-                context['cached_dindices'] = {}
-            if 'cached_pruned_dindices' not in context:
-                context['cached_pruned_dindices'] = {}
+            # Group IDs arrive incrementally from the client. We keep a per-request map from
+            # patch index to transmission group so correction plans can be rebuilt after exits.
+            self._get_group_plans(context)
 
             # Initialize or Retrieve group_map: [CurrentBatch, Max_Tokens]
             if 'group_map' not in context:
@@ -272,6 +337,10 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                     group_map[b_t, s_t] = g_t
                     
         with torch.cuda.nvtx.range("Preprocess::Dindices"):
+            # Build one correction plan per group. Each plan owns:
+            # 1) the full token set for approx sparse-cache capture,
+            # 2) the pruned token set for correction,
+            # 3) the packed query metadata reused by every correction layer.
             num_pretokens = 1 + self.model.backbone.n_storage_tokens
             B = group_map.shape[0]
             appcorr_method = getattr(self.model.backbone, 'appcorr_method', None)
@@ -282,9 +351,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             token_prune_enabled = getattr(self.model.backbone, 'appcorr_token_prune_enabled', False)
             token_prune_threshold = float(getattr(self.model.backbone, 'appcorr_token_prune_threshold', 0.0))
             token_prune_min_keep = int(getattr(self.model.backbone, 'appcorr_token_prune_min_keep', 1))
-            context['cached_token_prune_stats'] = {}
-            context['cached_pruned_dindices'] = {}
-            context['cached_query_states'] = {}
+            group_plans = self._get_group_plans(context)
+            group_plans.clear()
 
             if appcorr_method == 'partial_channel' and grouping_strategy in {'grid', 'uniform', 'geometric'}:
                 num_tokens = group_map.shape[1]
@@ -302,39 +370,21 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                     spatial_indices = torch.where(group_idx == gid)[1].view(B, -1)
                     patch_indices = spatial_indices + num_pretokens
                     dindice = torch.cat([pre_indices, patch_indices], dim=1)
-                    context['cached_dindices'][gid] = dindice
-                    kept_patch_count = torch.full(
-                        (B,), spatial_indices.shape[1], device=self.device, dtype=torch.int32
-                    )
-                    full_patch_count = kept_patch_count.clone()
-                    kept_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
-                    full_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
-                    pruned_dindice = dindice
-                    if token_prune_enabled:
-                        pruned_dindice, kept_patch_count, full_patch_count, kept_residual_mass, full_residual_mass = self._apply_image_residual_token_pruning(
-                            dindice,
-                            spatial_indices,
-                            patch_residual_rms,
-                            token_prune_threshold,
-                            token_prune_min_keep,
-                        )
-                    context['cached_pruned_dindices'][gid] = pruned_dindice
-                    context['cached_query_states'][gid] = self._build_fixed_query_state(
-                        pruned_dindice,
-                        kept_patch_count,
+                    plan = self._build_group_plan(
+                        dindice,
+                        spatial_indices,
+                        patch_residual_rms,
                         num_pretokens,
+                        token_prune_enabled,
+                        token_prune_threshold,
+                        token_prune_min_keep,
                     )
-                    context['cached_token_prune_stats'][gid] = {
-                        'kept_patch_count': kept_patch_count,
-                        'full_patch_count': full_patch_count,
-                        'kept_residual_mass': kept_residual_mass,
-                        'full_residual_mass': full_residual_mass,
-                    }
-                    kept_total = int(kept_patch_count.sum().item())
-                    full_total = int(full_patch_count.sum().item())
+                    group_plans[gid] = plan
+                    kept_total = int(plan.kept_patch_count.sum().item())
+                    full_total = int(plan.full_patch_count.sum().item())
                     keep_ratio = (kept_total / full_total) if full_total > 0 else 1.0
-                    kept_mass_total = float(kept_residual_mass.sum().item())
-                    full_mass_total = float(full_residual_mass.sum().item())
+                    kept_mass_total = float(plan.kept_residual_mass.sum().item())
+                    full_mass_total = float(plan.full_residual_mass.sum().item())
                     mass_ratio = (kept_mass_total / full_mass_total) if full_mass_total > 0 else 1.0
                     rms_mean = (
                         float(patch_residual_rms.gather(1, spatial_indices).mean().item())
@@ -364,39 +414,21 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                     patch_indices = spatial_indices + num_pretokens
                     pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
                     dindice = torch.cat([pre_indices, patch_indices], dim=1)
-                    context['cached_dindices'][gid] = dindice
-                    kept_patch_count = torch.full(
-                        (B,), spatial_indices.shape[1], device=self.device, dtype=torch.int32
-                    )
-                    full_patch_count = kept_patch_count.clone()
-                    kept_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
-                    full_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
-                    pruned_dindice = dindice
-                    if token_prune_enabled:
-                        pruned_dindice, kept_patch_count, full_patch_count, kept_residual_mass, full_residual_mass = self._apply_image_residual_token_pruning(
-                            dindice,
-                            spatial_indices,
-                            patch_residual_rms,
-                            token_prune_threshold,
-                            token_prune_min_keep,
-                        )
-                    context['cached_pruned_dindices'][gid] = pruned_dindice
-                    context['cached_query_states'][gid] = self._build_fixed_query_state(
-                        pruned_dindice,
-                        kept_patch_count,
+                    plan = self._build_group_plan(
+                        dindice,
+                        spatial_indices,
+                        patch_residual_rms,
                         num_pretokens,
+                        token_prune_enabled,
+                        token_prune_threshold,
+                        token_prune_min_keep,
                     )
-                    context['cached_token_prune_stats'][gid] = {
-                        'kept_patch_count': kept_patch_count,
-                        'full_patch_count': full_patch_count,
-                        'kept_residual_mass': kept_residual_mass,
-                        'full_residual_mass': full_residual_mass,
-                    }
-                    kept_total = int(kept_patch_count.sum().item())
-                    full_total = int(full_patch_count.sum().item())
+                    group_plans[gid] = plan
+                    kept_total = int(plan.kept_patch_count.sum().item())
+                    full_total = int(plan.full_patch_count.sum().item())
                     keep_ratio = (kept_total / full_total) if full_total > 0 else 1.0
-                    kept_mass_total = float(kept_residual_mass.sum().item())
-                    full_mass_total = float(full_residual_mass.sum().item())
+                    kept_mass_total = float(plan.kept_residual_mass.sum().item())
+                    full_mass_total = float(plan.full_residual_mass.sum().item())
                     mass_ratio = (kept_mass_total / full_mass_total) if full_mass_total > 0 else 1.0
                     rms_mean = (
                         float(patch_residual_rms.gather(1, spatial_indices).mean().item())
@@ -449,11 +481,17 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         if start_l == 0:
             x_feature = context['input_tokens']
 
+        group_plans = self._get_group_plans(context)
+        attn_cache_candidates = {
+            gid: plan.full_dindice
+            for gid, plan in group_plans.items()
+        } if getattr(self.model.backbone, 'appcorr_method', None) == 'partial_channel' else None
+
         for lidx in range(start_l, end_l):
             blk = self.model.backbone.blocks[lidx]
             x_feature, cache = blk.approx(
                 x_feature, rope_sincos, cache, tag=f"layer{lidx}",
-                attn_cache_candidates=context.get('cached_dindices') if getattr(self.model.backbone, 'appcorr_method', None) == 'partial_channel' else None,
+                attn_cache_candidates=attn_cache_candidates,
                 attn_col_alive_ratio=getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0),
                 debug=False
             )
@@ -466,37 +504,14 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         group_id = params.get('group_id', 1)
         start_l, end_l = layers[0], layers[1]
 
-        # Prepare Update Indices
-        pruned_dindices = context.get('cached_pruned_dindices', {})
-        if group_id in pruned_dindices:
-            dindice = pruned_dindices[group_id].to(device=self.device, non_blocking=True)
-            context['cached_pruned_dindices'][group_id] = dindice
-        elif 'cached_dindices' in context and group_id in context['cached_dindices']:
-            dindice = context['cached_dindices'][group_id].to(device=self.device, non_blocking=True)
-            context['cached_dindices'][group_id] = dindice
-        else:
-             # Fallback recompute
-             print(f"!!! [Executor] Warning: dindice cache miss for group {group_id}. Recomputing...")
-             if 'group_map' in context:
-                  mask = (context['group_map'] == group_id)
-                  nonzero_indices = torch.nonzero(mask)
-                  num_pretokens = 1 + self.model.backbone.n_storage_tokens
-                  B = context['current_feature'].shape[0]
-                  try:
-                      spatial_indices = nonzero_indices[:, 1].view(B, -1)
-                      patch_indices = spatial_indices + num_pretokens
-                      pre_indices = torch.arange(num_pretokens, device=self.device).unsqueeze(0).expand(B, -1)
-                      dindice = torch.cat([pre_indices, patch_indices], dim=1)
-                      dindice = dindice.to(device=self.device, non_blocking=True)
-                      # Cache it
-                      if 'cached_dindices' not in context: context['cached_dindices'] = {}
-                      context['cached_dindices'][group_id] = dindice
-                  except:
-                      print("!!! [Executor] Failed to recompute dindice from map.")
-                      return
-             else:
-                 # Cannot compute without group map
-                 return
+        group_plans = self._get_group_plans(context)
+        plan = group_plans.get(group_id)
+        if plan is None:
+            print(f"!!! [Executor] Missing group correction plan for group {group_id}.")
+            return
+
+        dindice = plan.pruned_dindice.to(device=self.device, non_blocking=True)
+        plan.pruned_dindice = dindice
 
         cache = context.get('cache_feature', {})
         rope_sincos = context.get('rope_sincos')
@@ -506,24 +521,23 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         
         alive_ratio = getattr(self.model.backbone, 'appcorr_cls_alive_ratio', 0.2)
         attn_col_alive_ratio = getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0)
-        fixed_query_state = context.get('cached_query_states', {}).get(group_id)
-        token_prune_stats = context.get('cached_token_prune_stats', {}).get(group_id)
-        if token_prune_stats is not None:
+        fixed_query_state = plan.query_state
+        if fixed_query_state is not None:
             cache["_token_prune_kept_patch_total"] = (
                 cache.get("_token_prune_kept_patch_total", x_temp.new_zeros((), dtype=torch.float32))
-                + token_prune_stats['kept_patch_count'].sum(dtype=torch.float32)
+                + plan.kept_patch_count.sum(dtype=torch.float32)
             )
             cache["_token_prune_full_patch_total"] = (
                 cache.get("_token_prune_full_patch_total", x_temp.new_zeros((), dtype=torch.float32))
-                + token_prune_stats['full_patch_count'].sum(dtype=torch.float32)
+                + plan.full_patch_count.sum(dtype=torch.float32)
             )
             cache["_token_prune_kept_residual_mass_total"] = (
                 cache.get("_token_prune_kept_residual_mass_total", x_temp.new_zeros((), dtype=torch.float32))
-                + token_prune_stats.get('kept_residual_mass', x_temp.new_zeros((x_temp.shape[0],), dtype=torch.float32)).sum(dtype=torch.float32)
+                + plan.kept_residual_mass.sum(dtype=torch.float32)
             )
             cache["_token_prune_full_residual_mass_total"] = (
                 cache.get("_token_prune_full_residual_mass_total", x_temp.new_zeros((), dtype=torch.float32))
-                + token_prune_stats.get('full_residual_mass', x_temp.new_zeros((x_temp.shape[0],), dtype=torch.float32)).sum(dtype=torch.float32)
+                + plan.full_residual_mass.sum(dtype=torch.float32)
             )
 
         # dindice must be passed to correct()
@@ -687,14 +701,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 cache[k] = self._slice_cache_value(cache[k], keep_mask)
                 
         # Clear derived structures
-        if 'cached_dindices' in context:
-            context['cached_dindices'] = {}
-        if 'cached_pruned_dindices' in context:
-            context['cached_pruned_dindices'] = {}
-        if 'cached_query_states' in context:
-            context['cached_query_states'] = {}
-        if 'cached_token_prune_stats' in context:
-            context['cached_token_prune_stats'] = {}
+        if 'group_plans' in context:
+            context['group_plans'] = {}
 
         # Output (Logits)
         if 'output' in context:
