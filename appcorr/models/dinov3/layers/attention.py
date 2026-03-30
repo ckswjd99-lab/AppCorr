@@ -100,66 +100,8 @@ class SelfAttention(nn.Module):
         return {
             "query_idx": dindice.detach().clone(),
             "col_idx": col_idx.detach().clone() if col_idx is not None else None,
-            "attn_prob_sel": attn_prob_sel.detach().clone(),
+            "attn_prob_sel": attn_prob_sel.to(dtype=torch.bfloat16).detach().clone(),
         }
-
-    def _build_packed_sparse_attn_cache(
-        self,
-        attn_prob: Tensor,
-        attn_cache_candidates: Dict,
-        attn_col_alive_ratio: float,
-    ) -> Dict[str, Tensor | Dict]:
-        items = list(attn_cache_candidates.items())
-        B, H, _, N = attn_prob.shape
-        num_groups = len(items)
-        max_q = max(dindice.shape[1] for _, dindice in items)
-        num_alive_cols = max(min(int(N * attn_col_alive_ratio), N), 1)
-
-        query_idx = torch.full((num_groups, B, max_q), -1, device=attn_prob.device, dtype=torch.long)
-        query_count = torch.zeros((num_groups,), device=attn_prob.device, dtype=torch.long)
-        attn_prob_sel = torch.zeros(
-            (num_groups, B, H, max_q, num_alive_cols),
-            device=attn_prob.device,
-            dtype=attn_prob.dtype,
-        )
-
-        if num_alive_cols < N:
-            col_idx = torch.empty((num_groups, B, num_alive_cols), device=attn_prob.device, dtype=torch.long)
-        else:
-            col_idx = None
-
-        key_to_slot = {}
-        for slot, (cache_key, dindice) in enumerate(items):
-            key_to_slot[cache_key] = slot
-            q = dindice.shape[1]
-            query_idx[slot, :, :q] = dindice
-            query_count[slot] = q
-
-            gather_idx = dindice.view(B, 1, q, 1).expand(-1, H, -1, N)
-            attn_prob_group = attn_prob.gather(2, gather_idx).contiguous()  # [B, H, q, N]
-
-            if num_alive_cols < N:
-                col_scores = attn_prob_group.mean(dim=(1, 2))  # [B, N]
-                topk_cols = torch.topk(col_scores, k=num_alive_cols, dim=-1, largest=True).indices  # [B, K]
-                col_idx[slot] = topk_cols
-                gather_idx_col = topk_cols.view(B, 1, 1, num_alive_cols).expand(-1, H, q, -1)
-                attn_prob_group = attn_prob_group.gather(3, gather_idx_col).contiguous()  # [B, H, q, K]
-
-            attn_prob_sel[slot, :, :, :q, :] = attn_prob_group
-
-        return {
-            "key_to_slot": key_to_slot,
-            "query_idx": query_idx.detach().clone(),
-            "query_count": query_count.detach().clone(),
-            "col_idx": col_idx.detach().clone() if col_idx is not None else None,
-            "attn_prob_sel": attn_prob_sel.detach().clone(),
-        }
-
-    def _consume_packed_sparse_attn_cache(self, sparse_cache: Dict, attn_cache_key) -> Dict | None:
-        sparse_cache["key_to_slot"].pop(attn_cache_key)
-        if not sparse_cache["key_to_slot"]:
-            return None
-        return sparse_cache
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
         # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
@@ -354,13 +296,14 @@ class SelfAttention(nn.Module):
         attn_score = (q @ k.transpose(-2, -1)) * self.scale
         attn_prob = attn_score.softmax(dim=-1)
         cache_feature[f"{tag}_dv_cache"] = torch.zeros(
-            B, self.num_heads, N, head_dim, device=x.device, dtype=x.dtype
+            B, self.num_heads, N, head_dim, device=x.device, dtype=torch.bfloat16
         )
         if not attn_cache_candidates:
             raise ValueError("partial_channel requires non-empty attn_cache_candidates")
-        cache_feature[f"{tag}_attn_sparse_cache"] = self._build_packed_sparse_attn_cache(
-            attn_prob, attn_cache_candidates, attn_col_alive_ratio
-        )
+        for cache_key, dindice in attn_cache_candidates.items():
+            cache_feature[f"{tag}_attn_sparse_cache_g{cache_key}"] = self._build_sparse_attn_cache(
+                attn_prob, dindice, attn_col_alive_ratio
+            )
         attn_v = attn_prob @ v
         attn_v = attn_v.transpose(1, 2).reshape(B, N, C)
         
@@ -389,16 +332,12 @@ class SelfAttention(nn.Module):
         active_token_idx = fixed_query_state.active_token_idx
         active_query_pos_padded = fixed_query_state.active_query_pos_padded
         active_query_mask = fixed_query_state.active_query_mask
+        sparse_cache_key = f"{tag}_attn_sparse_cache_g{attn_cache_key}"
 
         if num_active == 0:
-            sparse_cache = cache_feature.get(f"{tag}_attn_sparse_cache")
-            if sparse_cache is None or attn_cache_key not in sparse_cache["key_to_slot"]:
+            if sparse_cache_key not in cache_feature:
                 raise KeyError(f"Sparse attention cache miss for key {attn_cache_key!r}")
-            next_sparse_cache = self._consume_packed_sparse_attn_cache(sparse_cache, attn_cache_key)
-            if next_sparse_cache is None:
-                del cache_feature[f"{tag}_attn_sparse_cache"]
-            else:
-                cache_feature[f"{tag}_attn_sparse_cache"] = next_sparse_cache
+            del cache_feature[sparse_cache_key]
             return dx_active.new_zeros((0, C)), cache_feature
 
         # Generate dv_active [T, H, Dh]
@@ -410,16 +349,14 @@ class SelfAttention(nn.Module):
         dv_active = dv_active.to(dtype=dv_cache.dtype)
         dv_cache[active_batch_idx, :, active_token_idx, :] = dv_active
 
-        sparse_cache = cache_feature.get(f"{tag}_attn_sparse_cache")
-        if sparse_cache is None or attn_cache_key not in sparse_cache["key_to_slot"]:
+        sparse_cache = cache_feature.get(sparse_cache_key)
+        if sparse_cache is None:
             raise KeyError(f"Sparse attention cache miss for key {attn_cache_key!r}")
 
-        slot = sparse_cache["key_to_slot"][attn_cache_key]
-        attn_prob_full = sparse_cache["attn_prob_sel"][slot].to(dtype=dv_cache.dtype)  # [B,H,Qmax,K]
+        attn_prob_full = sparse_cache["attn_prob_sel"].to(dtype=dv_cache.dtype)  # [B,H,Q,K]
         col_idx = sparse_cache["col_idx"]
         if col_idx is not None:
-            col_idx_sel = col_idx[slot]  # [B, K]
-            gather_idx_dv = col_idx_sel.view(B, 1, col_idx_sel.shape[1], 1).expand(-1, self.num_heads, -1, head_dim)
+            gather_idx_dv = col_idx.view(B, 1, col_idx.shape[1], 1).expand(-1, self.num_heads, -1, head_dim)
             dv_sub = dv_cache.gather(2, gather_idx_dv).contiguous()  # [B, H, K, Dh]
         else:
             dv_sub = dv_cache
@@ -453,11 +390,7 @@ class SelfAttention(nn.Module):
         dx = F.linear(dattn_v_active, self.proj.weight, bias=None)
         dx = self.proj_drop(dx)
 
-        next_sparse_cache = self._consume_packed_sparse_attn_cache(sparse_cache, attn_cache_key)
-        if next_sparse_cache is None:
-            del cache_feature[f"{tag}_attn_sparse_cache"]
-        else:
-            cache_feature[f"{tag}_attn_sparse_cache"] = next_sparse_cache
+        del cache_feature[sparse_cache_key]
         
         return dx, cache_feature
 
