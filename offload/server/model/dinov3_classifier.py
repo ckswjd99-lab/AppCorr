@@ -23,6 +23,10 @@ class QueryState:
 
 @dataclass
 class GroupCorrectionPlan:
+    num_pretokens: int
+    prefix_dindice: torch.Tensor
+    group_patch_dindice: torch.Tensor
+    group_patch_keep_local_idx: torch.Tensor
     full_dindice: torch.Tensor
     pruned_dindice: torch.Tensor
     query_state: QueryState
@@ -85,16 +89,28 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         patch_residual_rms: torch.Tensor | None,
         threshold: float,
         min_keep: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B, total_selected = dindice.shape
         num_pretokens = total_selected - spatial_indices.shape[1]
         full_patch_count = torch.full((B,), spatial_indices.shape[1], device=dindice.device, dtype=torch.int32)
         full_residual_mass = torch.zeros((B,), device=dindice.device, dtype=torch.float32)
         kept_residual_mass = torch.zeros((B,), device=dindice.device, dtype=torch.float32)
+        full_keep_local_idx = torch.arange(
+            spatial_indices.shape[1],
+            device=dindice.device,
+            dtype=torch.long,
+        ).unsqueeze(0).expand(B, -1)
 
         if patch_residual_rms is None or spatial_indices.shape[1] == 0:
             kept_patch_count = full_patch_count.clone()
-            return dindice, kept_patch_count, full_patch_count, kept_residual_mass, full_residual_mass
+            return (
+                dindice,
+                kept_patch_count,
+                full_patch_count,
+                kept_residual_mass,
+                full_residual_mass,
+                full_keep_local_idx,
+            )
 
         residual_sel = patch_residual_rms.gather(1, spatial_indices)
         full_residual_mass = residual_sel.sum(dim=1, dtype=torch.float32)
@@ -109,9 +125,17 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         kept_residual_mass = (residual_sel * keep_mask.to(dtype=residual_sel.dtype)).sum(dim=1, dtype=torch.float32)
         max_keep = int(kept_patch_count.max().item()) if kept_patch_count.numel() > 0 else 0
         if max_keep == spatial_indices.shape[1]:
-            return dindice, kept_patch_count, full_patch_count, kept_residual_mass, full_residual_mass
+            return (
+                dindice,
+                kept_patch_count,
+                full_patch_count,
+                kept_residual_mass,
+                full_residual_mass,
+                full_keep_local_idx,
+            )
 
         kept_spatial = torch.zeros((B, max_keep), device=dindice.device, dtype=spatial_indices.dtype)
+        kept_local_idx = torch.zeros((B, max_keep), device=dindice.device, dtype=torch.long)
         if max_keep > 0:
             batch_idx, patch_idx = keep_mask.nonzero(as_tuple=True)
             counts = torch.bincount(batch_idx, minlength=B)
@@ -119,11 +143,19 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             slot_idx = torch.arange(patch_idx.shape[0], device=dindice.device, dtype=torch.long)
             slot_idx = slot_idx - torch.repeat_interleave(batch_start, counts)
             kept_spatial[batch_idx, slot_idx] = spatial_indices[batch_idx, patch_idx]
+            kept_local_idx[batch_idx, slot_idx] = patch_idx
 
         pruned_dindice = dindice[:, :num_pretokens]
         if max_keep > 0:
             pruned_dindice = torch.cat([pruned_dindice, kept_spatial + num_pretokens], dim=1)
-        return pruned_dindice, kept_patch_count, full_patch_count, kept_residual_mass, full_residual_mass
+        return (
+            pruned_dindice,
+            kept_patch_count,
+            full_patch_count,
+            kept_residual_mass,
+            full_residual_mass,
+            kept_local_idx,
+        )
 
     def _build_fixed_query_state(
         self,
@@ -172,9 +204,21 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         full_patch_count = kept_patch_count.clone()
         kept_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
         full_residual_mass = torch.zeros((B,), device=self.device, dtype=torch.float32)
+        group_patch_keep_local_idx = torch.arange(
+            spatial_indices.shape[1],
+            device=self.device,
+            dtype=torch.long,
+        ).unsqueeze(0).expand(B, -1)
         pruned_dindice = dindice
         if token_prune_enabled:
-            pruned_dindice, kept_patch_count, full_patch_count, kept_residual_mass, full_residual_mass = (
+            (
+                pruned_dindice,
+                kept_patch_count,
+                full_patch_count,
+                kept_residual_mass,
+                full_residual_mass,
+                group_patch_keep_local_idx,
+            ) = (
                 self._apply_image_residual_token_pruning(
                     dindice,
                     spatial_indices,
@@ -184,6 +228,10 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 )
             )
         return GroupCorrectionPlan(
+            num_pretokens=num_pretokens,
+            prefix_dindice=dindice[:, :num_pretokens],
+            group_patch_dindice=dindice[:, num_pretokens:],
+            group_patch_keep_local_idx=group_patch_keep_local_idx,
             full_dindice=dindice,
             pruned_dindice=pruned_dindice,
             query_state=self._build_fixed_query_state(pruned_dindice, kept_patch_count, num_pretokens),
@@ -492,6 +540,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             x_feature, cache = blk.approx(
                 x_feature, rope_sincos, cache, tag=f"layer{lidx}",
                 attn_cache_candidates=attn_cache_candidates,
+                group_plans=group_plans if getattr(self.model.backbone, 'appcorr_method', None) == 'partial_channel' else None,
                 attn_col_alive_ratio=getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0),
                 debug=False
             )
@@ -556,6 +605,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 fixed_token_prune_state=None,
                 record_token_prune_stats=False,
                 fixed_query_state=fixed_query_state,
+                group_plan=plan,
                 attn_cache_key=group_id,
                 debug=False
             )

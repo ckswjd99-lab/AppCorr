@@ -277,8 +277,8 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if (batch_idx+1) == 40:
-                break # TEMP
+            # if (batch_idx+1) == 20:
+            #     break # TEMP
 
         final_summary = self.dataset_loader.get_summary()
         print(f"[Source] Final Summary: {final_summary}")
@@ -319,6 +319,7 @@ class SourceModule(multiprocessing.Process):
         print("=== Cache Usage ===")
         print(f"Avg cache size per offload: {avg_cache_size_bytes / (1024 ** 2):.2f} MB")
         print(f"Max cache size per offload: {max_cache_size_bytes / (1024 ** 2):.2f} MB")
+        cache_breakdown_summary = {}
         if cache_breakdown_accumulator:
             print("Cache breakdown by property:")
             sorted_cache_breakdown = sorted(
@@ -326,12 +327,37 @@ class SourceModule(multiprocessing.Process):
                 key=lambda item: item[1]['sum'],
                 reverse=True,
             )
+            small_entry_threshold_bytes = int(0.01 * (1024 ** 2))
+            large_entries = []
+            other_sum = 0.0
+            other_max = 0
             for key, stats in sorted_cache_breakdown:
                 avg_value = stats['sum'] / (batch_idx + 1)
+                if avg_value < small_entry_threshold_bytes:
+                    other_sum += stats['sum']
+                    other_max = max(other_max, stats['max'])
+                    continue
+                large_entries.append((key, stats, avg_value))
+
+            for key, stats, avg_value in large_entries:
                 print(
                     f"{key:<25} | Avg {avg_value / (1024 ** 2):>7.2f} MB"
                     f" | Max {stats['max'] / (1024 ** 2):>7.2f} MB"
                 )
+                cache_breakdown_summary[key] = {
+                    'avg_bytes': avg_value,
+                    'max_bytes': stats['max'],
+                }
+            if other_sum > 0:
+                other_avg = other_sum / (batch_idx + 1)
+                print(
+                    f"{'other':<25} | Avg {other_avg / (1024 ** 2):>7.2f} MB"
+                    f" | Max {other_max / (1024 ** 2):>7.2f} MB"
+                )
+                cache_breakdown_summary['other'] = {
+                    'avg_bytes': other_avg,
+                    'max_bytes': other_max,
+                }
         print("")
         print("=== Attention Stats ===")
         print(f"Avg attention mass covered during V correction: {avg_attn_prob_coverage_pct:.2f}%")
@@ -341,18 +367,6 @@ class SourceModule(multiprocessing.Process):
         print(f"Avg residual mass covered by kept patches: {avg_token_residual_mass_keep_pct:.2f}%")
         print("")
 
-        cache_breakdown_summary = {
-            key: {
-                'avg_bytes': stats['sum'] / (batch_idx + 1),
-                'max_bytes': stats['max'],
-            }
-            for key, stats in sorted(
-                cache_breakdown_accumulator.items(),
-                key=lambda item: item[1]['sum'],
-                reverse=True,
-            )
-        }
-        
         # Write Summary
         summary = {
             'exp_id': self.config.exp_id,

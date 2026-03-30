@@ -333,9 +333,13 @@ class WorkerModule(multiprocessing.Process):
         breakdown: Dict[str, int] = {}
         seen: set[int] = set()
         layer_prefix = re.compile(r"^layer\d+_")
+        group_suffix = re.compile(r"_g\d+$")
+        full_dindice_group_suffix = re.compile(r"_full_dindice_g\d+$")
 
         for key, value in cache_feature.items():
             normalized_key = layer_prefix.sub("", key) if isinstance(key, str) else str(key)
+            normalized_key = full_dindice_group_suffix.sub("_full_dindice", normalized_key)
+            normalized_key = group_suffix.sub("", normalized_key)
             size_bytes = self._estimate_cache_size_bytes(value, seen)
             if size_bytes == 0:
                 continue
