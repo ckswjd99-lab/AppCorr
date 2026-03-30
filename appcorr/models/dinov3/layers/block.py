@@ -3,7 +3,6 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
-import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -15,9 +14,8 @@ from ._triton_kernels import (
     fused_layerscale_add,
     masked_residual_add_triton,
     masked_token_update_triton,
-    token_prune_select_compact_triton,
 )
-from .attention import CausalSelfAttention, SelfAttention
+from .attention import CausalSelfAttention, QueryStateLike, SelfAttention
 from .ffn_layers import Mlp, SwiGLUFFN
 from .layer_scale import LayerScale  # , DropPath
 
@@ -247,7 +245,16 @@ class SelfAttentionBlock(nn.Module):
             if self.appcorr_method == "partial_token":
                 return self.correct_partial_token(x, dindice, rope, cache_feature, tag, **kwargs)
             if self.appcorr_method == "partial_channel":
-                return self.correct_partial_channel(x, dindice, rope, cache_feature, tag, **kwargs)
+                return self.correct_partial_channel(
+                    x,
+                    dindice,
+                    rope,
+                    cache_feature,
+                    tag,
+                    fixed_query_state=kwargs["fixed_query_state"],
+                    attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
+                    attn_cache_key=kwargs.get("attn_cache_key"),
+                )
             raise ValueError(
                 f"Unknown SelfAttentionBlock.correct method '{self.appcorr_method}'. "
                 "Available methods: partial_channel, partial_token"
@@ -366,83 +373,93 @@ class SelfAttentionBlock(nn.Module):
             x = shortcut2 + x_ls2
 
         return x, cache_feature
+
+    @staticmethod
+    def _select_active_tokens(x: torch.Tensor, fixed_query_state: QueryStateLike) -> torch.Tensor:
+        if fixed_query_state.all_valid:
+            return x.reshape(-1, x.shape[-1])
+        return x[fixed_query_state.active_batch_idx, fixed_query_state.active_pos_idx]
+
+    def _apply_attn_delta(
+        self,
+        x_sel: torch.Tensor,
+        x_ls1_sel_old: torch.Tensor,
+        dx_attn: torch.Tensor,
+        fixed_query_state: QueryStateLike,
+    ) -> torch.Tensor:
+        if fixed_query_state.all_valid:
+            dx_ls1 = self.ls1(dx_attn).view(x_sel.shape)
+            return x_sel + x_ls1_sel_old.to(dtype=x_sel.dtype) + dx_ls1.to(dtype=x_sel.dtype)
+
+        dx_ls1 = torch.zeros_like(x_sel)
+        dx_ls1[fixed_query_state.active_batch_idx, fixed_query_state.active_pos_idx] = self.ls1(dx_attn)
+        return masked_residual_add_triton(x_sel, x_ls1_sel_old, dx_ls1, fixed_query_state.query_valid_mask)
+
+    def _build_ffn_delta(
+        self,
+        x_attn_sel: torch.Tensor,
+        cache_feature: Dict,
+        tag: str,
+        fixed_query_state: QueryStateLike,
+    ) -> tuple[torch.Tensor, Dict]:
+        x_attn_active = self._select_active_tokens(x_attn_sel, fixed_query_state)
+        x_norm2_active = self.norm2(x_attn_active)
+        x_mlp_active, cache_feature = self.mlp.correct_partial_channel(x_norm2_active, cache_feature, tag)
+        if fixed_query_state.all_valid:
+            return self.ls2(x_mlp_active).view(x_attn_sel.shape), cache_feature
+
+        x_ls2 = torch.zeros_like(x_attn_sel)
+        x_ls2[fixed_query_state.active_batch_idx, fixed_query_state.active_pos_idx] = self.ls2(x_mlp_active)
+        return x_ls2, cache_feature
     
     def correct_partial_channel(
-            self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+            self,
+            x: torch.Tensor,
+            dindice: List[int],
+            rope: Tuple[torch.Tensor],
+            cache_feature: Dict,
+            tag: str,
+            *,
+            fixed_query_state: QueryStateLike,
+            attn_col_alive_ratio: float = 1.0,
+            attn_cache_key=None,
     ) -> List[Tensor]:
-        B, _, C = x.shape
-        num_tokens_sel = dindice.shape[1]
-        attn_col_alive_ratio = kwargs.get("attn_col_alive_ratio", 1.0)
-        attn_cache_key = kwargs.get("attn_cache_key")
-        fixed_query_state = kwargs.get("fixed_query_state")
-
         with torch.cuda.nvtx.range("correct_attn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
             x_base = x + blocks_out_sum.to(x.dtype)
-
             x_norm1_old = cache_feature[f"{tag}_x_norm1"]
-            
-            dindice_sel = dindice
-            query_valid_mask = fixed_query_state["query_valid_mask"]
-            valid_b = fixed_query_state["active_batch_idx"]
-            valid_m = fixed_query_state["active_pos_idx"]
-            active_token_idx = fixed_query_state["active_token_idx"]
-            active_query_pos = fixed_query_state["active_query_pos"]
-            active_query_pos_padded = fixed_query_state["active_query_pos_padded"]
-            active_query_mask = fixed_query_state["active_query_mask"]
-            all_valid = bool(fixed_query_state.get("all_valid", False))
+            x_ls1_old = cache_feature[f"{tag}_x_ls1"]
 
-            gather_idx_x = dindice_sel.unsqueeze(-1).expand(-1, -1, C)
+            dindice_sel = dindice
+            gather_idx_x = dindice_sel.unsqueeze(-1).expand(-1, -1, x.shape[-1])
             x_sel = x.gather(1, gather_idx_x).contiguous()
             x_norm1_sel = self.norm1(x_sel)
             x_norm1_sel_old = x_norm1_old.gather(1, gather_idx_x)
             dx_norm1 = x_norm1_sel - x_norm1_sel_old
-
-            if all_valid:
-                dx_norm1_active = dx_norm1.reshape(-1, C)
-            else:
-                dx_norm1 = dx_norm1 * query_valid_mask.unsqueeze(-1).to(dtype=dx_norm1.dtype)
-                dx_norm1_active = dx_norm1[valid_b, valid_m]
+            dx_norm1_active = self._select_active_tokens(dx_norm1, fixed_query_state)
 
             dx_attn, cache_feature = self.attn.correct_partial_channel(
                 dx_norm1_active,
-                active_token_idx,
                 rope,
                 cache_feature,
                 tag,
+                fixed_query_state,
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 attn_cache_key=attn_cache_key,
-                active_batch_idx=valid_b,
-                active_query_pos=active_query_pos,
-                active_query_pos_padded=active_query_pos_padded,
-                active_query_mask=active_query_mask,
-                all_valid_queries=all_valid,
+                all_valid_queries=fixed_query_state.all_valid,
             )
-
-            x_ls1_old = cache_feature[f"{tag}_x_ls1"]
             x_ls1_sel_old = x_ls1_old.gather(1, gather_idx_x)
-            if all_valid:
-                dx_ls1 = self.ls1(dx_attn).view(B, num_tokens_sel, C)
-                x_attn_sel = x_sel + x_ls1_sel_old.to(dtype=x_sel.dtype) + dx_ls1.to(dtype=x_sel.dtype)
-            else:
-                dx_ls1 = torch.zeros_like(x_sel)
-                dx_ls1[valid_b, valid_m] = self.ls1(dx_attn)
-                x_attn_sel = masked_residual_add_triton(x_sel, x_ls1_sel_old, dx_ls1, query_valid_mask)
+            x_attn_sel = self._apply_attn_delta(x_sel, x_ls1_sel_old, dx_attn, fixed_query_state)
 
         with torch.cuda.nvtx.range("correct_ffn"):
-            if all_valid:
-                x_attn_active = x_attn_sel.reshape(-1, C)
-            else:
-                x_attn_active = x_attn_sel[valid_b, valid_m]
-            x_norm2_active = self.norm2(x_attn_active)
-            x_mlp_active, cache_feature = self.mlp.correct_partial_channel(x_norm2_active, cache_feature, tag)
-            if all_valid:
-                x_ls2 = self.ls2(x_mlp_active).view(B, num_tokens_sel, C)
-            else:
-                x_ls2_active = self.ls2(x_mlp_active)
-                x_ls2 = torch.zeros_like(x_attn_sel)
-                x_ls2[valid_b, valid_m] = x_ls2_active
-            x = masked_token_update_triton(x_base, dindice_sel, x_attn_sel, x_ls2, query_valid_mask)
+            x_ls2, cache_feature = self._build_ffn_delta(x_attn_sel, cache_feature, tag, fixed_query_state)
+            x = masked_token_update_triton(
+                x_base,
+                dindice_sel,
+                x_attn_sel,
+                x_ls2,
+                fixed_query_state.query_valid_mask,
+            )
 
         return x, cache_feature
 
