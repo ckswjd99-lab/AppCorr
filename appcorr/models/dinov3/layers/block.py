@@ -3,6 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -373,85 +374,74 @@ class SelfAttentionBlock(nn.Module):
         num_tokens_sel = dindice.shape[1]
         attn_col_alive_ratio = kwargs.get("attn_col_alive_ratio", 1.0)
         attn_cache_key = kwargs.get("attn_cache_key")
-        token_prune_enabled = kwargs.get("token_prune_enabled", False)
-        token_prune_threshold = float(kwargs.get("token_prune_threshold", 0.0))
-        token_prune_min_keep = int(kwargs.get("token_prune_min_keep", 1))
+        fixed_query_state = kwargs.get("fixed_query_state")
 
         with torch.cuda.nvtx.range("correct_attn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
             x_base = x + blocks_out_sum.to(x.dtype)
 
             x_norm1_old = cache_feature[f"{tag}_x_norm1"]
-            gather_idx_x_full = dindice.unsqueeze(-1).expand(-1, -1, C)
-            x_sel_full = x.gather(1, gather_idx_x_full).contiguous()
-            x_norm1_sel_full = self.norm1(x_sel_full)
-            x_norm1_sel_old_full = x_norm1_old.gather(1, gather_idx_x_full)
-            dx_norm1_full = x_norm1_sel_full - x_norm1_sel_old_full
+            
+            dindice_sel = dindice
+            query_valid_mask = fixed_query_state["query_valid_mask"]
+            valid_b = fixed_query_state["active_batch_idx"]
+            valid_m = fixed_query_state["active_pos_idx"]
+            active_token_idx = fixed_query_state["active_token_idx"]
+            active_query_pos = fixed_query_state["active_query_pos"]
+            active_query_pos_padded = fixed_query_state["active_query_pos_padded"]
+            active_query_mask = fixed_query_state["active_query_mask"]
+            all_valid = bool(fixed_query_state.get("all_valid", False))
 
-            if rope is not None:
-                num_pretokens = x.shape[1] - rope[0].shape[0]
-            else:
-                pretoken_match = dindice.eq(torch.arange(num_tokens_sel, device=x.device).unsqueeze(0)).all(dim=0)
-                pretoken_prefix = pretoken_match.to(dtype=torch.int32).cumprod(dim=0).to(dtype=torch.bool)
-                num_pretokens = int(pretoken_prefix.sum().item())
-
-            if token_prune_enabled and num_tokens_sel > 0:
-                dindice_sel, query_pos_idx, query_valid_mask, kept_patch_count = token_prune_select_compact_triton(
-                    dx_norm1_full,
-                    dindice,
-                    num_pretokens=num_pretokens,
-                    token_prune_threshold=token_prune_threshold,
-                    token_prune_min_keep=token_prune_min_keep,
-                )
-                kept_patch_total = kept_patch_count.sum(dtype=torch.float32)
-            else:
-                dindice_sel = dindice
-                query_pos_idx = torch.arange(num_tokens_sel, device=x.device, dtype=torch.long).unsqueeze(0).expand(B, -1)
-                query_valid_mask = torch.ones(B, num_tokens_sel, dtype=torch.bool, device=x.device)
-                kept_patch_total = x.new_tensor(B * max(num_tokens_sel - num_pretokens, 0), dtype=torch.float32)
-
-            full_patch_total = x.new_tensor(B * max(num_tokens_sel - num_pretokens, 0), dtype=torch.float32)
-            cache_feature["_token_prune_kept_patch_total"] = (
-                cache_feature.get("_token_prune_kept_patch_total", x.new_zeros((), dtype=torch.float32))
-                + kept_patch_total
-            )
-            cache_feature["_token_prune_full_patch_total"] = (
-                cache_feature.get("_token_prune_full_patch_total", x.new_zeros((), dtype=torch.float32))
-                + full_patch_total
-            )
-
-            if token_prune_enabled and num_tokens_sel > 0:
-                gather_idx_qpos = query_pos_idx.unsqueeze(-1).expand(-1, -1, C)
-                x_sel = x_sel_full.gather(1, gather_idx_qpos).contiguous()
-                dx_norm1 = dx_norm1_full.gather(1, gather_idx_qpos).contiguous()
-            else:
-                x_sel = x_sel_full
-                dx_norm1 = dx_norm1_full
-
-            dx_norm1 = dx_norm1 * query_valid_mask.unsqueeze(-1).to(dtype=dx_norm1.dtype)
             gather_idx_x = dindice_sel.unsqueeze(-1).expand(-1, -1, C)
+            x_sel = x.gather(1, gather_idx_x).contiguous()
+            x_norm1_sel = self.norm1(x_sel)
+            x_norm1_sel_old = x_norm1_old.gather(1, gather_idx_x)
+            dx_norm1 = x_norm1_sel - x_norm1_sel_old
+
+            if all_valid:
+                dx_norm1_active = dx_norm1.reshape(-1, C)
+            else:
+                dx_norm1 = dx_norm1 * query_valid_mask.unsqueeze(-1).to(dtype=dx_norm1.dtype)
+                dx_norm1_active = dx_norm1[valid_b, valid_m]
 
             dx_attn, cache_feature = self.attn.correct_partial_channel(
-                dx_norm1,
-                dindice_sel,
+                dx_norm1_active,
+                active_token_idx,
                 rope,
                 cache_feature,
                 tag,
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 attn_cache_key=attn_cache_key,
-                query_pos_idx=query_pos_idx,
-                query_valid_mask=query_valid_mask,
+                active_batch_idx=valid_b,
+                active_query_pos=active_query_pos,
+                active_query_pos_padded=active_query_pos_padded,
+                active_query_mask=active_query_mask,
+                all_valid_queries=all_valid,
             )
-            dx_ls1 = self.ls1(dx_attn)
 
             x_ls1_old = cache_feature[f"{tag}_x_ls1"]
             x_ls1_sel_old = x_ls1_old.gather(1, gather_idx_x)
-            x_attn_sel = masked_residual_add_triton(x_sel, x_ls1_sel_old, dx_ls1, query_valid_mask)
+            if all_valid:
+                dx_ls1 = self.ls1(dx_attn).view(B, num_tokens_sel, C)
+                x_attn_sel = x_sel + x_ls1_sel_old.to(dtype=x_sel.dtype) + dx_ls1.to(dtype=x_sel.dtype)
+            else:
+                dx_ls1 = torch.zeros_like(x_sel)
+                dx_ls1[valid_b, valid_m] = self.ls1(dx_attn)
+                x_attn_sel = masked_residual_add_triton(x_sel, x_ls1_sel_old, dx_ls1, query_valid_mask)
 
         with torch.cuda.nvtx.range("correct_ffn"):
-            x_norm2_sel = self.norm2(x_attn_sel)
-            x_mlp, cache_feature = self.mlp.correct_partial_channel(x_norm2_sel, cache_feature, tag)
-            x_ls2 = self.ls2(x_mlp)
+            if all_valid:
+                x_attn_active = x_attn_sel.reshape(-1, C)
+            else:
+                x_attn_active = x_attn_sel[valid_b, valid_m]
+            x_norm2_active = self.norm2(x_attn_active)
+            x_mlp_active, cache_feature = self.mlp.correct_partial_channel(x_norm2_active, cache_feature, tag)
+            if all_valid:
+                x_ls2 = self.ls2(x_mlp_active).view(B, num_tokens_sel, C)
+            else:
+                x_ls2_active = self.ls2(x_mlp_active)
+                x_ls2 = torch.zeros_like(x_attn_sel)
+                x_ls2[valid_b, valid_m] = x_ls2_active
             x = masked_token_update_triton(x_base, dindice_sel, x_attn_sel, x_ls2, query_valid_mask)
 
         return x, cache_feature

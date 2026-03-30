@@ -27,7 +27,7 @@
         "num_groups": 4,
         "attn_col_alive_ratio": 0.5,
         "token_prune_enabled": true,
-        "token_prune_threshold": 0.02,
+        "token_prune_threshold": 7.0,
         "token_prune_min_keep": 4
     }
 }
