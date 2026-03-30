@@ -133,6 +133,10 @@ class WorkerModule(multiprocessing.Process):
                                 context['patch_buffer'].extend(task.payload)
 
                                 t_decode_start = time.time()
+                                prev_input_hr_np = context.get('input_hr_np')
+                                context['prev_input_hr_np'] = (
+                                    prev_input_hr_np.copy() if prev_input_hr_np is not None else None
+                                )
                                 context['input_hr_np'] = self.policy.decode(
                                     context['patch_buffer'], self.config,
                                     canvas=context.get('input_hr_np')
@@ -272,11 +276,15 @@ class WorkerModule(multiprocessing.Process):
         attn_prob_mass_full = 0.0
         token_prune_kept_patch = 0.0
         token_prune_full_patch = 0.0
+        token_prune_kept_residual_mass = 0.0
+        token_prune_full_residual_mass = 0.0
         if isinstance(cache_feature, dict):
             attn_prob_mass_used = self._as_float(cache_feature.get('_attn_prob_mass_used_total', 0.0))
             attn_prob_mass_full = self._as_float(cache_feature.get('_attn_prob_mass_full_total', 0.0))
             token_prune_kept_patch = self._as_float(cache_feature.get('_token_prune_kept_patch_total', 0.0))
             token_prune_full_patch = self._as_float(cache_feature.get('_token_prune_full_patch_total', 0.0))
+            token_prune_kept_residual_mass = self._as_float(cache_feature.get('_token_prune_kept_residual_mass_total', 0.0))
+            token_prune_full_residual_mass = self._as_float(cache_feature.get('_token_prune_full_residual_mass_total', 0.0))
         result = InferenceResult(
             task.task_id,
             time.time(),
@@ -288,6 +296,8 @@ class WorkerModule(multiprocessing.Process):
             attn_prob_mass_full=attn_prob_mass_full,
             token_prune_kept_patch=token_prune_kept_patch,
             token_prune_full_patch=token_prune_full_patch,
+            token_prune_kept_residual_mass=token_prune_kept_residual_mass,
+            token_prune_full_residual_mass=token_prune_full_residual_mass,
         )
         self.output_queue.put(result)
 
@@ -500,6 +510,7 @@ class WorkerModule(multiprocessing.Process):
         return {
             'events': [],
             'patch_buffer': [],
+            'prev_input_hr_np': None,
             'input_hr_np': None,
             'input_lr_native_np': None,
             'input_sr_tensor': None,
@@ -507,7 +518,7 @@ class WorkerModule(multiprocessing.Process):
 
     def _snapshot_input_state(self, context: Dict[str, Any]) -> Dict[str, Any]:
         snapshot = {}
-        for key in ('input_hr_np', 'input_lr_native_np'):
+        for key in ('prev_input_hr_np', 'input_hr_np', 'input_lr_native_np'):
             value = context.get(key)
             snapshot[key] = value.copy() if value is not None else None
         return snapshot

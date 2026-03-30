@@ -112,6 +112,8 @@ class SourceModule(multiprocessing.Process):
         total_attn_prob_mass_full = 0.0
         total_token_prune_kept_patch = 0.0
         total_token_prune_full_patch = 0.0
+        total_token_prune_kept_residual_mass = 0.0
+        total_token_prune_full_residual_mass = 0.0
         cache_breakdown_accumulator = {}
         
         # Track event statistics
@@ -232,12 +234,16 @@ class SourceModule(multiprocessing.Process):
             attn_prob_mass_full = getattr(result, 'attn_prob_mass_full', 0.0)
             token_prune_kept_patch = getattr(result, 'token_prune_kept_patch', 0.0)
             token_prune_full_patch = getattr(result, 'token_prune_full_patch', 0.0)
+            token_prune_kept_residual_mass = getattr(result, 'token_prune_kept_residual_mass', 0.0)
+            token_prune_full_residual_mass = getattr(result, 'token_prune_full_residual_mass', 0.0)
             total_cache_size_bytes += cache_size_bytes
             max_cache_size_bytes = max(max_cache_size_bytes, cache_size_bytes)
             total_attn_prob_mass_used += attn_prob_mass_used
             total_attn_prob_mass_full += attn_prob_mass_full
             total_token_prune_kept_patch += token_prune_kept_patch
             total_token_prune_full_patch += token_prune_full_patch
+            total_token_prune_kept_residual_mass += token_prune_kept_residual_mass
+            total_token_prune_full_residual_mass += token_prune_full_residual_mass
             for key, value in cache_breakdown_bytes.items():
                 stats = cache_breakdown_accumulator.setdefault(key, {'sum': 0, 'max': 0})
                 stats['sum'] += value
@@ -256,6 +262,8 @@ class SourceModule(multiprocessing.Process):
                 'attn_prob_mass_full': attn_prob_mass_full,
                 'token_prune_kept_patch': token_prune_kept_patch,
                 'token_prune_full_patch': token_prune_full_patch,
+                'token_prune_kept_residual_mass': token_prune_kept_residual_mass,
+                'token_prune_full_residual_mass': token_prune_full_residual_mass,
                 'group_stats': group_stats,
                 'events': all_events,
                 'labels': valid_labels
@@ -304,6 +312,10 @@ class SourceModule(multiprocessing.Process):
             if total_token_prune_full_patch > 0 else 100.0
         )
         avg_token_prune_pct = 100.0 - avg_token_keep_pct
+        avg_token_residual_mass_keep_pct = (
+            100.0 * total_token_prune_kept_residual_mass / total_token_prune_full_residual_mass
+            if total_token_prune_full_residual_mass > 0 else 100.0
+        )
         print("=== Cache Usage ===")
         print(f"Avg cache size per offload: {avg_cache_size_bytes / (1024 ** 2):.2f} MB")
         print(f"Max cache size per offload: {max_cache_size_bytes / (1024 ** 2):.2f} MB")
@@ -326,7 +338,7 @@ class SourceModule(multiprocessing.Process):
         print("")
         print("=== Token Prune Stats ===")
         print(f"Avg patch-token keep ratio during correction: {avg_token_keep_pct:.2f}%")
-        print(f"Avg patch-token prune ratio during correction: {avg_token_prune_pct:.2f}%")
+        print(f"Avg residual mass covered by kept patches: {avg_token_residual_mass_keep_pct:.2f}%")
         print("")
 
         cache_breakdown_summary = {
@@ -352,6 +364,7 @@ class SourceModule(multiprocessing.Process):
             'avg_attn_prob_coverage_pct': avg_attn_prob_coverage_pct,
             'avg_token_keep_pct': avg_token_keep_pct,
             'avg_token_prune_pct': avg_token_prune_pct,
+            'avg_token_residual_mass_keep_pct': avg_token_residual_mass_keep_pct,
             'cache_breakdown_bytes_per_offload': cache_breakdown_summary,
             'time_offset_ms': time_offset * 1000,
             'latency_breakdown': latency_breakdown,

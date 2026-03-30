@@ -212,3 +212,4 @@ appcorr/weights
 *.nsys-rep
 *.qdstrm
 .vscode
+.codex
