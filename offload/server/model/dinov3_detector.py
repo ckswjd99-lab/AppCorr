@@ -43,43 +43,98 @@ class DINOv3DetectorExecutor(ModelExecutor):
         except Exception as e:
             print(f"!!! [Executor] Failed to load detector weights: {e}")
             raise e
+
+        appcorr_kwargs = config.appcorr_kwargs.copy()
+        appcorr_kwargs.pop('generated_from_client', None)
+        if appcorr_kwargs:
+            print(f"[Executor] Enabling AppCorr Mode: {appcorr_kwargs}")
+            self._get_vit_backbone().set_appcorr_mode(**appcorr_kwargs)
+        else:
+            self._get_vit_backbone().set_appcorr_mode(enabled=False)
             
         self.model.eval()
-        
+
     def _get_vit_backbone(self):
         inner = self.model.detector.backbone[0]
         return inner._backbone.backbone if hasattr(inner, "_backbone") else inner.backbone
+        
 
-    def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
-        if isinstance(batch_data, torch.Tensor):
-            with torch.cuda.nvtx.range("Preprocess::ToDevice"):
-                tensor = batch_data.to(device=self.device, non_blocking=True)
-                if tensor.ndim != 4:
-                    raise ValueError(f"Expected 4D tensor input, got {tensor.shape}")
-                if tensor.shape[1] != 3:
-                    if tensor.shape[-1] == 3:
-                        tensor = tensor.permute(0, 3, 1, 2)
-                    else:
-                        raise ValueError(f"Expected channel dimension of size 3, got {tensor.shape}")
-                tensor = tensor.float()
-                if batch_data.dtype == torch.uint8:
-                    tensor = tensor / 255.0
-                tensor = (tensor - self.norm_mean) / self.norm_std
-        else:
-            with torch.cuda.nvtx.range("Preprocess::PinMemory"):
-                tensor = torch.from_numpy(batch_data)
-                if hasattr(tensor, 'pin_memory'):
-                    tensor = tensor.pin_memory()
-                    
-            with torch.cuda.nvtx.range("Preprocess::ToDevice"):
-                tensor = tensor.to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float() / 255.0
-                tensor = (tensor - self.norm_mean) / self.norm_std
+    def preprocess(self, batch_np: np.ndarray, task: Task, context: Dict[str, Any], config: Any):
+        with torch.cuda.nvtx.range("Preprocess::PinMemory"):
+            tensor = torch.from_numpy(batch_np)
+            if hasattr(tensor, 'pin_memory'):
+                tensor = tensor.pin_memory()
+                
+        with torch.cuda.nvtx.range("Preprocess::ToDevice"):
+            tensor = tensor.to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float() / 255.0
+            tensor = (tensor - self.norm_mean) / self.norm_std
             
         with torch.cuda.nvtx.range("Preprocess::Slicing"):
             idx = context.get('active_indices')
             if idx is not None and len(idx) < config.batch_size:
                 tensor = tensor[idx]
             context['input_tensor'] = tensor
+
+
+    def prepare_group_maps_and_dindices(self, task: Task, context: Dict[str, Any], config: Any):
+        all_input_tokens = context.get('all_x_backbones')
+        if all_input_tokens is None:
+            return
+
+        all_group_maps = context.get('all_group_maps')
+        if all_group_maps is None:
+            return
+
+        if not isinstance(all_group_maps, list) or len(all_group_maps) != len(all_input_tokens):
+            print("!!! [DetectorExecutor] all_group_maps must be a list aligned with all_x_backbones.")
+            return
+
+        all_cached_dindices = []
+        num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
+
+        for src_idx, (input_tokens, group_map) in enumerate(zip(all_input_tokens, all_group_maps)):
+            if not torch.is_tensor(group_map):
+                print(f"!!! [DetectorExecutor] all_group_maps[{src_idx}] must be a tensor.")
+                return
+            if group_map.ndim != 2:
+                print(f"!!! [DetectorExecutor] all_group_maps[{src_idx}] must have shape [B, N].")
+                return
+            if group_map.shape[0] != input_tokens.shape[0]:
+                print(
+                    f"!!! [DetectorExecutor] Batch mismatch for all_group_maps[{src_idx}]: "
+                    f"{group_map.shape[0]} != {input_tokens.shape[0]}"
+                )
+                return
+
+            src_cached_dindices = {}
+            group_ids = torch.unique(group_map)
+            group_ids = group_ids[group_ids >= 0]
+
+            for gid_tensor in group_ids:
+                gid = int(gid_tensor.item())
+                nonzero_indices = torch.nonzero(group_map == gid, as_tuple=False)
+                if nonzero_indices.numel() == 0:
+                    continue
+
+                B = input_tokens.shape[0]
+                try:
+                    spatial_indices = nonzero_indices[:, 1].view(B, -1)
+                except RuntimeError:
+                    print(f"!!! [DetectorExecutor] Non-uniform group size detected at src={src_idx}, group={gid}.")
+                    return
+
+                patch_indices = spatial_indices + num_pretokens
+                pre_indices = torch.arange(
+                    num_pretokens,
+                    device=input_tokens.device,
+                    dtype=torch.long,
+                ).unsqueeze(0).expand(B, -1)
+                src_cached_dindices[gid] = torch.cat([pre_indices, patch_indices], dim=1)
+
+            all_cached_dindices.append(src_cached_dindices)
+
+        context['all_cached_dindices'] = all_cached_dindices
+
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
         if 'input_tensor' not in context: return {}
@@ -132,45 +187,182 @@ class DINOv3DetectorExecutor(ModelExecutor):
         all_x_backbones.append(g_xb); all_rope_sincos.append(g_rs)
 
         context['all_x_backbones'], context['all_rope_sincos'] = all_x_backbones, all_rope_sincos
+        
+        self.prepare_group_maps_and_dindices(task, context, config)
 
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
-        pass
+        layers = params.get('layers', (0, 40))
+        start_l, end_l = layers[0], layers[1]
+
+        dino_backbone = self.model.detector.backbone[0]._backbone
+        blocks = dino_backbone.backbone.blocks
+
+        if 'current_features' not in context:
+            if 'all_x_backbones' in context:
+                context['current_features'] = [x for x in context['all_x_backbones']]
+            else:
+                return
+
+        all_current_features = context['current_features']
+        all_input_tokens = context.get('all_x_backbones')
+        all_rope_sincos = context.get('all_rope_sincos')
+        all_cache_features = context.get('all_cache_features')
+        all_outputs = context.get('all_outputs')
+
+        if all_input_tokens is None or all_rope_sincos is None:
+            return
+
+        if all_cache_features is None:
+            all_cache_features = [dict() for _ in range(len(all_input_tokens))]
+
+        if all_outputs is None or start_l == 0:
+            all_outputs = [[] for _ in range(len(all_input_tokens))]
+
+        if start_l == 0:
+            all_current_features = [x for x in all_input_tokens]
+
+        new_current_features = []
+        new_cache_features = []
+        new_all_outputs = []
+
+        for src_idx, (x_feature, rope_sincos, cache, prev_outputs) in enumerate(
+            zip(all_current_features, all_rope_sincos, all_cache_features, all_outputs)
+        ):
+            collected_outputs = [] if start_l == 0 else list(prev_outputs)
+
+            for lidx in range(start_l, end_l):
+                blk = blocks[lidx]
+
+                with torch.no_grad():
+                    x_feature, cache = blk.approx(
+                        x_feature,
+                        rope_sincos,
+                        cache,
+                        tag=f"src{src_idx}_layer{lidx}",
+                        debug=False
+                    )
+
+                if lidx in dino_backbone.layers_to_use:
+                    collected_outputs.append(x_feature)
+
+            new_current_features.append(x_feature)
+            new_cache_features.append(cache)
+            new_all_outputs.append(collected_outputs)
+
+        context['current_features'] = new_current_features
+        context['all_cache_features'] = new_cache_features
+        context['all_outputs'] = new_all_outputs
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        layers = params.get('layers', (0, 40))
+        group_id = params.get('group_id', 1)
+        start_l, end_l = layers[0], layers[1]
+
         dino_backbone = self.model.detector.backbone[0]._backbone
-        all_x_backbones = context.get('all_x_backbones')
+        blocks = self._get_vit_backbone().blocks
+
+        all_input_tokens = context.get('all_x_backbones')
         all_rope_sincos = context.get('all_rope_sincos')
-        n, blocks = dino_backbone.layers_to_use, dino_backbone.backbone.blocks
-        blocks_to_take = range(len(blocks) - n, len(blocks)) if isinstance(n, int) else n
+        all_group_maps = context.get('all_group_maps')
+        all_cache_features = context.get('all_cache_features')
+        all_cached_dindices = context.get('all_cached_dindices')
+        all_outputs = context.get('all_outputs')   
 
-        all_outputs = []
-        for x_backbone, rope_sincos in zip(all_x_backbones, all_rope_sincos):
-            output = []
-            for i, blk in enumerate(blocks):
-                x_backbone = blk(x_backbone, rope_sincos)
-                if i in blocks_to_take:
-                    output.append(x_backbone)
-            all_outputs.append(output)
+        if all_input_tokens is None or all_rope_sincos is None:
+            return
+        if all_group_maps is None or all_cached_dindices is None:
+            return
+        if not isinstance(all_group_maps, list) or not isinstance(all_cached_dindices, list):
+            return
+        if len(all_group_maps) != len(all_input_tokens) or len(all_cached_dindices) != len(all_input_tokens):
+            return
 
-        context['all_outputs'] = all_outputs
+        if all_cache_features is None:
+            all_cache_features = [dict() for _ in range(len(all_input_tokens))]
+
+        if all_outputs is None or start_l == 0:   
+            all_outputs = [[] for _ in range(len(all_input_tokens))]
+
+        alive_ratio = getattr(dino_backbone, 'appcorr_cls_alive_ratio', 0.2)
+
+        new_current_features = []
+        new_cache_features = []
+        new_all_outputs = []   
+
+        for src_idx, (input_tokens, rope_sincos, group_map, cached_dindices, cache, prev_outputs) in enumerate(
+            zip(all_input_tokens, all_rope_sincos, all_group_maps, all_cached_dindices, all_cache_features, all_outputs)
+        ):
+            if not torch.is_tensor(group_map) or not isinstance(cached_dindices, dict):
+                return
+
+            dindice = cached_dindices.get(group_id)
+            collected_outputs = [] if start_l == 0 else list(prev_outputs)   
+
+            if dindice is None:
+                new_current_features.append(input_tokens)
+                new_cache_features.append(cache)
+                new_all_outputs.append(collected_outputs)   
+                continue
+
+            x_temp = input_tokens
+            for lidx in range(start_l, end_l):
+                blk = blocks[lidx]
+                with torch.no_grad():
+                    x_temp, cache = blk.correct(
+                        x_temp,
+                        dindice,
+                        rope_sincos,
+                        cache,
+                        tag=f"src{src_idx}_layer{lidx}",
+                        cls_alive_ratio=alive_ratio,
+                        debug=False,
+                    )
+
+                if lidx in dino_backbone.layers_to_use:   
+                    collected_outputs.append(x_temp)
+
+            new_current_features.append(x_temp)
+            new_cache_features.append(cache)
+            new_all_outputs.append(collected_outputs)   
+
+        context['current_features'] = new_current_features
+        context['all_cache_features'] = new_cache_features
+        context['all_outputs'] = new_all_outputs   
 
     def _process_outputs(self, outputs, x, dt_backbone):
-        normed = []
-        for out in outputs:
-            if dt_backbone.backbone.untie_cls_and_patch_norms:
-                cls_reg = dt_backbone.backbone.cls_norm(out[:, : dt_backbone.backbone.n_storage_tokens + 1])
-                patch = dt_backbone.backbone.norm(out[:, dt_backbone.backbone.n_storage_tokens + 1 :])
-                normed.append(torch.cat((cls_reg, patch), dim=1))
-            else:
-                normed.append(dt_backbone.backbone.norm(out))
-        outputs = [out[:, dt_backbone.backbone.n_storage_tokens + 1 :] for out in normed]
-
         B, _, h, w = x.shape
         ps = dt_backbone.backbone.patch_size
-        xs = [o.reshape(B, h // ps, w // ps, -1).permute(0, 3, 1, 2).contiguous() for o in outputs]
-        
+        expected = (h // ps) * (w // ps)
+        special = dt_backbone.backbone.n_storage_tokens + 1
+
+        xs = []
+        for i, out in enumerate(outputs):
+            n = out.shape[1]
+
+            if n == expected:
+                out = dt_backbone.backbone.norm(out)
+            elif n == expected + special:
+                if dt_backbone.backbone.untie_cls_and_patch_norms:
+                    out = torch.cat([
+                        dt_backbone.backbone.cls_norm(out[:, :special]),
+                        dt_backbone.backbone.norm(out[:, special:])
+                    ], dim=1)
+                else:
+                    out = dt_backbone.backbone.norm(out)
+                out = out[:, special:]
+            else:
+                raise RuntimeError(
+                    f"Unexpected token count at layer {i}: got {n}, "
+                    f"expected {expected} or {expected + special}"
+                )
+
+            xs.append(
+                out.reshape(B, h // ps, w // ps, -1).permute(0, 3, 1, 2).contiguous()
+            )
+
         if dt_backbone.use_layernorm:
             xs = [ln(x).contiguous() for ln, x in zip(dt_backbone.layer_norms, xs)]
+
         return torch.cat(xs, dim=1)
 
     def _run_transformer_and_postprocess(self, detector, features, sizes_tensor):
@@ -230,6 +422,9 @@ class DINOv3DetectorExecutor(ModelExecutor):
         dino_bb = win_wrapper._backbone
 
         all_outputs = context.get('all_outputs')
+        if all_outputs is None:
+            raise RuntimeError("Missing context['all_outputs'] for head_inference().")
+
         global_output, window_outputs = all_outputs[-1], all_outputs[:-1]
 
         win_patch_tensors, win_patch_masks = context.get('window_patch_tensors'), context.get('window_patch_masks')
@@ -258,14 +453,14 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         context['det_outputs'] = self._run_transformer_and_postprocess(detector, features, context.get('sizes_tensor'))
         return {}
+        
 
     @torch.inference_mode()
     def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
-        if 'input_tensor' not in context: return {}
-        self.prepare_tokens(task, context, config)
-        self.correct_forward({}, context, config)
-        self.head_inference(task, context, config)
-        return {}
+        inp = context.get('input_tensor')
+        if inp is not None:
+            context['det_output'] = self.model(inp)
+
 
     def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
         results = {}
