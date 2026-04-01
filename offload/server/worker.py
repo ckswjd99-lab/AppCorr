@@ -332,7 +332,7 @@ class WorkerModule(multiprocessing.Process):
 
         breakdown: Dict[str, int] = {}
         seen: set[int] = set()
-        layer_prefix = re.compile(r"^layer\d+_")
+        layer_prefix = re.compile(r"^(?:src\d+_)?layer\d+_")
         group_suffix = re.compile(r"_g\d+$")
         full_dindice_group_suffix = re.compile(r"_full_dindice_g\d+$")
 
