@@ -107,3 +107,5 @@ class InferenceResult:
     attn_prob_mass_full: float = 0.0
     token_prune_kept_patch: float = 0.0
     token_prune_full_patch: float = 0.0
+    token_prune_kept_residual_mass: float = 0.0
+    token_prune_full_residual_mass: float = 0.0

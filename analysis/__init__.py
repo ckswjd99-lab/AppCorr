@@ -1,1 +1,1 @@
-# Analysis utilities and standalone experiment scripts.
+# Analysis package for standalone experiments, log tools, and shared helpers.

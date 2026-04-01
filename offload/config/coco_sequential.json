@@ -3,7 +3,7 @@
     "dataset_name": "coco2017",
     "dataset_kwargs": {
     },
-    "batch_size": 4,
+    "batch_size": 1,
     "image_shape": [1024, 1024, 3],
     "patch_size": [64, 64],
     "transmission_policy_name": "Raw",

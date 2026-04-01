@@ -12,6 +12,7 @@ import torch.nn.init
 from torch import Tensor, nn
 
 from ..layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
+from ..layers._triton_kernels import token_prune_select_compact_triton
 from ..utils import named_apply
 from ..utils.hier_token import HierarchicalToken
 
@@ -431,6 +432,44 @@ class DinoVisionTransformer(nn.Module):
 
                 x_temp = x_pyramid[level]
                 rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
+                fixed_token_prune_state = None
+                if self.appcorr_token_prune_enabled:
+                    B_level, _, C = x_temp.shape
+                    num_level_pretokens = x_temp.shape[1] - rope_sincos[0].shape[0] if rope_sincos is not None else num_pretokens
+                    gather_idx_x_full = dindice.unsqueeze(-1).expand(-1, -1, C)
+                    dx_sel_full = (x_feature - x_temp).gather(1, gather_idx_x_full).contiguous()
+                    dindice_sel, query_pos_idx, query_valid_mask, kept_patch_count = token_prune_select_compact_triton(
+                        dx_sel_full,
+                        dindice,
+                        num_pretokens=num_level_pretokens,
+                        token_prune_threshold=self.appcorr_token_prune_threshold,
+                        token_prune_min_keep=self.appcorr_token_prune_min_keep,
+                    )
+                    active_batch_idx, active_pos_idx = query_valid_mask.nonzero(as_tuple=True)
+                    active_token_idx = dindice_sel[active_batch_idx, active_pos_idx]
+                    active_query_pos = query_pos_idx[active_batch_idx, active_pos_idx]
+                    active_counts = torch.bincount(active_batch_idx, minlength=B_level)
+                    max_active = int(active_counts.max().item()) if active_counts.numel() > 0 else 0
+                    active_query_pos_padded = torch.zeros((B_level, max_active), device=x_temp.device, dtype=torch.long)
+                    active_query_mask = torch.zeros((B_level, max_active), device=x_temp.device, dtype=torch.bool)
+                    if active_query_pos.numel() > 0:
+                        batch_start = active_counts.cumsum(0) - active_counts
+                        slot_idx = torch.arange(active_query_pos.shape[0], device=x_temp.device, dtype=torch.long)
+                        slot_idx = slot_idx - torch.repeat_interleave(batch_start, active_counts)
+                        active_query_pos_padded[active_batch_idx, slot_idx] = active_query_pos
+                        active_query_mask[active_batch_idx, slot_idx] = True
+                    fixed_token_prune_state = {
+                        "dindice_sel": dindice_sel,
+                        "query_pos_idx": query_pos_idx,
+                        "query_valid_mask": query_valid_mask,
+                        "kept_patch_count": kept_patch_count,
+                        "active_batch_idx": active_batch_idx,
+                        "active_pos_idx": active_pos_idx,
+                        "active_token_idx": active_token_idx,
+                        "active_query_pos": active_query_pos,
+                        "active_query_pos_padded": active_query_pos_padded,
+                        "active_query_mask": active_query_mask,
+                    }
                 
                 for lidx in layers:
                     with torch.cuda.nvtx.range(f"correct_{lidx}"):
@@ -442,6 +481,7 @@ class DinoVisionTransformer(nn.Module):
                             token_prune_enabled=self.appcorr_token_prune_enabled,
                             token_prune_threshold=self.appcorr_token_prune_threshold,
                             token_prune_min_keep=self.appcorr_token_prune_min_keep,
+                            fixed_token_prune_state=fixed_token_prune_state,
                             attn_cache_key=(level, group_idx),
                             debug=self.appcorr_debug
                         )
