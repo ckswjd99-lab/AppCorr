@@ -6,6 +6,7 @@ import torchvision.transforms.v2 as v2
 import math
 import numpy as np
 from offload.common import Task
+from offload.common.protocol import normalize_appcorr_kwargs
 from .base import ModelExecutor
 from .utils import load_weight_mmap
 
@@ -252,6 +253,144 @@ class DINOv3DetectorExecutor(ModelExecutor):
         merged.update(total_values)
         return merged
 
+    @staticmethod
+    def _is_global_source(source_layout: Dict[str, Any] | None) -> bool:
+        return isinstance(source_layout, dict) and source_layout.get('kind') == 'global'
+
+    @classmethod
+    def _is_deferred_global_source(
+        cls,
+        appcorr_options: Dict[str, Any],
+        source_layout: Dict[str, Any] | None,
+    ) -> bool:
+        return (
+            bool(appcorr_options.get('generated_from_client', False))
+            and cls._is_global_source(source_layout)
+            and appcorr_options.get('global_source_mode', 'final_correct') == 'final_correct'
+        )
+
+    @classmethod
+    def _is_approx_global_source(
+        cls,
+        appcorr_options: Dict[str, Any],
+        source_layout: Dict[str, Any] | None,
+    ) -> bool:
+        return (
+            bool(appcorr_options.get('generated_from_client', False))
+            and cls._is_global_source(source_layout)
+            and appcorr_options.get('global_source_mode', 'final_correct') == 'approx'
+        )
+
+    def _run_exact_source_backbone(
+        self,
+        input_tokens: torch.Tensor,
+        rope_sincos: Any,
+        blocks: Any,
+        layers_to_use: Any,
+        end_l: int,
+    ) -> tuple[torch.Tensor, List[torch.Tensor]]:
+        x_temp = input_tokens
+        collected_outputs: List[torch.Tensor] = []
+        for lidx in range(end_l):
+            blk = blocks[lidx]
+            with torch.no_grad():
+                x_temp = blk(x_temp, rope_sincos)
+            if lidx in layers_to_use:
+                collected_outputs.append(x_temp)
+        return x_temp, collected_outputs
+
+    @staticmethod
+    def _build_grid_group_map_2d(
+        grid_h: int,
+        grid_w: int,
+        num_groups: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        return create_group_index(
+            grid_h * grid_w,
+            num_groups,
+            "grid",
+            device=device,
+            token_hw=(grid_h, grid_w),
+        ).view(grid_h, grid_w)
+
+    def _project_transmission_groups_to_sources(
+        self,
+        context: Dict[str, Any],
+        config: Any,
+    ) -> List[torch.Tensor] | None:
+        source_layouts = context.get('all_source_layouts')
+        all_input_tokens = context.get('all_x_backbones')
+        if not isinstance(source_layouts, list) or all_input_tokens is None:
+            return None
+        if len(source_layouts) != len(all_input_tokens):
+            return None
+
+        grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
+        if grouping_strategy != 'grid':
+            return None
+
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
+        if len(levels) != 2 or levels[-1] != 0:
+            return None
+
+        img_h, img_w = config.image_shape[:2]
+        if isinstance(config.patch_size, int):
+            tx_patch_h = tx_patch_w = config.patch_size
+        else:
+            tx_patch_h, tx_patch_w = config.patch_size
+        if img_h % tx_patch_h != 0 or img_w % tx_patch_w != 0:
+            return None
+
+        num_groups = int(config.transmission_kwargs.get('num_groups', 4))
+        tx_grid_h = img_h // tx_patch_h
+        tx_grid_w = img_w // tx_patch_w
+        tx_group_map_2d = self._build_grid_group_map_2d(
+            tx_grid_h,
+            tx_grid_w,
+            num_groups,
+            self.device,
+        )
+
+        vit_patch_size = int(self._get_vit_backbone().patch_size)
+        num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
+        all_group_maps: List[torch.Tensor] = []
+
+        for layout, input_tokens in zip(source_layouts, all_input_tokens):
+            token_h = int(layout['token_h'])
+            token_w = int(layout['token_w'])
+            if layout['kind'] == 'window':
+                y_origin = int(layout['top']) + torch.arange(token_h, device=self.device, dtype=torch.long) * vit_patch_size
+                x_origin = int(layout['left']) + torch.arange(token_w, device=self.device, dtype=torch.long) * vit_patch_size
+            elif layout['kind'] == 'global':
+                resized_h = int(layout['resized_h'])
+                resized_w = int(layout['resized_w'])
+                y_origin = (
+                    (torch.arange(token_h, device=self.device, dtype=torch.float32) + 0.5)
+                    * vit_patch_size
+                    * (img_h / float(resized_h))
+                ).floor().to(dtype=torch.long)
+                x_origin = (
+                    (torch.arange(token_w, device=self.device, dtype=torch.float32) + 0.5)
+                    * vit_patch_size
+                    * (img_w / float(resized_w))
+                ).floor().to(dtype=torch.long)
+            else:
+                return None
+
+            y_idx = torch.clamp(y_origin // tx_patch_h, min=0, max=tx_grid_h - 1)
+            x_idx = torch.clamp(x_origin // tx_patch_w, min=0, max=tx_grid_w - 1)
+            source_group_map = tx_group_map_2d.index_select(0, y_idx).index_select(1, x_idx).reshape(1, -1)
+            expected_tokens = input_tokens.shape[1] - num_pretokens
+            if source_group_map.shape[1] != expected_tokens:
+                raise RuntimeError(
+                    f"Projected detector group map has {source_group_map.shape[1]} tokens, "
+                    f"expected {expected_tokens} for source layout {layout}"
+                )
+            all_group_maps.append(source_group_map.expand(input_tokens.shape[0], -1).contiguous())
+
+        return all_group_maps
+
     def _build_all_group_maps(self, context: Dict[str, Any], config: Any) -> List[torch.Tensor] | None:
         all_input_tokens = context.get('all_x_backbones')
         if all_input_tokens is None:
@@ -262,16 +401,27 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if grouping_strategy not in {'grid', 'uniform', 'geometric'}:
             return None
 
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        if appcorr_options.get('generated_from_client', False):
+            projected_group_maps = self._project_transmission_groups_to_sources(context, config)
+            if projected_group_maps is not None:
+                return projected_group_maps
+
         all_group_maps = []
         num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
-        for input_tokens in all_input_tokens:
+        source_layouts = context.get('all_source_layouts') or [None] * len(all_input_tokens)
+        for input_tokens, source_layout in zip(all_input_tokens, source_layouts):
             B = input_tokens.shape[0]
             num_tokens = input_tokens.shape[1] - num_pretokens
+            token_hw = None
+            if isinstance(source_layout, dict):
+                token_hw = (int(source_layout['token_h']), int(source_layout['token_w']))
             group_idx = create_group_index(
                 num_tokens,
                 num_groups,
                 grouping_strategy,
                 device=input_tokens.device,
+                token_hw=token_hw,
             )
             if group_idx.ndim == 1:
                 group_idx = group_idx.unsqueeze(0).expand(B, -1)
@@ -288,7 +438,9 @@ class DINOv3DetectorExecutor(ModelExecutor):
             isinstance(all_group_maps, list)
             and len(all_group_maps) == len(all_input_tokens)
             and all(
-                torch.is_tensor(group_map) and group_map.shape[0] == input_tokens.shape[0]
+                torch.is_tensor(group_map)
+                and group_map.shape[0] == input_tokens.shape[0]
+                and group_map.shape[1] == (input_tokens.shape[1] - (1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)))
                 for group_map, input_tokens in zip(all_group_maps, all_input_tokens)
             )
         )
@@ -334,14 +486,6 @@ class DINOv3DetectorExecutor(ModelExecutor):
             print(f"!!! [Executor] Failed to load detector weights: {e}")
             raise e
 
-        appcorr_kwargs = config.appcorr_kwargs.copy()
-        appcorr_kwargs.pop('generated_from_client', None)
-        if appcorr_kwargs:
-            print(f"[Executor] Enabling AppCorr Mode: {appcorr_kwargs}")
-            self._get_vit_backbone().set_appcorr_mode(**appcorr_kwargs)
-        else:
-            self._get_vit_backbone().set_appcorr_mode(enabled=False)
-            
         self.model.eval()
 
     def _get_vit_backbone(self):
@@ -398,9 +542,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
         all_group_plans = []
         num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
         all_patch_residual_rms = context.get('all_patch_residual_rms')
-        token_prune_enabled = getattr(self._get_vit_backbone(), 'appcorr_token_prune_enabled', False)
-        token_prune_threshold = float(getattr(self._get_vit_backbone(), 'appcorr_token_prune_threshold', 0.0))
-        token_prune_min_keep = int(getattr(self._get_vit_backbone(), 'appcorr_token_prune_min_keep', 1))
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        token_prune_enabled = appcorr_options["token_prune_enabled"]
+        token_prune_threshold = appcorr_options["token_prune_threshold"]
+        token_prune_min_keep = appcorr_options["token_prune_min_keep"]
 
         for src_idx, (input_tokens, group_map) in enumerate(zip(all_input_tokens, all_group_maps)):
             if not torch.is_tensor(group_map):
@@ -413,6 +558,13 @@ class DINOv3DetectorExecutor(ModelExecutor):
                 print(
                     f"!!! [DetectorExecutor] Batch mismatch for all_group_maps[{src_idx}]: "
                     f"{group_map.shape[0]} != {input_tokens.shape[0]}"
+                )
+                return
+            expected_tokens = input_tokens.shape[1] - num_pretokens
+            if group_map.shape[1] != expected_tokens:
+                print(
+                    f"!!! [DetectorExecutor] Token mismatch for all_group_maps[{src_idx}]: "
+                    f"{group_map.shape[1]} != {expected_tokens}"
                 )
                 return
 
@@ -490,6 +642,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         context['window_patch_tensors'], context['window_patch_masks'], context['window_patch_tokens'] = [], [], []
         all_x_backbones, all_rope_sincos = [], []
         all_patch_residual_rms = []
+        all_source_layouts = []
 
         def _prep(x):
             xb, (H, W) = dino_bb.prepare_tokens_with_masks(x)
@@ -520,6 +673,15 @@ class DINOv3DetectorExecutor(ModelExecutor):
                 row_t.append(wt); row_m.append(wm); row_x.append(x)
                 xb, rs = _prep(x)
                 all_x_backbones.append(xb); all_rope_sincos.append(rs)
+                all_source_layouts.append({
+                    'kind': 'window',
+                    'top': all_h_cum[ih],
+                    'left': all_w_cum[iw],
+                    'height': all_h[ih],
+                    'width': all_w[iw],
+                    'token_h': all_h[ih] // dino_bb.patch_size,
+                    'token_w': all_w[iw] // dino_bb.patch_size,
+                })
                 if curr_hr_tensor is not None:
                     curr_src = v2.functional.crop(curr_hr_tensor, all_h_cum[ih], all_w_cum[iw], all_h[ih], all_w[iw])
                     prev_src = None
@@ -536,6 +698,17 @@ class DINOv3DetectorExecutor(ModelExecutor):
         context['global_x'] = NestedTensor(v2.functional.resize(tensors, size=(win_h, win_w)), mask).tensors
         g_xb, g_rs = _prep(context['global_x'])
         all_x_backbones.append(g_xb); all_rope_sincos.append(g_rs)
+        all_source_layouts.append({
+            'kind': 'global',
+            'top': 0,
+            'left': 0,
+            'height': orig_h,
+            'width': orig_w,
+            'resized_h': win_h,
+            'resized_w': win_w,
+            'token_h': win_h // dino_bb.patch_size,
+            'token_w': win_w // dino_bb.patch_size,
+        })
         if curr_hr_tensor is not None:
             curr_global = v2.functional.resize(curr_hr_tensor, size=(win_h, win_w))
             prev_global = v2.functional.resize(prev_hr_tensor, size=(win_h, win_w)) if prev_hr_tensor is not None else None
@@ -544,6 +717,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
             )
 
         context['all_x_backbones'], context['all_rope_sincos'] = all_x_backbones, all_rope_sincos
+        context['all_source_layouts'] = all_source_layouts
         context['all_patch_residual_rms'] = all_patch_residual_rms
         context.pop('all_group_plans', None)
         context.pop('all_cached_dindices', None)
@@ -571,10 +745,12 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get('all_group_plans')
-        appcorr_method = getattr(self._get_vit_backbone(), 'appcorr_method', None)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_method = appcorr_options["method"]
 
         if all_input_tokens is None or all_rope_sincos is None:
             return
+        all_source_layouts = context.get('all_source_layouts') or [None] * len(all_input_tokens)
 
         if all_cache_features is None:
             all_cache_features = [dict() for _ in range(len(all_input_tokens))]
@@ -595,9 +771,28 @@ class DINOv3DetectorExecutor(ModelExecutor):
             if len(all_group_plans) != len(all_input_tokens):
                 raise ValueError("all_group_plans must align with all_x_backbones")
 
-        for src_idx, (x_feature, rope_sincos, cache, prev_outputs) in enumerate(
-            zip(all_current_features, all_rope_sincos, all_cache_features, all_outputs)
+        for src_idx, (x_feature, input_tokens, rope_sincos, cache, prev_outputs, source_layout) in enumerate(
+            zip(all_current_features, all_input_tokens, all_rope_sincos, all_cache_features, all_outputs, all_source_layouts)
         ):
+            if self._is_approx_global_source(appcorr_options, source_layout):
+                x_feature, collected_outputs = self._run_exact_source_backbone(
+                    input_tokens,
+                    rope_sincos,
+                    blocks,
+                    dino_backbone.layers_to_use,
+                    end_l,
+                )
+                new_current_features.append(x_feature)
+                new_cache_features.append(cache)
+                new_all_outputs.append(collected_outputs)
+                continue
+
+            if self._is_deferred_global_source(appcorr_options, source_layout):
+                new_current_features.append(input_tokens)
+                new_cache_features.append(cache)
+                new_all_outputs.append([] if start_l == 0 else list(prev_outputs))
+                continue
+
             collected_outputs = [] if start_l == 0 else list(prev_outputs)
             group_plans = all_group_plans[src_idx] if appcorr_method == 'partial_channel' else None
             attn_cache_candidates = (
@@ -614,9 +809,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
                         rope_sincos,
                         cache,
                         tag=f"src{src_idx}_layer{lidx}",
+                        appcorr_method=appcorr_method,
                         attn_cache_candidates=attn_cache_candidates,
                         group_plans=group_plans,
-                        attn_col_alive_ratio=getattr(self._get_vit_backbone(), 'appcorr_attn_col_alive_ratio', 1.0),
+                        attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
                         debug=False
                     )
 
@@ -638,7 +834,8 @@ class DINOv3DetectorExecutor(ModelExecutor):
         start_l, end_l = layers[0], layers[1]
 
         dino_backbone = self.model.detector.backbone[0]._backbone
-        blocks = self._get_vit_backbone().blocks
+        vit_backbone = self._get_vit_backbone()
+        blocks = vit_backbone.blocks
 
         all_input_tokens = context.get('all_x_backbones')
         all_rope_sincos = context.get('all_rope_sincos')
@@ -649,10 +846,12 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get('all_group_plans')
-        appcorr_method = getattr(self._get_vit_backbone(), 'appcorr_method', None)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_method = appcorr_options["method"]
 
         if all_input_tokens is None or all_rope_sincos is None:
             return
+        all_source_layouts = context.get('all_source_layouts') or [None] * len(all_input_tokens)
         if all_group_maps is None or all_cached_dindices is None:
             return
         if not isinstance(all_group_maps, list) or not isinstance(all_cached_dindices, list):
@@ -666,7 +865,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if all_outputs is None or start_l == 0:   
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
-        alive_ratio = getattr(dino_backbone, 'appcorr_cls_alive_ratio', 0.2)
+        alive_ratio = appcorr_options["cls_alive_ratio"]
+        final_group_id = int(config.transmission_kwargs.get('num_groups', 4))
+        total_layers = min(int(config.transmission_kwargs.get('total_layers', len(blocks))), len(blocks))
+        is_final_group = int(group_id) >= final_group_id
 
         if appcorr_method == 'partial_channel':
             if all_group_plans is None or not isinstance(all_group_plans, list):
@@ -678,9 +880,40 @@ class DINOv3DetectorExecutor(ModelExecutor):
         new_cache_features = []
         new_all_outputs = []
 
-        for src_idx, (input_tokens, rope_sincos, group_map, cached_dindices, cache, prev_outputs) in enumerate(
-            zip(all_input_tokens, all_rope_sincos, all_group_maps, all_cached_dindices, all_cache_features, all_outputs)
+        for src_idx, (input_tokens, rope_sincos, group_map, cached_dindices, cache, prev_outputs, source_layout) in enumerate(
+            zip(all_input_tokens, all_rope_sincos, all_group_maps, all_cached_dindices, all_cache_features, all_outputs, all_source_layouts)
         ):
+            if self._is_approx_global_source(appcorr_options, source_layout):
+                x_temp, collected_outputs = self._run_exact_source_backbone(
+                    input_tokens,
+                    rope_sincos,
+                    blocks,
+                    dino_backbone.layers_to_use,
+                    end_l,
+                )
+                new_current_features.append(x_temp)
+                new_cache_features.append(cache)
+                new_all_outputs.append(collected_outputs)
+                continue
+
+            if self._is_deferred_global_source(appcorr_options, source_layout):
+                if is_final_group:
+                    x_temp, collected_outputs = self._run_exact_source_backbone(
+                        input_tokens,
+                        rope_sincos,
+                        blocks,
+                        dino_backbone.layers_to_use,
+                        total_layers,
+                    )
+                    new_current_features.append(x_temp)
+                    new_cache_features.append(cache)
+                    new_all_outputs.append(collected_outputs)
+                else:
+                    new_current_features.append(input_tokens)
+                    new_cache_features.append(cache)
+                    new_all_outputs.append([] if start_l == 0 else list(prev_outputs))
+                continue
+
             if not torch.is_tensor(group_map) or not isinstance(cached_dindices, dict):
                 return
 
@@ -704,7 +937,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                 dindice = plan.pruned_dindice.to(device=self.device, non_blocking=True)
                 plan.pruned_dindice = dindice
                 fixed_query_state = plan.query_state
-                attn_col_alive_ratio = getattr(self._get_vit_backbone(), 'appcorr_attn_col_alive_ratio', 1.0)
+                attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
                 cache["_token_prune_kept_patch_total"] = (
                     cache.get("_token_prune_kept_patch_total", input_tokens.new_zeros((), dtype=torch.float32))
                     + plan.kept_patch_count.sum(dtype=torch.float32)
@@ -736,6 +969,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             rope_sincos,
                             cache,
                             tag=f"src{src_idx}_layer{lidx}",
+                            appcorr_method=appcorr_method,
                             cls_alive_ratio=alive_ratio,
                             attn_col_alive_ratio=attn_col_alive_ratio,
                             fixed_query_state=fixed_query_state,
@@ -750,6 +984,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             rope_sincos,
                             cache,
                             tag=f"src{src_idx}_layer{lidx}",
+                            appcorr_method=appcorr_method,
                             cls_alive_ratio=alive_ratio,
                             debug=False,
                         )

@@ -73,13 +73,6 @@ class SelfAttentionBlock(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
 
         self.sample_drop_ratio = drop_path
-        self.appcorr_method = "partial_token"
-
-    def set_appcorr_method(self, method: str | None = None) -> None:
-        if method is not None:
-            self.appcorr_method = method
-        if hasattr(self.attn, "set_appcorr_method"):
-            self.attn.set_appcorr_method(method=method)
 
     @staticmethod
     def _maybe_index_rope(rope: tuple[Tensor, Tensor] | None, indices: Tensor) -> tuple[Tensor, Tensor] | None:
@@ -229,12 +222,13 @@ class SelfAttentionBlock(nn.Module):
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         with torch.cuda.nvtx.range("approx"):
-            if self.appcorr_method == "partial_token":
+            appcorr_method = kwargs.get("appcorr_method", "partial_token")
+            if appcorr_method == "partial_token":
                 return self.approx_partial_token(x, rope, cache_feature, tag, **kwargs)
-            if self.appcorr_method == "partial_channel":
+            if appcorr_method == "partial_channel":
                 return self.approx_partial_channel(x, rope, cache_feature, tag, **kwargs)
             raise ValueError(
-                f"Unknown SelfAttentionBlock.approx method '{self.appcorr_method}'. "
+                f"Unknown SelfAttentionBlock.approx method '{appcorr_method}'. "
                 "Available methods: partial_channel, partial_token"
             )
     
@@ -242,9 +236,10 @@ class SelfAttentionBlock(nn.Module):
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         with torch.cuda.nvtx.range("correct"):
-            if self.appcorr_method == "partial_token":
+            appcorr_method = kwargs.get("appcorr_method", "partial_token")
+            if appcorr_method == "partial_token":
                 return self.correct_partial_token(x, dindice, rope, cache_feature, tag, **kwargs)
-            if self.appcorr_method == "partial_channel":
+            if appcorr_method == "partial_channel":
                 return self.correct_partial_channel(
                     x,
                     dindice,
@@ -257,7 +252,7 @@ class SelfAttentionBlock(nn.Module):
                     attn_cache_key=kwargs.get("attn_cache_key"),
                 )
             raise ValueError(
-                f"Unknown SelfAttentionBlock.correct method '{self.appcorr_method}'. "
+                f"Unknown SelfAttentionBlock.correct method '{appcorr_method}'. "
                 "Available methods: partial_channel, partial_token"
             )
 
@@ -268,7 +263,13 @@ class SelfAttentionBlock(nn.Module):
         debug = kwargs.get("debug", False)
 
         with torch.cuda.nvtx.range("approx_attn"):
-            x_attn, cache_feature = self.attn.approx(self.norm1(x), rope=rope, cache_feature=cache_feature, tag=tag)
+            x_attn, cache_feature = self.attn.approx(
+                self.norm1(x),
+                rope=rope,
+                cache_feature=cache_feature,
+                tag=tag,
+                appcorr_method="partial_token",
+            )
             x_attn = self.ls1(x_attn)  # [B, N, C]
             cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
             
@@ -304,9 +305,13 @@ class SelfAttentionBlock(nn.Module):
 
         patch_scores = cls_attn_score.gather(1, dindice_patches) # [B, M]
         
-        k_refined = int(dindice_patches.shape[1] * cls_alive_ratio)
-        _, topk_local_idx = torch.topk(patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
-        selected_patch_indices = dindice_patches.gather(1, topk_local_idx)  # [B, k_refined]
+        num_patch_candidates = dindice_patches.shape[1]
+        k_refined = int(num_patch_candidates * cls_alive_ratio)
+        if k_refined <= 0:
+            selected_patch_indices = dindice_patches[:, :0]
+        else:
+            _, topk_local_idx = torch.topk(patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
+            selected_patch_indices = dindice_patches.gather(1, topk_local_idx)  # [B, k_refined]
 
         update_indice = torch.cat([dindice_pre, selected_patch_indices], dim=1)
         cache_feature[f"{tag}_update_indice"] = update_indice.detach().clone()
@@ -317,7 +322,7 @@ class SelfAttentionBlock(nn.Module):
             x_norm_sel = self.norm1(x_sel)
 
             x_attn_sel, cache_feature = self.attn.correct(
-                x_norm_sel, dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag
+                x_norm_sel, dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag, appcorr_method="partial_token"
             )
             x_sel = x_sel + self.ls1(x_attn_sel)
             
@@ -465,8 +470,11 @@ class SelfAttentionBlock(nn.Module):
         fixed_query_state: QueryStateLike,
     ) -> tuple[torch.Tensor, Dict]:
         x_attn_active = self._select_active_tokens(x_attn_sel, fixed_query_state)
-        x_norm2_active = self.norm2(x_attn_active)
-        x_mlp_active, cache_feature = self.mlp.correct_partial_channel(x_norm2_active, cache_feature, tag)
+        x_mlp_active, cache_feature = self.mlp.correct_partial_channel(
+            self.norm2(x_attn_active),
+            cache_feature,
+            tag,
+        )
         if fixed_query_state.all_valid:
             return self.ls2(x_mlp_active).view(x_attn_sel.shape), cache_feature
 
@@ -520,7 +528,12 @@ class SelfAttentionBlock(nn.Module):
             x_attn_sel = self._apply_attn_delta(x_sel, x_ls1_sel_old, dx_attn, fixed_query_state)
 
         with torch.cuda.nvtx.range("correct_ffn"):
-            x_ls2, cache_feature = self._build_ffn_delta(x_attn_sel, cache_feature, tag, fixed_query_state)
+            x_ls2, cache_feature = self._build_ffn_delta(
+                x_attn_sel,
+                cache_feature,
+                tag,
+                fixed_query_state,
+            )
             x = masked_token_update_triton(
                 x_base,
                 dindice_sel,

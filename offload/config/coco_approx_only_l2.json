@@ -1,7 +1,7 @@
 {
     "model_name": "dinov3_detector",
     "dataset_name": "coco2017",
-    "exp_id": "approx_only_l2",
+    "exp_id": "coco_approx_only_l2",
     "batch_size": 1,
     "image_shape": [1024, 1024, 3],
     "patch_size": [16, 16],

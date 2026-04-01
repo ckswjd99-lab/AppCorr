@@ -1,11 +1,10 @@
 {
     "model_name": "dinov3_detector",
     "dataset_name": "coco2017",
-    "dataset_kwargs": {
-    },
+    "exp_id": "coco_sequential",
     "batch_size": 1,
     "image_shape": [1024, 1024, 3],
-    "patch_size": [64, 64],
+    "patch_size": [16, 16],
     "transmission_policy_name": "Raw",
     "transmission_kwargs": {},
     "scheduler_policy_name": "BatchCountBased",
