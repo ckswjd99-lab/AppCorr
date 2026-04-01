@@ -7,11 +7,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from analysis.common import (
+from analysis.shared.common import (
     build_analysis_loader,
     default_data_root_for_dataset,
     make_lowres_and_bicubic,
@@ -21,9 +21,6 @@ from analysis.common import (
     write_csv,
     write_json,
 )
-from analysis.dinov3_probe import Dinov3SignalProbe
-
-
 LOWER_IS_BETTER = {"js_divergence", "l1_mean", "l2_mean"}
 HIGHER_IS_BETTER = {"pearson", "spearman", "topk_overlap"}
 
@@ -399,6 +396,8 @@ def print_quick_summary(summary_rows: list[dict[str, object]]) -> None:
 
 def main():
     args = parse_args()
+    from analysis.shared.dinov3_probe import Dinov3SignalProbe
+
     dataset_name = normalize_dataset_name(args.dataset)
     if args.image_size % args.downscale != 0:
         raise ValueError(f"image_size={args.image_size} must be divisible by downscale={args.downscale}")
