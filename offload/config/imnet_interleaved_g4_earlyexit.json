@@ -21,13 +21,9 @@
         "compression_level": 1
     },
     "appcorr_kwargs": {
-        "method": "partial_channel",
         "generated_from_client": true,
         "pyramid_levels": [2, 0],
         "num_groups": 4,
-        "attn_col_alive_ratio": 0.5,
-        "token_prune_enabled": true,
-        "token_prune_threshold": 7.0,
-        "token_prune_min_keep": 4
+        "cls_alive_ratio": 0.4
     }
 }

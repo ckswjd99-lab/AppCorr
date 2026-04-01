@@ -1,0 +1,14 @@
+{
+    "model_name": "dinov3_detector",
+    "dataset_name": "coco2017",
+    "exp_id": "approx_only_l2",
+    "batch_size": 1,
+    "image_shape": [1024, 1024, 3],
+    "patch_size": [16, 16],
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "Laplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [2],
+        "compression_level": 1
+    }
+}

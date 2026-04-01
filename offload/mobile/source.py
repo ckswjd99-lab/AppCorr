@@ -277,8 +277,8 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            # if (batch_idx+1) == 20:
-            #     break # TEMP
+            if (batch_idx+1) == 20:
+                break # TEMP
 
         final_summary = self.dataset_loader.get_summary()
         print(f"[Source] Final Summary: {final_summary}")
@@ -307,6 +307,7 @@ class SourceModule(multiprocessing.Process):
             100.0 * total_attn_prob_mass_used / total_attn_prob_mass_full
             if total_attn_prob_mass_full > 0 else 0.0
         )
+        attn_col_keep_pct = 100.0 * float(self.config.appcorr_kwargs.get('attn_col_alive_ratio', 1.0))
         avg_token_keep_pct = (
             100.0 * total_token_prune_kept_patch / total_token_prune_full_patch
             if total_token_prune_full_patch > 0 else 100.0
@@ -360,6 +361,7 @@ class SourceModule(multiprocessing.Process):
                 }
         print("")
         print("=== Attention Stats ===")
+        print(f"Configured attention column keep ratio: {attn_col_keep_pct:.2f}%")
         print(f"Avg attention mass covered during V correction: {avg_attn_prob_coverage_pct:.2f}%")
         print("")
         print("=== Token Prune Stats ===")
@@ -375,6 +377,7 @@ class SourceModule(multiprocessing.Process):
             'avg_latency_per_batch': total_latency / (batch_idx + 1),
             'avg_cache_size_bytes_per_offload': avg_cache_size_bytes,
             'max_cache_size_bytes_per_offload': max_cache_size_bytes,
+            'attn_col_keep_pct': attn_col_keep_pct,
             'avg_attn_prob_coverage_pct': avg_attn_prob_coverage_pct,
             'avg_token_keep_pct': avg_token_keep_pct,
             'avg_token_prune_pct': avg_token_prune_pct,
