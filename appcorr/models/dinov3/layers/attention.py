@@ -66,17 +66,12 @@ class SelfAttention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim**-0.5
-        self.appcorr_method = "partial_token"
 
         linear_class = LinearKMaskedBias if mask_k_bias else nn.Linear
         self.qkv = linear_class(dim, dim * 3, bias=qkv_bias, device=device)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias, device=device)
         self.proj_drop = nn.Dropout(proj_drop)
-
-    def set_appcorr_method(self, method: str | None = None) -> None:
-        if method is not None:
-            self.appcorr_method = method
 
     def _build_sparse_attn_cache(
         self,
@@ -89,17 +84,14 @@ class SelfAttention(nn.Module):
         attn_prob_sel = attn_prob.gather(2, gather_idx).contiguous()  # [B, H, Q, N]
 
         num_alive_cols = max(min(int(N * attn_col_alive_ratio), N), 1)
-        if num_alive_cols < N:
-            col_scores = attn_prob_sel.mean(dim=(1, 2))  # [B, N]
-            col_idx = torch.topk(col_scores, k=num_alive_cols, dim=-1, largest=True).indices  # [B, K]
-            gather_idx_col = col_idx.view(B, 1, 1, num_alive_cols).expand(-1, self.num_heads, num_tok, -1)
-            attn_prob_sel = attn_prob_sel.gather(3, gather_idx_col).contiguous()  # [B, H, Q, K]
-        else:
-            col_idx = None
+        col_scores = attn_prob_sel.mean(dim=(1, 2))  # [B, N]
+        col_idx = torch.topk(col_scores, k=num_alive_cols, dim=-1, largest=True).indices  # [B, K]
+        gather_idx_col = col_idx.view(B, 1, 1, num_alive_cols).expand(-1, self.num_heads, num_tok, -1)
+        attn_prob_sel = attn_prob_sel.gather(3, gather_idx_col).contiguous()  # [B, H, Q, K]
 
         return {
             "query_idx": dindice.detach().clone(),
-            "col_idx": col_idx.detach().clone() if col_idx is not None else None,
+            "col_idx": col_idx.detach().clone(),
             "attn_prob_sel": attn_prob_sel.to(dtype=torch.bfloat16).detach().clone(),
         }
 
@@ -187,13 +179,21 @@ class SelfAttention(nn.Module):
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
 
-    def approx(self, x: Tensor, rope: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
-        if self.appcorr_method == "partial_token":
+    def approx(self, x: Tensor, rope: Tensor, cache_feature: Dict, tag: str, **kwargs) -> Tuple[Tensor, dict]:
+        appcorr_method = kwargs.get("appcorr_method", "partial_token")
+        if appcorr_method == "partial_token":
             return self.approx_partial_token(x, rope, cache_feature, tag)
-        if self.appcorr_method == "partial_channel":
-            return self.approx_partial_channel(x, rope, cache_feature, tag)
+        if appcorr_method == "partial_channel":
+            return self.approx_partial_channel(
+                x,
+                rope,
+                cache_feature,
+                tag,
+                attn_cache_candidates=kwargs["attn_cache_candidates"],
+                attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
+            )
         raise ValueError(
-            f"Unknown SelfAttention.approx method '{self.appcorr_method}'. "
+            f"Unknown SelfAttention.approx method '{appcorr_method}'. "
             "Available methods: partial_channel, partial_token"
         )
     
@@ -206,12 +206,13 @@ class SelfAttention(nn.Module):
         tag: str,
         **kwargs,
     ) -> Tuple[Tensor, dict]:
-        if self.appcorr_method == "partial_token":
+        appcorr_method = kwargs.get("appcorr_method", "partial_token")
+        if appcorr_method == "partial_token":
             return self.correct_partial_token(x_sel, dindice, rope, cache_feature, tag)
-        if self.appcorr_method == "partial_channel":
+        if appcorr_method == "partial_channel":
             return self.correct_partial_channel(x_sel, dindice, rope, cache_feature, tag, **kwargs)
         raise ValueError(
-            f"Unknown SelfAttention.correct method '{self.appcorr_method}'. "
+            f"Unknown SelfAttention.correct method '{appcorr_method}'. "
             "Available methods: partial_channel, partial_token"
         )
 
@@ -355,11 +356,8 @@ class SelfAttention(nn.Module):
 
         attn_prob_full = sparse_cache["attn_prob_sel"].to(dtype=dv_cache.dtype)  # [B,H,Q,K]
         col_idx = sparse_cache["col_idx"]
-        if col_idx is not None:
-            gather_idx_dv = col_idx.view(B, 1, col_idx.shape[1], 1).expand(-1, self.num_heads, -1, head_dim)
-            dv_sub = dv_cache.gather(2, gather_idx_dv).contiguous()  # [B, H, K, Dh]
-        else:
-            dv_sub = dv_cache
+        gather_idx_dv = col_idx.view(B, 1, col_idx.shape[1], 1).expand(-1, self.num_heads, -1, head_dim)
+        dv_sub = dv_cache.gather(2, gather_idx_dv).contiguous()  # [B, H, K, Dh]
 
         T_max = active_query_pos_padded.shape[1]
         # When every slot is valid we can slice the packed cache directly; otherwise we
@@ -387,11 +385,11 @@ class SelfAttention(nn.Module):
             dattn_v_active = dattn_v_packed.reshape(num_active, C)
         else:
             dattn_v_active = dattn_v_packed[active_query_mask].reshape(num_active, C)
+        dattn_v_active = dattn_v_active.to(dtype=self.proj.weight.dtype)
         dx = F.linear(dattn_v_active, self.proj.weight, bias=None)
         dx = self.proj_drop(dx)
 
         del cache_feature[sparse_cache_key]
-        
         return dx, cache_feature
 
 

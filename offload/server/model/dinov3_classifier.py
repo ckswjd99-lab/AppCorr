@@ -3,6 +3,7 @@ from typing import Any, Dict
 import torch
 import numpy as np
 from offload.common import Task
+from offload.common.protocol import normalize_appcorr_kwargs
 from .base import ModelExecutor
 from .utils import load_weight_mmap
 from appcorr.models.dinov3.models.vision_transformer import create_group_index
@@ -284,17 +285,6 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             print(f"!!! [Executor] Failed to load weights: {e}")
             raise e
 
-        # Configure AppCorr Mode via Config
-        appcorr_kwargs = config.appcorr_kwargs.copy()
-        # Remove non-argument keys if any
-        appcorr_kwargs.pop('generated_from_client', None)
-        
-        if appcorr_kwargs:
-            print(f"[Executor] Enabling AppCorr Mode: {appcorr_kwargs}")
-            self.model.backbone.set_appcorr_mode(**appcorr_kwargs)
-        else:
-            self.model.backbone.set_appcorr_mode(enabled=False)
-
         self.model.eval()
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
@@ -391,14 +381,15 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             # 3) the packed query metadata reused by every correction layer.
             num_pretokens = 1 + self.model.backbone.n_storage_tokens
             B = group_map.shape[0]
-            appcorr_method = getattr(self.model.backbone, 'appcorr_method', None)
+            appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+            appcorr_method = appcorr_options["method"]
             grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
             num_groups = config.transmission_kwargs.get('num_groups', 4)
             active_indices = self._get_active_batch_indices(context, config.batch_size)
             patch_residual_rms = self._compute_patch_residual_rms(context, config, active_indices)
-            token_prune_enabled = getattr(self.model.backbone, 'appcorr_token_prune_enabled', False)
-            token_prune_threshold = float(getattr(self.model.backbone, 'appcorr_token_prune_threshold', 0.0))
-            token_prune_min_keep = int(getattr(self.model.backbone, 'appcorr_token_prune_min_keep', 1))
+            token_prune_enabled = appcorr_options["token_prune_enabled"]
+            token_prune_threshold = appcorr_options["token_prune_threshold"]
+            token_prune_min_keep = appcorr_options["token_prune_min_keep"]
             group_plans = self._get_group_plans(context)
             group_plans.clear()
 
@@ -483,13 +474,6 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                         if patch_residual_rms is not None and spatial_indices.numel() > 0
                         else -1.0
                     )
-                    print(
-                        f"[TokenPrune][fallback gid={gid}] kept={kept_total}/{full_total} "
-                        f"ratio={keep_ratio:.4f} thr={token_prune_threshold:.3f} "
-                        f"min_keep={token_prune_min_keep} rms_mean={rms_mean:.4f} "
-                        f"res_mass={kept_mass_total:.2f}/{full_mass_total:.2f} "
-                        f"mass_ratio={mass_ratio:.4f}"
-                    )
     
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
@@ -525,6 +509,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         cache = context.get('cache_feature', {})
         
         start_l, end_l = layers[0], layers[1]
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_method = appcorr_options["method"]
         
         if start_l == 0:
             x_feature = context['input_tokens']
@@ -533,15 +519,16 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         attn_cache_candidates = {
             gid: plan.full_dindice
             for gid, plan in group_plans.items()
-        } if getattr(self.model.backbone, 'appcorr_method', None) == 'partial_channel' else None
+        } if appcorr_method == 'partial_channel' else None
 
         for lidx in range(start_l, end_l):
             blk = self.model.backbone.blocks[lidx]
             x_feature, cache = blk.approx(
                 x_feature, rope_sincos, cache, tag=f"layer{lidx}",
+                appcorr_method=appcorr_method,
                 attn_cache_candidates=attn_cache_candidates,
-                group_plans=group_plans if getattr(self.model.backbone, 'appcorr_method', None) == 'partial_channel' else None,
-                attn_col_alive_ratio=getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0),
+                group_plans=group_plans if appcorr_method == 'partial_channel' else None,
+                attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
                 debug=False
             )
         
@@ -568,8 +555,9 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         # logic from worker.py: x_temp starts from input_tokens
         x_temp = context.get('input_tokens')
         
-        alive_ratio = getattr(self.model.backbone, 'appcorr_cls_alive_ratio', 0.2)
-        attn_col_alive_ratio = getattr(self.model.backbone, 'appcorr_attn_col_alive_ratio', 1.0)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        alive_ratio = appcorr_options["cls_alive_ratio"]
+        attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
         fixed_query_state = plan.query_state
         if fixed_query_state is not None:
             cache["_token_prune_kept_patch_total"] = (
@@ -597,13 +585,9 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             blk = self.model.backbone.blocks[lidx]
             x_temp, cache = blk.correct(
                 x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
+                appcorr_method=appcorr_options["method"],
                 cls_alive_ratio=alive_ratio,
                 attn_col_alive_ratio=attn_col_alive_ratio,
-                token_prune_enabled=False,
-                token_prune_threshold=0.0,
-                token_prune_min_keep=1,
-                fixed_token_prune_state=None,
-                record_token_prune_stats=False,
                 fixed_query_state=fixed_query_state,
                 group_plan=plan,
                 attn_cache_key=group_id,

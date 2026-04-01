@@ -11,6 +11,7 @@ import torch
 import torch.nn.init
 from torch import Tensor, nn
 
+from offload.common.protocol import normalize_appcorr_kwargs
 from ..layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
 from ..layers._triton_kernels import token_prune_select_compact_triton
 from ..utils import named_apply
@@ -37,8 +38,6 @@ dtype_dict = {
     "fp16": torch.float16,
     "bf16": torch.bfloat16,
 }
-
-
 def init_weights_vit(module: nn.Module, name: str = ""):
     if isinstance(module, nn.Linear):
         torch.nn.init.trunc_normal_(module.weight, std=0.02)
@@ -62,7 +61,16 @@ def create_group_index(num_tokens: int, num_groups: int, strategy: str, device: 
         group_idx = torch.randint(1, num_groups + 1, (num_tokens,), device=device)
     elif strategy == "grid":
         s = int(num_groups ** 0.5)  # sqrt(num_groups), assumes perfect square
-        H = W = int((num_tokens) ** 0.5)  # assumes square input
+        token_hw = kwargs.get("token_hw")
+        if token_hw is None:
+            H = W = int((num_tokens) ** 0.5)  # legacy square fallback
+        else:
+            H, W = map(int, token_hw)
+        if H * W != num_tokens:
+            raise ValueError(
+                f"grid grouping requires token_hw whose product matches num_tokens, "
+                f"got token_hw=({H}, {W}) and num_tokens={num_tokens}"
+            )
 
         pattern = torch.arange(1, num_groups + 1, device=device).view(s, s)
 
@@ -238,59 +246,6 @@ class DinoVisionTransformer(nn.Module):
         self.head = nn.Identity()
         self.mask_token = nn.Parameter(torch.empty(1, embed_dim, device=device))
 
-        # AppCorr settings
-        self.appcorr_enabled = False
-        self.appcorr_update_attn = False
-        self.appcorr_pyramid_levels = [0]
-        self.appcorr_token_res = [1.0]
-        self.appcorr_plan = []
-        self.appcorr_group = 0
-        self.appcorr_grouping_strategy = "uniform"
-        self.appcorr_cls_alive_ratio = 0.2
-        self.appcorr_attn_col_alive_ratio = 1.0
-        self.appcorr_token_prune_enabled = False
-        self.appcorr_token_prune_threshold = 0.0
-        self.appcorr_token_prune_min_keep = 1
-        self.appcorr_method = "partial_token"
-
-        self.appcorr_debug = False
-    
-    def set_appcorr_mode(
-        self,
-        enabled: bool | None = None,
-        update_attn: bool | None = None,
-        pyramid_levels: List[int] | None = None,
-        token_res: List[float] | None = None,
-        plan: List[Tuple[str, int, range, Optional[int]]] | None = None,
-        num_groups: int | None = None,
-        group_strategy: str | None = None,
-        cls_alive_ratio: float | None = None,
-        attn_col_alive_ratio: float | None = None,
-        token_prune_enabled: bool | None = None,
-        token_prune_threshold: float | None = None,
-        token_prune_min_keep: int | None = None,
-        method: str | None = None,
-        debug: bool | None = None,
-    ):
-        if enabled is not None: self.appcorr_enabled = enabled
-        if update_attn is not None: self.appcorr_update_attn = update_attn
-        if pyramid_levels is not None: self.appcorr_pyramid_levels = pyramid_levels
-        if token_res is not None: self.appcorr_token_res = token_res
-        if plan is not None: self.appcorr_plan = plan
-        if num_groups is not None: self.appcorr_group = num_groups
-        if group_strategy is not None: self.appcorr_grouping_strategy = group_strategy
-        if cls_alive_ratio is not None: self.appcorr_cls_alive_ratio = cls_alive_ratio
-        if attn_col_alive_ratio is not None: self.appcorr_attn_col_alive_ratio = attn_col_alive_ratio
-        if token_prune_enabled is not None: self.appcorr_token_prune_enabled = token_prune_enabled
-        if token_prune_threshold is not None: self.appcorr_token_prune_threshold = token_prune_threshold
-        if token_prune_min_keep is not None: self.appcorr_token_prune_min_keep = token_prune_min_keep
-        if method is not None: self.appcorr_method = method
-        if debug is not None: self.appcorr_debug = debug
-
-        for blk in self.blocks:
-            if hasattr(blk, "set_appcorr_method"):
-                blk.set_appcorr_method(method=self.appcorr_method)
-
 
     def init_weights(self):
         self.rope_embed._init_weights()
@@ -332,10 +287,15 @@ class DinoVisionTransformer(nn.Module):
 
         return x, (H, W)
 
-    def forward_features_list(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
-        # AppCorr-specific forward_features
-        if self.appcorr_enabled:
-            return self.forward_features_list_appcorr(x_list, masks_list)
+    def forward_features_list(
+        self,
+        x_list: List[Tensor],
+        masks_list: List[Tensor],
+        appcorr_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Tensor]]:
+        appcorr_options = normalize_appcorr_kwargs(appcorr_kwargs)
+        if appcorr_options["enabled"]:
+            return self.forward_features_list_appcorr(x_list, masks_list, appcorr_options)
             
         x = []
         rope = []
@@ -359,7 +319,12 @@ class DinoVisionTransformer(nn.Module):
 
         return output
 
-    def forward_features_list_appcorr(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
+    def forward_features_list_appcorr(
+        self,
+        x_list: List[Tensor],
+        masks_list: List[Tensor],
+        appcorr_options: Dict[str, Any],
+    ) -> List[Dict[str, Tensor]]:
         if len(x_list) != 1:
             raise NotImplementedError("AppCorr forward_features_list currently only supports single input.")
 
@@ -375,7 +340,7 @@ class DinoVisionTransformer(nn.Module):
         rope_pyramid = []
 
         # Prepare pyramid of inputs
-        for level in self.appcorr_pyramid_levels:
+        for level in appcorr_options["pyramid_levels"]:
             # downsample and upsample
             x_temp = x_tensor
             x_temp = nn.functional.interpolate(x_temp, scale_factor=2**(-level), mode='bicubic', align_corners=False)
@@ -387,7 +352,7 @@ class DinoVisionTransformer(nn.Module):
 
             num_tokens = t2_x.shape[1] - num_pretokens  # Exclude pre-tokens
             group_idx = create_group_index(
-                num_tokens, self.appcorr_group, self.appcorr_grouping_strategy, device=t2_x.device,
+                num_tokens, appcorr_options["num_groups"], appcorr_options["group_strategy"], device=t2_x.device,
                 token_diffs=(x_pyramid[0]-t2_x)[:, num_pretokens:, :]
             )   # [N] or [B, N]
             if len(group_idx.shape) == 1:
@@ -400,7 +365,7 @@ class DinoVisionTransformer(nn.Module):
         # Run through transformer blocks
         cache_feature = {}
         attn_cache_candidates = {}
-        for (op_type, level, layers, group_idx) in self.appcorr_plan:
+        for (op_type, level, layers, group_idx) in appcorr_options["plan"]:
             if op_type != "C":
                 continue
             dmask = (x_groups[level] == group_idx)
@@ -408,7 +373,7 @@ class DinoVisionTransformer(nn.Module):
             attn_cache_candidates[(level, group_idx)] = torch.where(dmask)[1].view(B, -1)
 
         x_feature = x_pyramid[0]
-        for (op_type, level, layers, group_idx) in self.appcorr_plan:
+        for (op_type, level, layers, group_idx) in appcorr_options["plan"]:
             if op_type == "A":
                 # Approx
                 for lidx in layers:
@@ -417,12 +382,13 @@ class DinoVisionTransformer(nn.Module):
                         rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
                         x_feature, cache_feature = blk.approx(
                             x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}",
-                            attn_cache_candidates=attn_cache_candidates if self.appcorr_method == "partial_channel" else None,
-                            attn_col_alive_ratio=self.appcorr_attn_col_alive_ratio,
-                            debug=self.appcorr_debug
+                            appcorr_method=appcorr_options["method"],
+                            attn_cache_candidates=attn_cache_candidates if appcorr_options["method"] == "partial_channel" else None,
+                            attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
+                            debug=appcorr_options["debug"]
                         )
 
-                        if self.appcorr_debug:
+                        if appcorr_options["debug"]:
                             torch.cuda.synchronize()
             elif op_type == "C":
                 # Correct
@@ -433,7 +399,7 @@ class DinoVisionTransformer(nn.Module):
                 x_temp = x_pyramid[level]
                 rope_sincos = self.rope_embed(H=rope_pyramid[level][0], W=rope_pyramid[level][1]) if self.rope_embed is not None else None
                 fixed_token_prune_state = None
-                if self.appcorr_token_prune_enabled:
+                if appcorr_options["token_prune_enabled"]:
                     B_level, _, C = x_temp.shape
                     num_level_pretokens = x_temp.shape[1] - rope_sincos[0].shape[0] if rope_sincos is not None else num_pretokens
                     gather_idx_x_full = dindice.unsqueeze(-1).expand(-1, -1, C)
@@ -442,8 +408,8 @@ class DinoVisionTransformer(nn.Module):
                         dx_sel_full,
                         dindice,
                         num_pretokens=num_level_pretokens,
-                        token_prune_threshold=self.appcorr_token_prune_threshold,
-                        token_prune_min_keep=self.appcorr_token_prune_min_keep,
+                        token_prune_threshold=appcorr_options["token_prune_threshold"],
+                        token_prune_min_keep=appcorr_options["token_prune_min_keep"],
                     )
                     active_batch_idx, active_pos_idx = query_valid_mask.nonzero(as_tuple=True)
                     active_token_idx = dindice_sel[active_batch_idx, active_pos_idx]
@@ -476,17 +442,18 @@ class DinoVisionTransformer(nn.Module):
                         blk = self.blocks[lidx]
                         x_temp, cache_feature = blk.correct(
                             x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}",
-                            cls_alive_ratio=self.appcorr_cls_alive_ratio,
-                            attn_col_alive_ratio=self.appcorr_attn_col_alive_ratio,
-                            token_prune_enabled=self.appcorr_token_prune_enabled,
-                            token_prune_threshold=self.appcorr_token_prune_threshold,
-                            token_prune_min_keep=self.appcorr_token_prune_min_keep,
+                            appcorr_method=appcorr_options["method"],
+                            cls_alive_ratio=appcorr_options["cls_alive_ratio"],
+                            attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
+                            token_prune_enabled=appcorr_options["token_prune_enabled"],
+                            token_prune_threshold=appcorr_options["token_prune_threshold"],
+                            token_prune_min_keep=appcorr_options["token_prune_min_keep"],
                             fixed_token_prune_state=fixed_token_prune_state,
                             attn_cache_key=(level, group_idx),
-                            debug=self.appcorr_debug
+                            debug=appcorr_options["debug"]
                         )
 
-                        if self.appcorr_debug:
+                        if appcorr_options["debug"]:
                             torch.cuda.synchronize()
                 
                 x_feature = x_temp.to(x_feature.dtype)
@@ -528,11 +495,16 @@ class DinoVisionTransformer(nn.Module):
 
         return output
 
-    def forward_features(self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
+    def forward_features(
+        self,
+        x: Tensor | List[Tensor],
+        masks: Optional[Tensor] = None,
+        appcorr_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Tensor]]:
         if isinstance(x, torch.Tensor):
-            return self.forward_features_list([x], [masks])[0]
+            return self.forward_features_list([x], [masks], appcorr_kwargs=appcorr_kwargs)[0]
         else:
-            return self.forward_features_list(x, masks)
+            return self.forward_features_list(x, masks, appcorr_kwargs=appcorr_kwargs)
 
     def _get_intermediate_layers_not_chunked(self, x: Tensor, n: int = 1) -> List[Tensor]:
         x, (H, W) = self.prepare_tokens_with_masks(x)

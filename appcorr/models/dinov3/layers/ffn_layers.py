@@ -48,6 +48,14 @@ class Mlp(nn.Module, ListForwardMixin):
         x = self.drop(x)
         return x
 
+    def correct_partial_channel(
+        self,
+        x: Tensor,
+        cache_feature: Dict,
+        tag: str,
+    ) -> Tuple[Tensor, dict]:
+        return self.forward(x), cache_feature
+
 
 class SwiGLUFFN(nn.Module, ListForwardMixin):
     def __init__(
@@ -86,11 +94,14 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
 
         return output, cache_feature
     
-    def correct_partial_channel(self, x: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+    def correct_partial_channel(
+        self,
+        x: Tensor,
+        cache_feature: Dict,
+        tag: str,
+    ) -> Tuple[Tensor, dict]:
         x1 = self.w1(x)
         x2 = self.w2(x)
         hidden = F.silu(x1) * x2
         output = self.w3(hidden)
-
         return output, cache_feature
-
