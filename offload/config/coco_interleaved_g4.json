@@ -1,0 +1,31 @@
+{
+    "model_name": "dinov3_detector",
+    "dataset_name": "coco2017",
+    "batch_size": 1,
+    "image_shape": [1024, 1024, 3],
+    "patch_size": [64, 64],
+    "scheduler_policy_name": "GroupTrigger",
+    "scheduler_kwargs": {
+        "early_exit": false,
+        "lowres_sr": true,
+        "lowres_sr_model": "realesr_general_x4v3"
+    },
+    "transmission_policy_name": "ProgressiveLaplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [2, 0],
+        "grouping_strategy": "grid",
+        "num_groups": 4,
+        "compression_level": 1
+    },
+    "appcorr_kwargs": {
+        "method": "partial_channel",
+        "generated_from_client": true,
+        "pyramid_levels": [1, 0],
+        "num_groups": 4,
+        "attn_col_alive_ratio": 0.7,
+        "token_prune_enabled": false,
+        "token_prune_threshold": 0.0,
+        "token_prune_min_keep": 4
+    },
+    "device": "cuda:0"
+}

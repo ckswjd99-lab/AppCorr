@@ -4,7 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Protocol, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -40,6 +40,14 @@ class LinearKMaskedBias(nn.Linear):
     def forward(self, input: Tensor) -> Tensor:
         masked_bias = self.bias * self.bias_mask.to(self.bias.dtype) if self.bias is not None else None
         return F.linear(input, self.weight, masked_bias)
+
+
+class QueryStateLike(Protocol):
+    active_batch_idx: Tensor
+    active_token_idx: Tensor
+    active_query_pos_padded: Tensor
+    active_query_mask: Tensor
+    all_valid: bool
 
 
 class SelfAttention(nn.Module):
@@ -92,82 +100,8 @@ class SelfAttention(nn.Module):
         return {
             "query_idx": dindice.detach().clone(),
             "col_idx": col_idx.detach().clone() if col_idx is not None else None,
-            "attn_prob_sel": attn_prob_sel.detach().clone(),
+            "attn_prob_sel": attn_prob_sel.to(dtype=torch.bfloat16).detach().clone(),
         }
-
-    def _build_packed_sparse_attn_cache(
-        self,
-        attn_prob: Tensor,
-        attn_cache_candidates: Dict,
-        attn_col_alive_ratio: float,
-    ) -> Dict[str, Tensor | Dict]:
-        items = list(attn_cache_candidates.items())
-        B, H, _, N = attn_prob.shape
-        num_groups = len(items)
-        max_q = max(dindice.shape[1] for _, dindice in items)
-        num_alive_cols = max(min(int(N * attn_col_alive_ratio), N), 1)
-
-        query_idx = torch.full((num_groups, B, max_q), -1, device=attn_prob.device, dtype=torch.long)
-        query_count = torch.zeros((num_groups,), device=attn_prob.device, dtype=torch.long)
-        attn_prob_sel = torch.zeros(
-            (num_groups, B, H, max_q, num_alive_cols),
-            device=attn_prob.device,
-            dtype=attn_prob.dtype,
-        )
-
-        if num_alive_cols < N:
-            col_idx = torch.empty((num_groups, B, num_alive_cols), device=attn_prob.device, dtype=torch.long)
-        else:
-            col_idx = None
-
-        key_to_slot = {}
-        for slot, (cache_key, dindice) in enumerate(items):
-            key_to_slot[cache_key] = slot
-            q = dindice.shape[1]
-            query_idx[slot, :, :q] = dindice
-            query_count[slot] = q
-
-            gather_idx = dindice.view(B, 1, q, 1).expand(-1, H, -1, N)
-            attn_prob_group = attn_prob.gather(2, gather_idx).contiguous()  # [B, H, q, N]
-
-            if num_alive_cols < N:
-                col_scores = attn_prob_group.mean(dim=(1, 2))  # [B, N]
-                topk_cols = torch.topk(col_scores, k=num_alive_cols, dim=-1, largest=True).indices  # [B, K]
-                col_idx[slot] = topk_cols
-                gather_idx_col = topk_cols.view(B, 1, 1, num_alive_cols).expand(-1, H, q, -1)
-                attn_prob_group = attn_prob_group.gather(3, gather_idx_col).contiguous()  # [B, H, q, K]
-
-            attn_prob_sel[slot, :, :, :q, :] = attn_prob_group
-
-        return {
-            "key_to_slot": key_to_slot,
-            "query_idx": query_idx.detach().clone(),
-            "query_count": query_count.detach().clone(),
-            "col_idx": col_idx.detach().clone() if col_idx is not None else None,
-            "attn_prob_sel": attn_prob_sel.detach().clone(),
-        }
-
-    def _consume_packed_sparse_attn_cache(self, sparse_cache: Dict, attn_cache_key) -> Dict | None:
-        slot = sparse_cache["key_to_slot"].pop(attn_cache_key)
-        remaining = sparse_cache["query_count"].shape[0] - 1
-        if remaining == 0:
-            return None
-
-        keep = torch.ones(remaining + 1, device=sparse_cache["query_count"].device, dtype=torch.bool)
-        keep[slot] = False
-
-        compact_cache = {
-            "key_to_slot": {},
-            "query_idx": sparse_cache["query_idx"][keep].contiguous(),
-            "query_count": sparse_cache["query_count"][keep].contiguous(),
-            "col_idx": sparse_cache["col_idx"][keep].contiguous() if sparse_cache["col_idx"] is not None else None,
-            "attn_prob_sel": sparse_cache["attn_prob_sel"][keep].contiguous(),
-        }
-
-        for key, old_slot in sparse_cache["key_to_slot"].items():
-            compact_cache["key_to_slot"][key] = old_slot if old_slot < slot else old_slot - 1
-
-        return compact_cache
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
         # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
@@ -263,11 +197,19 @@ class SelfAttention(nn.Module):
             "Available methods: partial_channel, partial_token"
         )
     
-    def correct(self, x_sel: Tensor, dindice: Tensor, rope: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+    def correct(
+        self,
+        x_sel: Tensor,
+        dindice: Tensor,
+        rope: Tensor,
+        cache_feature: Dict,
+        tag: str,
+        **kwargs,
+    ) -> Tuple[Tensor, dict]:
         if self.appcorr_method == "partial_token":
             return self.correct_partial_token(x_sel, dindice, rope, cache_feature, tag)
         if self.appcorr_method == "partial_channel":
-            return self.correct_partial_channel(x_sel, dindice, rope, cache_feature, tag)
+            return self.correct_partial_channel(x_sel, dindice, rope, cache_feature, tag, **kwargs)
         raise ValueError(
             f"Unknown SelfAttention.correct method '{self.appcorr_method}'. "
             "Available methods: partial_channel, partial_token"
@@ -354,13 +296,14 @@ class SelfAttention(nn.Module):
         attn_score = (q @ k.transpose(-2, -1)) * self.scale
         attn_prob = attn_score.softmax(dim=-1)
         cache_feature[f"{tag}_dv_cache"] = torch.zeros(
-            B, self.num_heads, N, head_dim, device=x.device, dtype=x.dtype
+            B, self.num_heads, N, head_dim, device=x.device, dtype=torch.bfloat16
         )
         if not attn_cache_candidates:
             raise ValueError("partial_channel requires non-empty attn_cache_candidates")
-        cache_feature[f"{tag}_attn_sparse_cache"] = self._build_packed_sparse_attn_cache(
-            attn_prob, attn_cache_candidates, attn_col_alive_ratio
-        )
+        for cache_key, dindice in attn_cache_candidates.items():
+            cache_feature[f"{tag}_attn_sparse_cache_g{cache_key}"] = self._build_sparse_attn_cache(
+                attn_prob, dindice, attn_col_alive_ratio
+            )
         attn_v = attn_prob @ v
         attn_v = attn_v.transpose(1, 2).reshape(B, N, C)
         
@@ -371,73 +314,83 @@ class SelfAttention(nn.Module):
 
     def correct_partial_channel(
         self,
-        dx_sel: Tensor,
-        dindice: Tensor,
+        dx_active: Tensor,
         rope: Tensor,
         cache_feature: Dict,
         tag: str,
+        fixed_query_state: QueryStateLike,
         attn_col_alive_ratio: float = 1.0,
         attn_cache_key=None,
-        query_pos_idx: Tensor | None = None,
-        query_valid_mask: Tensor | None = None,
+        all_valid_queries: bool = False,
     ) -> Tuple[Tensor, dict]:
-        B, num_toksel, C = dx_sel.shape
+        # The block has already compacted tokens across the batch. At this point we only
+        # need to map those active updates back into the cached sparse-attention layout.
+        B = cache_feature[f"{tag}_dv_cache"].shape[0]
+        num_active, C = dx_active.shape
         head_dim = C // self.num_heads
+        active_batch_idx = fixed_query_state.active_batch_idx
+        active_token_idx = fixed_query_state.active_token_idx
+        active_query_pos_padded = fixed_query_state.active_query_pos_padded
+        active_query_mask = fixed_query_state.active_query_mask
+        sparse_cache_key = f"{tag}_attn_sparse_cache_g{attn_cache_key}"
 
-        # Generate dv_sel [B, H, num_toksel, Dh]
+        if num_active == 0:
+            if sparse_cache_key not in cache_feature:
+                raise KeyError(f"Sparse attention cache miss for key {attn_cache_key!r}")
+            del cache_feature[sparse_cache_key]
+            return dx_active.new_zeros((0, C)), cache_feature
+
+        # Generate dv_active [T, H, Dh]
         v_weight = self.qkv.weight[2 * C :, :]
-        dv_sel = F.linear(dx_sel, v_weight, bias=None)
-        dv_sel = dv_sel.reshape(B, num_toksel, self.num_heads, head_dim).transpose(1, 2).contiguous()   # [B, H, num_toksel, Dh]
+        dv_active = F.linear(dx_active, v_weight, bias=None)
+        dv_active = dv_active.reshape(num_active, self.num_heads, head_dim).contiguous()
 
         dv_cache = cache_feature[f"{tag}_dv_cache"]
-        dv_sel = dv_sel.to(dtype=dv_cache.dtype)
-        scatter_idx = dindice.view(B, 1, num_toksel, 1).expand(-1, self.num_heads, -1, head_dim)
-        dv_cache.scatter_(2, scatter_idx, dv_sel)
+        dv_active = dv_active.to(dtype=dv_cache.dtype)
+        dv_cache[active_batch_idx, :, active_token_idx, :] = dv_active
 
-        sparse_cache = cache_feature.get(f"{tag}_attn_sparse_cache")
-        if sparse_cache is None or attn_cache_key not in sparse_cache["key_to_slot"]:
+        sparse_cache = cache_feature.get(sparse_cache_key)
+        if sparse_cache is None:
             raise KeyError(f"Sparse attention cache miss for key {attn_cache_key!r}")
 
-        slot = sparse_cache["key_to_slot"][attn_cache_key]
-        num_query_full = int(sparse_cache["query_count"][slot].item())
-        attn_prob_full = sparse_cache["attn_prob_sel"][slot, :, :, :num_query_full, :].to(dtype=dv_cache.dtype)  # [B,H,Qf,K]
-        if query_pos_idx is not None:
-            K = attn_prob_full.shape[-1]
-            gather_idx_q = query_pos_idx.view(B, 1, num_toksel, 1).expand(-1, self.num_heads, -1, K)
-            attn_prob_sel = attn_prob_full.gather(2, gather_idx_q).contiguous()  # [B,H,Qsel,K]
-        else:
-            attn_prob_sel = attn_prob_full[:, :, :num_toksel, :]
+        attn_prob_full = sparse_cache["attn_prob_sel"].to(dtype=dv_cache.dtype)  # [B,H,Q,K]
         col_idx = sparse_cache["col_idx"]
         if col_idx is not None:
-            col_idx_sel = col_idx[slot]  # [B, K]
-            gather_idx_dv = col_idx_sel.view(B, 1, col_idx_sel.shape[1], 1).expand(-1, self.num_heads, -1, head_dim)
+            gather_idx_dv = col_idx.view(B, 1, col_idx.shape[1], 1).expand(-1, self.num_heads, -1, head_dim)
             dv_sub = dv_cache.gather(2, gather_idx_dv).contiguous()  # [B, H, K, Dh]
         else:
             dv_sub = dv_cache
 
-        if query_valid_mask is not None:
-            qmask = query_valid_mask.view(B, 1, num_toksel, 1).to(dtype=attn_prob_sel.dtype)
-            attn_prob_sel = attn_prob_sel * qmask
-            valid_count = float(query_valid_mask.sum().item())
+        T_max = active_query_pos_padded.shape[1]
+        # When every slot is valid we can slice the packed cache directly; otherwise we
+        # gather only the valid query rows and mask padded positions back out.
+        if all_valid_queries:
+            attn_prob_packed = attn_prob_full[:, :, :T_max, :].contiguous()
         else:
-            valid_count = float(B * num_toksel)
+            gather_idx_q = active_query_pos_padded.view(B, 1, T_max, 1).expand(-1, self.num_heads, -1, dv_sub.shape[2])
+            attn_prob_packed = attn_prob_full.gather(2, gather_idx_q).contiguous()  # [B,H,Tmax,K]
+            active_query_mask_f = active_query_mask.view(B, 1, T_max, 1).to(dtype=attn_prob_packed.dtype)
+            attn_prob_packed = attn_prob_packed * active_query_mask_f
+        attn_prob_mass_used = attn_prob_packed.float().sum()
+        dattn_v_packed = torch.matmul(attn_prob_packed, dv_sub).transpose(1, 2).contiguous()  # [B,Tmax,H,Dh]
 
-        cache_feature["_attn_prob_mass_used_total"] = cache_feature.get("_attn_prob_mass_used_total", 0.0) + float(attn_prob_sel.float().sum().item())
-        cache_feature["_attn_prob_mass_full_total"] = cache_feature.get("_attn_prob_mass_full_total", 0.0) + float(self.num_heads * valid_count)
+        cache_feature["_attn_prob_mass_used_total"] = (
+            cache_feature.get("_attn_prob_mass_used_total", dx_active.new_zeros((), dtype=torch.float32))
+            + attn_prob_mass_used
+        )
+        cache_feature["_attn_prob_mass_full_total"] = (
+            cache_feature.get("_attn_prob_mass_full_total", dx_active.new_zeros((), dtype=torch.float32))
+            + dx_active.new_tensor(float(num_active * self.num_heads), dtype=torch.float32)
+        )
 
-        dattn_v = attn_prob_sel @ dv_sub    # [B, H, num_toksel, Dh]
-        dattn_v = dattn_v.transpose(1, 2).reshape(B, num_toksel, C)
-        if query_valid_mask is not None:
-            dattn_v = dattn_v * query_valid_mask.unsqueeze(-1).to(dtype=dattn_v.dtype)
-        
-        dx = F.linear(dattn_v, self.proj.weight, bias=None)
+        if all_valid_queries:
+            dattn_v_active = dattn_v_packed.reshape(num_active, C)
+        else:
+            dattn_v_active = dattn_v_packed[active_query_mask].reshape(num_active, C)
+        dx = F.linear(dattn_v_active, self.proj.weight, bias=None)
         dx = self.proj_drop(dx)
 
-        next_sparse_cache = self._consume_packed_sparse_attn_cache(sparse_cache, attn_cache_key)
-        if next_sparse_cache is None:
-            del cache_feature[f"{tag}_attn_sparse_cache"]
-        else:
-            cache_feature[f"{tag}_attn_sparse_cache"] = next_sparse_cache
+        del cache_feature[sparse_cache_key]
         
         return dx, cache_feature
 
