@@ -131,7 +131,9 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         
         if name == 'APPROX_FORWARD':
             layers = event.get('params', {}).get('layers', (0, 0))
-            if layers[1] == layers[0] + 1:
+            if event.get('params', {}).get('source_kind') == 'global':
+                display_name = "AP\nGLB"
+            elif layers[1] == layers[0] + 1:
                 display_name = f"AP\n{layers[0]}"
             else:
                 display_name = f"AP\n({layers[0]}, {layers[1]})"
