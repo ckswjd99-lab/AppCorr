@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 import threading
 import queue
 
-from offload.common import Task, InferenceResult
+from offload.common import Task, HintPacket, InferenceResult
 from offload.common.protocol import OpType, Instruction
 from offload.policies import get_transmission
 from offload.server.model import get_model_executor
@@ -102,6 +102,27 @@ class WorkerModule(multiprocessing.Process):
 
                 if msg_type == 'TIME_SYNC':
                     self.gpu_queue.put(msg)
+                    continue
+
+                if msg_type == 'HINT':
+                    packet = payload
+                    if not isinstance(packet, HintPacket):
+                        continue
+                    req_id = int(packet.request_id)
+                    if req_id not in self.sessions:
+                        self.sessions[req_id] = self._create_session_context()
+                    context = self.sessions[req_id]
+                    hint_maps = context.setdefault('mobile_hint_maps', {})
+
+                    scores = packet.scores
+                    if torch.is_tensor(scores):
+                        score_tensor = scores.detach().cpu()
+                    elif isinstance(scores, np.ndarray):
+                        score_tensor = torch.from_numpy(scores.copy())
+                    else:
+                        score_tensor = torch.tensor(scores)
+
+                    hint_maps[int(packet.layer_idx)] = score_tensor.contiguous()
                     continue
 
                 if msg_type == 'TASK':
@@ -518,6 +539,7 @@ class WorkerModule(multiprocessing.Process):
             'input_hr_np': None,
             'input_lr_native_np': None,
             'input_sr_tensor': None,
+            'mobile_hint_maps': {},
         }
 
     def _snapshot_input_state(self, context: Dict[str, Any]) -> Dict[str, Any]:

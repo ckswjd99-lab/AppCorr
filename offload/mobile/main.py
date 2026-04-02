@@ -9,8 +9,10 @@ import json
 sys.path.append(os.getcwd())
 
 from offload.mobile.modules import MobileSender, MobileReceiver
+from offload.mobile.hint import MobileHintWorker, mobile_hint_enabled
 from offload.mobile.source import SourceModule
 from offload.common import ExperimentConfig
+from offload.common.protocol import normalize_appcorr_kwargs
 
 def run_mobile(server_ip, recv_port, send_port, data_root, config_path):
     print(f"=== Starting AppCorr Mobile Client ===")
@@ -36,13 +38,30 @@ def run_mobile(server_ip, recv_port, send_port, data_root, config_path):
     # IPC Queues
     send_queue = multiprocessing.Queue()
     feedback_queue = multiprocessing.Queue()
+    hint_input_queue = multiprocessing.Queue() if mobile_hint_enabled(config) else None
+    hint_event_queue = multiprocessing.Queue() if hint_input_queue is not None else None
 
     # Initialize processes
     sender = MobileSender(server_ip, recv_port, send_queue)
     receiver = MobileReceiver(server_ip, send_port, feedback_queue)
-    source = SourceModule(send_queue, feedback_queue, config, data_root, config.batch_size)
+    source = SourceModule(
+        send_queue,
+        feedback_queue,
+        config,
+        data_root,
+        config.batch_size,
+        hint_input_queue=hint_input_queue,
+        hint_event_queue=hint_event_queue,
+    )
+    hint_worker = None
+    if hint_input_queue is not None:
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        hint_weights = appcorr_options.get("mobile_hint_model_weights")
+        if hint_weights is None:
+            raise ValueError("mobile hint enabled but mobile_hint_model_weights is not configured")
+        hint_worker = MobileHintWorker(hint_input_queue, send_queue, hint_event_queue, config)
 
-    procs = [sender, receiver, source]
+    procs = [sender, receiver, source] + ([hint_worker] if hint_worker is not None else [])
 
     try:
         for p in procs:
@@ -50,6 +69,13 @@ def run_mobile(server_ip, recv_port, send_port, data_root, config_path):
         
         source.join()
         print("[Main] Source module finished.")
+        if hint_input_queue is not None:
+            hint_input_queue.put('STOP')
+            if hint_worker is not None:
+                hint_worker.join()
+        send_queue.put('STOP')
+        sender.join()
+        receiver.join(timeout=5)
         
     except KeyboardInterrupt:
         print("\n[Main] Stopping client...")

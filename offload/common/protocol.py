@@ -18,6 +18,10 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'attn_col_alive_ratio': 1.0,
         'mobile_pscore': 'none',
         'mobile_pscore_weight': 0.0,
+        'mobile_hint_model_name': 'dinov3_vits16',
+        'mobile_hint_model_weights': '~/cjpark/weights/dinov3/dinov3_vits16_pretrain_lvd1689m-08c60483.pth',
+        'mobile_hint_batch_size': 4,
+        'mobile_hint_device': None,
         'server_pscore': 'cls_attn_prob',
         'server_pscore_weight': 1.0,
         'token_prune_enabled': False,
@@ -54,8 +58,29 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
     mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
     if mobile_pscore in {'', 'null', 'None'}:
         mobile_pscore = defaults['mobile_pscore']
+    if mobile_pscore == 'attn_delta':
+        mobile_pscore = 'patch_attn_delta'
+    if mobile_pscore == 'attn_delta_abs':
+        mobile_pscore = 'patch_attn_delta_abs'
+    if mobile_pscore not in {'none', 'patch_attn_delta', 'patch_attn_delta_abs'}:
+        mobile_pscore = defaults['mobile_pscore']
     options['mobile_pscore'] = mobile_pscore
     options['mobile_pscore_weight'] = float(options.get('mobile_pscore_weight', defaults['mobile_pscore_weight']))
+    options['mobile_hint_model_name'] = str(
+        options.get('mobile_hint_model_name', defaults['mobile_hint_model_name'])
+    )
+    mobile_hint_model_weights = options.get('mobile_hint_model_weights', defaults['mobile_hint_model_weights'])
+    options['mobile_hint_model_weights'] = (
+        None if mobile_hint_model_weights in {None, '', 'null', 'None'} else str(mobile_hint_model_weights)
+    )
+    options['mobile_hint_batch_size'] = max(
+        int(options.get('mobile_hint_batch_size', defaults['mobile_hint_batch_size'])),
+        1,
+    )
+    mobile_hint_device = options.get('mobile_hint_device', defaults['mobile_hint_device'])
+    options['mobile_hint_device'] = (
+        None if mobile_hint_device in {None, '', 'null', 'None'} else str(mobile_hint_device)
+    )
 
     server_pscore = str(options.get('server_pscore', defaults['server_pscore']))
     legacy_token_prune_score = raw.get('token_prune_score')
@@ -138,7 +163,15 @@ class Patch:
     res_level: int = 0
     group_id: int = 0
     batch_group_total: int = 0
+    request_id: int = -1
     arrival_time: float = 0.0
+
+
+@dataclass
+class HintPacket:
+    request_id: int
+    layer_idx: int
+    scores: Any
 
 class OpType(Enum):
     # --- Computation Ops ---

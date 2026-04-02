@@ -1,5 +1,6 @@
 import multiprocessing
 import time
+import queue
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -12,6 +13,7 @@ from offload.mobile.dataset import get_dataset_loader
 import os
 import json
 import datetime
+
 
 def perform_time_sync(output_queue, feedback_queue, rounds=10):
     """Estimate clock offset via ping-pong."""
@@ -45,13 +47,39 @@ def perform_time_sync(output_queue, feedback_queue, rounds=10):
 class SourceModule(multiprocessing.Process):
     """Run experiment loop, handle partial batches, track metrics."""
 
-    def __init__(self, output_queue, feedback_queue, config: ExperimentConfig, data_root: str, loader_batch_size: int):
+    def __init__(
+        self,
+        output_queue,
+        feedback_queue,
+        config: ExperimentConfig,
+        data_root: str,
+        loader_batch_size: int,
+        hint_input_queue=None,
+        hint_event_queue=None,
+    ):
         super().__init__()
         self.output_queue = output_queue
         self.feedback_queue = feedback_queue
         self.config = config
         self.data_root = data_root
         self.loader_batch_size = loader_batch_size
+        self.hint_input_queue = hint_input_queue
+        self.hint_event_queue = hint_event_queue
+
+    def _drain_hint_events(self, pending_events):
+        if self.hint_event_queue is None:
+            return
+        while True:
+            try:
+                event = self.hint_event_queue.get_nowait()
+            except queue.Empty:
+                break
+            if not isinstance(event, dict):
+                continue
+            request_id = event.get('request_id')
+            if request_id is None:
+                continue
+            pending_events.setdefault(int(request_id), []).append(event)
 
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
@@ -118,6 +146,7 @@ class SourceModule(multiprocessing.Process):
         
         # Track event statistics
         event_stats_accumulator = {}
+        hint_events_by_request = {}
 
         # Constants for padding
         SERVER_BATCH_SIZE = self.config.batch_size
@@ -127,7 +156,9 @@ class SourceModule(multiprocessing.Process):
 
         pbar = tqdm(enumerate(loader), total=len(loader), leave=False)
         for batch_idx, (images, labels) in pbar:
+            self._drain_hint_events(hint_events_by_request)
             curr_bs = images.size(0)
+            request_id = int(batch_idx)
             
             # Send Phase
             t_load_start = time.time()
@@ -137,6 +168,9 @@ class SourceModule(multiprocessing.Process):
             real_imgs_np = images.permute(0, 2, 3, 1).numpy()
             full_batch_np[:curr_bs] = real_imgs_np
             t_load_end = time.time()
+
+            if self.hint_input_queue is not None:
+                self.hint_input_queue.put((request_id, full_batch_np.copy()))
             
             # Encode data
             batch_bytes = 0
@@ -157,6 +191,7 @@ class SourceModule(multiprocessing.Process):
                 # Send Patches immediately
                 t_tx_start = time.time()
                 for p in group_patches:
+                    p.request_id = request_id
                     self.output_queue.put(p)
                 t_tx_end = time.time()
                 
@@ -173,6 +208,7 @@ class SourceModule(multiprocessing.Process):
             
             # Wait for Response
             result = self.feedback_queue.get()
+            self._drain_hint_events(hint_events_by_request)
             
             # Calculate Metrics
             t_result_recv = time.time()
@@ -187,6 +223,7 @@ class SourceModule(multiprocessing.Process):
             
             # Final local event addition
             local_events.append({'type': 'MOBILE_RECEIVE', 'timestamp': t_result_recv, 'duration': 0})
+            local_events.extend(hint_events_by_request.pop(request_id, []))
             
             # Combine
             all_events = local_events + server_events
@@ -391,5 +428,4 @@ class SourceModule(multiprocessing.Process):
             json.dump(summary, f, indent=4)
             
         events_file.close()
-        self.output_queue.put('STOP')
             

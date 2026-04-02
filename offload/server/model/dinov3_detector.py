@@ -491,6 +491,116 @@ class DINOv3DetectorExecutor(ModelExecutor):
     def _get_vit_backbone(self):
         inner = self.model.detector.backbone[0]
         return inner._backbone.backbone if hasattr(inner, "_backbone") else inner.backbone
+
+    @staticmethod
+    def _mobile_hint_enabled(appcorr_options: Dict[str, Any]) -> bool:
+        return (
+            appcorr_options.get("mobile_pscore", "none") != "none"
+            and float(appcorr_options.get("mobile_pscore_weight", 0.0)) != 0.0
+        )
+
+    def _get_mobile_hint_map(
+        self,
+        context: Dict[str, Any],
+        layer_idx: int,
+        active_indices: torch.Tensor,
+    ) -> torch.Tensor | None:
+        hint_maps = context.get('mobile_hint_maps')
+        if not isinstance(hint_maps, dict):
+            return None
+        layer_map = hint_maps.get(int(layer_idx))
+        if layer_map is None:
+            return None
+        layer_map = layer_map.to(device=self.device, dtype=torch.float32, non_blocking=True)
+        return layer_map[active_indices]
+
+    def _project_mobile_hint_to_source(
+        self,
+        layer_map: torch.Tensor,
+        source_layout: Dict[str, Any] | None,
+        image_hw: tuple[int, int],
+        target_hw: tuple[int, int],
+    ) -> torch.Tensor | None:
+        if layer_map.ndim != 3 or not isinstance(source_layout, dict):
+            return None
+
+        token_h, token_w = int(target_hw[0]), int(target_hw[1])
+        if token_h <= 0 or token_w <= 0:
+            return None
+
+        if source_layout.get('kind') == 'window':
+            img_h, img_w = image_hw
+            full_h, full_w = layer_map.shape[1:]
+
+            top = float(source_layout.get('top', 0))
+            left = float(source_layout.get('left', 0))
+            height = float(source_layout.get('height', img_h))
+            width = float(source_layout.get('width', img_w))
+
+            y0 = int(math.floor((top / max(img_h, 1)) * full_h))
+            y1 = int(math.ceil(((top + height) / max(img_h, 1)) * full_h))
+            x0 = int(math.floor((left / max(img_w, 1)) * full_w))
+            x1 = int(math.ceil(((left + width) / max(img_w, 1)) * full_w))
+
+            y0 = max(0, min(y0, full_h - 1))
+            y1 = max(y0 + 1, min(y1, full_h))
+            x0 = max(0, min(x0, full_w - 1))
+            x1 = max(x0 + 1, min(x1, full_w))
+            source_map = layer_map[:, y0:y1, x0:x1]
+        elif source_layout.get('kind') == 'global':
+            source_map = layer_map
+        else:
+            return None
+
+        if source_map.shape[-2:] != (token_h, token_w):
+            source_map = F.interpolate(
+                source_map.unsqueeze(1),
+                size=(token_h, token_w),
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(1)
+        return source_map.contiguous()
+
+    def _attach_mobile_hint_scores(
+        self,
+        cache: Dict[str, Any],
+        context: Dict[str, Any],
+        layer_idx: int,
+        src_idx: int,
+        source_layout: Dict[str, Any] | None,
+        active_indices: torch.Tensor,
+        num_pretokens: int,
+        image_hw: tuple[int, int],
+    ) -> None:
+        layer_map = self._get_mobile_hint_map(context, layer_idx, active_indices)
+        if layer_map is None:
+            raise KeyError(f"Missing mobile hint map for layer {layer_idx}")
+
+        target_hw = (
+            int(source_layout['token_h']) if isinstance(source_layout, dict) else 0,
+            int(source_layout['token_w']) if isinstance(source_layout, dict) else 0,
+        )
+        source_map = self._project_mobile_hint_to_source(
+            layer_map,
+            source_layout,
+            image_hw=image_hw,
+            target_hw=target_hw,
+        )
+        if source_map is None:
+            raise KeyError(
+                f"Unable to project mobile hint map for layer {layer_idx} and source {src_idx}"
+            )
+
+        patch_scores = source_map.flatten(1)
+        pretoken_scores = torch.zeros(
+            (patch_scores.shape[0], num_pretokens),
+            device=self.device,
+            dtype=patch_scores.dtype,
+        )
+        cache[f"src{src_idx}_layer{layer_idx}_mobile_pscore"] = torch.cat(
+            [pretoken_scores, patch_scores],
+            dim=1,
+        )
         
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
@@ -892,6 +1002,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
         token_keep_ratio = appcorr_options["token_keep_ratio"]
+        mobile_hint_enabled = self._mobile_hint_enabled(appcorr_options)
+        active_indices = self._get_active_batch_indices(context, config.batch_size)
+        num_pretokens = 1 + getattr(vit_backbone, 'n_storage_tokens', 0)
+        image_hw = tuple(int(v) for v in config.image_shape[:2])
 
         if appcorr_method == 'partial_channel':
             if all_group_plans is None or not isinstance(all_group_plans, list):
@@ -968,6 +1082,17 @@ class DINOv3DetectorExecutor(ModelExecutor):
             for lidx in range(start_l, end_l):
                 blk = blocks[lidx]
                 with torch.no_grad():
+                    if mobile_hint_enabled:
+                        self._attach_mobile_hint_scores(
+                            cache,
+                            context,
+                            lidx,
+                            src_idx,
+                            source_layout,
+                            active_indices,
+                            num_pretokens,
+                            image_hw,
+                        )
                     if appcorr_method == 'partial_channel':
                         x_temp, cache = blk.correct(
                             x_temp,

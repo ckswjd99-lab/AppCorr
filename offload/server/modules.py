@@ -1,7 +1,7 @@
 import multiprocessing
 import socket
 import time
-from offload.common import send_msg, recv_msg, ExperimentConfig
+from offload.common import send_msg, recv_msg, ExperimentConfig, HintPacket
 
 class ServerReceiver(multiprocessing.Process):
     """Receives Config and Patches from Mobile."""
@@ -49,6 +49,10 @@ class ServerReceiver(multiprocessing.Process):
                     if hasattr(msg, 'arrival_time'):
                         msg.arrival_time = time.time()
                     
+                    if isinstance(msg, HintPacket):
+                        self.sched_queue.put(msg)
+                        continue
+
                     if isinstance(msg, tuple):
                          if msg[0] == 'TIME_SYNC':
                              self.control_queue.put(msg)

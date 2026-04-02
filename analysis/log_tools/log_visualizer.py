@@ -23,10 +23,14 @@ def classify_event(event_name):
     }
     
     # Prefix matchers
+    if event_name == 'MOBILE_HINT_READY':
+        return 'Mobile (GPU)'
+    if event_name.startswith('MOBILE_HINT'):
+        return 'Mobile (GPU)'
     if event_name.startswith('MOBILE_'):
         if event_name.startswith('MOBILE_SEND') or event_name == 'MOBILE_RECV' or event_name == 'MOBILE_RECEIVE':
             return 'Network' # Treated specially later, but base is Network
-        return 'Mobile'
+        return 'Mobile (CPU)'
     elif event_name == 'SERVER_RECEIVE' or event_name == 'SERVER_SEND':
         return 'Network'
     elif event_name == 'Decode':
@@ -36,7 +40,7 @@ def classify_event(event_name):
     
     # Default fallback
     parts = event_name.split('_')
-    if parts[0] == 'MOBILE': return 'Mobile'
+    if parts[0] == 'MOBILE': return 'Mobile (CPU)'
     if parts[0] == 'SERVER': return 'Server (GPU)'
     return 'Server (GPU)' # Most generic ops are server GPU side
 
@@ -104,10 +108,10 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
     base_time = valid_events[0]['start']
     
     # Y-axis position (highest index = top)
-    categories = ['Server (GPU)', 'Server (CPU)', 'Network', 'Mobile']
+    categories = ['Server (GPU)', 'Server (CPU)', 'Network', 'Mobile (GPU)', 'Mobile (CPU)']
     y_pos = {cat: i for i, cat in enumerate(categories)}
     
-    fig, ax = plt.subplots(figsize=(15, 6))
+    fig, ax = plt.subplots(figsize=(15, 7))
     
     # Sequential counters for DEC
     decode_idx = 0
@@ -125,6 +129,13 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         color = get_color(base_name, color_map)
         
         y = y_pos[category]
+
+        if name == 'MOBILE_HINT_READY':
+            ax.vlines(start, y - 0.35, y + 0.35, color=color, linewidth=1.5, zorder=3)
+            layer_label = event.get('params', {}).get('layer_label')
+            if layer_label:
+                ax.text(start, y + 0.38, f"H{layer_label}", ha='center', va='bottom', fontsize=6, rotation=90)
+            continue
         
         # Display labels
         display_name = name.replace('Preprocess::', 'Prep:').replace('MOBILE_', '').replace('SERVER_', '')
@@ -151,6 +162,8 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
             match = re.search(r'[G_](\d+)$', name)
             gid = match.group(1) if match else event.get('params', {}).get('group_id', '?')
             display_name = f"ENC\nG{gid}"
+        elif name == 'MOBILE_HINT_GPU':
+            display_name = "HINT\nGPU"
         
         # Plot event block (zorder=2 to be on top)
         bar = ax.barh(y, width=duration, left=start, height=0.6, align='center', 
@@ -213,7 +226,8 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         idx += 1
 
     # Sequential Simulation Baseline
-    total_mobile = sum(e['end'] - e['start'] for e in valid_events if classify_event(e['type']) == 'Mobile')
+    total_mobile_cpu = sum(e['end'] - e['start'] for e in valid_events if classify_event(e['type']) == 'Mobile (CPU)')
+    total_mobile_gpu = sum(e['end'] - e['start'] for e in valid_events if classify_event(e['type']) == 'Mobile (GPU)')
     total_cpu = sum(e['end'] - e['start'] for e in valid_events if classify_event(e['type']) == 'Server (CPU)')
     total_gpu_no_correct = sum(e['end'] - e['start'] for e in valid_events 
                                if classify_event(e['type']) == 'Server (GPU)' and 'CORRECT_FORWARD' not in e['type'])
@@ -236,10 +250,10 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
             prev_rx_end = rx_end
         idx += 1
 
-    sequential_time = total_mobile + total_ul + total_cpu + total_gpu_no_correct
+    sequential_time = total_mobile_cpu + total_mobile_gpu + total_ul + total_cpu + total_gpu_no_correct
     actual_time = max(e['end'] for e in valid_events) - base_time
     total_mobile_load = sum(e['end'] - e['start'] for e in valid_events if e['type'] == 'MOBILE_LOAD')
-    ideal_time = total_mobile_load + total_gpu_no_correct
+    ideal_time = total_mobile_load + total_mobile_gpu + total_gpu_no_correct
     
     # Plot Baseline
     ax.axvline(x=sequential_time, color='red', linestyle='--', linewidth=2, label='Sequential Baseline', zorder=0)

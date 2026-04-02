@@ -13,6 +13,35 @@ class GroupTriggerPolicy(ISchedulingPolicy):
         self.current_request_id = None
 
     @staticmethod
+    def _get_patch_request_id(patch: Patch) -> int | None:
+        request_id = getattr(patch, 'request_id', -1)
+        if isinstance(request_id, int) and request_id >= 0:
+            return request_id
+        return None
+
+    @staticmethod
+    def _mobile_hint_required(config: ExperimentConfig) -> bool:
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        return (
+            appcorr_options.get('mobile_pscore', 'none') != 'none'
+            and float(appcorr_options.get('mobile_pscore_weight', 0.0)) != 0.0
+        )
+
+    @staticmethod
+    def _hint_ready_prefix_end(
+        request_id: int | None,
+        total_layers: int,
+        hint_ready_layers_by_request: dict[int, set[int]] | None,
+    ) -> int:
+        if request_id is None:
+            return 0
+        ready_layers = (hint_ready_layers_by_request or {}).get(int(request_id), set())
+        prefix_end = 0
+        while prefix_end < total_layers and prefix_end in ready_layers:
+            prefix_end += 1
+        return prefix_end
+
+    @staticmethod
     def _needs_final_global_approx(config: ExperimentConfig) -> bool:
         if getattr(config, 'model_name', None) != 'dinov3_detector':
             return False
@@ -40,11 +69,34 @@ class GroupTriggerPolicy(ISchedulingPolicy):
         
         # Check trigger condition
         if len(buffer) >= target_count:
-            t_id = next(task_id_gen)
-            
-            # Manage Request ID (New for Group 0, reuse for others)
+            mobile_request_id = self._get_patch_request_id(head_patch)
             if current_group == 0 or self.current_request_id is None:
-                self.current_request_id = t_id
+                self.current_request_id = mobile_request_id
+            elif mobile_request_id is not None:
+                self.current_request_id = mobile_request_id
+
+            request_id = self.current_request_id
+            total_layers = int(config.transmission_kwargs.get('total_layers', 40))
+            num_res_groups = int(config.transmission_kwargs.get('num_groups', 4))
+            chunk_size = total_layers // num_res_groups
+
+            if self._mobile_hint_required(config):
+                if current_group < num_res_groups:
+                    required_end = current_group * chunk_size
+                else:
+                    required_end = total_layers
+                ready_prefix_end = self._hint_ready_prefix_end(
+                    request_id,
+                    total_layers,
+                    kwargs.get('hint_ready_layers_by_request'),
+                )
+                if required_end > 0 and ready_prefix_end < required_end:
+                    return None
+
+            t_id = next(task_id_gen)
+            if request_id is None:
+                request_id = t_id
+                self.current_request_id = request_id
             
             # Extract patches
             current_batch_patches = buffer[:target_count]
@@ -54,7 +106,7 @@ class GroupTriggerPolicy(ISchedulingPolicy):
             
             task = Task(
                 task_id=t_id,
-                request_id=self.current_request_id,
+                request_id=request_id,
                 payload=current_batch_patches,
                 instructions=instructions
             )

@@ -246,6 +246,48 @@ class DINOv3ClassifierExecutor(ModelExecutor):
     def _get_group_plans(context: Dict[str, Any]) -> Dict[int, GroupCorrectionPlan]:
         return context.setdefault('group_plans', {})
 
+    @staticmethod
+    def _mobile_hint_enabled(appcorr_options: Dict[str, Any]) -> bool:
+        return (
+            appcorr_options.get("mobile_pscore", "none") != "none"
+            and float(appcorr_options.get("mobile_pscore_weight", 0.0)) != 0.0
+        )
+
+    def _get_mobile_hint_map(
+        self,
+        context: Dict[str, Any],
+        layer_idx: int,
+        active_indices: torch.Tensor,
+    ) -> torch.Tensor | None:
+        hint_maps = context.get('mobile_hint_maps')
+        if not isinstance(hint_maps, dict):
+            return None
+        layer_map = hint_maps.get(int(layer_idx))
+        if layer_map is None:
+            return None
+        layer_map = layer_map.to(device=self.device, dtype=torch.float32, non_blocking=True)
+        return layer_map[active_indices]
+
+    def _attach_mobile_hint_scores(
+        self,
+        cache: Dict[str, Any],
+        context: Dict[str, Any],
+        layer_idx: int,
+        active_indices: torch.Tensor,
+        num_pretokens: int,
+    ) -> None:
+        layer_map = self._get_mobile_hint_map(context, layer_idx, active_indices)
+        if layer_map is None:
+            raise KeyError(f"Missing mobile hint map for layer {layer_idx}")
+
+        patch_scores = layer_map.flatten(1)
+        pretoken_scores = torch.zeros(
+            (patch_scores.shape[0], num_pretokens),
+            device=self.device,
+            dtype=patch_scores.dtype,
+        )
+        cache[f"layer{layer_idx}_mobile_pscore"] = torch.cat([pretoken_scores, patch_scores], dim=1)
+
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Model (MMap): {model_name}...")
         if self.model is not None:
@@ -559,6 +601,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
+        active_indices = self._get_active_batch_indices(context, config.batch_size)
+        num_pretokens = 1 + self.model.backbone.n_storage_tokens
         fixed_query_state = plan.query_state
         if fixed_query_state is not None:
             cache["_token_prune_kept_patch_total"] = (
@@ -584,6 +628,14 @@ class DINOv3ClassifierExecutor(ModelExecutor):
 
         for lidx in range(start_l, end_l):
             blk = self.model.backbone.blocks[lidx]
+            if self._mobile_hint_enabled(appcorr_options):
+                self._attach_mobile_hint_scores(
+                    cache,
+                    context,
+                    lidx,
+                    active_indices,
+                    num_pretokens,
+                )
             x_temp, cache = blk.correct(
                 x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
                 appcorr_method=appcorr_options["method"],

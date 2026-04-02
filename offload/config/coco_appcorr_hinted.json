@@ -1,7 +1,7 @@
 {
     "model_name": "dinov3_detector",
     "dataset_name": "coco2017",
-    "exp_id": "coco_appcorr",
+    "exp_id": "coco_appcorr_hinted",
     "batch_size": 1,
     "image_shape": [1024, 1024, 3],
     "patch_size": [16, 16],
@@ -24,7 +24,7 @@
         "pyramid_levels": [2, 0],
         "num_groups": 1,
         "token_keep_ratio": 0.3,
-        "mobile_pscore": "none",
+        "mobile_pscore": "patch_attn_delta_abs",
         "mobile_pscore_weight": 0.0,
         "server_pscore": "patch_attn_prob",
         "server_pscore_weight": 1.0

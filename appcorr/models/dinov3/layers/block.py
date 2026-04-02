@@ -315,10 +315,17 @@ class SelfAttentionBlock(nn.Module):
 
         server_patch_scores = server_token_scores.gather(1, dindice_patches) # [B, M]
 
-        combined_patch_scores = server_pscore_weight * server_patch_scores
+        combined_patch_scores = server_pscore_weight * server_patch_scores.float()
         if mobile_pscore != "none" and mobile_pscore_weight != 0.0:
-            mobile_patch_scores = torch.zeros_like(server_patch_scores)
+            mobile_token_scores = cache_feature.get(f"{tag}_mobile_pscore")
+            if mobile_token_scores is None:
+                raise KeyError(
+                    f"Missing cached {tag}_mobile_pscore. "
+                    "It must be delivered before correction."
+                )
+            mobile_patch_scores = mobile_token_scores.gather(1, dindice_patches).float()
             combined_patch_scores = combined_patch_scores + (mobile_pscore_weight * mobile_patch_scores)
+            cache_feature[f"{tag}_mobile_pscore_sel"] = mobile_patch_scores.detach()
         cache_feature[f"{tag}_server_pscore_sel"] = server_patch_scores.detach()
         cache_feature[f"{tag}_combined_pscore"] = combined_patch_scores.detach()
         

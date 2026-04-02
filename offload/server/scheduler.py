@@ -1,8 +1,8 @@
 import multiprocessing
 import itertools
 import time
-from typing import List
-from offload.common import Patch, Task, ExperimentConfig
+from typing import Dict, List, Set
+from offload.common import Patch, HintPacket, Task, ExperimentConfig, OpType
 from offload.policies import get_scheduler
 from offload.common.utils import calculate_total_patches
 
@@ -20,6 +20,7 @@ class SchedulerModule(multiprocessing.Process):
         self.config: ExperimentConfig = None
         self.policy = None
         self.task_counter = itertools.count()
+        self.hint_ready_layers: Dict[int, Set[int]] = {}
 
     def run(self):
         print("[Scheduler] Started.")
@@ -33,6 +34,7 @@ class SchedulerModule(multiprocessing.Process):
                     self.worker_queue.put(('CONFIG', data))
                     self.buffer = []
                     self.task_counter = itertools.count()
+                    self.hint_ready_layers = {}
 
                     print(f"[Scheduler] Configured with {self.config.scheduler_policy_name}")
                 
@@ -40,10 +42,17 @@ class SchedulerModule(multiprocessing.Process):
                      self.worker_queue.put(('TIME_SYNC', data))
 
             # Drain queue
+            hint_updated = False
             while not self.input_queue.empty():
                 try:
                     item = self.input_queue.get_nowait()
-                    self.buffer.append(item)
+                    if isinstance(item, HintPacket):
+                        ready_layers = self.hint_ready_layers.setdefault(int(item.request_id), set())
+                        ready_layers.add(int(item.layer_idx))
+                        self.worker_queue.put(('HINT', item))
+                        hint_updated = True
+                    else:
+                        self.buffer.append(item)
                 except:
                     break
                     
@@ -63,11 +72,16 @@ class SchedulerModule(multiprocessing.Process):
                     kwargs = {}
                     if feedback_events:
                         kwargs['feedback_events'] = feedback_events
+                    if self.hint_ready_layers:
+                        kwargs['hint_ready_layers_by_request'] = self.hint_ready_layers
+                    if hint_updated:
+                        kwargs['hint_updated'] = True
                         
                     task = self.policy.decide(self.buffer, self.config, self.task_counter, **kwargs)
                     
                     # Pass feedback events once
                     feedback_events = []
+                    hint_updated = False
                     
                     if task:
                         consume_count = len(task.payload)
@@ -75,6 +89,8 @@ class SchedulerModule(multiprocessing.Process):
                         self.buffer = self.buffer[consume_count:]
                         
                         self.worker_queue.put(('TASK', task))
+                        if any(instr.op_type == OpType.FREE_SESSION for instr in task.instructions):
+                            self.hint_ready_layers.pop(task.request_id, None)
                     else:
                         break
             

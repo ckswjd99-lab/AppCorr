@@ -157,6 +157,51 @@ class SelfAttention(nn.Module):
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
 
+    def compute_server_pscore_from_attn_prob(
+        self,
+        attn_prob: Tensor,
+        *,
+        server_pscore: str = "cls_attn_prob",
+    ) -> Tensor:
+        if server_pscore == "patch_attn_prob":
+            return attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.float32)
+        return attn_prob[:, :, 0:1, :].mean(dim=1).squeeze(1).to(dtype=torch.float32)
+
+    def forward_with_server_pscore(
+        self,
+        x: Tensor,
+        *,
+        rope: Tensor | Tuple[Tensor, Tensor] | None = None,
+        server_pscore: str = "cls_attn_prob",
+        pair_batch_size: int | None = None,
+        pair_score_type: str | None = None,
+    ) -> Tuple[Tensor, Tensor]:
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        q, k, v = torch.unbind(qkv, 2)
+        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+        if rope is not None:
+            q, k = self.apply_rope(q, k, rope)
+
+        attn_score = (q @ k.transpose(-2, -1)) * self.scale
+        attn_prob = attn_score.softmax(dim=-1)
+        server_pscore_tensor = self.compute_server_pscore_from_attn_prob(
+            attn_prob,
+            server_pscore=server_pscore,
+        )
+        if pair_score_type == "patch_attn_delta_abs" and pair_batch_size is not None:
+            if pair_batch_size < 0 or (pair_batch_size * 2) > B:
+                raise ValueError(
+                    f"Invalid pair_batch_size={pair_batch_size} for batch size {B}"
+                )
+            attn_prob_diff = (attn_prob[:pair_batch_size] - attn_prob[pair_batch_size : pair_batch_size * 2]).abs()
+            server_pscore_tensor = attn_prob_diff.mean(dim=1).mean(dim=1).to(dtype=torch.float32)
+        attn_v = attn_prob @ v
+        attn_v = attn_v.transpose(1, 2).reshape([B, N, C])
+        x = self.proj(attn_v)
+        x = self.proj_drop(x)
+        return x, server_pscore_tensor
+
     def compute_attention_partial_token(
         self,
         qkv: Tensor,
@@ -179,14 +224,19 @@ class SelfAttention(nn.Module):
 
         cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
         if server_pscore == "patch_attn_prob":
-            attn_prob = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, N, N]
-            server_pscore_tensor = attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.bfloat16)  # [B, N]
+            attn_score = (q @ k.transpose(-2, -1)) * self.scale
+            attn_prob = attn_score.softmax(dim=-1)
+            server_pscore_tensor = self.compute_server_pscore_from_attn_prob(
+                attn_prob,
+                server_pscore=server_pscore,
+            )
+            x = attn_prob @ v
         else:
-            cls_attn_score = q[:, :, 0:1, :] @ k.transpose(-2, -1) * self.scale
-            server_pscore_tensor = cls_attn_score.softmax(-1).mean(dim=1).squeeze(1).to(dtype=torch.float32)
+            cls_attn_score = (q[:, :, 0:1, :] @ k.transpose(-2, -1)) * self.scale
+            server_pscore_tensor = cls_attn_score.softmax(dim=-1).mean(dim=1).squeeze(1).to(dtype=torch.float32)
+            x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         cache_feature[f"{tag}_server_pscore"] = server_pscore_tensor.detach()
 
-        x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
 
