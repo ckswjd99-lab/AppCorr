@@ -1,7 +1,7 @@
 {
     "model_name": "dinov3_detector",
     "dataset_name": "coco2017",
-    "exp_id": "coco_interleaved_g4",
+    "exp_id": "coco_interleaved_g4_ffn_hidden_l2_r50_last20",
     "batch_size": 1,
     "image_shape": [1024, 1024, 3],
     "patch_size": [16, 16],
@@ -21,13 +21,17 @@
     "appcorr_kwargs": {
         "generated_from_client": true,
         "global_source_mode": "final_correct",
+        "method": "partial_token",
         "pyramid_levels": [2, 0],
         "num_groups": 1,
         "token_keep_ratio": 0.3,
-        "mobile_pscore": "output_l2_diff",
-        "mobile_pscore_weight": 1.0,
+        "mobile_pscore": "none",
+        "mobile_pscore_weight": 0.0,
         "server_pscore": "patch_attn_prob",
-        "server_pscore_weight": 1.0
+        "server_pscore_weight": 1.0,
+        "ffn_hidden_prune_enabled": true,
+        "ffn_hidden_prune_ratio": 0.5,
+        "ffn_hidden_prune_last_n_layers": 20
     },
     "device": "cuda:0"
 }

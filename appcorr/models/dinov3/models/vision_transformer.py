@@ -373,6 +373,7 @@ class DinoVisionTransformer(nn.Module):
             attn_cache_candidates[(level, group_idx)] = torch.where(dmask)[1].view(B, -1)
 
         x_feature = x_pyramid[0]
+        total_layers = len(self.blocks)
         for (op_type, level, layers, group_idx) in appcorr_options["plan"]:
             if op_type == "A":
                 # Approx
@@ -386,6 +387,11 @@ class DinoVisionTransformer(nn.Module):
                             attn_cache_candidates=attn_cache_candidates if appcorr_options["method"] == "partial_channel" else None,
                             server_pscore=appcorr_options["server_pscore"],
                             attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
+                            ffn_hidden_prune_enabled=appcorr_options["ffn_hidden_prune_enabled"],
+                            ffn_hidden_prune_ratio=appcorr_options["ffn_hidden_prune_ratio"],
+                            ffn_hidden_prune_last_n_layers=appcorr_options["ffn_hidden_prune_last_n_layers"],
+                            layer_idx=lidx,
+                            total_layers=total_layers,
                             debug=appcorr_options["debug"]
                         )
 
@@ -455,6 +461,7 @@ class DinoVisionTransformer(nn.Module):
                             token_prune_min_keep=appcorr_options["token_prune_min_keep"],
                             fixed_token_prune_state=fixed_token_prune_state,
                             attn_cache_key=(level, group_idx),
+                            mobile_pscore_source_tag=f"layer{lidx - 1}" if lidx > 0 else None,
                             debug=appcorr_options["debug"]
                         )
 

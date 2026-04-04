@@ -748,6 +748,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         all_group_plans = context.get('all_group_plans')
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
         appcorr_method = appcorr_options["method"]
+        total_layers = len(blocks)
 
         if all_input_tokens is None or all_rope_sincos is None:
             return
@@ -834,6 +835,11 @@ class DINOv3DetectorExecutor(ModelExecutor):
                         group_plans=group_plans,
                         server_pscore=appcorr_options["server_pscore"],
                         attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
+                        ffn_hidden_prune_enabled=appcorr_options["ffn_hidden_prune_enabled"],
+                        ffn_hidden_prune_ratio=appcorr_options["ffn_hidden_prune_ratio"],
+                        ffn_hidden_prune_last_n_layers=appcorr_options["ffn_hidden_prune_last_n_layers"],
+                        layer_idx=lidx,
+                        total_layers=total_layers,
                         debug=False
                     )
 
@@ -985,6 +991,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             fixed_query_state=fixed_query_state,
                             group_plan=plan,
                             attn_cache_key=group_id,
+                            mobile_pscore_source_tag=f"src{src_idx}_layer{lidx - 1}" if lidx > 0 else None,
                             debug=False,
                         )
                     else:
@@ -1000,6 +1007,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
                             server_pscore=appcorr_options["server_pscore"],
                             server_pscore_weight=appcorr_options["server_pscore_weight"],
+                            mobile_pscore_source_tag=f"src{src_idx}_layer{lidx - 1}" if lidx > 0 else None,
                             debug=False,
                         )
 

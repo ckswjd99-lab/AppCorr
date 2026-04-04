@@ -23,6 +23,9 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'token_prune_enabled': False,
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
+        'ffn_hidden_prune_enabled': False,
+        'ffn_hidden_prune_ratio': 0.0,
+        'ffn_hidden_prune_last_n_layers': 0,
         'method': 'partial_token',
         'debug': False,
     }
@@ -54,6 +57,13 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
     mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
     if mobile_pscore in {'', 'null', 'None'}:
         mobile_pscore = defaults['mobile_pscore']
+    mobile_pscore_aliases = {
+        'output_feature_l2': 'output_l2_diff',
+        'layer_output_l2': 'output_l2_diff',
+        'layer_output_l2_diff': 'output_l2_diff',
+        'prev_layer_output_l2': 'output_l2_diff',
+    }
+    mobile_pscore = mobile_pscore_aliases.get(mobile_pscore, mobile_pscore)
     options['mobile_pscore'] = mobile_pscore
     options['mobile_pscore_weight'] = float(options.get('mobile_pscore_weight', defaults['mobile_pscore_weight']))
 
@@ -72,6 +82,17 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
     options['token_prune_enabled'] = bool(options.get('token_prune_enabled', defaults['token_prune_enabled']))
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)
+    options['ffn_hidden_prune_enabled'] = bool(
+        options.get('ffn_hidden_prune_enabled', defaults['ffn_hidden_prune_enabled'])
+    )
+    options['ffn_hidden_prune_ratio'] = min(
+        max(float(options.get('ffn_hidden_prune_ratio', defaults['ffn_hidden_prune_ratio'])), 0.0),
+        1.0,
+    )
+    options['ffn_hidden_prune_last_n_layers'] = max(
+        int(options.get('ffn_hidden_prune_last_n_layers', defaults['ffn_hidden_prune_last_n_layers'])),
+        0,
+    )
     options['method'] = str(options.get('method', defaults['method']))
     options['debug'] = bool(options.get('debug', defaults['debug']))
     return options

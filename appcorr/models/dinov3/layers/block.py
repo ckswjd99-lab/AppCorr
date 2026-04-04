@@ -26,6 +26,12 @@ torch._dynamo.config.accumulated_cache_size_limit = 1024
 
 
 class SelfAttentionBlock(nn.Module):
+    _OUTPUT_L2_MOBILE_PSCORE_ALIASES = frozenset({
+        "output_l2_diff",
+        "layer_output_l2_diff",
+        "prev_layer_output_l2",
+    })
+
     def __init__(
         self,
         dim: int,
@@ -262,6 +268,7 @@ class SelfAttentionBlock(nn.Module):
         # check debug
         debug = kwargs.get("debug", False)
         server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
+        ffn_hidden_prune_ratio = self._resolve_ffn_hidden_prune_ratio(kwargs)
 
         with torch.cuda.nvtx.range("approx_attn"):
             x_attn, cache_feature = self.attn.approx(
@@ -281,7 +288,13 @@ class SelfAttentionBlock(nn.Module):
                 torch.cuda.synchronize()
 
         with torch.cuda.nvtx.range("approx_ffn"):
-            mlp_out = self.ls2(self.mlp(self.norm2(x_attn)))  # [B, N, C]
+            mlp_out, cache_feature = self.mlp.approx_partial_channel(
+                self.norm2(x_attn),
+                cache_feature,
+                tag,
+                hidden_prune_ratio=ffn_hidden_prune_ratio,
+            )
+            mlp_out = self.ls2(mlp_out)  # [B, N, C]
             cache_feature[f"{tag}_blocks_out_sum"] += mlp_out.detach()
 
             x_ffn = x_attn + mlp_out
@@ -290,6 +303,48 @@ class SelfAttentionBlock(nn.Module):
                 torch.cuda.synchronize()
 
         return x_ffn, cache_feature
+
+    def _resolve_mobile_patch_scores(
+        self,
+        mobile_pscore: str,
+        cache_feature: Dict,
+        dindice_patches: torch.Tensor,
+        default_scores: torch.Tensor,
+        source_tag: str | None = None,
+    ) -> torch.Tensor:
+        if mobile_pscore not in self._OUTPUT_L2_MOBILE_PSCORE_ALIASES:
+            return default_scores
+
+        if not source_tag:
+            return default_scores
+
+        token_scores = cache_feature.get(f"{source_tag}_mobile_pscore_output_l2")
+        if token_scores is None:
+            return default_scores
+
+        if token_scores.shape[0] != dindice_patches.shape[0]:
+            raise RuntimeError(
+                f"Cached mobile pscore batch mismatch for {source_tag}: "
+                f"cached={tuple(token_scores.shape)} current={tuple(dindice_patches.shape)}"
+            )
+
+        return token_scores.gather(1, dindice_patches).to(dtype=default_scores.dtype)
+
+    @staticmethod
+    def _cache_output_l2_mobile_pscore(
+        cache_feature: Dict,
+        tag: str,
+        selected_patch_indices: torch.Tensor,
+        selected_patch_scores: torch.Tensor,
+        num_tokens: int,
+    ) -> None:
+        token_scores = selected_patch_scores.new_zeros(
+            (selected_patch_scores.shape[0], num_tokens),
+            dtype=torch.float32,
+        )
+        if selected_patch_indices.numel() > 0:
+            token_scores.scatter_(1, selected_patch_indices, selected_patch_scores.to(dtype=torch.float32))
+        cache_feature[f"{tag}_mobile_pscore_output_l2"] = token_scores.detach()
 
     def correct_partial_token(
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
@@ -313,12 +368,19 @@ class SelfAttentionBlock(nn.Module):
         dindice_pre = dindice[:, :num_pretokens]      # [B, 5] Shared pretokens
         dindice_patches = dindice[:, num_pretokens:]  # [B, M] Shared candidate patches
 
-        server_patch_scores = server_token_scores.gather(1, dindice_patches) # [B, M]
+        server_patch_scores = server_token_scores.gather(1, dindice_patches).to(dtype=torch.float32) # [B, M]
 
         combined_patch_scores = server_pscore_weight * server_patch_scores
         if mobile_pscore != "none" and mobile_pscore_weight != 0.0:
-            mobile_patch_scores = torch.zeros_like(server_patch_scores)
+            mobile_patch_scores = self._resolve_mobile_patch_scores(
+                mobile_pscore,
+                cache_feature,
+                dindice_patches,
+                torch.zeros_like(server_patch_scores),
+                source_tag=kwargs.get("mobile_pscore_source_tag"),
+            )
             combined_patch_scores = combined_patch_scores + (mobile_pscore_weight * mobile_patch_scores)
+            cache_feature[f"{tag}_mobile_pscore_sel"] = mobile_patch_scores.detach()
         cache_feature[f"{tag}_server_pscore_sel"] = server_patch_scores.detach()
         cache_feature[f"{tag}_combined_pscore"] = combined_patch_scores.detach()
         
@@ -348,11 +410,29 @@ class SelfAttentionBlock(nn.Module):
 
         with torch.cuda.nvtx.range("correct_ffn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
+            x_base = x + blocks_out_sum.to(x.dtype)
+            x_base_sel = x_base.gather(1, gather_idx_x).contiguous()
 
             mlp_out_new = self.ls2(self.mlp(self.norm2(x_sel)))
 
             x_sel = x_sel + mlp_out_new
-            x = x + blocks_out_sum.to(x.dtype)
+            if selected_patch_indices.numel() > 0:
+                selected_patch_scores = torch.linalg.vector_norm(
+                    (x_sel[:, num_pretokens:, :] - x_base_sel[:, num_pretokens:, :]).to(dtype=torch.float32),
+                    ord=2,
+                    dim=-1,
+                )
+            else:
+                selected_patch_scores = x.new_zeros((B, 0), dtype=torch.float32)
+            self._cache_output_l2_mobile_pscore(
+                cache_feature,
+                tag,
+                selected_patch_indices,
+                selected_patch_scores,
+                N,
+            )
+
+            x = x_base
             x.scatter_(1, gather_idx_x, x_sel)
 
             if debug:
@@ -366,6 +446,7 @@ class SelfAttentionBlock(nn.Module):
         attn_cache_candidates = kwargs.get("attn_cache_candidates")
         group_plans = kwargs.get("group_plans")
         attn_col_alive_ratio = kwargs.get("attn_col_alive_ratio", 1.0)
+        ffn_hidden_prune_ratio = self._resolve_ffn_hidden_prune_ratio(kwargs)
 
         with torch.cuda.nvtx.range("approx_attn"):
             shortcut1 = x
@@ -392,12 +473,40 @@ class SelfAttentionBlock(nn.Module):
         with torch.cuda.nvtx.range("approx_ffn"):
             shortcut2 = x
             x_norm2 = self.norm2(x)
-            x_mlp, cache_feature = self.mlp.approx_partial_channel(x_norm2, cache_feature, tag)
+            x_mlp, cache_feature = self.mlp.approx_partial_channel(
+                x_norm2,
+                cache_feature,
+                tag,
+                hidden_prune_ratio=ffn_hidden_prune_ratio,
+            )
             x_ls2 = self.ls2(x_mlp)
             cache_feature[f"{tag}_blocks_out_sum"] += x_ls2.detach()
             x = shortcut2 + x_ls2
 
         return x, cache_feature
+
+    @staticmethod
+    def _resolve_ffn_hidden_prune_ratio(kwargs: Dict) -> float:
+        if not bool(kwargs.get("ffn_hidden_prune_enabled", False)):
+            return 0.0
+
+        hidden_prune_ratio = float(kwargs.get("ffn_hidden_prune_ratio", 0.0))
+        if hidden_prune_ratio <= 0.0:
+            return 0.0
+
+        last_n_layers = max(int(kwargs.get("ffn_hidden_prune_last_n_layers", 0)), 0)
+        if last_n_layers <= 0:
+            return 0.0
+
+        layer_idx = kwargs.get("layer_idx")
+        total_layers = kwargs.get("total_layers")
+        if layer_idx is None or total_layers is None:
+            return 0.0
+
+        layer_idx = int(layer_idx)
+        total_layers = int(total_layers)
+        start_layer = max(total_layers - last_n_layers, 0)
+        return hidden_prune_ratio if layer_idx >= start_layer else 0.0
 
     @staticmethod
     def _cache_group_slices(

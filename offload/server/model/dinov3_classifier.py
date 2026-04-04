@@ -511,6 +511,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         start_l, end_l = layers[0], layers[1]
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
         appcorr_method = appcorr_options["method"]
+        total_layers = len(self.model.backbone.blocks)
         
         if start_l == 0:
             x_feature = context['input_tokens']
@@ -530,6 +531,11 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 group_plans=group_plans if appcorr_method == 'partial_channel' else None,
                 server_pscore=appcorr_options["server_pscore"],
                 attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
+                ffn_hidden_prune_enabled=appcorr_options["ffn_hidden_prune_enabled"],
+                ffn_hidden_prune_ratio=appcorr_options["ffn_hidden_prune_ratio"],
+                ffn_hidden_prune_last_n_layers=appcorr_options["ffn_hidden_prune_last_n_layers"],
+                layer_idx=lidx,
+                total_layers=total_layers,
                 debug=False
             )
         
@@ -596,6 +602,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 fixed_query_state=fixed_query_state,
                 group_plan=plan,
                 attn_cache_key=group_id,
+                mobile_pscore_source_tag=f"layer{lidx - 1}" if lidx > 0 else None,
                 debug=False
             )
         
