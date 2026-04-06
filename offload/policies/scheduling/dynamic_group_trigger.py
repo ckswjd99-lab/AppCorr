@@ -1,5 +1,5 @@
 from typing import List, Optional, Any
-from offload.common.protocol import Patch, Task, ExperimentConfig, Instruction, OpType
+from offload.common.protocol import Patch, Task, ExperimentConfig, Instruction, OpType, normalize_appcorr_kwargs
 from ..interface import ISchedulingPolicy
 
 class DynamicGroupTriggerPolicy(ISchedulingPolicy):
@@ -19,6 +19,16 @@ class DynamicGroupTriggerPolicy(ISchedulingPolicy):
                 "ahead_layers",
                 config.transmission_kwargs.get("ahead_layers", self.ahead_layers)
             )
+
+    @staticmethod
+    def _needs_final_global_approx(config: ExperimentConfig) -> bool:
+        if getattr(config, 'model_name', None) != 'dinov3_detector':
+            return False
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        return (
+            bool(appcorr_options.get('generated_from_client', False))
+            and appcorr_options.get('global_source_mode', 'final_correct') == 'final_correct'
+        )
 
     def decide(
         self, 
@@ -93,6 +103,15 @@ class DynamicGroupTriggerPolicy(ISchedulingPolicy):
                         instructions.append(
                             Instruction(OpType.APPROX_FORWARD, {
                                 'layers': (self.latest_approx_layer_queued, total_layers)
+                            })
+                        )
+
+                    if self._needs_final_global_approx(config):
+                        instructions.append(
+                            Instruction(OpType.APPROX_FORWARD, {
+                                'layers': (0, total_layers),
+                                'global_only': True,
+                                'source_kind': 'global',
                             })
                         )
                     

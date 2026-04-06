@@ -727,6 +727,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get('layers', (0, 40))
         start_l, end_l = layers[0], layers[1]
+        global_only = bool(params.get('global_only', False))
 
         dino_backbone = self.model.detector.backbone[0]._backbone
         blocks = dino_backbone.backbone.blocks
@@ -755,11 +756,12 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if all_cache_features is None:
             all_cache_features = [dict() for _ in range(len(all_input_tokens))]
 
-        if all_outputs is None or start_l == 0:
+        if all_outputs is None:
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
-        if start_l == 0:
+        if start_l == 0 and not global_only:
             all_current_features = [x for x in all_input_tokens]
+            all_outputs = [[] for _ in range(len(all_input_tokens))]
 
         new_current_features = []
         new_cache_features = []
@@ -774,6 +776,24 @@ class DINOv3DetectorExecutor(ModelExecutor):
         for src_idx, (x_feature, input_tokens, rope_sincos, cache, prev_outputs, source_layout) in enumerate(
             zip(all_current_features, all_input_tokens, all_rope_sincos, all_cache_features, all_outputs, all_source_layouts)
         ):
+            if global_only:
+                if self._is_global_source(source_layout):
+                    x_feature, collected_outputs = self._run_exact_source_backbone(
+                        input_tokens,
+                        rope_sincos,
+                        blocks,
+                        dino_backbone.layers_to_use,
+                        end_l,
+                    )
+                    new_current_features.append(x_feature)
+                    new_cache_features.append(cache)
+                    new_all_outputs.append(collected_outputs)
+                else:
+                    new_current_features.append(x_feature)
+                    new_cache_features.append(cache)
+                    new_all_outputs.append(list(prev_outputs))
+                continue
+
             if self._is_approx_global_source(appcorr_options, source_layout):
                 x_feature, collected_outputs = self._run_exact_source_backbone(
                     input_tokens,
@@ -812,6 +832,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                         appcorr_method=appcorr_method,
                         attn_cache_candidates=attn_cache_candidates,
                         group_plans=group_plans,
+                        server_pscore=appcorr_options["server_pscore"],
                         attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
                         debug=False
                     )
@@ -837,6 +858,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         vit_backbone = self._get_vit_backbone()
         blocks = vit_backbone.blocks
 
+        all_current_features = context.get('current_features')
         all_input_tokens = context.get('all_x_backbones')
         all_rope_sincos = context.get('all_rope_sincos')
         all_group_maps = context.get('all_group_maps')
@@ -851,6 +873,8 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         if all_input_tokens is None or all_rope_sincos is None:
             return
+        if all_current_features is None:
+            all_current_features = [x for x in all_input_tokens]
         all_source_layouts = context.get('all_source_layouts') or [None] * len(all_input_tokens)
         if all_group_maps is None or all_cached_dindices is None:
             return
@@ -858,17 +882,16 @@ class DINOv3DetectorExecutor(ModelExecutor):
             return
         if len(all_group_maps) != len(all_input_tokens) or len(all_cached_dindices) != len(all_input_tokens):
             return
+        if len(all_current_features) != len(all_input_tokens):
+            return
 
         if all_cache_features is None:
             all_cache_features = [dict() for _ in range(len(all_input_tokens))]
 
-        if all_outputs is None or start_l == 0:   
+        if all_outputs is None:
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
-        alive_ratio = appcorr_options["cls_alive_ratio"]
-        final_group_id = int(config.transmission_kwargs.get('num_groups', 4))
-        total_layers = min(int(config.transmission_kwargs.get('total_layers', len(blocks))), len(blocks))
-        is_final_group = int(group_id) >= final_group_id
+        token_keep_ratio = appcorr_options["token_keep_ratio"]
 
         if appcorr_method == 'partial_channel':
             if all_group_plans is None or not isinstance(all_group_plans, list):
@@ -880,38 +903,21 @@ class DINOv3DetectorExecutor(ModelExecutor):
         new_cache_features = []
         new_all_outputs = []
 
-        for src_idx, (input_tokens, rope_sincos, group_map, cached_dindices, cache, prev_outputs, source_layout) in enumerate(
-            zip(all_input_tokens, all_rope_sincos, all_group_maps, all_cached_dindices, all_cache_features, all_outputs, all_source_layouts)
+        for src_idx, (x_feature, input_tokens, rope_sincos, group_map, cached_dindices, cache, prev_outputs, source_layout) in enumerate(
+            zip(all_current_features, all_input_tokens, all_rope_sincos, all_group_maps, all_cached_dindices, all_cache_features, all_outputs, all_source_layouts)
         ):
             if self._is_approx_global_source(appcorr_options, source_layout):
-                x_temp, collected_outputs = self._run_exact_source_backbone(
-                    input_tokens,
-                    rope_sincos,
-                    blocks,
-                    dino_backbone.layers_to_use,
-                    end_l,
-                )
-                new_current_features.append(x_temp)
+                # Keep the global source in its previously approximated state.
+                # `global_source_mode=approx` means correction must not rerun the source backbone.
+                new_current_features.append(x_feature)
                 new_cache_features.append(cache)
-                new_all_outputs.append(collected_outputs)
+                new_all_outputs.append(list(prev_outputs))
                 continue
 
             if self._is_deferred_global_source(appcorr_options, source_layout):
-                if is_final_group:
-                    x_temp, collected_outputs = self._run_exact_source_backbone(
-                        input_tokens,
-                        rope_sincos,
-                        blocks,
-                        dino_backbone.layers_to_use,
-                        total_layers,
-                    )
-                    new_current_features.append(x_temp)
-                    new_cache_features.append(cache)
-                    new_all_outputs.append(collected_outputs)
-                else:
-                    new_current_features.append(input_tokens)
-                    new_cache_features.append(cache)
-                    new_all_outputs.append([] if start_l == 0 else list(prev_outputs))
+                new_current_features.append(x_feature)
+                new_cache_features.append(cache)
+                new_all_outputs.append(list(prev_outputs))
                 continue
 
             if not torch.is_tensor(group_map) or not isinstance(cached_dindices, dict):
@@ -970,7 +976,11 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             cache,
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
-                            cls_alive_ratio=alive_ratio,
+                            token_keep_ratio=token_keep_ratio,
+                            mobile_pscore=appcorr_options["mobile_pscore"],
+                            mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                            server_pscore=appcorr_options["server_pscore"],
+                            server_pscore_weight=appcorr_options["server_pscore_weight"],
                             attn_col_alive_ratio=attn_col_alive_ratio,
                             fixed_query_state=fixed_query_state,
                             group_plan=plan,
@@ -985,7 +995,11 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             cache,
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
-                            cls_alive_ratio=alive_ratio,
+                            token_keep_ratio=token_keep_ratio,
+                            mobile_pscore=appcorr_options["mobile_pscore"],
+                            mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                            server_pscore=appcorr_options["server_pscore"],
+                            server_pscore_weight=appcorr_options["server_pscore_weight"],
                             debug=False,
                         )
 
@@ -1000,6 +1014,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         context['all_cache_features'] = new_cache_features
         context['all_outputs'] = new_all_outputs
         context['cache_feature'] = self._aggregate_cache_features(new_cache_features)
+        return None
 
     def _process_outputs(self, outputs, x, dt_backbone):
         B, _, h, w = x.shape

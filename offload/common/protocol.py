@@ -14,8 +14,12 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'plan': [],
         'num_groups': 1,
         'group_strategy': 'uniform',
-        'cls_alive_ratio': 0.2,
+        'token_keep_ratio': 0.2,
         'attn_col_alive_ratio': 1.0,
+        'mobile_pscore': 'none',
+        'mobile_pscore_weight': 0.0,
+        'server_pscore': 'cls_attn_prob',
+        'server_pscore_weight': 1.0,
         'token_prune_enabled': False,
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
@@ -42,8 +46,29 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
     options['plan'] = list(options.get('plan', defaults['plan']))
     options['num_groups'] = max(int(options.get('num_groups', defaults['num_groups'])), 1)
     options['group_strategy'] = str(options.get('group_strategy', defaults['group_strategy']))
-    options['cls_alive_ratio'] = float(options.get('cls_alive_ratio', defaults['cls_alive_ratio']))
+    token_keep_ratio = options.get('token_keep_ratio', defaults['token_keep_ratio'])
+    if 'token_keep_ratio' not in raw and 'cls_alive_ratio' in raw:
+        token_keep_ratio = raw['cls_alive_ratio']
+    options['token_keep_ratio'] = float(token_keep_ratio)
     options['attn_col_alive_ratio'] = float(options.get('attn_col_alive_ratio', defaults['attn_col_alive_ratio']))
+    mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
+    if mobile_pscore in {'', 'null', 'None'}:
+        mobile_pscore = defaults['mobile_pscore']
+    options['mobile_pscore'] = mobile_pscore
+    options['mobile_pscore_weight'] = float(options.get('mobile_pscore_weight', defaults['mobile_pscore_weight']))
+
+    server_pscore = str(options.get('server_pscore', defaults['server_pscore']))
+    legacy_token_prune_score = raw.get('token_prune_score')
+    if legacy_token_prune_score is not None and 'server_pscore' not in raw:
+        server_pscore = str(legacy_token_prune_score)
+    if bool(raw.get('patch_attn_prune', False)) and 'server_pscore' not in raw and legacy_token_prune_score is None:
+        server_pscore = 'patch_attn_prob'
+    if server_pscore == 'patch_attn_prune':
+        server_pscore = 'patch_attn_prob'
+    if server_pscore not in {'cls_attn_prob', 'patch_attn_prob'}:
+        server_pscore = defaults['server_pscore']
+    options['server_pscore'] = server_pscore
+    options['server_pscore_weight'] = float(options.get('server_pscore_weight', defaults['server_pscore_weight']))
     options['token_prune_enabled'] = bool(options.get('token_prune_enabled', defaults['token_prune_enabled']))
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)
