@@ -158,7 +158,13 @@ class SelfAttention(nn.Module):
         return x.reshape([B, N, C])
 
     def compute_attention_partial_token(
-        self, qkv: Tensor, rope: Tensor, cache_feature: Dict, tag: str
+        self,
+        qkv: Tensor,
+        rope: Tensor,
+        cache_feature: Dict,
+        tag: str,
+        *,
+        server_pscore: str = "cls_attn_prob",
     ) -> Tensor:
         B, N, _ = qkv.shape
         C = self.qkv.in_features
@@ -172,8 +178,13 @@ class SelfAttention(nn.Module):
             q, k = self.apply_rope(q, k, rope)
 
         cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
-        cls_attn_score = q[:, :, 0:1, :] @ k.transpose(-2, -1) * self.scale
-        cache_feature[f"{tag}_cls_attn_prob"] = cls_attn_score.softmax(-1).detach()
+        if server_pscore == "patch_attn_prob":
+            attn_prob = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, N, N]
+            server_pscore_tensor = attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.bfloat16)  # [B, N]
+        else:
+            cls_attn_score = q[:, :, 0:1, :] @ k.transpose(-2, -1) * self.scale
+            server_pscore_tensor = cls_attn_score.softmax(-1).mean(dim=1).squeeze(1).to(dtype=torch.float32)
+        cache_feature[f"{tag}_server_pscore"] = server_pscore_tensor.detach()
 
         x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         x = x.transpose(1, 2)
@@ -182,7 +193,13 @@ class SelfAttention(nn.Module):
     def approx(self, x: Tensor, rope: Tensor, cache_feature: Dict, tag: str, **kwargs) -> Tuple[Tensor, dict]:
         appcorr_method = kwargs.get("appcorr_method", "partial_token")
         if appcorr_method == "partial_token":
-            return self.approx_partial_token(x, rope, cache_feature, tag)
+            return self.approx_partial_token(
+                x,
+                rope,
+                cache_feature,
+                tag,
+                server_pscore=kwargs.get("server_pscore", "cls_attn_prob"),
+            )
         if appcorr_method == "partial_channel":
             return self.approx_partial_channel(
                 x,
@@ -216,11 +233,23 @@ class SelfAttention(nn.Module):
             "Available methods: partial_channel, partial_token"
         )
 
-    def approx_partial_token(self, x: Tensor, rope: Tensor, cache_feature: Dict, tag: str) -> Tuple[Tensor, dict]:
+    def approx_partial_token(
+        self,
+        x: Tensor,
+        rope: Tensor,
+        cache_feature: Dict,
+        tag: str,
+        *,
+        server_pscore: str = "cls_attn_prob",
+    ) -> Tuple[Tensor, dict]:
         qkv = self.qkv(x)   # [B, N, 3*D]
 
         attn_v = self.compute_attention_partial_token(
-            qkv=qkv, rope=rope, cache_feature=cache_feature, tag=tag
+            qkv=qkv,
+            rope=rope,
+            cache_feature=cache_feature,
+            tag=tag,
+            server_pscore=server_pscore,
         )
         x = self.proj(attn_v)
         x = self.proj_drop(x)

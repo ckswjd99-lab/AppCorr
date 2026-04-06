@@ -528,6 +528,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 appcorr_method=appcorr_method,
                 attn_cache_candidates=attn_cache_candidates,
                 group_plans=group_plans if appcorr_method == 'partial_channel' else None,
+                server_pscore=appcorr_options["server_pscore"],
                 attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
                 debug=False
             )
@@ -556,7 +557,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         x_temp = context.get('input_tokens')
         
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
-        alive_ratio = appcorr_options["cls_alive_ratio"]
+        token_keep_ratio = appcorr_options["token_keep_ratio"]
         attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
         fixed_query_state = plan.query_state
         if fixed_query_state is not None:
@@ -586,7 +587,11 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             x_temp, cache = blk.correct(
                 x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
                 appcorr_method=appcorr_options["method"],
-                cls_alive_ratio=alive_ratio,
+                token_keep_ratio=token_keep_ratio,
+                mobile_pscore=appcorr_options["mobile_pscore"],
+                mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                server_pscore=appcorr_options["server_pscore"],
+                server_pscore_weight=appcorr_options["server_pscore_weight"],
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 fixed_query_state=fixed_query_state,
                 group_plan=plan,

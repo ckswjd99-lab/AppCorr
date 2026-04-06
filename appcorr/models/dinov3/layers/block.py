@@ -261,6 +261,7 @@ class SelfAttentionBlock(nn.Module):
     ) -> List[Tensor]:
         # check debug
         debug = kwargs.get("debug", False)
+        server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
 
         with torch.cuda.nvtx.range("approx_attn"):
             x_attn, cache_feature = self.attn.approx(
@@ -269,6 +270,7 @@ class SelfAttentionBlock(nn.Module):
                 cache_feature=cache_feature,
                 tag=tag,
                 appcorr_method="partial_token",
+                server_pscore=server_pscore,
             )
             x_attn = self.ls1(x_attn)  # [B, N, C]
             cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
@@ -293,24 +295,39 @@ class SelfAttentionBlock(nn.Module):
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         debug = kwargs.get("debug", False)
-        cls_alive_ratio = kwargs.get("cls_alive_ratio", 0.2)
+        token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
+        server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
+        mobile_pscore = str(kwargs.get("mobile_pscore", "none"))
+        mobile_pscore_weight = float(kwargs.get("mobile_pscore_weight", 0.0))
 
         # create update index
         B, N, C = x.shape
         num_pretokens = N - (rope[0].shape[0])
-        cls_attn_score = cache_feature[f"{tag}_cls_attn_prob"].mean(dim=1).squeeze(1) # [B, N]
+        server_token_scores = cache_feature.get(f"{tag}_server_pscore")
+        if server_token_scores is None:
+            raise KeyError(
+                f"Missing cached {tag}_server_pscore. "
+                "It must be produced during approx."
+            )
 
         dindice_pre = dindice[:, :num_pretokens]      # [B, 5] Shared pretokens
         dindice_patches = dindice[:, num_pretokens:]  # [B, M] Shared candidate patches
 
-        patch_scores = cls_attn_score.gather(1, dindice_patches) # [B, M]
+        server_patch_scores = server_token_scores.gather(1, dindice_patches) # [B, M]
+
+        combined_patch_scores = server_pscore_weight * server_patch_scores
+        if mobile_pscore != "none" and mobile_pscore_weight != 0.0:
+            mobile_patch_scores = torch.zeros_like(server_patch_scores)
+            combined_patch_scores = combined_patch_scores + (mobile_pscore_weight * mobile_patch_scores)
+        cache_feature[f"{tag}_server_pscore_sel"] = server_patch_scores.detach()
+        cache_feature[f"{tag}_combined_pscore"] = combined_patch_scores.detach()
         
         num_patch_candidates = dindice_patches.shape[1]
-        k_refined = int(num_patch_candidates * cls_alive_ratio)
+        k_refined = min(int(num_patch_candidates * token_keep_ratio), num_patch_candidates)
         if k_refined <= 0:
             selected_patch_indices = dindice_patches[:, :0]
         else:
-            _, topk_local_idx = torch.topk(patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
+            _, topk_local_idx = torch.topk(combined_patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
             selected_patch_indices = dindice_patches.gather(1, topk_local_idx)  # [B, k_refined]
 
         update_indice = torch.cat([dindice_pre, selected_patch_indices], dim=1)

@@ -16,6 +16,6 @@
         "generated_from_client": true,
         "pyramid_levels": [2, 0],
         "num_groups": 4,
-        "cls_alive_ratio": 1.0
+        "token_keep_ratio": 1.0
     }
 }
