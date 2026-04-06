@@ -9,6 +9,17 @@ class ModelExecutor(ABC):
         self.device = device
         self.model = None
 
+    @staticmethod
+    def _normalize_patch_score_map(score_map: torch.Tensor | None) -> torch.Tensor | None:
+        if score_map is None:
+            return None
+        if score_map.ndim != 2:
+            raise ValueError(f"Expected a 2D score map, got shape {tuple(score_map.shape)}")
+
+        score_sums = score_map.sum(dim=1, keepdim=True, dtype=torch.float32)
+        denom = score_sums.clamp_min(torch.finfo(torch.float32).eps).to(dtype=score_map.dtype)
+        return score_map / denom
+
     @abstractmethod
     def load_model(self, model_name: str, config: Any):
         pass

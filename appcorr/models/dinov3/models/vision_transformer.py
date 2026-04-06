@@ -445,6 +445,7 @@ class DinoVisionTransformer(nn.Module):
                             x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}",
                             appcorr_method=appcorr_options["method"],
                             token_keep_ratio=appcorr_options["token_keep_ratio"],
+                            token_keep_thres=appcorr_options["token_keep_thres"],
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
                             server_pscore=appcorr_options["server_pscore"],
