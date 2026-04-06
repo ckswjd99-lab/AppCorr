@@ -278,6 +278,11 @@ class WorkerModule(multiprocessing.Process):
         token_prune_full_patch = 0.0
         token_prune_kept_residual_mass = 0.0
         token_prune_full_residual_mass = 0.0
+        token_pscore_kept_mass = 0.0
+        token_pscore_full_mass = 0.0
+        partial_token_kept_patch = 0.0
+        partial_token_full_patch = 0.0
+        partial_token_sample_count = 0.0
         if isinstance(cache_feature, dict):
             attn_prob_mass_used = self._as_float(cache_feature.get('_attn_prob_mass_used_total', 0.0))
             attn_prob_mass_full = self._as_float(cache_feature.get('_attn_prob_mass_full_total', 0.0))
@@ -285,6 +290,11 @@ class WorkerModule(multiprocessing.Process):
             token_prune_full_patch = self._as_float(cache_feature.get('_token_prune_full_patch_total', 0.0))
             token_prune_kept_residual_mass = self._as_float(cache_feature.get('_token_prune_kept_residual_mass_total', 0.0))
             token_prune_full_residual_mass = self._as_float(cache_feature.get('_token_prune_full_residual_mass_total', 0.0))
+            token_pscore_kept_mass = self._as_float(cache_feature.get('_token_pscore_kept_mass_total', 0.0))
+            token_pscore_full_mass = self._as_float(cache_feature.get('_token_pscore_full_mass_total', 0.0))
+            partial_token_kept_patch = self._as_float(cache_feature.get('_partial_token_kept_patch_total', 0.0))
+            partial_token_full_patch = self._as_float(cache_feature.get('_partial_token_full_patch_total', 0.0))
+            partial_token_sample_count = self._as_float(cache_feature.get('_partial_token_sample_total', 0.0))
         result = InferenceResult(
             task.task_id,
             time.time(),
@@ -298,6 +308,11 @@ class WorkerModule(multiprocessing.Process):
             token_prune_full_patch=token_prune_full_patch,
             token_prune_kept_residual_mass=token_prune_kept_residual_mass,
             token_prune_full_residual_mass=token_prune_full_residual_mass,
+            token_pscore_kept_mass=token_pscore_kept_mass,
+            token_pscore_full_mass=token_pscore_full_mass,
+            partial_token_kept_patch=partial_token_kept_patch,
+            partial_token_full_patch=partial_token_full_patch,
+            partial_token_sample_count=partial_token_sample_count,
         )
         self.output_queue.put(result)
 

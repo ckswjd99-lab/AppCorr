@@ -15,6 +15,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'num_groups': 1,
         'group_strategy': 'uniform',
         'token_keep_ratio': 0.2,
+        'token_keep_thres': None,
         'attn_col_alive_ratio': 1.0,
         'mobile_pscore': 'none',
         'mobile_pscore_weight': 0.0,
@@ -50,10 +51,24 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
     if 'token_keep_ratio' not in raw and 'cls_alive_ratio' in raw:
         token_keep_ratio = raw['cls_alive_ratio']
     options['token_keep_ratio'] = float(token_keep_ratio)
+    token_keep_thres = options.get('token_keep_thres', defaults['token_keep_thres'])
+    if token_keep_thres in {'', 'null', 'None'}:
+        token_keep_thres = None
+    options['token_keep_thres'] = None if token_keep_thres is None else float(token_keep_thres)
     options['attn_col_alive_ratio'] = float(options.get('attn_col_alive_ratio', defaults['attn_col_alive_ratio']))
     mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
     if mobile_pscore in {'', 'null', 'None'}:
         mobile_pscore = defaults['mobile_pscore']
+    mobile_pscore_aliases = {
+        'residual_rms': 'residual_rms',
+        'patch_residual_rms': 'residual_rms',
+        'residual_l2': 'residual_energy',
+        'residual_l2_energy': 'residual_energy',
+        'residual_energy': 'residual_energy',
+        'patch_residual_l2': 'residual_energy',
+        'patch_residual_energy': 'residual_energy',
+    }
+    mobile_pscore = mobile_pscore_aliases.get(mobile_pscore, mobile_pscore)
     options['mobile_pscore'] = mobile_pscore
     options['mobile_pscore_weight'] = float(options.get('mobile_pscore_weight', defaults['mobile_pscore_weight']))
 
@@ -139,6 +154,7 @@ class Patch:
     group_id: int = 0
     batch_group_total: int = 0
     arrival_time: float = 0.0
+    pscore_hint: float = 0.0
 
 class OpType(Enum):
     # --- Computation Ops ---
@@ -183,3 +199,8 @@ class InferenceResult:
     token_prune_full_patch: float = 0.0
     token_prune_kept_residual_mass: float = 0.0
     token_prune_full_residual_mass: float = 0.0
+    token_pscore_kept_mass: float = 0.0
+    token_pscore_full_mass: float = 0.0
+    partial_token_kept_patch: float = 0.0
+    partial_token_full_patch: float = 0.0
+    partial_token_sample_count: float = 0.0
