@@ -10,16 +10,9 @@ from torch import Tensor, nn
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 
-from ._triton_kernels import (
-    fused_layerscale_add,
-    masked_residual_add_triton,
-    masked_token_update_triton,
-)
-from .attention import CausalSelfAttention, QueryStateLike, SelfAttention
+from .attention import CausalSelfAttention, SelfAttention
 from .ffn_layers import Mlp, SwiGLUFFN
 from .layer_scale import LayerScale  # , DropPath
-
-from ..utils.hier_token import HierarchicalToken
 
 torch._dynamo.config.automatic_dynamic_shapes = False
 torch._dynamo.config.accumulated_cache_size_limit = 1024
@@ -246,8 +239,8 @@ class SelfAttentionBlock(nn.Module):
                     rope,
                     cache_feature,
                     tag,
-                    fixed_query_state=kwargs["fixed_query_state"],
-                    group_plan=kwargs["group_plan"],
+                    fixed_query_state=kwargs.get("fixed_query_state"),
+                    group_plan=kwargs.get("group_plan"),
                     attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
                     attn_cache_key=kwargs.get("attn_cache_key"),
                 )
@@ -363,142 +356,23 @@ class SelfAttentionBlock(nn.Module):
     def approx_partial_channel(
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
-        attn_cache_candidates = kwargs.get("attn_cache_candidates")
-        group_plans = kwargs.get("group_plans")
-        attn_col_alive_ratio = kwargs.get("attn_col_alive_ratio", 1.0)
-
         with torch.cuda.nvtx.range("approx_attn"):
-            shortcut1 = x
-            x_norm1 = self.norm1(x)
-            if group_plans:
-                self._cache_group_slices(cache_feature, tag, "x_norm1", x_norm1, group_plans)
-
             x_attn, cache_feature = self.attn.approx_partial_channel(
-                x_norm1,
+                self.norm1(x),
                 rope,
                 cache_feature,
                 tag,
-                attn_cache_candidates=attn_cache_candidates,
-                attn_col_alive_ratio=attn_col_alive_ratio,
+                attn_cache_candidates=kwargs.get("attn_cache_candidates"),
+                attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
             )
-            x_ls1 = self.ls1(x_attn)
-            
-            if group_plans:
-                self._cache_group_slices(cache_feature, tag, "x_ls1", x_ls1, group_plans)
-            cache_feature[f"{tag}_blocks_out_sum"] = x_ls1.detach().clone()
-
-            x = shortcut1 + x_ls1
+            x = x + self.ls1(x_attn)
 
         with torch.cuda.nvtx.range("approx_ffn"):
-            shortcut2 = x
-            x_norm2 = self.norm2(x)
-            x_mlp, cache_feature = self.mlp.approx_partial_channel(x_norm2, cache_feature, tag)
-            x_ls2 = self.ls2(x_mlp)
-            cache_feature[f"{tag}_blocks_out_sum"] += x_ls2.detach()
-            x = shortcut2 + x_ls2
+            x_mlp, cache_feature = self.mlp.approx_partial_channel(self.norm2(x), cache_feature, tag)
+            x = x + self.ls2(x_mlp)
 
         return x, cache_feature
 
-    @staticmethod
-    def _cache_group_slices(
-        cache_feature: Dict,
-        tag: str,
-        cache_name: str,
-        x_cache: torch.Tensor,
-        group_plans: Dict[int, object],
-    ) -> None:
-        if torch.is_floating_point(x_cache) and x_cache.dtype != torch.bfloat16:
-            x_cache = x_cache.to(dtype=torch.bfloat16)
-        first_plan = next(iter(group_plans.values()))
-        cache_feature[f"{tag}_{cache_name}_prefix"] = x_cache[:, :first_plan.num_pretokens].detach().clone()
-        for gid, plan in group_plans.items():
-            cache_feature[f"{tag}_{cache_name}_full_dindice_g{gid}"] = plan.full_dindice.detach().clone()
-            if plan.group_patch_dindice.shape[1] > 0:
-                group_idx = plan.group_patch_dindice.unsqueeze(-1).expand(-1, -1, x_cache.shape[-1])
-                cache_feature[f"{tag}_{cache_name}_g{gid}"] = x_cache.gather(1, group_idx).detach().clone()
-            else:
-                cache_feature[f"{tag}_{cache_name}_g{gid}"] = x_cache[:, :0].detach().clone()
-
-    @staticmethod
-    def _pop_group_cached_tensor(
-        cache_feature: Dict,
-        tag: str,
-        cache_name: str,
-        group_id: int,
-        group_plan: object,
-    ) -> torch.Tensor | None:
-        prefix_key = f"{tag}_{cache_name}_prefix"
-        group_key = f"{tag}_{cache_name}_g{group_id}"
-        dindice_key = f"{tag}_{cache_name}_full_dindice_g{group_id}"
-        if prefix_key not in cache_feature or group_key not in cache_feature or dindice_key not in cache_feature:
-            missing_keys = [
-                key
-                for key in (prefix_key, group_key, dindice_key)
-                if key not in cache_feature
-            ]
-            raise KeyError(
-                f"Missing split cache for {tag}/{cache_name}/group {group_id}: {missing_keys}"
-            )
-
-        cached_dindice = cache_feature[dindice_key]
-        if cached_dindice.shape != group_plan.full_dindice.shape or not torch.equal(cached_dindice, group_plan.full_dindice):
-            raise RuntimeError(
-                f"Stale split cache for {tag}/{cache_name}/group {group_id}: "
-                f"cached full dindice shape={tuple(cached_dindice.shape)} "
-                f"current full shape={tuple(group_plan.full_dindice.shape)}"
-            )
-
-        group_tensor = cache_feature.pop(group_key)
-        cache_feature.pop(dindice_key, None)
-        keep_local_idx = group_plan.group_patch_keep_local_idx
-        if keep_local_idx.shape[1] > 0:
-            gather_idx = keep_local_idx.unsqueeze(-1).expand(-1, -1, group_tensor.shape[-1])
-            group_tensor = group_tensor.gather(1, gather_idx)
-        else:
-            group_tensor = group_tensor[:, :0]
-        return torch.cat([cache_feature[prefix_key], group_tensor], dim=1)
-
-    @staticmethod
-    def _select_active_tokens(x: torch.Tensor, fixed_query_state: QueryStateLike) -> torch.Tensor:
-        if fixed_query_state.all_valid:
-            return x.reshape(-1, x.shape[-1])
-        return x[fixed_query_state.active_batch_idx, fixed_query_state.active_pos_idx]
-
-    def _apply_attn_delta(
-        self,
-        x_sel: torch.Tensor,
-        x_ls1_sel_old: torch.Tensor,
-        dx_attn: torch.Tensor,
-        fixed_query_state: QueryStateLike,
-    ) -> torch.Tensor:
-        if fixed_query_state.all_valid:
-            dx_ls1 = self.ls1(dx_attn).view(x_sel.shape)
-            return x_sel + x_ls1_sel_old.to(dtype=x_sel.dtype) + dx_ls1.to(dtype=x_sel.dtype)
-
-        dx_ls1 = torch.zeros_like(x_sel)
-        dx_ls1[fixed_query_state.active_batch_idx, fixed_query_state.active_pos_idx] = self.ls1(dx_attn)
-        return masked_residual_add_triton(x_sel, x_ls1_sel_old, dx_ls1, fixed_query_state.query_valid_mask)
-
-    def _build_ffn_delta(
-        self,
-        x_attn_sel: torch.Tensor,
-        cache_feature: Dict,
-        tag: str,
-        fixed_query_state: QueryStateLike,
-    ) -> tuple[torch.Tensor, Dict]:
-        x_attn_active = self._select_active_tokens(x_attn_sel, fixed_query_state)
-        x_mlp_active, cache_feature = self.mlp.correct_partial_channel(
-            self.norm2(x_attn_active),
-            cache_feature,
-            tag,
-        )
-        if fixed_query_state.all_valid:
-            return self.ls2(x_mlp_active).view(x_attn_sel.shape), cache_feature
-
-        x_ls2 = torch.zeros_like(x_attn_sel)
-        x_ls2[fixed_query_state.active_batch_idx, fixed_query_state.active_pos_idx] = self.ls2(x_mlp_active)
-        return x_ls2, cache_feature
-    
     def correct_partial_channel(
             self,
             x: torch.Tensor,
@@ -507,57 +381,31 @@ class SelfAttentionBlock(nn.Module):
             cache_feature: Dict,
             tag: str,
             *,
-            fixed_query_state: QueryStateLike,
-            group_plan: object,
+            fixed_query_state=None,
+            group_plan: object | None = None,
             attn_col_alive_ratio: float = 1.0,
             attn_cache_key=None,
     ) -> List[Tensor]:
         with torch.cuda.nvtx.range("correct_attn"):
-            blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
-            x_base = x + blocks_out_sum.to(x.dtype)
-
-            dindice_sel = dindice
-            x_norm1_old = self._pop_group_cached_tensor(cache_feature, tag, "x_norm1", attn_cache_key, group_plan)
-            x_ls1_old = self._pop_group_cached_tensor(cache_feature, tag, "x_ls1", attn_cache_key, group_plan)
-            gather_idx_x = dindice_sel.unsqueeze(-1).expand(-1, -1, x.shape[-1])
-            x_sel = x.gather(1, gather_idx_x).contiguous()
-            x_norm1_sel = self.norm1(x_sel)
-            x_norm1_sel_old = x_norm1_old.to(dtype=x_norm1_sel.dtype)
-            dx_norm1 = x_norm1_sel - x_norm1_sel_old
-            dx_norm1_active = self._select_active_tokens(dx_norm1, fixed_query_state)
-
-            dx_attn, cache_feature = self.attn.correct_partial_channel(
-                dx_norm1_active,
+            x_attn, cache_feature = self.attn.correct_partial_channel(
+                self.norm1(x),
+                dindice,
                 rope,
                 cache_feature,
                 tag,
-                fixed_query_state,
+                fixed_query_state=fixed_query_state,
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 attn_cache_key=attn_cache_key,
-                all_valid_queries=fixed_query_state.all_valid,
             )
-            if x_ls1_old.shape[1] != dindice_sel.shape[1]:
-                raise RuntimeError(
-                    f"Split x_ls1 cache shape mismatch for {tag}/group {attn_cache_key}: "
-                    f"cached={tuple(x_ls1_old.shape)} current={tuple(x_sel.shape)}"
-                )
-            x_ls1_sel_old = x_ls1_old.to(dtype=x_sel.dtype)
-            x_attn_sel = self._apply_attn_delta(x_sel, x_ls1_sel_old, dx_attn, fixed_query_state)
+            x = x + self.ls1(x_attn)
 
         with torch.cuda.nvtx.range("correct_ffn"):
-            x_ls2, cache_feature = self._build_ffn_delta(
-                x_attn_sel,
+            x_mlp, cache_feature = self.mlp.correct_partial_channel(
+                self.norm2(x),
                 cache_feature,
                 tag,
-                fixed_query_state,
             )
-            x = masked_token_update_triton(
-                x_base,
-                dindice_sel,
-                x_attn_sel,
-                x_ls2,
-                fixed_query_state.query_valid_mask,
-            )
+            x = x + self.ls2(x_mlp)
 
         return x, cache_feature
 
