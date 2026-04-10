@@ -1,13 +1,15 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Tuple
+import os
 import time
 import torch
+import torch.nn.functional as F
 from torchvision import datasets, transforms
 import numpy as np
 
 class DatasetLoader(ABC):
     def __init__(self, root: str, batch_size: int, **kwargs):
-        self.root = root
+        self.root = os.path.abspath(os.path.expanduser(root))
         self.batch_size = batch_size
         self.kwargs = kwargs
 
@@ -265,6 +267,244 @@ class COCO2017Loader(DatasetLoader):
         except Exception as e:
             print(f"!!! [COCOLoader] Eval Failed: {e}")
             return {"error": str(e)}
+        
+
+class ADE20KLoader(DatasetLoader):
+    """
+    Expected directory layout:
+
+    root/
+      images/
+        validation/
+          ADE_val_00000001.jpg
+          ...
+      annotations/
+        validation/
+          ADE_val_00000001.png
+          ...
+
+    Annotation PNG convention:
+      - class ids stored as 1..150
+      - 0 is background / ignore
+    This loader converts labels to 0..149 and keeps ignore_index=255.
+    """
+
+    def __init__(
+        self,
+        root: str,
+        batch_size: int,
+        image_size: int = 512,
+        num_workers: int = 4,
+        ignore_index: int = 255,
+        **kwargs,
+    ):
+        super().__init__(root, batch_size, **kwargs)
+        self.image_size = image_size
+        self.num_workers = num_workers
+        self.ignore_index = ignore_index
+
+        self.total_intersection = None
+        self.total_union = None
+        self.total_correct = 0
+        self.total_labeled = 0
+        self.total_samples = 0
+
+    def get_loader(self) -> torch.utils.data.DataLoader:
+        import os
+        from PIL import Image
+        from torch.utils.data import Dataset
+        from torchvision.transforms import v2
+
+        image_root = os.path.join(self.root, "images", "validation")
+        label_root = os.path.join(self.root, "annotations", "validation")
+
+        class ADE20KTorchDataset(Dataset):
+            def __init__(self, image_root, label_root, image_size, ignore_index):
+                self.image_root = image_root
+                self.label_root = label_root
+                self.image_size = image_size
+                self.ignore_index = ignore_index
+
+                image_files = sorted(
+                    [
+                        f for f in os.listdir(image_root)
+                        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+                    ]
+                )
+
+                self.samples = []
+                for img_name in image_files:
+                    stem = os.path.splitext(img_name)[0]
+                    label_name = f"{stem}.png"
+                    label_path = os.path.join(label_root, label_name)
+                    if os.path.exists(label_path):
+                        self.samples.append(
+                            (
+                                os.path.join(image_root, img_name),
+                                label_path,
+                            )
+                        )
+
+                if len(self.samples) == 0:
+                    raise RuntimeError(
+                        f"No ADE20K validation samples found under {image_root} and {label_root}"
+                    )
+
+                self.img_transform = v2.Compose([
+                    v2.ToImage(),
+                    v2.Resize((image_size, image_size), antialias=True),
+                    v2.ToDtype(torch.uint8, scale=False),
+                ])
+
+            def __len__(self):
+                return len(self.samples)
+
+            def __getitem__(self, idx):
+                img_path, label_path = self.samples[idx]
+
+                img = Image.open(img_path).convert("RGB")
+                label = Image.open(label_path)
+
+                img_t = self.img_transform(img)
+
+                # segmentation mask: nearest resize, keep integer ids
+                label_np = np.array(label, dtype=np.uint8)
+                label_t = torch.from_numpy(label_np).unsqueeze(0)  # [1, H, W]
+                label_t = F.interpolate(
+                    label_t.unsqueeze(0).float(),
+                    size=(self.image_size, self.image_size),
+                    mode="nearest",
+                ).squeeze(0).squeeze(0).to(torch.uint8)
+
+                # ADE20K GT is commonly 1..150, with 0 as background/void.
+                # Convert valid classes to 0..149, and background/void -> ignore_index.
+                label_t = label_t.clone()
+                void_mask = label_t == 0
+                label_t = label_t.long() - 1
+                label_t[void_mask] = self.ignore_index
+
+                return img_t, label_t
+
+        ds = ADE20KTorchDataset(
+            image_root=image_root,
+            label_root=label_root,
+            image_size=self.image_size,
+            ignore_index=self.ignore_index,
+        )
+
+        return torch.utils.data.DataLoader(
+            ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+    def _fast_hist(self, pred: torch.Tensor, target: torch.Tensor, num_classes: int) -> torch.Tensor:
+        valid = (target >= 0) & (target < num_classes)
+        hist = torch.bincount(
+            num_classes * target[valid].to(torch.int64) + pred[valid].to(torch.int64),
+            minlength=num_classes ** 2,
+        ).reshape(num_classes, num_classes)
+        return hist
+
+    def evaluate_batch(self, preds: List[Any], labels: List[Any], **kwargs) -> Dict[str, Any]:
+        """
+        preds:
+          either list of HxW prediction maps
+          or dict payloads containing "segmentation"
+        labels:
+          batch of GT masks
+        """
+        if isinstance(labels, torch.Tensor):
+            gt_batch = labels
+        else:
+            gt_batch = torch.as_tensor(labels)
+
+        num_classes = kwargs.get("num_classes", 150)
+
+        if self.total_intersection is None:
+            self.total_intersection = torch.zeros(num_classes, dtype=torch.float64)
+            self.total_union = torch.zeros(num_classes, dtype=torch.float64)
+
+        batch_correct = 0
+        batch_labeled = 0
+        batch_size = gt_batch.shape[0]
+
+        for i in range(batch_size):
+            gt = gt_batch[i]
+            if i >= len(preds):
+                break
+
+            pred_item = preds[i]
+            if isinstance(pred_item, dict) and "segmentation" in pred_item:
+                pred = pred_item["segmentation"]
+                pred = torch.from_numpy(pred) if isinstance(pred, np.ndarray) else pred
+            else:
+                pred = pred_item
+                pred = torch.from_numpy(pred) if isinstance(pred, np.ndarray) else pred
+
+            pred = pred.to(torch.long)
+            gt = gt.to(torch.long)
+
+            if pred.shape != gt.shape:
+                pred = F.interpolate(
+                    pred.unsqueeze(0).unsqueeze(0).float(),
+                    size=gt.shape[-2:],
+                    mode="nearest",
+                ).squeeze(0).squeeze(0).long()
+
+            valid = gt != self.ignore_index
+            batch_correct += (pred[valid] == gt[valid]).sum().item()
+            batch_labeled += valid.sum().item()
+
+            hist = self._fast_hist(pred[valid], gt[valid], num_classes)
+            inter = torch.diag(hist).to(torch.float64)
+            union = (hist.sum(1) + hist.sum(0) - torch.diag(hist)).to(torch.float64)
+
+            self.total_intersection += inter
+            self.total_union += union
+
+        self.total_correct += batch_correct
+        self.total_labeled += batch_labeled
+        self.total_samples += batch_size
+
+        pix_acc = 100.0 * batch_correct / batch_labeled if batch_labeled > 0 else 0.0
+        iou = self.total_intersection / torch.clamp(self.total_union, min=1.0)
+        miou = 100.0 * iou.mean().item()
+
+        return {
+            "total": batch_size,
+            "pix_acc": pix_acc,
+            "miou": miou,
+        }
+
+    def get_pbar_desc(self) -> str:
+        pix_acc = 100.0 * self.total_correct / self.total_labeled if self.total_labeled > 0 else 0.0
+        if self.total_intersection is None:
+            miou = 0.0
+        else:
+            iou = self.total_intersection / torch.clamp(self.total_union, min=1.0)
+            miou = 100.0 * iou.mean().item()
+        return f"mIoU: {miou:.2f} | PixAcc: {pix_acc:.2f}"
+
+    def get_summary(self) -> Dict[str, Any]:
+        pix_acc = 100.0 * self.total_correct / self.total_labeled if self.total_labeled > 0 else 0.0
+        if self.total_intersection is None:
+            miou = 0.0
+            per_class_iou = []
+        else:
+            iou = self.total_intersection / torch.clamp(self.total_union, min=1.0)
+            miou = 100.0 * iou.mean().item()
+            per_class_iou = (100.0 * iou).cpu().tolist()
+
+        return {
+            "total_samples": self.total_samples,
+            "pixel_acc": pix_acc,
+            "mIoU": miou,
+            "per_class_iou": per_class_iou,
+        }
 
 
 def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> DatasetLoader:
@@ -272,5 +512,7 @@ def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> Datas
         return ImageNetLoader(root, batch_size, **kwargs)
     elif name == 'coco2017':
         return COCO2017Loader(root, batch_size, **kwargs)
+    elif name == 'ade20k':
+        return ADE20KLoader(root, batch_size, **kwargs)
     else:
         raise ValueError(f"Unknown dataset name: {name}")
