@@ -6,7 +6,6 @@ import torchvision.transforms.v2 as v2
 import math
 import numpy as np
 from offload.common import Task
-from offload.common.protocol import normalize_appcorr_kwargs
 from .base import ModelExecutor
 from .utils import load_weight_mmap
 
@@ -401,7 +400,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if grouping_strategy not in {'grid', 'uniform', 'geometric'}:
             return None
 
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = config.get_appcorr_options()
         if appcorr_options.get('generated_from_client', False):
             projected_group_maps = self._project_transmission_groups_to_sources(context, config)
             if projected_group_maps is not None:
@@ -542,7 +541,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         all_group_plans = []
         num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
         all_patch_residual_rms = context.get('all_patch_residual_rms')
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = config.get_appcorr_options()
         token_prune_enabled = appcorr_options["token_prune_enabled"]
         token_prune_threshold = appcorr_options["token_prune_threshold"]
         token_prune_min_keep = appcorr_options["token_prune_min_keep"]
@@ -746,7 +745,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get('all_group_plans')
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = config.get_appcorr_options()
         appcorr_method = appcorr_options["method"]
 
         if all_input_tokens is None or all_rope_sincos is None:
@@ -868,7 +867,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get('all_group_plans')
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = config.get_appcorr_options()
         appcorr_method = appcorr_options["method"]
 
         if all_input_tokens is None or all_rope_sincos is None:

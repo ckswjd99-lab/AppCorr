@@ -3,7 +3,6 @@ from typing import Any, Dict
 import torch
 import numpy as np
 from offload.common import Task
-from offload.common.protocol import normalize_appcorr_kwargs
 from .base import ModelExecutor
 from .utils import load_weight_mmap
 from appcorr.models.dinov3.models.vision_transformer import create_group_index
@@ -381,7 +380,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             # 3) the packed query metadata reused by every correction layer.
             num_pretokens = 1 + self.model.backbone.n_storage_tokens
             B = group_map.shape[0]
-            appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+            appcorr_options = config.get_appcorr_options()
             appcorr_method = appcorr_options["method"]
             grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
             num_groups = config.transmission_kwargs.get('num_groups', 4)
@@ -509,7 +508,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         cache = context.get('cache_feature', {})
         
         start_l, end_l = layers[0], layers[1]
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = config.get_appcorr_options()
         appcorr_method = appcorr_options["method"]
         
         if start_l == 0:
@@ -556,7 +555,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         # logic from worker.py: x_temp starts from input_tokens
         x_temp = context.get('input_tokens')
         
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = config.get_appcorr_options()
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
         fixed_query_state = plan.query_state

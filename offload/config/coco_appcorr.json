@@ -23,12 +23,11 @@
         "global_source_mode": "final_correct",
         "method": "partial_channel",
         "attn_col_alive_ratio": 0.3,
-        "pyramid_levels": [2, 1, 0],
-        "num_groups": 1,
         "token_keep_ratio": 1.0,
         "mobile_pscore": "none",
         "mobile_pscore_weight": 0.0,
         "server_pscore": "patch_attn_prob",
         "server_pscore_weight": 1.0
-    }
+    },
+    "device": "cuda:1"
 }

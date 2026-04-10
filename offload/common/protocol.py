@@ -28,13 +28,20 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
     }
 
 
-def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def normalize_appcorr_kwargs(
+    appcorr_kwargs: Dict[str, Any] | None = None,
+    transmission_kwargs: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     defaults = default_appcorr_kwargs()
     raw = dict(appcorr_kwargs or {})
+    transmission = dict(transmission_kwargs or {})
     explicit_enabled = raw.pop('enabled', None)
 
     options = default_appcorr_kwargs()
     options.update(raw)
+    for key in ('pyramid_levels', 'num_groups'):
+        if key not in raw and transmission.get(key) is not None:
+            options[key] = transmission[key]
     options['enabled'] = bool(raw) if explicit_enabled is None else bool(explicit_enabled)
     options['generated_from_client'] = bool(options.get('generated_from_client', defaults['generated_from_client']))
     options['global_source_mode'] = str(options.get('global_source_mode', defaults['global_source_mode']))
@@ -118,6 +125,9 @@ class ExperimentConfig:
 
     def lowres_sr_enabled(self) -> bool:
         return bool(self.scheduler_kwargs.get('lowres_sr', False))
+
+    def get_appcorr_options(self) -> Dict[str, Any]:
+        return normalize_appcorr_kwargs(self.appcorr_kwargs, self.transmission_kwargs)
 
     def get_lowres_sr_config(self) -> Dict[str, Any]:
         return {

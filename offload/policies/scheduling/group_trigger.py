@@ -1,5 +1,5 @@
 from typing import List, Optional, Any
-from offload.common.protocol import Patch, Task, ExperimentConfig, Instruction, OpType, normalize_appcorr_kwargs
+from offload.common.protocol import Patch, Task, ExperimentConfig, Instruction, OpType
 from ..interface import ISchedulingPolicy
 
 class GroupTriggerPolicy(ISchedulingPolicy):
@@ -16,7 +16,7 @@ class GroupTriggerPolicy(ISchedulingPolicy):
     def _needs_final_global_approx(config: ExperimentConfig) -> bool:
         if getattr(config, 'model_name', None) != 'dinov3_detector':
             return False
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = config.get_appcorr_options()
         return (
             bool(appcorr_options.get('generated_from_client', False))
             and appcorr_options.get('global_source_mode', 'final_correct') == 'final_correct'

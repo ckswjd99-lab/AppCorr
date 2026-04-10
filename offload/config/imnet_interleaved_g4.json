@@ -14,8 +14,6 @@
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
-        "pyramid_levels": [2, 0],
-        "num_groups": 4,
         "token_keep_ratio": 1.0
     }
 }
