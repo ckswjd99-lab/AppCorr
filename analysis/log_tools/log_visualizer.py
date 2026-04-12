@@ -140,13 +140,28 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         elif name == 'CORRECT_FORWARD':
             layers = event.get('params', {}).get('layers', (0, 0))
             gid = event.get('params', {}).get('group_id', '?')
+            transport_gid = event.get('params', {}).get('transport_group_id')
             if layers[1] == layers[0] + 1:
-                display_name = f"CO\nG{gid}\n{layers[0]}"
+                if transport_gid is None:
+                    display_name = f"CO\nG{gid}\n{layers[0]}"
+                else:
+                    display_name = f"CO\nT{transport_gid}/G{gid}\n{layers[0]}"
             else:
-                display_name = f"CO\nG{gid}\n({layers[0]}, {layers[1]})"
+                if transport_gid is None:
+                    display_name = f"CO\nG{gid}\n({layers[0]}, {layers[1]})"
+                else:
+                    display_name = f"CO\nT{transport_gid}/G{gid}\n({layers[0]}, {layers[1]})"
         elif 'Decode' in name:
-            display_name = f"DEC\nG{decode_idx}"
-            decode_idx += 1
+            transport_gid = event.get('params', {}).get('transport_group_id')
+            if transport_gid is None:
+                display_name = f"DEC\nG{decode_idx}"
+                decode_idx += 1
+            else:
+                display_name = f"DEC\nT{transport_gid}"
+        elif name == 'HEAD_INFERENCE':
+            transport_gid = event.get('params', {}).get('transport_group_id')
+            if transport_gid is not None:
+                display_name = f"HEAD\nT{transport_gid}"
         elif 'ENCODE' in name or name.startswith('MOBILE_SEND'):
             match = re.search(r'[G_](\d+)$', name)
             gid = match.group(1) if match else event.get('params', {}).get('group_id', '?')

@@ -15,6 +15,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
         B = images.shape[0]
         num_groups = config.transmission_kwargs.get('num_groups', 4)
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
 
         base_patches = []
         gaussians_batch = [None] * B
@@ -36,6 +37,35 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             p.batch_group_total = g0_total
 
         yield base_patches # Yield Group 0 (Base Layer) Immediately!
+
+        # When there is only one logical correction group, stream each residual level
+        # as soon as it is ready so the scheduler can run per-level correction passes.
+        if num_groups == 1 and len(levels) > 1:
+            for phase_id, lvl in enumerate(levels[1:], start=1):
+                prev_lvl = levels[phase_id - 1]
+                group_patches = []
+                with ThreadPoolExecutor() as executor:
+                    futures = [
+                        executor.submit(
+                            self._process_image_single_residual_level,
+                            b,
+                            gaussians_batch[b],
+                            prev_lvl,
+                            lvl,
+                            phase_id,
+                            config,
+                        )
+                        for b in range(B)
+                    ]
+                    for f in futures:
+                        group_patches.extend(f.result())
+
+                if group_patches:
+                    total_in_group = len(group_patches)
+                    for p in group_patches:
+                        p.batch_group_total = total_in_group
+                    yield group_patches
+            return
 
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
 
@@ -89,6 +119,28 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                     for p in group_patches:
                         p.batch_group_total = total_in_group
                     yield group_patches
+
+    def _process_image_single_residual_level(self, b_idx, gaussians, prev_lvl, lvl, group_id, config):
+        H, W = config.image_shape[:2]
+        comp_lvl = config.transmission_kwargs.get('compression_level', 1)
+
+        prev_img = gaussians[prev_lvl]
+        curr_g = gaussians[lvl]
+        pred = self._iterative_upsample(prev_img, prev_lvl, lvl, H, W)
+        residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+
+        local_patches = []
+        self._create_patches_with_group_vectorized(
+            local_patches,
+            residual,
+            b_idx,
+            lvl,
+            config,
+            np.int16,
+            group_id=group_id,
+            compression=comp_lvl,
+        )
+        return local_patches
 
     def _collect_residual_metadata(self, gaussians, config):
         """Map pyramid structure to get spatial_idx and res_level."""

@@ -13,6 +13,15 @@ class GroupTriggerPolicy(ISchedulingPolicy):
         self.current_request_id = None
 
     @staticmethod
+    def _uses_levelwise_progressive_schedule(config: ExperimentConfig) -> bool:
+        levels = config.transmission_kwargs.get('pyramid_levels', [2, 1, 0])
+        return (
+            config.transmission_policy_name == 'ProgressiveLaplacian'
+            and int(config.transmission_kwargs.get('num_groups', 4)) == 1
+            and len(levels) > 1
+        )
+
+    @staticmethod
     def _needs_final_global_approx(config: ExperimentConfig) -> bool:
         if getattr(config, 'model_name', None) != 'dinov3_detector':
             return False
@@ -37,20 +46,21 @@ class GroupTriggerPolicy(ISchedulingPolicy):
         head_patch = buffer[0]
         current_group = head_patch.group_id
         target_count = head_patch.batch_group_total
-        
+        request_start_group = 0
+
         # Check trigger condition
         if len(buffer) >= target_count:
             t_id = next(task_id_gen)
             
             # Manage Request ID (New for Group 0, reuse for others)
-            if current_group == 0 or self.current_request_id is None:
+            if request_start_group == current_group or self.current_request_id is None:
                 self.current_request_id = t_id
             
             # Extract patches
             current_batch_patches = buffer[:target_count]
             
             # Generate instructions
-            instructions = self._get_pipeline_instructions(current_group, config)
+            instructions = self._get_pipeline_instructions(head_patch, config)
             
             task = Task(
                 task_id=t_id,
@@ -62,7 +72,11 @@ class GroupTriggerPolicy(ISchedulingPolicy):
             
         return None
 
-    def _get_pipeline_instructions(self, group_id: int, config: ExperimentConfig) -> List[Instruction]:
+    def _get_pipeline_instructions(self, head_patch: Patch, config: ExperimentConfig) -> List[Instruction]:
+        group_id = head_patch.group_id
+        if self._uses_levelwise_progressive_schedule(config):
+            return self._get_levelwise_pipeline_instructions(group_id, config)
+
         total_layers = config.transmission_kwargs.get('total_layers', 40)
         num_res_groups = config.transmission_kwargs.get('num_groups', 4)
         early_exit = config.early_exit_enabled()
@@ -114,4 +128,45 @@ class GroupTriggerPolicy(ISchedulingPolicy):
             instructions.append(Instruction(OpType.SEND_RESPONSE))
             instructions.append(Instruction(OpType.FREE_SESSION))
             
+        return instructions
+
+    def _get_levelwise_pipeline_instructions(self, phase_id: int, config: ExperimentConfig) -> List[Instruction]:
+        total_layers = config.transmission_kwargs.get('total_layers', 40)
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
+        last_phase_id = len(levels) - 1
+        early_exit = config.early_exit_enabled()
+        instructions = [Instruction(OpType.LOAD_INPUT), Instruction(OpType.PREPARE_TOKENS)]
+
+        if phase_id <= 0:
+            instructions.append(
+                Instruction(OpType.APPROX_FORWARD, {
+                    'layers': (0, total_layers)
+                })
+            )
+            if early_exit:
+                instructions.append(Instruction(OpType.HEAD_INFERENCE))
+                instructions.append(Instruction(OpType.DECIDE_EXIT))
+            return instructions
+
+        instructions.append(
+            Instruction(OpType.CORRECT_FORWARD, {
+                'layers': (0, total_layers),
+                'group_id': 1,
+            })
+        )
+
+        if phase_id >= last_phase_id:
+            if self._needs_final_global_approx(config):
+                instructions.append(
+                    Instruction(OpType.APPROX_FORWARD, {
+                        'layers': (0, total_layers),
+                        'global_only': True,
+                        'source_kind': 'global',
+                    })
+                )
+            instructions.append(Instruction(OpType.HEAD_INFERENCE))
+            instructions.append(Instruction(OpType.EXIT_ALL))
+            instructions.append(Instruction(OpType.SEND_RESPONSE))
+            instructions.append(Instruction(OpType.FREE_SESSION))
+
         return instructions

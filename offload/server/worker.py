@@ -113,9 +113,14 @@ class WorkerModule(multiprocessing.Process):
 
                     context = self.sessions[req_id]
                     if task.payload:
+                        head_patch = task.payload[0]
+                        task_transport_params = {
+                            'transport_group_id': head_patch.group_id,
+                            'transport_res_level': head_patch.res_level,
+                        }
                         for instr in task.instructions:
                             if instr.op_type == OpType.LOAD_INPUT:
-                                group_id = task.payload[0].group_id
+                                group_id = head_patch.group_id
                                 max_arrival_time = max(
                                     (p.arrival_time for p in task.payload if hasattr(p, 'arrival_time')),
                                     default=0.0
@@ -125,7 +130,7 @@ class WorkerModule(multiprocessing.Process):
                                         'type': 'SERVER_RECEIVE',
                                         'start': max_arrival_time,
                                         'end': max_arrival_time,
-                                        'params': {}
+                                        'params': task_transport_params.copy(),
                                     })
 
                                 if 'patch_buffer' not in context:
@@ -151,7 +156,7 @@ class WorkerModule(multiprocessing.Process):
                                         'type': 'Decode',
                                         'start': t_decode_start,
                                         'end': t_decode_end,
-                                        'params': {}
+                                        'params': task_transport_params.copy(),
                                     })
                                 break
 
@@ -405,6 +410,12 @@ class WorkerModule(multiprocessing.Process):
                     meta = self._dispatch(instr, task, context)
                 end_ev.record()
 
+                job_params = instr.params.copy()
+                if task.payload:
+                    head_patch = task.payload[0]
+                    job_params.setdefault('transport_group_id', head_patch.group_id)
+                    job_params.setdefault('transport_res_level', head_patch.res_level)
+
                 # Hand off to Reaper Thread immediately; GPU Worker moves on.
                 self.monitor_queue.put(_MonitorJob(
                     op_type=instr.op_type,
@@ -412,7 +423,7 @@ class WorkerModule(multiprocessing.Process):
                     end_ev=end_ev,
                     req_id=req_id,
                     task=task,
-                    params=instr.params.copy(),
+                    params=job_params,
                     meta=meta,
                 ))
 
