@@ -278,27 +278,81 @@ class SelfAttention(nn.Module):
         rope: Tensor,
         cache_feature: Dict,
         tag: str,
-        attn_cache_candidates: Dict | None = None,
-        attn_col_alive_ratio: float = 1.0,
+        **kwargs,
     ) -> Tuple[Tensor, dict]:
-        del attn_cache_candidates, attn_col_alive_ratio, tag
-        return self.forward(x, rope=rope), cache_feature
+        B, N, C = x.shape
+
+        cache_feature[f"{tag}_attn_input"] = x.detach().clone().to(dtype=torch.bfloat16)
+
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        q, k, v = torch.unbind(qkv, 2)
+        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+
+        # RoPE
+        if rope is not None:
+            q, k = self.apply_rope(q, k, rope)
+        
+        cache_feature[f"{tag}_q"] = q.detach().clone().to(dtype=torch.bfloat16)
+        cache_feature[f"{tag}_k"] = k.detach().clone().to(dtype=torch.bfloat16)
+        cache_feature[f"{tag}_v"] = v.detach().clone().to(dtype=torch.bfloat16)
+
+        # Attention
+        attn_score = (q @ k.transpose(-2, -1)) * self.scale
+        attn_prob = attn_score.softmax(dim=-1)
+        attn_v = attn_prob @ v
+        attn_v = attn_v.transpose(1, 2).reshape([B, N, C])
+        
+        x = self.proj(attn_v)
+        x = self.proj_drop(x)
+
+        cache_feature[f"{tag}_attn_output"] = x.detach().clone().to(dtype=torch.bfloat16)
+        
+        return x, cache_feature
 
     def correct_partial_channel(
         self,
-        x_sel: Tensor,
+        x: Tensor,
         dindice: Tensor,
         rope: Tensor,
         cache_feature: Dict,
         tag: str,
-        appcorr_method: str | None = None,
-        fixed_query_state=None,
-        attn_col_alive_ratio: float = 1.0,
-        attn_cache_key=None,
-        all_valid_queries: bool = False,
+        **kwargs,
     ) -> Tuple[Tensor, dict]:
-        del dindice, tag, appcorr_method, fixed_query_state, attn_col_alive_ratio, attn_cache_key, all_valid_queries
-        return self.forward(x_sel, rope=rope), cache_feature
+        B, N, C = x.shape
+
+        x_old = cache_feature.get(f"{tag}_attn_input")
+        dx = x - x_old
+
+        dqkv = F.linear(dx, self.qkv.weight, None).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        dq, dk, dv = torch.unbind(dqkv, 2)
+        dq, dk, dv = [t.transpose(1, 2) for t in [dq, dk, dv]]
+
+        # RoPE
+        if rope is not None:
+            dq, dk = self.apply_rope(dq, dk, rope)
+
+        q_old = cache_feature.get(f"{tag}_q")
+        k_old = cache_feature.get(f"{tag}_k")
+        v_old = cache_feature.get(f"{tag}_v")
+
+        # Attention
+        attn_score_old = (q_old @ k_old.transpose(-2, -1)) * self.scale
+        attn_prob_old = attn_score_old.softmax(dim=-1)
+
+        attn_score_new = ((q_old + dq) @ (k_old + dk).transpose(-2, -1)) * self.scale
+        attn_prob_new = attn_score_new.softmax(dim=-1)
+
+        d_attn_prob = attn_prob_new - attn_prob_old
+        d_attn_v = d_attn_prob @ v_old + attn_prob_old @ dv + d_attn_prob @ dv
+
+        d_attn_v = d_attn_v.transpose(1, 2).reshape([B, N, C])
+
+        dx = self.proj(d_attn_v)
+        dx = self.proj_drop(dx)
+
+        x = cache_feature.get(f"{tag}_attn_output") + dx
+        
+        return x, cache_feature
 
 
 class CausalSelfAttention(nn.Module):

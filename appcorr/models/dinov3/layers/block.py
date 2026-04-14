@@ -233,17 +233,7 @@ class SelfAttentionBlock(nn.Module):
             if appcorr_method == "partial_token":
                 return self.correct_partial_token(x, dindice, rope, cache_feature, tag, **kwargs)
             if appcorr_method == "partial_channel":
-                return self.correct_partial_channel(
-                    x,
-                    dindice,
-                    rope,
-                    cache_feature,
-                    tag,
-                    fixed_query_state=kwargs.get("fixed_query_state"),
-                    group_plan=kwargs.get("group_plan"),
-                    attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
-                    attn_cache_key=kwargs.get("attn_cache_key"),
-                )
+                return self.correct_partial_channel(x, dindice, rope, cache_feature, tag, **kwargs)
             raise ValueError(
                 f"Unknown SelfAttentionBlock.correct method '{appcorr_method}'. "
                 "Available methods: partial_channel, partial_token"
@@ -357,13 +347,12 @@ class SelfAttentionBlock(nn.Module):
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         with torch.cuda.nvtx.range("approx_attn"):
+            x_norm1 = self.norm1(x)
             x_attn, cache_feature = self.attn.approx_partial_channel(
-                self.norm1(x),
+                x_norm1,
                 rope,
                 cache_feature,
-                tag,
-                attn_cache_candidates=kwargs.get("attn_cache_candidates"),
-                attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
+                tag
             )
             x = x + self.ls1(x_attn)
 
@@ -380,22 +369,16 @@ class SelfAttentionBlock(nn.Module):
             rope: Tuple[torch.Tensor],
             cache_feature: Dict,
             tag: str,
-            *,
-            fixed_query_state=None,
-            group_plan: object | None = None,
-            attn_col_alive_ratio: float = 1.0,
-            attn_cache_key=None,
+            **kwargs
     ) -> List[Tensor]:
         with torch.cuda.nvtx.range("correct_attn"):
+            x_norm1 = self.norm1(x)
             x_attn, cache_feature = self.attn.correct_partial_channel(
-                self.norm1(x),
+                x_norm1,
                 dindice,
                 rope,
                 cache_feature,
-                tag,
-                fixed_query_state=fixed_query_state,
-                attn_col_alive_ratio=attn_col_alive_ratio,
-                attn_cache_key=attn_cache_key,
+                tag
             )
             x = x + self.ls1(x_attn)
 

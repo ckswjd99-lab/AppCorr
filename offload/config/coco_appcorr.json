@@ -29,5 +29,5 @@
         "server_pscore": "patch_attn_prob",
         "server_pscore_weight": 1.0
     },
-    "device": "cuda:1"
+    "device": "cuda:0"
 }

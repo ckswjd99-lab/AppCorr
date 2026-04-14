@@ -277,7 +277,7 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if (batch_idx+1) == 20:
+            if (batch_idx+1) == 50:
                 break # TEMP
 
         final_summary = self.dataset_loader.get_summary()
