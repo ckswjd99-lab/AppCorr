@@ -1,0 +1,55 @@
+{
+    "model_name": "dinov3_detector",
+    "dataset_name": "coco2017",
+    "dataset_kwargs": {
+        "split": "train"
+    },
+    "exp_id": "coco_appcorr_learned_block",
+    "batch_size": 1,
+    "image_shape": [1024, 1024, 3],
+    "patch_size": [16, 16],
+    "scheduler_policy_name": "GroupTrigger",
+    "scheduler_kwargs": {
+        "early_exit": false,
+        "lowres_sr": false,
+        "lowres_sr_model": "realesr_general_x4v3"
+    },
+    "transmission_policy_name": "ProgressiveLaplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [2, 1, 0],
+        "grouping_strategy": "grid",
+        "num_groups": 1,
+        "compression_level": 1
+    },
+    "appcorr_kwargs": {
+        "generated_from_client": true,
+        "global_source_mode": "final_correct",
+        "method": "partial_channel",
+        "correction_mode": "learned_block",
+        "learned_correction_layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "learned_hidden_size": 512,
+        "learned_bottleneck_size": 256,
+        "learned_attn_mixer_layers": 1,
+        "learned_dropout": 0.0,
+        "learned_checkpoint_load_path": "checkpoints/coco_layer0_learned_block.pt",
+        "learned_checkpoint_save_path": "checkpoints/coco_layer0_9_learned_block.pt",
+        "learned_train": true,
+        "learned_train_epochs": 1,
+        "learned_train_steps_per_epoch": 5000,
+        "learned_train_lr": 0.0001,
+        "learned_train_weight_decay": 0.0001,
+        "learned_log_interval": 500,
+        "learned_save_every": 1,
+        "learned_loss_weight_dx": 1.0,
+        "learned_loss_weight_attn": 0.1,
+        "learned_loss_weight_ffn": 0.1,
+        "learned_loss_weight_cosine": 0.0,
+        "attn_col_alive_ratio": 0.3,
+        "token_keep_ratio": 1.0,
+        "mobile_pscore": "none",
+        "mobile_pscore_weight": 0.0,
+        "server_pscore": "patch_attn_prob",
+        "server_pscore_weight": 1.0
+    },
+    "device": "cuda:0"
+}

@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import time
 import torch
 from torchvision import datasets, transforms
 import numpy as np
 
 class DatasetLoader(ABC):
-    def __init__(self, root: str, batch_size: int, **kwargs):
-        self.root = root
+    def __init__(self, root: Optional[str], batch_size: int, **kwargs):
+        self.root = root or ""
         self.batch_size = batch_size
         self.kwargs = kwargs
 
@@ -39,7 +39,7 @@ class DatasetLoader(ABC):
         pass
 
 class ImageNetLoader(DatasetLoader):
-    def __init__(self, root: str, batch_size: int, image_size: int = 256, num_workers: int = 4, **kwargs):
+    def __init__(self, root: Optional[str], batch_size: int, image_size: int = 256, num_workers: int = 4, **kwargs):
         super().__init__(root, batch_size, **kwargs)
         self.image_size = image_size
         self.num_workers = num_workers
@@ -48,6 +48,8 @@ class ImageNetLoader(DatasetLoader):
         self.total_samples = 0
 
     def get_loader(self) -> torch.utils.data.DataLoader:
+        if not self.root:
+            raise ValueError("ImageNetLoader requires a dataset root.")
         val_transforms = transforms.Compose([
             transforms.Resize(self.image_size),
             transforms.CenterCrop(self.image_size),
@@ -113,23 +115,38 @@ class ImageNetLoader(DatasetLoader):
         }
 
 class COCO2017Loader(DatasetLoader):
-    def __init__(self, root: str, batch_size: int, image_size: int = 1024, num_workers: int = 4, **kwargs):
+    def __init__(self, root: Optional[str], batch_size: int, image_size: int = 1024, num_workers: int = 4, **kwargs):
         super().__init__(root, batch_size, **kwargs)
         self.image_size = image_size
         self.num_workers = num_workers
         self.coco_results = []
         self.processed_ids = []
+        raw_split = str(kwargs.get("split", "validation")).strip().lower()
+        split_aliases = {
+            "val": "validation",
+            "validation": "validation",
+            "train": "train",
+        }
+        if raw_split not in split_aliases:
+            raise ValueError(
+                f"Unsupported COCO split '{raw_split}'. Available splits: train, validation"
+            )
+        self.split = split_aliases[raw_split]
+        self.shuffle = bool(kwargs.get("shuffle", self.split == "train"))
         
         # Lazy load heavy dependencies
         import fiftyone.zoo as foz
         from pycocotools.coco import COCO
         import os
 
-        print("[COCOLoader] Loading FiftyOne COCO-2017 Validation Split...")
-        # Note: 'root' argument is ignored as FiftyOne manages its own dataset path.
-        self.fo_dataset = foz.load_zoo_dataset("coco-2017", split="validation")
+        print(f"[COCOLoader] Loading FiftyOne COCO-2017 {self.split} split...")
+        if self.root:
+            print(f"[COCOLoader] Ignoring dataset root '{self.root}' and using FiftyOne dataset storage.")
+        # Note: root is intentionally ignored; FiftyOne manages the dataset path.
+        self.fo_dataset = foz.load_zoo_dataset("coco-2017", split=self.split)
         
-        self.ann_file = os.path.expanduser("~/fiftyone/coco-2017/raw/instances_val2017.json")
+        ann_suffix = "train2017" if self.split == "train" else "val2017"
+        self.ann_file = os.path.expanduser(f"~/fiftyone/coco-2017/raw/instances_{ann_suffix}.json")
         if not os.path.exists(self.ann_file):
             print(f"!!! [COCOLoader] Annotation file not found at {self.ann_file}. Evaluation might fail.")
         else:
@@ -181,7 +198,7 @@ class COCO2017Loader(DatasetLoader):
         return torch.utils.data.DataLoader(
             ds,
             batch_size=self.batch_size,
-            shuffle=False,
+            shuffle=self.shuffle,
             num_workers=self.num_workers,
             pin_memory=True,
             drop_last=False
@@ -267,7 +284,7 @@ class COCO2017Loader(DatasetLoader):
             return {"error": str(e)}
 
 
-def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> DatasetLoader:
+def get_dataset_loader(name: str, root: Optional[str], batch_size: int, **kwargs) -> DatasetLoader:
     if name == 'imagenet-1k':
         return ImageNetLoader(root, batch_size, **kwargs)
     elif name == 'coco2017':

@@ -2,9 +2,14 @@ from dataclasses import dataclass
 from typing import Any, Dict
 import torch
 import numpy as np
+import os
 from offload.common import Task
 from .base import ModelExecutor
 from .utils import load_weight_mmap
+from appcorr.models.dinov3.layers.learned_correction import (
+    ensure_learned_block_predictors,
+    load_learned_block_checkpoint,
+)
 from appcorr.models.dinov3.models.vision_transformer import create_group_index
 
 
@@ -284,6 +289,21 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             print(f"!!! [Executor] Failed to load weights: {e}")
             raise e
 
+        appcorr_options = config.get_appcorr_options()
+        ensure_learned_block_predictors(self.model.backbone, appcorr_options)
+        learned_ckpt_path = (
+            appcorr_options.get("learned_checkpoint_load_path")
+            or appcorr_options.get("learned_checkpoint_path")
+            or appcorr_options.get("learned_checkpoint_save_path")
+        )
+        if learned_ckpt_path:
+            learned_ckpt_path = os.path.expanduser(learned_ckpt_path)
+            if os.path.exists(learned_ckpt_path):
+                print(f"[Executor] Loading learned correction checkpoint from {learned_ckpt_path}")
+                load_learned_block_checkpoint(self.model.backbone, learned_ckpt_path, strict=False)
+            else:
+                print(f"[Executor] Learned correction checkpoint not found at {learned_ckpt_path}; starting from scratch.")
+
         self.model.eval()
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
@@ -525,6 +545,9 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             x_feature, cache = blk.approx(
                 x_feature, rope_sincos, cache, tag=f"layer{lidx}",
                 appcorr_method=appcorr_method,
+                correction_mode=appcorr_options["correction_mode"],
+                learned_correction_layers=appcorr_options["learned_correction_layers"],
+                layer_idx=lidx,
                 attn_cache_candidates=attn_cache_candidates,
                 group_plans=group_plans if appcorr_method == 'partial_channel' else None,
                 server_pscore=appcorr_options["server_pscore"],
@@ -586,6 +609,9 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             x_temp, cache = blk.correct(
                 x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
                 appcorr_method=appcorr_options["method"],
+                correction_mode=appcorr_options["correction_mode"],
+                learned_correction_layers=appcorr_options["learned_correction_layers"],
+                layer_idx=lidx,
                 token_keep_ratio=token_keep_ratio,
                 mobile_pscore=appcorr_options["mobile_pscore"],
                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],

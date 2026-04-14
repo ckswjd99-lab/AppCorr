@@ -383,6 +383,9 @@ class DinoVisionTransformer(nn.Module):
                         x_feature, cache_feature = blk.approx(
                             x_feature, rope_sincos, cache_feature, tag=f"layer{lidx}",
                             appcorr_method=appcorr_options["method"],
+                            correction_mode=appcorr_options["correction_mode"],
+                            learned_correction_layers=appcorr_options["learned_correction_layers"],
+                            layer_idx=lidx,
                             attn_cache_candidates=attn_cache_candidates if appcorr_options["method"] == "partial_channel" else None,
                             server_pscore=appcorr_options["server_pscore"],
                             attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
@@ -444,6 +447,9 @@ class DinoVisionTransformer(nn.Module):
                         x_temp, cache_feature = blk.correct(
                             x_temp, dindice, rope_sincos, cache_feature, tag=f"layer{lidx}",
                             appcorr_method=appcorr_options["method"],
+                            correction_mode=appcorr_options["correction_mode"],
+                            learned_correction_layers=appcorr_options["learned_correction_layers"],
+                            layer_idx=lidx,
                             token_keep_ratio=appcorr_options["token_keep_ratio"],
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],

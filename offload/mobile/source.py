@@ -55,7 +55,10 @@ class SourceModule(multiprocessing.Process):
 
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
-        print(f"[Source] Loading {dataset_name} from {self.data_root} (Loader Batch: {self.loader_batch_size})...")
+        if dataset_name == 'coco2017':
+            print(f"[Source] Loading {dataset_name} via FiftyOne (Loader Batch: {self.loader_batch_size})...")
+        else:
+            print(f"[Source] Loading {dataset_name} from {self.data_root} (Loader Batch: {self.loader_batch_size})...")
         
         try:
             # Initialize Dataset Loader

@@ -8,6 +8,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'enabled': False,
         'generated_from_client': False,
         'global_source_mode': 'final_correct',
+        'correction_mode': 'exact',
         'update_attn': False,
         'pyramid_levels': [0],
         'token_res': [1.0],
@@ -24,6 +25,25 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
         'method': 'partial_token',
+        'learned_correction_layers': [0],
+        'learned_hidden_size': 512,
+        'learned_bottleneck_size': 256,
+        'learned_attn_mixer_layers': 1,
+        'learned_dropout': 0.0,
+        'learned_checkpoint_path': '',
+        'learned_checkpoint_load_path': '',
+        'learned_checkpoint_save_path': '',
+        'learned_train': False,
+        'learned_train_epochs': 1,
+        'learned_train_steps_per_epoch': 0,
+        'learned_train_lr': 1e-4,
+        'learned_train_weight_decay': 1e-4,
+        'learned_log_interval': 10,
+        'learned_save_every': 1,
+        'learned_loss_weight_dx': 1.0,
+        'learned_loss_weight_attn': 0.1,
+        'learned_loss_weight_ffn': 0.1,
+        'learned_loss_weight_cosine': 0.0,
         'debug': False,
     }
 
@@ -47,6 +67,10 @@ def normalize_appcorr_kwargs(
     options['global_source_mode'] = str(options.get('global_source_mode', defaults['global_source_mode']))
     if options['global_source_mode'] not in {'final_correct', 'approx'}:
         options['global_source_mode'] = defaults['global_source_mode']
+    correction_mode = str(options.get('correction_mode', defaults['correction_mode']))
+    if correction_mode not in {'exact', 'learned_block', 'none'}:
+        correction_mode = defaults['correction_mode']
+    options['correction_mode'] = correction_mode
     options['update_attn'] = bool(options.get('update_attn', defaults['update_attn']))
     options['pyramid_levels'] = list(options.get('pyramid_levels', defaults['pyramid_levels']))
     options['token_res'] = list(options.get('token_res', defaults['token_res']))
@@ -80,6 +104,55 @@ def normalize_appcorr_kwargs(
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)
     options['method'] = str(options.get('method', defaults['method']))
+    options['learned_correction_layers'] = [
+        int(layer_idx) for layer_idx in options.get('learned_correction_layers', defaults['learned_correction_layers'])
+    ]
+    options['learned_hidden_size'] = max(int(options.get('learned_hidden_size', defaults['learned_hidden_size'])), 1)
+    options['learned_bottleneck_size'] = max(
+        int(options.get('learned_bottleneck_size', defaults['learned_bottleneck_size'])),
+        1,
+    )
+    options['learned_attn_mixer_layers'] = max(
+        int(options.get('learned_attn_mixer_layers', defaults['learned_attn_mixer_layers'])),
+        1,
+    )
+    options['learned_dropout'] = float(options.get('learned_dropout', defaults['learned_dropout']))
+    options['learned_checkpoint_path'] = str(
+        options.get('learned_checkpoint_path', defaults['learned_checkpoint_path'])
+    )
+    options['learned_checkpoint_load_path'] = str(
+        options.get('learned_checkpoint_load_path', defaults['learned_checkpoint_load_path'])
+    )
+    options['learned_checkpoint_save_path'] = str(
+        options.get('learned_checkpoint_save_path', defaults['learned_checkpoint_save_path'])
+    )
+    options['learned_train'] = bool(options.get('learned_train', defaults['learned_train']))
+    options['learned_train_epochs'] = max(
+        int(options.get('learned_train_epochs', defaults['learned_train_epochs'])),
+        1,
+    )
+    options['learned_train_steps_per_epoch'] = max(
+        int(options.get('learned_train_steps_per_epoch', defaults['learned_train_steps_per_epoch'])),
+        0,
+    )
+    options['learned_train_lr'] = float(options.get('learned_train_lr', defaults['learned_train_lr']))
+    options['learned_train_weight_decay'] = float(
+        options.get('learned_train_weight_decay', defaults['learned_train_weight_decay'])
+    )
+    options['learned_log_interval'] = max(int(options.get('learned_log_interval', defaults['learned_log_interval'])), 1)
+    options['learned_save_every'] = max(int(options.get('learned_save_every', defaults['learned_save_every'])), 1)
+    options['learned_loss_weight_dx'] = float(
+        options.get('learned_loss_weight_dx', defaults['learned_loss_weight_dx'])
+    )
+    options['learned_loss_weight_attn'] = float(
+        options.get('learned_loss_weight_attn', defaults['learned_loss_weight_attn'])
+    )
+    options['learned_loss_weight_ffn'] = float(
+        options.get('learned_loss_weight_ffn', defaults['learned_loss_weight_ffn'])
+    )
+    options['learned_loss_weight_cosine'] = float(
+        options.get('learned_loss_weight_cosine', defaults['learned_loss_weight_cosine'])
+    )
     options['debug'] = bool(options.get('debug', defaults['debug']))
     return options
 

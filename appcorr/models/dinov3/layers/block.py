@@ -3,6 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+import re
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -12,6 +13,7 @@ from ..utils import cat_keep_shapes, uncat_with_shapes
 
 from .attention import CausalSelfAttention, SelfAttention
 from .ffn_layers import Mlp, SwiGLUFFN
+from .learned_correction import supports_learned_block_layer
 from .layer_scale import LayerScale  # , DropPath
 
 torch._dynamo.config.automatic_dynamic_shapes = False
@@ -66,6 +68,7 @@ class SelfAttentionBlock(nn.Module):
         self.ls2 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
 
         self.sample_drop_ratio = drop_path
+        self.learned_block_delta = None
 
     @staticmethod
     def _maybe_index_rope(rope: tuple[Tensor, Tensor] | None, indices: Tensor) -> tuple[Tensor, Tensor] | None:
@@ -122,6 +125,69 @@ class SelfAttentionBlock(nn.Module):
             x_ffn = x_attn + self.ls2(self.mlp(self.norm2(x_attn)))
 
         return x_ffn
+
+    @staticmethod
+    def _resolve_layer_idx(tag: str, kwargs: Dict) -> int:
+        explicit_layer_idx = kwargs.get("layer_idx")
+        if explicit_layer_idx is not None:
+            return int(explicit_layer_idx)
+
+        match = re.search(r"layer(\d+)$", tag)
+        if match is None:
+            return -1
+        return int(match.group(1))
+
+    def _should_use_learned_block_pair(self, tag: str, kwargs: Dict) -> bool:
+        correction_mode = str(kwargs.get("correction_mode", "exact"))
+        if correction_mode not in {"learned_block", "none"}:
+            return False
+
+        layer_idx = self._resolve_layer_idx(tag, kwargs)
+        return supports_learned_block_layer(
+            layer_idx,
+            {"learned_correction_layers": kwargs.get("learned_correction_layers", [0])},
+        )
+
+    def forward_with_branch_outputs(self, x: Tensor, rope=None) -> Dict[str, Tensor]:
+        ln1 = self.norm1(x)
+        attn_out = self.ls1(self.attn(ln1, rope=rope))
+        h = x + attn_out
+        ln2 = self.norm2(h)
+        ffn_out = self.ls2(self.mlp(ln2))
+        out = h + ffn_out
+        return {
+            "x": x,
+            "ln1": ln1,
+            "attn_out": attn_out,
+            "h": h,
+            "ln2": ln2,
+            "ffn_out": ffn_out,
+            "out": out,
+        }
+
+    def predict_learned_block_delta(
+        self,
+        x_old: Tensor,
+        x_new: Tensor,
+        attn_out_old: Tensor,
+        *,
+        ln1_old: Tensor | None = None,
+        ln2_old: Tensor | None = None,
+        h_old: Tensor | None = None,
+    ) -> Dict[str, Tensor]:
+        if self.learned_block_delta is None:
+            raise RuntimeError("learned_block_delta is not initialized for this block.")
+
+        return self.learned_block_delta(
+            x_old=x_old,
+            dx_in=x_new - x_old,
+            attn_out_old=attn_out_old,
+            norm1=self.norm1,
+            norm2=self.norm2,
+            ln1_old=ln1_old,
+            ln2_old=ln2_old,
+            h_old=h_old,
+        )
 
     def _forward_list(self, x_list: List[Tensor], rope_list=None) -> List[Tensor]:
         """
@@ -215,6 +281,8 @@ class SelfAttentionBlock(nn.Module):
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         with torch.cuda.nvtx.range("approx"):
+            if self._should_use_learned_block_pair(tag, kwargs):
+                return self.approx_learned_block(x, rope, cache_feature, tag, **kwargs)
             appcorr_method = kwargs.get("appcorr_method", "partial_token")
             if appcorr_method == "partial_token":
                 return self.approx_partial_token(x, rope, cache_feature, tag, **kwargs)
@@ -229,6 +297,8 @@ class SelfAttentionBlock(nn.Module):
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
         with torch.cuda.nvtx.range("correct"):
+            if self._should_use_learned_block_pair(tag, kwargs):
+                return self.correct_learned_block(x, dindice, rope, cache_feature, tag, **kwargs)
             appcorr_method = kwargs.get("appcorr_method", "partial_token")
             if appcorr_method == "partial_token":
                 return self.correct_partial_token(x, dindice, rope, cache_feature, tag, **kwargs)
@@ -238,6 +308,59 @@ class SelfAttentionBlock(nn.Module):
                 f"Unknown SelfAttentionBlock.correct method '{appcorr_method}'. "
                 "Available methods: partial_channel, partial_token"
             )
+
+    def approx_learned_block(
+        self,
+        x: torch.Tensor,
+        rope: Tuple[torch.Tensor],
+        cache_feature: Dict,
+        tag: str,
+        **kwargs,
+    ) -> List[Tensor]:
+        outputs = self.forward_with_branch_outputs(x, rope=rope)
+        cache_feature[f"{tag}_learned_x_old"] = outputs["x"].detach().clone()
+        cache_feature[f"{tag}_learned_attn_out_old"] = outputs["attn_out"].detach().clone()
+        cache_feature[f"{tag}_learned_h_old"] = outputs["h"].detach().clone()
+        cache_feature[f"{tag}_learned_ln1_old"] = outputs["ln1"].detach().clone()
+        cache_feature[f"{tag}_learned_ln2_old"] = outputs["ln2"].detach().clone()
+        cache_feature[f"{tag}_learned_block_out_old"] = outputs["out"].detach().clone()
+        return outputs["out"], cache_feature
+
+    def correct_learned_block(
+        self,
+        x: torch.Tensor,
+        dindice: List[int],
+        rope: Tuple[torch.Tensor],
+        cache_feature: Dict,
+        tag: str,
+        **kwargs,
+    ) -> List[Tensor]:
+        x_old = cache_feature[f"{tag}_learned_x_old"].to(device=x.device, dtype=x.dtype)
+        attn_out_old = cache_feature[f"{tag}_learned_attn_out_old"].to(device=x.device, dtype=x.dtype)
+        block_out_old = cache_feature[f"{tag}_learned_block_out_old"].to(device=x.device, dtype=x.dtype)
+
+        if str(kwargs.get("correction_mode", "learned_block")) == "none":
+            return block_out_old, cache_feature
+
+        h_old = cache_feature.get(f"{tag}_learned_h_old")
+        if h_old is not None:
+            h_old = h_old.to(device=x.device, dtype=x.dtype)
+        ln1_old = cache_feature.get(f"{tag}_learned_ln1_old")
+        if ln1_old is not None:
+            ln1_old = ln1_old.to(device=x.device, dtype=x.dtype)
+        ln2_old = cache_feature.get(f"{tag}_learned_ln2_old")
+        if ln2_old is not None:
+            ln2_old = ln2_old.to(device=x.device, dtype=x.dtype)
+
+        pred = self.predict_learned_block_delta(
+            x_old=x_old,
+            x_new=x,
+            attn_out_old=attn_out_old,
+            ln1_old=ln1_old,
+            ln2_old=ln2_old,
+            h_old=h_old,
+        )
+        return block_out_old + pred["dx_out_hat"], cache_feature
 
     def approx_partial_token(
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs

@@ -5,9 +5,14 @@ import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
 import math
 import numpy as np
+import os
 from offload.common import Task
 from .base import ModelExecutor
 from .utils import load_weight_mmap
+from appcorr.models.dinov3.layers.learned_correction import (
+    ensure_learned_block_predictors,
+    load_learned_block_checkpoint,
+)
 
 from appcorr.models.dinov3.eval.detection.util.misc import nested_tensor_from_tensor_list, NestedTensor
 from appcorr.models.dinov3.eval.detection.util import box_ops
@@ -485,6 +490,22 @@ class DINOv3DetectorExecutor(ModelExecutor):
             print(f"!!! [Executor] Failed to load detector weights: {e}")
             raise e
 
+        vit_backbone = self._get_vit_backbone()
+        appcorr_options = config.get_appcorr_options()
+        ensure_learned_block_predictors(vit_backbone, appcorr_options)
+        learned_ckpt_path = (
+            appcorr_options.get("learned_checkpoint_load_path")
+            or appcorr_options.get("learned_checkpoint_path")
+            or appcorr_options.get("learned_checkpoint_save_path")
+        )
+        if learned_ckpt_path:
+            learned_ckpt_path = os.path.expanduser(learned_ckpt_path)
+            if os.path.exists(learned_ckpt_path):
+                print(f"[Executor] Loading learned correction checkpoint from {learned_ckpt_path}")
+                load_learned_block_checkpoint(vit_backbone, learned_ckpt_path, strict=False)
+            else:
+                print(f"[Executor] Learned correction checkpoint not found at {learned_ckpt_path}; starting from scratch.")
+
         self.model.eval()
 
     def _get_vit_backbone(self):
@@ -829,6 +850,9 @@ class DINOv3DetectorExecutor(ModelExecutor):
                         cache,
                         tag=f"src{src_idx}_layer{lidx}",
                         appcorr_method=appcorr_method,
+                        correction_mode=appcorr_options["correction_mode"],
+                        learned_correction_layers=appcorr_options["learned_correction_layers"],
+                        layer_idx=lidx,
                         attn_cache_candidates=attn_cache_candidates,
                         group_plans=group_plans,
                         server_pscore=appcorr_options["server_pscore"],
@@ -975,6 +999,9 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             cache,
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
+                            correction_mode=appcorr_options["correction_mode"],
+                            learned_correction_layers=appcorr_options["learned_correction_layers"],
+                            layer_idx=lidx,
                             token_keep_ratio=token_keep_ratio,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
@@ -994,6 +1021,9 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             cache,
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
+                            correction_mode=appcorr_options["correction_mode"],
+                            learned_correction_layers=appcorr_options["learned_correction_layers"],
+                            layer_idx=lidx,
                             token_keep_ratio=token_keep_ratio,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],

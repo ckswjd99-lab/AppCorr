@@ -213,3 +213,5 @@ appcorr/weights
 *.qdstrm
 .vscode
 .codex
+checkpoints
+*.pt

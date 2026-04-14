@@ -66,7 +66,12 @@ if __name__ == "__main__":
     parser.add_argument("--ip", type=str, default="127.0.0.1", help="Target Server IP")
     parser.add_argument("--recv-port", type=int, default=39998, help="Uplink port")
     parser.add_argument("--send-port", type=int, default=39999, help="Downlink port")
-    parser.add_argument("--data", type=str, default="~/data/imagenet_val", help="Path to ImageNet")
+    parser.add_argument(
+        "--data",
+        type=str,
+        default="~/data/imagenet_val",
+        help="Dataset root. Ignored for coco2017, which is loaded via FiftyOne.",
+    )
     parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
     
     args = parser.parse_args()
