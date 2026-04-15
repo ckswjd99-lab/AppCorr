@@ -13,7 +13,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
     """
 
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> List[Patch]:
-        B = images.shape[0]
+        B = self._get_batch_size(images)
         # Yield patches layer by layer
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
         
@@ -21,7 +21,14 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             layer_patches = []
             with ThreadPoolExecutor() as executor:
                 futures = [
-                    executor.submit(self._process_image_encode_single_layer, b, images[b], tgt_lvl_idx, levels, config)
+                    executor.submit(
+                        self._process_image_encode_single_layer,
+                        b,
+                        self._get_batch_image(images, b),
+                        tgt_lvl_idx,
+                        levels,
+                        config,
+                    )
                     for b in range(B)
                 ]
                 for f in futures:
@@ -87,16 +94,61 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             curr = curr.astype(np.uint8) 
         return curr
 
-    def _process_image_encode_single_layer(self, b_idx, image, tgt_lvl_idx, levels, config):
+    def _get_batch_size(self, images) -> int:
+        if isinstance(images, np.ndarray):
+            return images.shape[0]
+        if isinstance(images, (list, tuple)):
+            return len(images)
+        raise TypeError(f"Unsupported image batch type: {type(images)!r}")
+
+    def _get_batch_image(self, images, index: int) -> np.ndarray:
+        if isinstance(images, np.ndarray):
+            return images[index]
+        if isinstance(images, (list, tuple)):
+            return images[index]
+        raise TypeError(f"Unsupported image batch type: {type(images)!r}")
+
+    def _resize_image(self, image: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+        if image.shape[:2] == (target_h, target_w):
+            return image.astype(np.uint8, copy=False)
+
+        src_h, src_w = image.shape[:2]
+        interpolation = cv2.INTER_AREA if target_h <= src_h and target_w <= src_w else cv2.INTER_LINEAR
+        resized = cv2.resize(image, (target_w, target_h), interpolation=interpolation)
+        return resized.astype(np.uint8, copy=False)
+
+    def _build_transmission_gaussians(self, image: np.ndarray, levels: List[int], config: ExperimentConfig):
         max_lvl = max(levels)
-        H, W = image.shape[:2]
+        target_h, target_w = config.image_shape[:2]
+        resize_order = config.get_pyramid_resize_order()
+
+        if resize_order == 'resize_then_pyramid':
+            base_image = self._resize_image(image, target_h, target_w)
+            gaussians = {0: base_image}
+            curr = base_image
+            for level in range(1, max_lvl + 1):
+                curr = cv2.pyrDown(curr).astype(np.uint8, copy=False)
+                gaussians[level] = curr
+            return gaussians
+
+        raw_gaussians = {0: image.astype(np.uint8, copy=False)}
+        curr = raw_gaussians[0]
+        for level in range(1, max_lvl + 1):
+            curr = cv2.pyrDown(curr).astype(np.uint8, copy=False)
+            raw_gaussians[level] = curr
+
+        gaussians = {}
+        for level in range(max_lvl + 1):
+            level_h = target_h // (2 ** level)
+            level_w = target_w // (2 ** level)
+            gaussians[level] = self._resize_image(raw_gaussians[level], level_h, level_w)
+        return gaussians
+
+    def _process_image_encode_single_layer(self, b_idx, image, tgt_lvl_idx, levels, config):
+        H, W = config.image_shape[:2]
         local_patches = []
-        
-        gaussians = {0: image}
-        curr = image
-        for i in range(1, max_lvl + 1):
-            curr = cv2.pyrDown(curr)
-            gaussians[i] = curr
+
+        gaussians = self._build_transmission_gaussians(image, levels, config)
             
         tgt_lvl = levels[tgt_lvl_idx]
         curr_g = gaussians[tgt_lvl]

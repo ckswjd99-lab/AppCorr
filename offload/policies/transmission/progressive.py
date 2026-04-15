@@ -13,7 +13,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
     """
 
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
-        B = images.shape[0]
+        B = self._get_batch_size(images)
         num_groups = config.transmission_kwargs.get('num_groups', 4)
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
 
@@ -23,7 +23,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         # Generate base layers
         with ThreadPoolExecutor() as executor:
             futures = [
-                executor.submit(self._process_image_base_layer, b, images[b], config)
+                executor.submit(self._process_image_base_layer, b, self._get_batch_image(images, b), config)
                 for b in range(B)
             ]
             for b, f in enumerate(futures):
@@ -231,14 +231,9 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
 
     def _process_image_base_layer(self, b_idx, image, config):
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
-        max_lvl = max(levels)
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
-        
-        gaussians = {0: image}
-        curr = image
-        for i in range(1, max_lvl + 1):
-            curr = cv2.pyrDown(curr)
-            gaussians[i] = curr
+
+        gaussians = self._build_transmission_gaussians(image, levels, config)
             
         local_patches = []
         base_lvl = levels[0] # Highest level index is the base layer

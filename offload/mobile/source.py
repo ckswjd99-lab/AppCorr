@@ -53,6 +53,41 @@ class SourceModule(multiprocessing.Process):
         self.data_root = data_root
         self.loader_batch_size = loader_batch_size
 
+    def _prepare_encode_batch(self, images):
+        img_h, img_w, img_c = self.config.image_shape
+        server_batch_size = self.config.batch_size
+
+        if isinstance(images, torch.Tensor):
+            curr_bs = images.size(0)
+            full_batch_np = np.zeros((server_batch_size, img_h, img_w, img_c), dtype=np.uint8)
+            real_imgs_np = images.permute(0, 2, 3, 1).cpu().numpy()
+            full_batch_np[:curr_bs] = real_imgs_np
+            return curr_bs, full_batch_np
+
+        if isinstance(images, (list, tuple)):
+            batch_np = []
+            for img in images:
+                if not isinstance(img, torch.Tensor):
+                    raise TypeError(f"Expected image tensor, got {type(img)!r}")
+                if img.ndim != 3:
+                    raise ValueError(f"Expected CHW image tensor, got shape {tuple(img.shape)}")
+                if img.shape[0] == img_c:
+                    np_img = img.permute(1, 2, 0).cpu().numpy()
+                elif img.shape[-1] == img_c:
+                    np_img = img.cpu().numpy()
+                else:
+                    raise ValueError(f"Expected 3-channel image tensor, got shape {tuple(img.shape)}")
+                batch_np.append(np.ascontiguousarray(np_img.astype(np.uint8, copy=False)))
+            return len(batch_np), batch_np
+
+        raise TypeError(f"Unsupported image batch type: {type(images)!r}")
+
+    @staticmethod
+    def _labels_to_list(labels):
+        if isinstance(labels, torch.Tensor):
+            return labels.tolist()
+        return [label.tolist() if isinstance(label, torch.Tensor) else label for label in labels]
+
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
         if dataset_name == 'coco2017':
@@ -62,9 +97,16 @@ class SourceModule(multiprocessing.Process):
         
         try:
             # Initialize Dataset Loader
-            dataset_kwargs = getattr(self.config, 'dataset_kwargs', {})
+            dataset_kwargs = dict(getattr(self.config, 'dataset_kwargs', {}))
             # Determine image size from config if possible, or default
             image_size = self.config.image_shape[0] if self.config.image_shape else 256
+            pyramid_then_resize = self.config.get_pyramid_resize_order() == 'pyramid_then_resize'
+            if pyramid_then_resize and self.config.transmission_policy_name not in {'Laplacian', 'ProgressiveLaplacian'}:
+                raise ValueError(
+                    "pyramid_then_resize is only supported with Laplacian or ProgressiveLaplacian transmission policies."
+                )
+            if dataset_name == 'coco2017':
+                dataset_kwargs['preserve_original_resolution'] = pyramid_then_resize
             
             self.dataset_loader = get_dataset_loader(
                 dataset_name, 
@@ -122,23 +164,13 @@ class SourceModule(multiprocessing.Process):
         # Track event statistics
         event_stats_accumulator = {}
 
-        # Constants for padding
-        SERVER_BATCH_SIZE = self.config.batch_size
-        IMG_H, IMG_W, IMG_C = self.config.image_shape
-
         print("[Source] Starting Batch Evaluation Loop...")
 
         pbar = tqdm(enumerate(loader), total=len(loader), leave=False)
         for batch_idx, (images, labels) in pbar:
-            curr_bs = images.size(0)
-            
             # Send Phase
             t_load_start = time.time()
-            # Prepare padded batch container
-            full_batch_np = np.zeros((SERVER_BATCH_SIZE, IMG_H, IMG_W, IMG_C), dtype=np.uint8)
-            
-            real_imgs_np = images.permute(0, 2, 3, 1).numpy()
-            full_batch_np[:curr_bs] = real_imgs_np
+            curr_bs, encode_input = self._prepare_encode_batch(images)
             t_load_end = time.time()
             
             # Encode data
@@ -147,7 +179,7 @@ class SourceModule(multiprocessing.Process):
             local_events = [{'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start}]
             
             # Execute generator pipeline
-            encode_gen = policy.encode(full_batch_np, self.config)
+            encode_gen = policy.encode(encode_input, self.config)
             
             group_idx = 0
             t_pipeline_start = time.time()
@@ -227,7 +259,7 @@ class SourceModule(multiprocessing.Process):
 
             # Calculate metrics via DatasetLoader
             valid_preds = result.output[:curr_bs]
-            valid_labels = labels.tolist()
+            valid_labels = self._labels_to_list(labels)
             
             latency = t_result_recv - t_send_start # End-to-End approximation
             total_latency += latency

@@ -199,6 +199,26 @@ class ExperimentConfig:
     def lowres_sr_enabled(self) -> bool:
         return bool(self.scheduler_kwargs.get('lowres_sr', False))
 
+    def get_pyramid_resize_order(self) -> str:
+        raw_order = self.transmission_kwargs.get('pyramid_resize_order')
+        if raw_order is None and 'build_pyramid_before_resize' in self.transmission_kwargs:
+            return 'pyramid_then_resize' if bool(self.transmission_kwargs['build_pyramid_before_resize']) else 'resize_then_pyramid'
+
+        normalized = str(raw_order or 'resize_then_pyramid').strip().lower()
+        aliases = {
+            'resize_then_pyramid': 'resize_then_pyramid',
+            'resize_first': 'resize_then_pyramid',
+            'pyramid_then_resize': 'pyramid_then_resize',
+            'pyramid_first': 'pyramid_then_resize',
+            'raw_then_resize': 'pyramid_then_resize',
+        }
+        if normalized not in aliases:
+            raise ValueError(
+                "Unsupported transmission_kwargs.pyramid_resize_order="
+                f"{raw_order!r}. Expected one of: resize_then_pyramid, pyramid_then_resize."
+            )
+        return aliases[normalized]
+
     def get_appcorr_options(self) -> Dict[str, Any]:
         return normalize_appcorr_kwargs(self.appcorr_kwargs, self.transmission_kwargs)
 

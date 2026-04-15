@@ -119,6 +119,7 @@ class COCO2017Loader(DatasetLoader):
         super().__init__(root, batch_size, **kwargs)
         self.image_size = image_size
         self.num_workers = num_workers
+        self.preserve_original_resolution = bool(kwargs.get("preserve_original_resolution", False))
         self.coco_results = []
         self.processed_ids = []
         raw_split = str(kwargs.get("split", "validation")).strip().lower()
@@ -187,21 +188,29 @@ class COCO2017Loader(DatasetLoader):
                 # The label here is metadata needed for post-processing
                 return img_t, torch.tensor([image_id, w, h], dtype=torch.long)
 
-        # Transform: To Image -> Resize -> To Uint8 Tensor
         to_tensor = v2.ToImage()
-        resize = v2.Resize((self.image_size, self.image_size), antialias=True)
         to_uint8 = v2.ToDtype(torch.uint8, scale=False)
-        tfm = v2.Compose([to_tensor, resize, to_uint8])
+        transform_steps = [to_tensor]
+        if not self.preserve_original_resolution:
+            transform_steps.append(v2.Resize((self.image_size, self.image_size), antialias=True))
+        tfm = v2.Compose([*transform_steps, to_uint8])
 
         ds = FiftyOneTorchDataset(self.fo_dataset, transform=tfm)
-        
+
+        collate_fn = None
+        if self.preserve_original_resolution:
+            def collate_fn(batch):
+                images, labels = zip(*batch)
+                return list(images), torch.stack(labels, dim=0)
+
         return torch.utils.data.DataLoader(
             ds,
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=False
+            drop_last=False,
+            collate_fn=collate_fn,
         )
 
     def evaluate_batch(self, preds: List[Any], labels: List[Any], **kwargs) -> Dict[str, Any]:

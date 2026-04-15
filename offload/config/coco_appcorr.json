@@ -13,10 +13,11 @@
     },
     "transmission_policy_name": "ProgressiveLaplacian",
     "transmission_kwargs": {
-        "pyramid_levels": [2, 1, 0],
+        "pyramid_levels": [1, 0],
         "grouping_strategy": "grid",
         "num_groups": 1,
-        "compression_level": 1
+        "compression_level": 1,
+        "pyramid_resize_order": "pyramid_then_resize"
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
