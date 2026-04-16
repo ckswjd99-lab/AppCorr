@@ -292,9 +292,9 @@ class SelfAttention(nn.Module):
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
         
-        cache_feature[f"{tag}_q"] = q.detach().clone().to(dtype=torch.bfloat16)
-        cache_feature[f"{tag}_k"] = k.detach().clone().to(dtype=torch.bfloat16)
-        cache_feature[f"{tag}_v"] = v.detach().clone().to(dtype=torch.bfloat16)
+        # cache_feature[f"{tag}_q"] = q.detach().clone().to(dtype=torch.bfloat16)
+        # cache_feature[f"{tag}_k"] = k.detach().clone().to(dtype=torch.bfloat16)
+        # cache_feature[f"{tag}_v"] = v.detach().clone().to(dtype=torch.bfloat16)
 
         # Attention
         attn_score = (q @ k.transpose(-2, -1)) * self.scale
@@ -323,6 +323,15 @@ class SelfAttention(nn.Module):
         x_old = cache_feature.get(f"{tag}_attn_input")
         dx = x - x_old
 
+        # Zero-out tokens based on dx magnitude
+        dx_norm = dx.norm(dim=-1)  # [B, N]
+        dx_alive_rate = 0.5
+        num_alive_tokens = max(1, min(N, int(N * dx_alive_rate)))
+        _, alive_idx = torch.topk(dx_norm, k=num_alive_tokens, dim=-1)
+        alive_mask = torch.zeros_like(dx_norm, dtype=torch.bool)
+        alive_mask.scatter_(dim=-1, index=alive_idx, value=True)  # [B, N]
+        dx = dx * alive_mask.unsqueeze(-1)
+
         dqkv = F.linear(dx, self.qkv.weight, None).reshape(B, N, 3, self.num_heads, C // self.num_heads)
         dq, dk, dv = torch.unbind(dqkv, 2)
         dq, dk, dv = [t.transpose(1, 2) for t in [dq, dk, dv]]
@@ -331,19 +340,43 @@ class SelfAttention(nn.Module):
         if rope is not None:
             dq, dk = self.apply_rope(dq, dk, rope)
 
-        q_old = cache_feature.get(f"{tag}_q")
-        k_old = cache_feature.get(f"{tag}_k")
-        v_old = cache_feature.get(f"{tag}_v")
+        # q_old = cache_feature.get(f"{tag}_q")
+        # k_old = cache_feature.get(f"{tag}_k")
+        # v_old = cache_feature.get(f"{tag}_v")
+        qkv_old = self.qkv(x_old).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        q_old, k_old, v_old = torch.unbind(qkv_old, 2)
+        q_old, k_old, v_old = [t.transpose(1, 2) for t in [q_old, k_old, v_old]]
+        if rope is not None:
+            q_old, k_old = self.apply_rope(q_old, k_old, rope)
 
         # Attention
-        attn_score_old = (q_old @ k_old.transpose(-2, -1)) * self.scale
+        attn_score_old = (q_old @ k_old.transpose(-2, -1)) * self.scale # [B, H, N, N]
         attn_prob_old = attn_score_old.softmax(dim=-1)
 
         attn_score_new = ((q_old + dq) @ (k_old + dk).transpose(-2, -1)) * self.scale
         attn_prob_new = attn_score_new.softmax(dim=-1)
 
         d_attn_prob = attn_prob_new - attn_prob_old
-        d_attn_v = d_attn_prob @ v_old + attn_prob_old @ dv + d_attn_prob @ dv
+
+        # Keep the old attention-driven pruning block disabled so attention/value updates
+        # share the same token sparsity pattern, following the aligned sparse products in
+        # Eventful Transformer.
+        # attn_prob_old_mean = attn_prob_old.mean(dim=2)  # [B, H, N]
+        # attn_col_alive_rate = 0.5
+        # num_alive_cols = max(1, min(N, int(N * attn_col_alive_rate)))
+        # _, attn_col_alive_idx = torch.topk(attn_prob_old_mean, k=num_alive_cols, dim=-1)
+        # attn_col_alive_mask = torch.zeros_like(attn_prob_old_mean, dtype=torch.bool)
+        # attn_col_alive_mask.scatter_(dim=-1, index=attn_col_alive_idx, value=True)  # [B, H, N]
+        # d_attn_prob = d_attn_prob * attn_col_alive_mask.unsqueeze(2)  # [B, H, N, N]
+
+        gather_idx_attn = alive_idx.unsqueeze(1).unsqueeze(2).expand(-1, self.num_heads, N, -1)
+        gather_idx_value = alive_idx.unsqueeze(1).unsqueeze(-1).expand(-1, self.num_heads, -1, C // self.num_heads)
+        attn_prob_new_sel = attn_prob_new.gather(dim=-1, index=gather_idx_attn)
+        d_attn_prob_sel = d_attn_prob.gather(dim=-1, index=gather_idx_attn)
+        dv_sel = dv.gather(dim=2, index=gather_idx_value)
+        v_old_sel = v_old.gather(dim=2, index=gather_idx_value)
+
+        d_attn_v = attn_prob_new_sel @ dv_sel + d_attn_prob_sel @ v_old_sel
 
         d_attn_v = d_attn_v.transpose(1, 2).reshape([B, N, C])
 

@@ -4,12 +4,51 @@ import time
 import torch
 from torchvision import datasets, transforms
 import numpy as np
+import json
+import os
+
+
+def _infer_fiftyone_label_field(dataset: Any, fallback: str = "ground_truth") -> str:
+    field_name = getattr(dataset, "default_label_field", None)
+    if isinstance(field_name, str) and field_name:
+        return field_name
+
+    try:
+        import fiftyone as fo
+
+        schema = dataset.get_field_schema()
+        for name, field in schema.items():
+            document_type = getattr(field, "document_type", None)
+            if document_type in (fo.Detections, fo.Polylines, fo.Keypoints):
+                return name
+    except Exception:
+        pass
+
+    return fallback
+
+
+def _infer_fiftyone_classes(dataset: Any, label_field: str) -> List[str]:
+    classes = getattr(dataset, "default_classes", None)
+    if classes:
+        return list(classes)
+
+    try:
+        info = dataset.info or {}
+        field_classes = info.get("classes", {}).get(label_field)
+        if field_classes:
+            return list(field_classes)
+    except Exception:
+        pass
+
+    return []
+
 
 class DatasetLoader(ABC):
     def __init__(self, root: Optional[str], batch_size: int, **kwargs):
         self.root = root or ""
         self.batch_size = batch_size
         self.kwargs = kwargs
+        self.log_dir: Optional[str] = None
 
     @abstractmethod
     def get_loader(self) -> torch.utils.data.DataLoader:
@@ -37,6 +76,9 @@ class DatasetLoader(ABC):
         Returns a summary of the evaluation (e.g., {'top1_acc': 75.0}).
         """
         pass
+
+    def set_log_dir(self, log_dir: str) -> None:
+        self.log_dir = log_dir
 
 class ImageNetLoader(DatasetLoader):
     def __init__(self, root: Optional[str], batch_size: int, image_size: int = 256, num_workers: int = 4, **kwargs):
@@ -122,6 +164,9 @@ class COCO2017Loader(DatasetLoader):
         self.preserve_original_resolution = bool(kwargs.get("preserve_original_resolution", False))
         self.coco_results = []
         self.processed_ids = []
+        self.sample_records: Dict[int, Dict[str, Any]] = {}
+        self.predictions_by_image: Dict[int, List[Dict[str, Any]]] = {}
+        self.export_info: Dict[str, str] = {}
         raw_split = str(kwargs.get("split", "validation")).strip().lower()
         split_aliases = {
             "val": "validation",
@@ -138,20 +183,115 @@ class COCO2017Loader(DatasetLoader):
         # Lazy load heavy dependencies
         import fiftyone.zoo as foz
         from pycocotools.coco import COCO
-        import os
 
         print(f"[COCOLoader] Loading FiftyOne COCO-2017 {self.split} split...")
         if self.root:
             print(f"[COCOLoader] Ignoring dataset root '{self.root}' and using FiftyOne dataset storage.")
         # Note: root is intentionally ignored; FiftyOne manages the dataset path.
         self.fo_dataset = foz.load_zoo_dataset("coco-2017", split=self.split)
+        self.fo_dataset_name = self.fo_dataset.name
+        self.default_label_field = _infer_fiftyone_label_field(self.fo_dataset)
+        self.coco_classes = _infer_fiftyone_classes(self.fo_dataset, self.default_label_field)
+        self.fo_sample_map = {
+            int(os.path.splitext(os.path.basename(filepath))[0]): {
+                "filepath": filepath,
+                "width": metadata.width if metadata is not None else None,
+                "height": metadata.height if metadata is not None else None,
+            }
+            for filepath, metadata in zip(
+                self.fo_dataset.values("filepath"),
+                self.fo_dataset.values("metadata"),
+            )
+        }
         
         ann_suffix = "train2017" if self.split == "train" else "val2017"
         self.ann_file = os.path.expanduser(f"~/fiftyone/coco-2017/raw/instances_{ann_suffix}.json")
         if not os.path.exists(self.ann_file):
             print(f"!!! [COCOLoader] Annotation file not found at {self.ann_file}. Evaluation might fail.")
         else:
-             self.coco_gt = COCO(self.ann_file)
+            self.coco_gt = COCO(self.ann_file)
+            self.category_id_to_name = {
+                int(cat["id"]): str(cat["name"])
+                for cat in self.coco_gt.loadCats(self.coco_gt.getCatIds())
+            }
+
+    def _category_name(self, category_id: int) -> str:
+        if hasattr(self, "category_id_to_name") and category_id in self.category_id_to_name:
+            return self.category_id_to_name[category_id]
+        if 0 <= category_id < len(self.coco_classes):
+            return str(self.coco_classes[category_id])
+        return str(category_id)
+
+    def _record_sample(self, image_id: int, width: int, height: int) -> None:
+        sample_info = self.fo_sample_map.get(image_id, {})
+        self.sample_records[image_id] = {
+            "image_id": int(image_id),
+            "filepath": sample_info.get("filepath"),
+            "width": int(sample_info.get("width") or width),
+            "height": int(sample_info.get("height") or height),
+        }
+
+    def _append_prediction(
+        self,
+        image_id: int,
+        width: int,
+        height: int,
+        category_id: int,
+        score: float,
+        bbox_xywh: List[float],
+    ) -> None:
+        norm_bbox = [
+            bbox_xywh[0] / max(width, 1),
+            bbox_xywh[1] / max(height, 1),
+            bbox_xywh[2] / max(width, 1),
+            bbox_xywh[3] / max(height, 1),
+        ]
+        self.predictions_by_image.setdefault(image_id, []).append({
+            "label": self._category_name(category_id),
+            "category_id": int(category_id),
+            "confidence": float(score),
+            "bounding_box": [float(v) for v in norm_bbox],
+            "bbox_abs_xywh": [float(v) for v in bbox_xywh],
+        })
+
+    def _write_detection_exports(self) -> None:
+        if not self.log_dir:
+            return
+
+        export_dir = os.path.join(self.log_dir, "detections")
+        os.makedirs(export_dir, exist_ok=True)
+
+        coco_results_path = os.path.join(export_dir, "coco_results.json")
+        with open(coco_results_path, "w") as f:
+            json.dump(self.coco_results, f, indent=2)
+
+        per_image_predictions = [
+            {
+                **self.sample_records[image_id],
+                "predictions": self.predictions_by_image.get(image_id, []),
+            }
+            for image_id in sorted(self.sample_records)
+        ]
+        detections_payload = {
+            "dataset_type": "coco2017",
+            "split": self.split,
+            "fiftyone_dataset_name": self.fo_dataset_name,
+            "fiftyone_label_field": self.default_label_field,
+            "annotation_file": self.ann_file,
+            "processed_image_ids": sorted(self.sample_records),
+            "num_images": len(self.sample_records),
+            "num_detections": len(self.coco_results),
+            "classes": self.coco_classes,
+            "samples": per_image_predictions,
+        }
+        detections_path = os.path.join(export_dir, "fiftyone_predictions.json")
+        with open(detections_path, "w") as f:
+            json.dump(detections_payload, f, indent=2)
+
+        self.export_info = {
+            "coco_results_path": coco_results_path,
+            "fiftyone_predictions_path": detections_path,
+        }
 
     def get_loader(self) -> torch.utils.data.DataLoader:
         from torch.utils.data import Dataset
@@ -229,6 +369,7 @@ class COCO2017Loader(DatasetLoader):
             count += 1
             if image_id not in self.processed_ids:
                 self.processed_ids.append(image_id)
+            self._record_sample(int(image_id), int(w), int(h))
 
             # Expecting pred to have 'scores', 'labels', 'boxes' keys
             if not isinstance(pred, dict) or 'boxes' not in pred:
@@ -250,13 +391,22 @@ class COCO2017Loader(DatasetLoader):
                 abs_y1 = ny1 * h
                 abs_w = (nx2 - nx1) * w
                 abs_h = (ny2 - ny1) * h
+                bbox_xywh = [float(abs_x1), float(abs_y1), float(abs_w), float(abs_h)]
                 
                 self.coco_results.append({
                     "image_id": int(image_id),
                     "category_id": int(cat_id),
-                    "bbox": [float(abs_x1), float(abs_y1), float(abs_w), float(abs_h)],
+                    "bbox": bbox_xywh,
                     "score": float(score)
                 })
+                self._append_prediction(
+                    image_id=int(image_id),
+                    width=int(w),
+                    height=int(h),
+                    category_id=int(cat_id),
+                    score=float(score),
+                    bbox_xywh=bbox_xywh,
+                )
 
         return {"detected_images": count}
 
@@ -274,6 +424,7 @@ class COCO2017Loader(DatasetLoader):
         print("[COCOLoader] Running Evaluation...")
         
         try:
+            self._write_detection_exports()
             coco_dt = self.coco_gt.loadRes(self.coco_results)
             coco_eval = COCOeval(self.coco_gt, coco_dt, 'bbox')
             coco_eval.params.imgIds = sorted(list(set(self.processed_ids)))
@@ -286,7 +437,8 @@ class COCO2017Loader(DatasetLoader):
                 "mAP": coco_eval.stats[0].item(),
                 "mAP_50": coco_eval.stats[1].item(),
                 "mAP_75": coco_eval.stats[2].item(),
-                "total_images": len(self.processed_ids)
+                "total_images": len(self.processed_ids),
+                "detection_exports": dict(self.export_info),
             }
         except Exception as e:
             print(f"!!! [COCOLoader] Eval Failed: {e}")

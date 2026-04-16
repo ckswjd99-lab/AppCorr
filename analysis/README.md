@@ -100,3 +100,16 @@ Interpretation:
 
 - `analysis/log_tools/log_visualizer.py`: renders request timelines from `events.jsonl`
 - `analysis/log_tools/simulate_exit.py`: simulates offline early-exit thresholds from logged head outputs
+- `analysis/log_tools/coco_fiftyone_viewer.py`: launches a FiftyOne web GUI for COCO detection logs
+
+COCO detection viewer example:
+
+```bash
+python analysis/log_tools/coco_fiftyone_viewer.py \
+  logs/offload/coco_appcorr_20260416_020814
+```
+
+COCO runs now also export:
+
+- `detections/coco_results.json`: COCO evaluation-format detections
+- `detections/fiftyone_predictions.json`: per-image metadata and normalized boxes for the FiftyOne viewer

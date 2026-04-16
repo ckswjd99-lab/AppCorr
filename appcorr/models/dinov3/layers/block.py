@@ -506,8 +506,9 @@ class SelfAttentionBlock(nn.Module):
             x = x + self.ls1(x_attn)
 
         with torch.cuda.nvtx.range("correct_ffn"):
+            x_norm2 = self.norm2(x)
             x_mlp, cache_feature = self.mlp.correct_partial_channel(
-                self.norm2(x),
+                x_norm2,
                 cache_feature,
                 tag,
             )

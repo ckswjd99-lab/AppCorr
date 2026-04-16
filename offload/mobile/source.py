@@ -12,6 +12,7 @@ from offload.mobile.dataset import get_dataset_loader
 import os
 import json
 import datetime
+import copy
 
 def perform_time_sync(output_queue, feedback_queue, rounds=10):
     """Estimate clock offset via ping-pong."""
@@ -135,6 +136,8 @@ class SourceModule(multiprocessing.Process):
         os.makedirs(log_dir, exist_ok=True)
         events_log_path = os.path.join(log_dir, "events.jsonl")
         summary_log_path = os.path.join(log_dir, "summary.json")
+        if hasattr(self.dataset_loader, "set_log_dir"):
+            self.dataset_loader.set_log_dir(log_dir)
         
         print(f"[Source] Logs will be saved to {log_dir}")
         events_file = open(events_log_path, "w")
@@ -312,11 +315,14 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if (batch_idx+1) == 50:
-                break # TEMP
+            # if (batch_idx+1) == 50:
+            #     break # TEMP
 
         final_summary = self.dataset_loader.get_summary()
-        print(f"[Source] Final Summary: {final_summary}")
+        console_summary = copy.deepcopy(final_summary)
+        if isinstance(console_summary, dict):
+            console_summary.pop("detection_exports", None)
+        print(f"[Source] Final Summary: {console_summary}")
         
         # Calculate Latency Breakdown
         latency_breakdown = {}
