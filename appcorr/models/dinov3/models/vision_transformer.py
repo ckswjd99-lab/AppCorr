@@ -450,6 +450,7 @@ class DinoVisionTransformer(nn.Module):
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
                             server_pscore=appcorr_options["server_pscore"],
                             server_pscore_weight=appcorr_options["server_pscore_weight"],
+                            pscore_fusion=appcorr_options["pscore_fusion"],
                             attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
                             token_prune_enabled=appcorr_options["token_prune_enabled"],
                             token_prune_threshold=appcorr_options["token_prune_threshold"],

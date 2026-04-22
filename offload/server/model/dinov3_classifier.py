@@ -644,6 +644,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 mobile_pscore_hint=mobile_pscore_hint,
                 server_pscore=appcorr_options["server_pscore"],
                 server_pscore_weight=appcorr_options["server_pscore_weight"],
+                pscore_fusion=appcorr_options["pscore_fusion"],
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 fixed_query_state=fixed_query_state,
                 group_plan=plan,

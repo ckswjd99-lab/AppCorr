@@ -21,6 +21,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'mobile_pscore_weight': 0.0,
         'server_pscore': 'cls_attn_prob',
         'server_pscore_weight': 1.0,
+        'pscore_fusion': 'add',
         'token_prune_enabled': False,
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
@@ -80,10 +81,33 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
         server_pscore = 'patch_attn_prob'
     if server_pscore == 'patch_attn_prune':
         server_pscore = 'patch_attn_prob'
-    if server_pscore not in {'cls_attn_prob', 'patch_attn_prob'}:
-        server_pscore = defaults['server_pscore']
+    legacy_server_pscore_layer_fusion = str(raw.get('server_pscore_layer_fusion', '')).lower()
+    if legacy_server_pscore_layer_fusion in {'mean', 'avg', 'all_layer_mean', 'layer_mean', 'mean_all_layers'}:
+        if server_pscore == 'patch_attn_prob':
+            server_pscore = 'patch_attn_prob_layermean'
+        elif server_pscore == 'cls_attn_prob':
+            server_pscore = 'cls_attn_prob_layermean'
+    valid_server_pscores = {
+        'cls_attn_prob',
+        'patch_attn_prob',
+        'patch_attn_prob_layermean',
+        'cls_attn_prob_layermean',
+    }
+    if server_pscore not in valid_server_pscores:
+        raise ValueError(
+            f"Unknown server_pscore '{server_pscore}'. "
+            f"Available values: {sorted(valid_server_pscores)}"
+        )
     options['server_pscore'] = server_pscore
     options['server_pscore_weight'] = float(options.get('server_pscore_weight', defaults['server_pscore_weight']))
+    pscore_fusion = str(options.get('pscore_fusion', defaults['pscore_fusion'])).lower()
+    if pscore_fusion in {'mul', 'product'}:
+        pscore_fusion = 'multiply'
+    elif pscore_fusion in {'geomean', 'geometric_mean'}:
+        pscore_fusion = 'geo_mean'
+    elif pscore_fusion not in {'add', 'multiply', 'geo_mean'}:
+        pscore_fusion = defaults['pscore_fusion']
+    options['pscore_fusion'] = pscore_fusion
     options['token_prune_enabled'] = bool(options.get('token_prune_enabled', defaults['token_prune_enabled']))
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)

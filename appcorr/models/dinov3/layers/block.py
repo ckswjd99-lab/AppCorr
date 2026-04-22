@@ -416,10 +416,9 @@ class SelfAttentionBlock(nn.Module):
         *,
         num_pretokens: int,
         num_tokens: int,
-        default_scores: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         if mobile_pscore not in self._MOBILE_HINT_PSCORE_ALIASES or mobile_pscore_hint is None:
-            return default_scores
+            return None
 
         if mobile_pscore_hint.shape[0] != dindice_patches.shape[0]:
             raise RuntimeError(
@@ -429,15 +428,79 @@ class SelfAttentionBlock(nn.Module):
 
         if mobile_pscore_hint.shape[1] == (num_tokens - num_pretokens):
             gather_idx = dindice_patches - num_pretokens
-            return mobile_pscore_hint.gather(1, gather_idx).to(dtype=default_scores.dtype)
+            return mobile_pscore_hint.gather(1, gather_idx)
 
         if mobile_pscore_hint.shape[1] == num_tokens:
-            return mobile_pscore_hint.gather(1, dindice_patches).to(dtype=default_scores.dtype)
+            return mobile_pscore_hint.gather(1, dindice_patches)
 
         raise RuntimeError(
             f"Unsupported mobile pscore hint shape {tuple(mobile_pscore_hint.shape)} for "
             f"num_tokens={num_tokens}, num_pretokens={num_pretokens}"
         )
+
+    @staticmethod
+    def _combine_patch_scores(
+        server_patch_scores: torch.Tensor,
+        server_pscore_weight: float,
+        mobile_patch_scores: torch.Tensor | None,
+        mobile_pscore_weight: float,
+        pscore_fusion: str,
+    ) -> torch.Tensor:
+        combined_patch_scores = server_pscore_weight * server_patch_scores
+        if mobile_patch_scores is None or mobile_pscore_weight == 0.0:
+            return combined_patch_scores
+
+        mobile_term = mobile_pscore_weight * mobile_patch_scores.to(dtype=combined_patch_scores.dtype)
+        if pscore_fusion == "multiply":
+            return combined_patch_scores * mobile_term
+        if pscore_fusion == "geo_mean":
+            return torch.sqrt(torch.clamp(combined_patch_scores * mobile_term, min=0.0))
+        return combined_patch_scores + mobile_term
+
+    @staticmethod
+    def _resolve_server_token_scores(
+        cache_feature: Dict,
+        tag: str,
+        server_pscore: str,
+    ) -> torch.Tensor:
+        if server_pscore in {"patch_attn_prob_layermean", "cls_attn_prob_layermean"}:
+            cache_key = "_shared_server_pscore_mean_all_layers"
+            signature_key = "_shared_server_pscore_mean_all_layers_keys"
+            server_pscore_keys = tuple(
+                sorted(
+                    key
+                    for key, value in cache_feature.items()
+                    if key.endswith("_server_pscore") and isinstance(value, torch.Tensor)
+                )
+            )
+            if not server_pscore_keys:
+                raise KeyError("Missing cached *_server_pscore entries. They must be produced during approx.")
+
+            cached_server_pscore = cache_feature.get(cache_key)
+            cached_signature = cache_feature.get(signature_key)
+            if cached_server_pscore is not None and cached_signature == server_pscore_keys:
+                return cached_server_pscore
+
+            server_pscore_tensors = [cache_feature[key].to(dtype=torch.float32) for key in server_pscore_keys]
+            base_shape = server_pscore_tensors[0].shape
+            if any(tensor.shape != base_shape for tensor in server_pscore_tensors[1:]):
+                raise RuntimeError(
+                    f"Cannot average server pscores across layers with inconsistent shapes: "
+                    f"{[(key, tuple(cache_feature[key].shape)) for key in server_pscore_keys]}"
+                )
+
+            shared_server_pscore = torch.stack(server_pscore_tensors, dim=0).mean(dim=0)
+            cache_feature[cache_key] = shared_server_pscore.detach()
+            cache_feature[signature_key] = server_pscore_keys
+            return shared_server_pscore
+
+        server_token_scores = cache_feature.get(f"{tag}_server_pscore")
+        if server_token_scores is None:
+            raise KeyError(
+                f"Missing cached {tag}_server_pscore. "
+                "It must be produced during approx."
+            )
+        return server_token_scores
 
     @staticmethod
     def _accumulate_token_pscore_coverage(
@@ -509,27 +572,40 @@ class SelfAttentionBlock(nn.Module):
         token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
         token_keep_thres = self._resolve_token_keep_threshold(kwargs)
         server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
+        server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
         mobile_pscore = str(kwargs.get("mobile_pscore", "none"))
         mobile_pscore_weight = float(kwargs.get("mobile_pscore_weight", 0.0))
         mobile_pscore_hint = kwargs.get("mobile_pscore_hint")
+        pscore_fusion = str(kwargs.get("pscore_fusion", "add")).lower()
+        if pscore_fusion not in {"add", "multiply", "geo_mean"}:
+            pscore_fusion = "add"
+        valid_server_pscores = {
+            "cls_attn_prob",
+            "patch_attn_prob",
+            "patch_attn_prob_layermean",
+            "cls_attn_prob_layermean",
+        }
+        if server_pscore not in valid_server_pscores:
+            raise ValueError(
+                f"Unknown server_pscore '{server_pscore}'. "
+                f"Available values: {sorted(valid_server_pscores)}"
+            )
 
         # create update index
         B, N, C = x.shape
         num_pretokens = N - (rope[0].shape[0])
-        server_token_scores = cache_feature.get(f"{tag}_server_pscore")
-        if server_token_scores is None:
-            raise KeyError(
-                f"Missing cached {tag}_server_pscore. "
-                "It must be produced during approx."
-            )
+        server_token_scores = self._resolve_server_token_scores(
+            cache_feature,
+            tag,
+            server_pscore,
+        )
 
         dindice_pre = dindice[:, :num_pretokens]      # [B, 5] Shared pretokens
         dindice_patches = dindice[:, num_pretokens:]  # [B, M] Shared candidate patches
 
         server_patch_scores = server_token_scores.gather(1, dindice_patches) # [B, M]
 
-        combined_patch_scores = server_pscore_weight * server_patch_scores
-        print(f"Server score: weight={server_pscore_weight:.3f} mean={server_patch_scores.mean().item():.6f} max={server_patch_scores.max().item():.6f}")
+        mobile_patch_scores = None
         if mobile_pscore != "none" and mobile_pscore_weight != 0.0:
             mobile_patch_scores = self._resolve_mobile_patch_scores(
                 mobile_pscore,
@@ -537,11 +613,16 @@ class SelfAttentionBlock(nn.Module):
                 dindice_patches,
                 num_pretokens=num_pretokens,
                 num_tokens=N,
-                default_scores=torch.zeros_like(server_patch_scores),
             )
-            combined_patch_scores = combined_patch_scores + (mobile_pscore_weight * mobile_patch_scores)
-            print(f"Mobile score: weight={mobile_pscore_weight:.3f} mean={mobile_patch_scores.mean().item():.6f} max={mobile_patch_scores.max().item():.6f}")
-            cache_feature[f"{tag}_mobile_pscore_sel"] = mobile_patch_scores.detach()
+            if mobile_patch_scores is not None:
+                cache_feature[f"{tag}_mobile_pscore_sel"] = mobile_patch_scores.detach()
+        combined_patch_scores = self._combine_patch_scores(
+            server_patch_scores,
+            server_pscore_weight,
+            mobile_patch_scores,
+            mobile_pscore_weight,
+            pscore_fusion,
+        )
         cache_feature[f"{tag}_server_pscore_sel"] = server_patch_scores.detach()
         cache_feature[f"{tag}_combined_pscore"] = combined_patch_scores.detach()
 
