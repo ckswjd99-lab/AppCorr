@@ -191,7 +191,7 @@ class SelfAttention(nn.Module):
             q, k = self.apply_rope(q, k, rope)
 
         cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
-        if server_pscore == "patch_attn_prob":
+        if server_pscore in {"patch_attn_prob", "patch_attn_prob_layermean"}:
             attn_prob = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, N, N]
             server_pscore_tensor = attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.bfloat16)  # [B, N]
         else:

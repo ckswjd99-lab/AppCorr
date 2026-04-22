@@ -28,7 +28,8 @@
         "mobile_pscore": "none",
         "mobile_pscore_weight": 0.0,
         "server_pscore": "patch_attn_prob",
-        "server_pscore_weight": 1.0
+        "server_pscore_weight": 1.0,
+        "pscore_fusion": "add"
     },
     "device": "cuda:0"
 }
