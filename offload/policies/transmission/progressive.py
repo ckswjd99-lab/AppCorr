@@ -23,7 +23,12 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         return float(np.square(crop_f32, dtype=np.float32).sum(dtype=np.float32))
 
     def _resolve_mobile_pscore(self, config: ExperimentConfig) -> str:
-        return str(normalize_appcorr_kwargs(getattr(config, "appcorr_kwargs", {})).get("mobile_pscore", "none"))
+        return str(
+            normalize_appcorr_kwargs(
+                getattr(config, "appcorr_kwargs", {}),
+                getattr(config, "transmission_kwargs", {}),
+            ).get("mobile_pscore", "none")
+        )
 
     def _compute_patch_pscore_hint(self, crop: np.ndarray, mobile_pscore: str) -> float:
         if mobile_pscore == "residual_energy":
