@@ -12,8 +12,67 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
     Enforces strict uint8 consistency for lossless residual coding.
     """
 
+    @staticmethod
+    def _as_image_list(images) -> List[np.ndarray]:
+        if isinstance(images, np.ndarray):
+            if images.ndim != 4:
+                raise RuntimeError(f"Expected image batch [B,H,W,C], got {tuple(images.shape)}")
+            return [np.ascontiguousarray(images[b]) for b in range(images.shape[0])]
+        if isinstance(images, (list, tuple)):
+            return [np.ascontiguousarray(image) for image in images]
+        raise RuntimeError(f"Unsupported image batch type: {type(images)!r}")
+
+    @staticmethod
+    def _target_hw_for_level(config: ExperimentConfig, lvl: int) -> tuple[int, int]:
+        H, W = config.image_shape[:2]
+        scale = 2 ** lvl
+        if H % scale != 0 or W % scale != 0:
+            raise RuntimeError(f"Target image shape {(H, W)} is not divisible by pyramid scale {scale}")
+        return H // scale, W // scale
+
+    @staticmethod
+    def _resize_to_hw(image: np.ndarray, target_hw: tuple[int, int], dtype) -> np.ndarray:
+        target_h, target_w = target_hw
+        if image.shape[:2] == (target_h, target_w):
+            return np.ascontiguousarray(image.astype(dtype, copy=False))
+
+        interpolation = cv2.INTER_AREA
+        if target_h > image.shape[0] or target_w > image.shape[1]:
+            interpolation = cv2.INTER_LINEAR
+
+        if dtype == np.int16:
+            resized = cv2.resize(image.astype(np.float32), (target_w, target_h), interpolation=interpolation)
+            resized = np.rint(resized)
+            resized = np.clip(resized, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+            return np.ascontiguousarray(resized)
+
+        resized = cv2.resize(image, (target_w, target_h), interpolation=interpolation)
+        return np.ascontiguousarray(resized.astype(dtype, copy=False))
+
+    def _project_band_to_target(self, image: np.ndarray, lvl: int, config: ExperimentConfig, dtype) -> np.ndarray:
+        return self._resize_to_hw(image, self._target_hw_for_level(config, lvl), dtype)
+
+    @staticmethod
+    def _build_native_gaussians(image: np.ndarray, max_lvl: int) -> dict[int, np.ndarray]:
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        gaussians = {0: np.ascontiguousarray(image)}
+        curr = gaussians[0]
+        for i in range(1, max_lvl + 1):
+            curr = cv2.pyrDown(curr)
+            gaussians[i] = np.ascontiguousarray(curr.astype(np.uint8, copy=False))
+        return gaussians
+
+    @staticmethod
+    def _iterative_upsample_native(img, start_lvl, end_lvl, gaussians):
+        curr = img
+        for next_lvl in range(start_lvl - 1, end_lvl - 1, -1):
+            th, tw = gaussians[next_lvl].shape[:2]
+            curr = cv2.pyrUp(curr, dstsize=(tw, th)).astype(np.uint8)
+        return curr
+
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> List[Patch]:
-        B = images.shape[0]
+        image_list = self._as_image_list(images)
         # Yield patches layer by layer
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
         
@@ -21,8 +80,8 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             layer_patches = []
             with ThreadPoolExecutor() as executor:
                 futures = [
-                    executor.submit(self._process_image_encode_single_layer, b, images[b], tgt_lvl_idx, levels, config)
-                    for b in range(B)
+                    executor.submit(self._process_image_encode_single_layer, b, image, tgt_lvl_idx, levels, config)
+                    for b, image in enumerate(image_list)
                 ]
                 for f in futures:
                     layer_patches.extend(f.result())
@@ -89,27 +148,24 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
     def _process_image_encode_single_layer(self, b_idx, image, tgt_lvl_idx, levels, config):
         max_lvl = max(levels)
-        H, W = image.shape[:2]
         local_patches = []
         
-        gaussians = {0: image}
-        curr = image
-        for i in range(1, max_lvl + 1):
-            curr = cv2.pyrDown(curr)
-            gaussians[i] = curr
+        gaussians = self._build_native_gaussians(image, max_lvl)
             
         tgt_lvl = levels[tgt_lvl_idx]
         curr_g = gaussians[tgt_lvl]
         
         if tgt_lvl_idx == 0:
             # Base Layer
-            self._create_patches_vectorized(local_patches, curr_g, b_idx, tgt_lvl, config, np.uint8)
+            projected = self._project_band_to_target(curr_g, tgt_lvl, config, np.uint8)
+            self._create_patches_vectorized(local_patches, projected, b_idx, tgt_lvl, config, np.uint8)
         else:
             prev_lvl = levels[tgt_lvl_idx - 1]
             prev_g = gaussians[prev_lvl]
-            pred = self._iterative_upsample(prev_g, prev_lvl, tgt_lvl, H, W)
+            pred = self._iterative_upsample_native(prev_g, prev_lvl, tgt_lvl, gaussians)
             residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            self._create_patches_vectorized(local_patches, residual, b_idx, tgt_lvl, config, np.int16)
+            projected = self._project_band_to_target(residual, tgt_lvl, config, np.int16)
+            self._create_patches_vectorized(local_patches, projected, b_idx, tgt_lvl, config, np.int16)
             
         return local_patches
 

@@ -21,13 +21,12 @@
     "appcorr_kwargs": {
         "generated_from_client": true,
         "global_source_mode": "final_correct",
-        "pyramid_levels": [2, 0],
-        "num_groups": 1,
-        "token_keep_ratio": 0.3,
-        "mobile_pscore": "none",
-        "mobile_pscore_weight": 0.0,
-        "server_pscore": "patch_attn_prob",
-        "server_pscore_weight": 1.0
+        "token_keep_thres": 0.002,
+        "mobile_pscore": "residual_energy",
+        "mobile_pscore_weight": 1.0,
+        "server_pscore": "patch_attn_prob_layermean",
+        "server_pscore_weight": 1.0,
+        "pscore_fusion": "geo_mean"
     },
     "device": "cuda:0"
 }

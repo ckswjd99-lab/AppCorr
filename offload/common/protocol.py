@@ -15,11 +15,13 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'num_groups': 1,
         'group_strategy': 'uniform',
         'token_keep_ratio': 0.2,
+        'token_keep_thres': None,
         'attn_col_alive_ratio': 1.0,
         'mobile_pscore': 'none',
         'mobile_pscore_weight': 0.0,
         'server_pscore': 'cls_attn_prob',
         'server_pscore_weight': 1.0,
+        'pscore_fusion': 'add',
         'token_prune_enabled': False,
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
@@ -28,14 +30,43 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
     }
 
 
-def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _inherit_shared_appcorr_kwargs(
+    raw: Dict[str, Any],
+    transmission_kwargs: Dict[str, Any] | None,
+) -> None:
+    if not transmission_kwargs:
+        return
+
+    if 'pyramid_levels' in transmission_kwargs:
+        pyramid_levels = list(transmission_kwargs['pyramid_levels'])
+        if 'pyramid_levels' in raw and list(raw['pyramid_levels']) != pyramid_levels:
+            raise ValueError(
+                "appcorr_kwargs.pyramid_levels must match transmission_kwargs.pyramid_levels"
+            )
+        raw['pyramid_levels'] = pyramid_levels
+
+    if 'num_groups' in transmission_kwargs:
+        num_groups = max(int(transmission_kwargs['num_groups']), 1)
+        if 'num_groups' in raw and max(int(raw['num_groups']), 1) != num_groups:
+            raise ValueError(
+                "appcorr_kwargs.num_groups must match transmission_kwargs.num_groups"
+            )
+        raw['num_groups'] = num_groups
+
+
+def normalize_appcorr_kwargs(
+    appcorr_kwargs: Dict[str, Any] | None = None,
+    transmission_kwargs: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     defaults = default_appcorr_kwargs()
     raw = dict(appcorr_kwargs or {})
     explicit_enabled = raw.pop('enabled', None)
+    enabled_from_appcorr = bool(raw)
+    _inherit_shared_appcorr_kwargs(raw, transmission_kwargs)
 
     options = default_appcorr_kwargs()
     options.update(raw)
-    options['enabled'] = bool(raw) if explicit_enabled is None else bool(explicit_enabled)
+    options['enabled'] = enabled_from_appcorr if explicit_enabled is None else bool(explicit_enabled)
     options['generated_from_client'] = bool(options.get('generated_from_client', defaults['generated_from_client']))
     options['global_source_mode'] = str(options.get('global_source_mode', defaults['global_source_mode']))
     if options['global_source_mode'] not in {'final_correct', 'approx'}:
@@ -50,10 +81,24 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
     if 'token_keep_ratio' not in raw and 'cls_alive_ratio' in raw:
         token_keep_ratio = raw['cls_alive_ratio']
     options['token_keep_ratio'] = float(token_keep_ratio)
+    token_keep_thres = options.get('token_keep_thres', defaults['token_keep_thres'])
+    if token_keep_thres in {'', 'null', 'None'}:
+        token_keep_thres = None
+    options['token_keep_thres'] = None if token_keep_thres is None else float(token_keep_thres)
     options['attn_col_alive_ratio'] = float(options.get('attn_col_alive_ratio', defaults['attn_col_alive_ratio']))
     mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
     if mobile_pscore in {'', 'null', 'None'}:
         mobile_pscore = defaults['mobile_pscore']
+    mobile_pscore_aliases = {
+        'residual_rms': 'residual_rms',
+        'patch_residual_rms': 'residual_rms',
+        'residual_l2': 'residual_energy',
+        'residual_l2_energy': 'residual_energy',
+        'residual_energy': 'residual_energy',
+        'patch_residual_l2': 'residual_energy',
+        'patch_residual_energy': 'residual_energy',
+    }
+    mobile_pscore = mobile_pscore_aliases.get(mobile_pscore, mobile_pscore)
     options['mobile_pscore'] = mobile_pscore
     options['mobile_pscore_weight'] = float(options.get('mobile_pscore_weight', defaults['mobile_pscore_weight']))
 
@@ -65,10 +110,33 @@ def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Di
         server_pscore = 'patch_attn_prob'
     if server_pscore == 'patch_attn_prune':
         server_pscore = 'patch_attn_prob'
-    if server_pscore not in {'cls_attn_prob', 'patch_attn_prob'}:
-        server_pscore = defaults['server_pscore']
+    legacy_server_pscore_layer_fusion = str(raw.get('server_pscore_layer_fusion', '')).lower()
+    if legacy_server_pscore_layer_fusion in {'mean', 'avg', 'all_layer_mean', 'layer_mean', 'mean_all_layers'}:
+        if server_pscore == 'patch_attn_prob':
+            server_pscore = 'patch_attn_prob_layermean'
+        elif server_pscore == 'cls_attn_prob':
+            server_pscore = 'cls_attn_prob_layermean'
+    valid_server_pscores = {
+        'cls_attn_prob',
+        'patch_attn_prob',
+        'patch_attn_prob_layermean',
+        'cls_attn_prob_layermean',
+    }
+    if server_pscore not in valid_server_pscores:
+        raise ValueError(
+            f"Unknown server_pscore '{server_pscore}'. "
+            f"Available values: {sorted(valid_server_pscores)}"
+        )
     options['server_pscore'] = server_pscore
     options['server_pscore_weight'] = float(options.get('server_pscore_weight', defaults['server_pscore_weight']))
+    pscore_fusion = str(options.get('pscore_fusion', defaults['pscore_fusion'])).lower()
+    if pscore_fusion in {'mul', 'product'}:
+        pscore_fusion = 'multiply'
+    elif pscore_fusion in {'geomean', 'geometric_mean'}:
+        pscore_fusion = 'geo_mean'
+    elif pscore_fusion not in {'add', 'multiply', 'geo_mean'}:
+        pscore_fusion = defaults['pscore_fusion']
+    options['pscore_fusion'] = pscore_fusion
     options['token_prune_enabled'] = bool(options.get('token_prune_enabled', defaults['token_prune_enabled']))
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)
@@ -104,7 +172,7 @@ class ExperimentConfig:
     # Dynamic arguments
     scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
-    appcorr_kwargs: Dict[str, Any] = field(default_factory=default_appcorr_kwargs)
+    appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def early_exit_enabled(self) -> bool:
         return bool(self.scheduler_kwargs.get('early_exit', False))
@@ -139,6 +207,7 @@ class Patch:
     group_id: int = 0
     batch_group_total: int = 0
     arrival_time: float = 0.0
+    pscore_hint: float = 0.0
 
 class OpType(Enum):
     # --- Computation Ops ---
@@ -183,3 +252,8 @@ class InferenceResult:
     token_prune_full_patch: float = 0.0
     token_prune_kept_residual_mass: float = 0.0
     token_prune_full_residual_mass: float = 0.0
+    token_pscore_kept_mass: float = 0.0
+    token_pscore_full_mass: float = 0.0
+    partial_token_kept_patch: float = 0.0
+    partial_token_full_patch: float = 0.0
+    partial_token_sample_count: float = 0.0

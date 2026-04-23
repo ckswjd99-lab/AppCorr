@@ -3,10 +3,23 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
+try:
+    import nvtx
+except ModuleNotFoundError:
+    class _NvtxFallback:
+        @staticmethod
+        def annotate(*args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    nvtx = _NvtxFallback()
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 
@@ -15,7 +28,7 @@ from ._triton_kernels import (
     masked_residual_add_triton,
     masked_token_update_triton,
 )
-from .attention import CausalSelfAttention, QueryStateLike, SelfAttention
+from .attention import CausalSelfAttention, PackedQueryState, QueryStateLike, SelfAttention
 from .ffn_layers import Mlp, SwiGLUFFN
 from .layer_scale import LayerScale  # , DropPath
 
@@ -25,7 +38,42 @@ torch._dynamo.config.automatic_dynamic_shapes = False
 torch._dynamo.config.accumulated_cache_size_limit = 1024
 
 
+@dataclass
+class PartialTokenQueryPlan:
+    update_indice: torch.Tensor
+    fixed_query_state: PackedQueryState
+    server_patch_scores: torch.Tensor
+    mobile_patch_scores: torch.Tensor | None
+    combined_patch_scores: torch.Tensor
+    kept_pscore_mass: torch.Tensor
+    full_pscore_mass: torch.Tensor
+    kept_patch_total: torch.Tensor
+    full_patch_total: torch.Tensor
+    sample_total: torch.Tensor
+
+
 class SelfAttentionBlock(nn.Module):
+    _MOBILE_HINT_PSCORE_ALIASES = frozenset({
+        "residual_rms",
+        "patch_residual_rms",
+        "residual_l2",
+        "residual_l2_energy",
+        "residual_energy",
+        "patch_residual_l2",
+        "patch_residual_energy",
+    })
+    _VALID_SERVER_PSCORES = frozenset({
+        "cls_attn_prob",
+        "patch_attn_prob",
+        "patch_attn_prob_layermean",
+        "cls_attn_prob_layermean",
+    })
+    _LAYERMEAN_SERVER_PSCORES = frozenset({
+        "patch_attn_prob_layermean",
+        "cls_attn_prob_layermean",
+    })
+    _PARTIAL_TOKEN_PLAN_CACHE_KEY = "_partial_token_query_plan_cache"
+
     def __init__(
         self,
         dim: int,
@@ -218,43 +266,43 @@ class SelfAttentionBlock(nn.Module):
         else:
             raise AssertionError
     
+    @nvtx.annotate("approx")
     def approx(
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
-        with torch.cuda.nvtx.range("approx"):
-            appcorr_method = kwargs.get("appcorr_method", "partial_token")
-            if appcorr_method == "partial_token":
-                return self.approx_partial_token(x, rope, cache_feature, tag, **kwargs)
-            if appcorr_method == "partial_channel":
-                return self.approx_partial_channel(x, rope, cache_feature, tag, **kwargs)
-            raise ValueError(
-                f"Unknown SelfAttentionBlock.approx method '{appcorr_method}'. "
-                "Available methods: partial_channel, partial_token"
-            )
+        appcorr_method = kwargs.get("appcorr_method", "partial_token")
+        if appcorr_method == "partial_token":
+            return self.approx_partial_token(x, rope, cache_feature, tag, **kwargs)
+        if appcorr_method == "partial_channel":
+            return self.approx_partial_channel(x, rope, cache_feature, tag, **kwargs)
+        raise ValueError(
+            f"Unknown SelfAttentionBlock.approx method '{appcorr_method}'. "
+            "Available methods: partial_channel, partial_token"
+        )
     
+    @nvtx.annotate("correct")
     def correct(
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
     ) -> List[Tensor]:
-        with torch.cuda.nvtx.range("correct"):
-            appcorr_method = kwargs.get("appcorr_method", "partial_token")
-            if appcorr_method == "partial_token":
-                return self.correct_partial_token(x, dindice, rope, cache_feature, tag, **kwargs)
-            if appcorr_method == "partial_channel":
-                return self.correct_partial_channel(
-                    x,
-                    dindice,
-                    rope,
-                    cache_feature,
-                    tag,
-                    fixed_query_state=kwargs["fixed_query_state"],
-                    group_plan=kwargs["group_plan"],
-                    attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
-                    attn_cache_key=kwargs.get("attn_cache_key"),
-                )
-            raise ValueError(
-                f"Unknown SelfAttentionBlock.correct method '{appcorr_method}'. "
-                "Available methods: partial_channel, partial_token"
+        appcorr_method = kwargs.get("appcorr_method", "partial_token")
+        if appcorr_method == "partial_token":
+            return self.correct_partial_token(x, dindice, rope, cache_feature, tag, **kwargs)
+        if appcorr_method == "partial_channel":
+            return self.correct_partial_channel(
+                x,
+                dindice,
+                rope,
+                cache_feature,
+                tag,
+                fixed_query_state=kwargs["fixed_query_state"],
+                group_plan=kwargs["group_plan"],
+                attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
+                attn_cache_key=kwargs.get("attn_cache_key"),
             )
+        raise ValueError(
+            f"Unknown SelfAttentionBlock.correct method '{appcorr_method}'. "
+            "Available methods: partial_channel, partial_token"
+        )
 
     def approx_partial_token(
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
@@ -262,6 +310,7 @@ class SelfAttentionBlock(nn.Module):
         # check debug
         debug = kwargs.get("debug", False)
         server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
+        self._invalidate_partial_token_derived_caches(cache_feature)
 
         with torch.cuda.nvtx.range("approx_attn"):
             x_attn, cache_feature = self.attn.approx(
@@ -291,69 +340,528 @@ class SelfAttentionBlock(nn.Module):
 
         return x_ffn, cache_feature
 
-    def correct_partial_token(
-            self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
-    ) -> List[Tensor]:
-        debug = kwargs.get("debug", False)
-        token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
-        server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
-        mobile_pscore = str(kwargs.get("mobile_pscore", "none"))
-        mobile_pscore_weight = float(kwargs.get("mobile_pscore_weight", 0.0))
+    @staticmethod
+    def _resolve_token_keep_threshold(kwargs: Dict) -> float | None:
+        token_keep_thres = kwargs.get("token_keep_thres")
+        if token_keep_thres in {None, "", "null", "None"}:
+            return None
+        return float(token_keep_thres)
 
-        # create update index
-        B, N, C = x.shape
-        num_pretokens = N - (rope[0].shape[0])
+    @staticmethod
+    @nvtx.annotate("select_patch_keep_mask")
+    def _select_patch_keep_mask(
+        combined_patch_scores: torch.Tensor,
+        token_keep_ratio: float,
+        token_keep_thres: float | None,
+    ) -> torch.Tensor:
+        B, num_patch_candidates = combined_patch_scores.shape
+        keep_patch_mask = torch.zeros(
+            (B, num_patch_candidates),
+            device=combined_patch_scores.device,
+            dtype=torch.bool,
+        )
+        if num_patch_candidates == 0:
+            return keep_patch_mask
+
+        if token_keep_thres is not None:
+            keep_patch_mask = combined_patch_scores >= token_keep_thres
+            return keep_patch_mask
+
+        k_refined = min(int(num_patch_candidates * token_keep_ratio), num_patch_candidates)
+        if k_refined <= 0:
+            return keep_patch_mask
+
+        topk_local_idx = torch.topk(
+            combined_patch_scores,
+            k=k_refined,
+            dim=1,
+            largest=True,
+        ).indices
+        keep_patch_mask.scatter_(1, topk_local_idx, True)
+        return keep_patch_mask
+
+    @staticmethod
+    @nvtx.annotate("build_packed_query_state")
+    def _build_packed_query_state(
+        dindice_pre: torch.Tensor,
+        dindice_patches: torch.Tensor,
+        keep_patch_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, PackedQueryState]:
+        B = dindice_pre.shape[0]
+        num_pretokens = dindice_pre.shape[1]
+        kept_patch_count = keep_patch_mask.sum(dim=1, dtype=torch.int32)
+        max_keep = int(kept_patch_count.max().item()) if kept_patch_count.numel() > 0 else 0
+        max_active = num_pretokens + max_keep
+
+        update_indice = torch.zeros(
+            (B, max_active),
+            device=dindice_pre.device,
+            dtype=dindice_pre.dtype,
+        )
+        if num_pretokens > 0:
+            update_indice[:, :num_pretokens] = dindice_pre
+
+        if max_keep > 0:
+            batch_idx, patch_idx = keep_patch_mask.nonzero(as_tuple=True)
+            counts = torch.bincount(batch_idx, minlength=B)
+            batch_start = counts.cumsum(0) - counts
+            slot_idx = torch.arange(patch_idx.shape[0], device=dindice_pre.device, dtype=torch.long)
+            slot_idx = slot_idx - torch.repeat_interleave(batch_start, counts)
+            update_indice[batch_idx, num_pretokens + slot_idx] = dindice_patches[batch_idx, patch_idx]
+
+        if max_active > 0:
+            active_query_pos_padded = torch.arange(
+                max_active,
+                device=dindice_pre.device,
+                dtype=torch.long,
+            ).unsqueeze(0).expand(B, -1)
+            valid_lengths = kept_patch_count.to(dtype=torch.long) + num_pretokens
+            query_valid_mask = active_query_pos_padded < valid_lengths.unsqueeze(1)
+        else:
+            active_query_pos_padded = torch.empty((B, 0), device=dindice_pre.device, dtype=torch.long)
+            query_valid_mask = torch.empty((B, 0), device=dindice_pre.device, dtype=torch.bool)
+
+        active_batch_idx, active_pos_idx = query_valid_mask.nonzero(as_tuple=True)
+        active_token_idx = update_indice[active_batch_idx, active_pos_idx]
+        active_patch_mask = active_token_idx >= num_pretokens
+        active_rope_idx = (active_token_idx - num_pretokens).clamp_min(0)
+        query_state = PackedQueryState(
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            query_valid_mask=query_valid_mask,
+            active_query_pos_padded=active_query_pos_padded,
+            active_query_mask=query_valid_mask,
+            all_valid=(
+                True
+                if B <= 1 or query_valid_mask.numel() == 0
+                else bool(torch.all(kept_patch_count == max_keep).item())
+            ),
+            active_patch_mask=active_patch_mask,
+            active_rope_idx=active_rope_idx,
+        )
+        return update_indice, query_state
+
+    @staticmethod
+    def _pad_active_tokens(
+        x_active: torch.Tensor,
+        x_template: torch.Tensor,
+        fixed_query_state: QueryStateLike,
+    ) -> torch.Tensor:
+        if fixed_query_state.all_valid:
+            return x_active.to(dtype=x_template.dtype).view(x_template.shape)
+
+        x_padded = torch.zeros_like(x_template)
+        x_padded[fixed_query_state.active_batch_idx, fixed_query_state.active_pos_idx] = x_active.to(
+            dtype=x_template.dtype
+        )
+        return x_padded
+
+    @nvtx.annotate("resolve_mobile_patch_scores")
+    def _resolve_mobile_patch_scores(
+        self,
+        mobile_pscore: str,
+        mobile_pscore_hint: torch.Tensor | None,
+        dindice_patches: torch.Tensor,
+        *,
+        num_pretokens: int,
+        num_tokens: int,
+    ) -> torch.Tensor | None:
+        if mobile_pscore not in self._MOBILE_HINT_PSCORE_ALIASES or mobile_pscore_hint is None:
+            return None
+
+        if mobile_pscore_hint.shape[0] != dindice_patches.shape[0]:
+            raise RuntimeError(
+                f"Mobile pscore hint batch mismatch: hint={tuple(mobile_pscore_hint.shape)} "
+                f"candidates={tuple(dindice_patches.shape)}"
+            )
+
+        if mobile_pscore_hint.shape[1] == (num_tokens - num_pretokens):
+            gather_idx = dindice_patches - num_pretokens
+            return mobile_pscore_hint.gather(1, gather_idx)
+
+        if mobile_pscore_hint.shape[1] == num_tokens:
+            return mobile_pscore_hint.gather(1, dindice_patches)
+
+        raise RuntimeError(
+            f"Unsupported mobile pscore hint shape {tuple(mobile_pscore_hint.shape)} for "
+            f"num_tokens={num_tokens}, num_pretokens={num_pretokens}"
+        )
+
+    @staticmethod
+    @nvtx.annotate("combine_patch_scores")
+    def _combine_patch_scores(
+        server_patch_scores: torch.Tensor,
+        server_pscore_weight: float,
+        mobile_patch_scores: torch.Tensor | None,
+        mobile_pscore_weight: float,
+        pscore_fusion: str,
+    ) -> torch.Tensor:
+        combined_patch_scores = server_pscore_weight * server_patch_scores
+        if mobile_patch_scores is None or mobile_pscore_weight == 0.0:
+            return combined_patch_scores
+
+        mobile_term = mobile_pscore_weight * mobile_patch_scores.to(dtype=combined_patch_scores.dtype)
+        if pscore_fusion == "multiply":
+            return combined_patch_scores * mobile_term
+        if pscore_fusion == "geo_mean":
+            return torch.sqrt(torch.clamp(combined_patch_scores * mobile_term, min=0.0))
+        return combined_patch_scores + mobile_term
+
+    @staticmethod
+    def _tensor_cache_signature(tensor: torch.Tensor | None) -> tuple | None:
+        if tensor is None:
+            return None
+        return (
+            tensor.data_ptr(),
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            tensor.storage_offset(),
+            str(tensor.device),
+            str(tensor.dtype),
+            getattr(tensor, "_version", 0),
+        )
+
+    @classmethod
+    @nvtx.annotate("shared_partial_token_plan_key")
+    def _shared_partial_token_plan_key(
+        cls,
+        *,
+        dindice: torch.Tensor,
+        mobile_pscore_hint: torch.Tensor | None,
+        num_pretokens: int,
+        num_tokens: int,
+        token_keep_ratio: float,
+        token_keep_thres: float | None,
+        server_pscore: str,
+        server_pscore_weight: float,
+        mobile_pscore: str,
+        mobile_pscore_weight: float,
+        pscore_fusion: str,
+    ) -> tuple | None:
+        if server_pscore_weight != 0.0 and server_pscore not in cls._LAYERMEAN_SERVER_PSCORES:
+            return None
+
+        return (
+            "partial_token",
+            cls._tensor_cache_signature(dindice),
+            cls._tensor_cache_signature(mobile_pscore_hint),
+            num_pretokens,
+            num_tokens,
+            float(token_keep_ratio),
+            token_keep_thres,
+            server_pscore,
+            float(server_pscore_weight),
+            mobile_pscore,
+            float(mobile_pscore_weight),
+            pscore_fusion,
+        )
+
+    @classmethod
+    @nvtx.annotate("get_partial_token_plan_cache")
+    def _get_partial_token_plan_cache(cls, cache_feature: Dict) -> Dict:
+        plan_cache = cache_feature.setdefault(cls._PARTIAL_TOKEN_PLAN_CACHE_KEY, {})
+        if not isinstance(plan_cache, dict):
+            raise RuntimeError(f"{cls._PARTIAL_TOKEN_PLAN_CACHE_KEY} must be a dict")
+        return plan_cache
+
+    @classmethod
+    def _invalidate_partial_token_derived_caches(cls, cache_feature: Dict) -> None:
+        cache_feature.pop(cls._PARTIAL_TOKEN_PLAN_CACHE_KEY, None)
+        cache_feature.pop("_shared_server_pscore_mean_all_layers", None)
+        cache_feature.pop("_shared_server_pscore_mean_all_layers_keys", None)
+        for server_pscore in cls._LAYERMEAN_SERVER_PSCORES:
+            cache_key = f"_shared_{server_pscore}_server_pscore_mean_all_layers"
+            cache_feature.pop(cache_key, None)
+            cache_feature.pop(f"{cache_key}_keys", None)
+
+    @staticmethod
+    def _compute_partial_token_plan_stats(
+        combined_patch_scores: torch.Tensor,
+        keep_patch_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        kept_pscore_mass = (
+            combined_patch_scores * keep_patch_mask.to(dtype=combined_patch_scores.dtype)
+        ).sum(dtype=torch.float32)
+        full_pscore_mass = combined_patch_scores.sum(dtype=torch.float32)
+        kept_patch_total = keep_patch_mask.sum(dtype=torch.float32)
+        full_patch_total = keep_patch_mask.new_full(
+            (),
+            float(keep_patch_mask.shape[0] * keep_patch_mask.shape[1]),
+            dtype=torch.float32,
+        )
+        sample_total = keep_patch_mask.new_full(
+            (),
+            float(keep_patch_mask.shape[0]),
+            dtype=torch.float32,
+        )
+        return (
+            kept_pscore_mass,
+            full_pscore_mass,
+            kept_patch_total,
+            full_patch_total,
+            sample_total,
+        )
+
+    @staticmethod
+    @nvtx.annotate("accumulate_partial_token_plan_stats")
+    def _accumulate_partial_token_plan_stats(
+        cache_feature: Dict,
+        plan: PartialTokenQueryPlan,
+    ) -> None:
+        cache_feature["_token_pscore_kept_mass_total"] = (
+            cache_feature.get(
+                "_token_pscore_kept_mass_total",
+                plan.kept_pscore_mass.new_zeros((), dtype=torch.float32),
+            )
+            + plan.kept_pscore_mass
+        )
+        cache_feature["_token_pscore_full_mass_total"] = (
+            cache_feature.get(
+                "_token_pscore_full_mass_total",
+                plan.full_pscore_mass.new_zeros((), dtype=torch.float32),
+            )
+            + plan.full_pscore_mass
+        )
+        cache_feature["_partial_token_kept_patch_total"] = (
+            cache_feature.get(
+                "_partial_token_kept_patch_total",
+                plan.kept_patch_total.new_zeros((), dtype=torch.float32),
+            )
+            + plan.kept_patch_total
+        )
+        cache_feature["_partial_token_full_patch_total"] = (
+            cache_feature.get(
+                "_partial_token_full_patch_total",
+                plan.full_patch_total.new_zeros((), dtype=torch.float32),
+            )
+            + plan.full_patch_total
+        )
+        cache_feature["_partial_token_sample_total"] = (
+            cache_feature.get(
+                "_partial_token_sample_total",
+                plan.sample_total.new_zeros((), dtype=torch.float32),
+            )
+            + plan.sample_total
+        )
+
+    @staticmethod
+    @nvtx.annotate("record_partial_token_plan_debug")
+    def _record_partial_token_plan_debug(
+        cache_feature: Dict,
+        tag: str,
+        plan: PartialTokenQueryPlan,
+        *,
+        record_update_indice: bool,
+    ) -> None:
+        if plan.mobile_patch_scores is not None:
+            cache_feature[f"{tag}_mobile_pscore_sel"] = plan.mobile_patch_scores.detach()
+        cache_feature[f"{tag}_server_pscore_sel"] = plan.server_patch_scores.detach()
+        cache_feature[f"{tag}_combined_pscore"] = plan.combined_patch_scores.detach()
+        if record_update_indice:
+            cache_feature[f"{tag}_update_indice"] = plan.update_indice.detach()
+
+    @staticmethod
+    @nvtx.annotate("resolve_server_token_scores")
+    def _resolve_server_token_scores(
+        cache_feature: Dict,
+        tag: str,
+        server_pscore: str,
+    ) -> torch.Tensor:
+        if server_pscore in {"patch_attn_prob_layermean", "cls_attn_prob_layermean"}:
+            cache_key = f"_shared_{server_pscore}_server_pscore_mean_all_layers"
+            signature_key = f"{cache_key}_keys"
+            cached_server_pscore = cache_feature.get(cache_key)
+            if cached_server_pscore is not None:
+                return cached_server_pscore
+
+            server_pscore_keys = tuple(
+                sorted(
+                    key
+                    for key, value in cache_feature.items()
+                    if key.endswith("_server_pscore") and isinstance(value, torch.Tensor)
+                )
+            )
+            if not server_pscore_keys:
+                raise KeyError("Missing cached *_server_pscore entries. They must be produced during approx.")
+
+            server_pscore_tensors = [cache_feature[key] for key in server_pscore_keys]
+            base_shape = server_pscore_tensors[0].shape
+            if any(tensor.shape != base_shape for tensor in server_pscore_tensors[1:]):
+                raise RuntimeError(
+                    f"Cannot average server pscores across layers with inconsistent shapes: "
+                    f"{[(key, tuple(cache_feature[key].shape)) for key in server_pscore_keys]}"
+                )
+
+            shared_server_pscore = torch.stack(server_pscore_tensors, dim=0).mean(dim=0)
+            cache_feature[cache_key] = shared_server_pscore.detach()
+            cache_feature[signature_key] = server_pscore_keys
+            return shared_server_pscore
+
         server_token_scores = cache_feature.get(f"{tag}_server_pscore")
         if server_token_scores is None:
             raise KeyError(
                 f"Missing cached {tag}_server_pscore. "
                 "It must be produced during approx."
             )
+        return server_token_scores
 
+    @nvtx.annotate("correct_partial_token")
+    def correct_partial_token(
+            self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
+        debug = kwargs.get("debug", False)
+        token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
+        token_keep_thres = self._resolve_token_keep_threshold(kwargs)
+        server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
+        server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
+        mobile_pscore = str(kwargs.get("mobile_pscore", "none"))
+        mobile_pscore_weight = float(kwargs.get("mobile_pscore_weight", 0.0))
+        mobile_pscore_hint = kwargs.get("mobile_pscore_hint")
+        pscore_fusion = str(kwargs.get("pscore_fusion", "add")).lower()
+        if pscore_fusion not in {"add", "multiply", "geo_mean"}:
+            pscore_fusion = "add"
+        if server_pscore not in self._VALID_SERVER_PSCORES:
+            raise ValueError(
+                f"Unknown server_pscore '{server_pscore}'. "
+                f"Available values: {sorted(self._VALID_SERVER_PSCORES)}"
+            )
+
+        # create update index
+        B, N, C = x.shape
+        num_pretokens = N - (rope[0].shape[0])
         dindice_pre = dindice[:, :num_pretokens]      # [B, 5] Shared pretokens
         dindice_patches = dindice[:, num_pretokens:]  # [B, M] Shared candidate patches
 
-        server_patch_scores = server_token_scores.gather(1, dindice_patches) # [B, M]
+        plan_cache_key = self._shared_partial_token_plan_key(
+            dindice=dindice,
+            mobile_pscore_hint=mobile_pscore_hint if mobile_pscore_weight != 0.0 else None,
+            num_pretokens=num_pretokens,
+            num_tokens=N,
+            token_keep_ratio=token_keep_ratio,
+            token_keep_thres=token_keep_thres,
+            server_pscore=server_pscore,
+            server_pscore_weight=server_pscore_weight,
+            mobile_pscore=mobile_pscore,
+            mobile_pscore_weight=mobile_pscore_weight,
+            pscore_fusion=pscore_fusion,
+        )
+        query_plan = None
+        if plan_cache_key is not None:
+            query_plan = self._get_partial_token_plan_cache(cache_feature).get(plan_cache_key)
+            if query_plan is not None and not isinstance(query_plan, PartialTokenQueryPlan):
+                raise RuntimeError("Corrupt partial-token query-plan cache entry")
 
-        combined_patch_scores = server_pscore_weight * server_patch_scores
-        if mobile_pscore != "none" and mobile_pscore_weight != 0.0:
-            mobile_patch_scores = torch.zeros_like(server_patch_scores)
-            combined_patch_scores = combined_patch_scores + (mobile_pscore_weight * mobile_patch_scores)
-        cache_feature[f"{tag}_server_pscore_sel"] = server_patch_scores.detach()
-        cache_feature[f"{tag}_combined_pscore"] = combined_patch_scores.detach()
-        
-        num_patch_candidates = dindice_patches.shape[1]
-        k_refined = min(int(num_patch_candidates * token_keep_ratio), num_patch_candidates)
-        if k_refined <= 0:
-            selected_patch_indices = dindice_patches[:, :0]
-        else:
-            _, topk_local_idx = torch.topk(combined_patch_scores, k=k_refined, dim=1, largest=True) # [B, k_refined]
-            selected_patch_indices = dindice_patches.gather(1, topk_local_idx)  # [B, k_refined]
+        if query_plan is None:
+            mobile_patch_scores = None
+            if mobile_pscore != "none" and mobile_pscore_weight != 0.0:
+                mobile_patch_scores = self._resolve_mobile_patch_scores(
+                    mobile_pscore,
+                    mobile_pscore_hint,
+                    dindice_patches,
+                    num_pretokens=num_pretokens,
+                    num_tokens=N,
+                )
 
-        update_indice = torch.cat([dindice_pre, selected_patch_indices], dim=1)
-        cache_feature[f"{tag}_update_indice"] = update_indice.detach().clone()
+            if server_pscore_weight == 0.0:
+                server_patch_scores = x.new_zeros((B, dindice_patches.shape[1]), dtype=torch.float32)
+            else:
+                server_token_scores = self._resolve_server_token_scores(
+                    cache_feature,
+                    tag,
+                    server_pscore,
+                )
+                server_patch_scores = server_token_scores.gather(1, dindice_patches) # [B, M]
+
+            combined_patch_scores = self._combine_patch_scores(
+                server_patch_scores,
+                server_pscore_weight,
+                mobile_patch_scores,
+                mobile_pscore_weight,
+                pscore_fusion,
+            )
+            keep_patch_mask = self._select_patch_keep_mask(
+                combined_patch_scores,
+                token_keep_ratio,
+                token_keep_thres,
+            )
+            (
+                kept_pscore_mass,
+                full_pscore_mass,
+                kept_patch_total,
+                full_patch_total,
+                sample_total,
+            ) = self._compute_partial_token_plan_stats(combined_patch_scores, keep_patch_mask)
+            update_indice, fixed_query_state = self._build_packed_query_state(
+                dindice_pre,
+                dindice_patches,
+                keep_patch_mask,
+            )
+            query_plan = PartialTokenQueryPlan(
+                update_indice=update_indice,
+                fixed_query_state=fixed_query_state,
+                server_patch_scores=server_patch_scores.detach(),
+                mobile_patch_scores=mobile_patch_scores.detach() if mobile_patch_scores is not None else None,
+                combined_patch_scores=combined_patch_scores.detach(),
+                kept_pscore_mass=kept_pscore_mass.detach(),
+                full_pscore_mass=full_pscore_mass.detach(),
+                kept_patch_total=kept_patch_total.detach(),
+                full_patch_total=full_patch_total.detach(),
+                sample_total=sample_total.detach(),
+            )
+            if plan_cache_key is not None:
+                self._get_partial_token_plan_cache(cache_feature)[plan_cache_key] = query_plan
+
+        self._accumulate_partial_token_plan_stats(cache_feature, query_plan)
+        self._record_partial_token_plan_debug(
+            cache_feature,
+            tag,
+            query_plan,
+            record_update_indice=debug,
+        )
+        update_indice = query_plan.update_indice
+        fixed_query_state = query_plan.fixed_query_state
         
         with torch.cuda.nvtx.range("correct_attn"):
             gather_idx_x = update_indice.unsqueeze(-1).expand(-1, -1, C)  # [B, num_update, C]
             x_sel = x.gather(1, gather_idx_x).contiguous()  # [B, num_update, C]
-            x_norm_sel = self.norm1(x_sel)
+            x_norm_sel = self.norm1(self._select_active_tokens(x_sel, fixed_query_state))
 
             x_attn_sel, cache_feature = self.attn.correct(
-                x_norm_sel, dindice=dindice, rope=rope, cache_feature=cache_feature, tag=tag, appcorr_method="partial_token"
+                x_norm_sel,
+                dindice=dindice,
+                rope=rope,
+                cache_feature=cache_feature,
+                tag=tag,
+                appcorr_method="partial_token",
+                fixed_query_state=fixed_query_state,
             )
-            x_sel = x_sel + self.ls1(x_attn_sel)
+            x_sel = x_sel + self._pad_active_tokens(
+                self.ls1(x_attn_sel),
+                x_sel,
+                fixed_query_state,
+            )
             
             if debug:
                 torch.cuda.synchronize()
 
         with torch.cuda.nvtx.range("correct_ffn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
+            x_attn_active = self._select_active_tokens(x_sel, fixed_query_state)
+            mlp_out_new = self.ls2(self.mlp(self.norm2(x_attn_active)))
+            x_ls2 = self._pad_active_tokens(
+                mlp_out_new,
+                x_sel,
+                fixed_query_state,
+            )
 
-            mlp_out_new = self.ls2(self.mlp(self.norm2(x_sel)))
-
-            x_sel = x_sel + mlp_out_new
-            x = x + blocks_out_sum.to(x.dtype)
-            x.scatter_(1, gather_idx_x, x_sel)
+            x = masked_token_update_triton(
+                x + blocks_out_sum.to(x.dtype),
+                update_indice,
+                x_sel,
+                x_ls2,
+                fixed_query_state.query_valid_mask,
+            )
 
             if debug:
                 torch.cuda.synchronize()

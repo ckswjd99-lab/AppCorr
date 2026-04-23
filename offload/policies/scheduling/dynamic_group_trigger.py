@@ -24,7 +24,7 @@ class DynamicGroupTriggerPolicy(ISchedulingPolicy):
     def _needs_final_global_approx(config: ExperimentConfig) -> bool:
         if getattr(config, 'model_name', None) != 'dinov3_detector':
             return False
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         return (
             bool(appcorr_options.get('generated_from_client', False))
             and appcorr_options.get('global_source_mode', 'final_correct') == 'final_correct'

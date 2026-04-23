@@ -3,6 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+from dataclasses import dataclass
 import math
 from typing import Dict, List, Protocol, Tuple
 
@@ -10,8 +11,8 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-from ._triton_kernels import apply_rope_partial_triton
 from ..utils import cat_keep_shapes, uncat_with_shapes
+from ._triton_kernels import apply_rope_active_inplace_triton
 
 
 # RoPE-related functions:
@@ -44,10 +45,27 @@ class LinearKMaskedBias(nn.Linear):
 
 class QueryStateLike(Protocol):
     active_batch_idx: Tensor
+    active_pos_idx: Tensor
     active_token_idx: Tensor
+    query_valid_mask: Tensor
     active_query_pos_padded: Tensor
     active_query_mask: Tensor
     all_valid: bool
+    active_patch_mask: Tensor | None
+    active_rope_idx: Tensor | None
+
+
+@dataclass
+class PackedQueryState:
+    active_batch_idx: Tensor
+    active_pos_idx: Tensor
+    active_token_idx: Tensor
+    query_valid_mask: Tensor
+    active_query_pos_padded: Tensor
+    active_query_mask: Tensor
+    all_valid: bool
+    active_patch_mask: Tensor | None = None
+    active_rope_idx: Tensor | None = None
 
 
 class SelfAttention(nn.Module):
@@ -178,7 +196,7 @@ class SelfAttention(nn.Module):
             q, k = self.apply_rope(q, k, rope)
 
         cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
-        if server_pscore == "patch_attn_prob":
+        if server_pscore in {"patch_attn_prob", "patch_attn_prob_layermean"}:
             attn_prob = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, N, N]
             server_pscore_tensor = attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.bfloat16)  # [B, N]
         else:
@@ -225,13 +243,60 @@ class SelfAttention(nn.Module):
     ) -> Tuple[Tensor, dict]:
         appcorr_method = kwargs.get("appcorr_method", "partial_token")
         if appcorr_method == "partial_token":
-            return self.correct_partial_token(x_sel, dindice, rope, cache_feature, tag)
+            return self.correct_partial_token(x_sel, dindice, rope, cache_feature, tag, **kwargs)
         if appcorr_method == "partial_channel":
             return self.correct_partial_channel(x_sel, dindice, rope, cache_feature, tag, **kwargs)
         raise ValueError(
             f"Unknown SelfAttention.correct method '{appcorr_method}'. "
             "Available methods: partial_channel, partial_token"
         )
+
+    @staticmethod
+    def _apply_rope_to_active_tokens(
+        q_active: Tensor,
+        k_active: Tensor,
+        rope: tuple[Tensor, Tensor] | None,
+        token_idx: Tensor,
+        prefix_len: int,
+        patch_mask: Tensor | None = None,
+        rope_idx: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        if rope is None or token_idx.numel() == 0:
+            return q_active, k_active
+
+        sin, cos = rope
+        if sin.shape[0] == 0:
+            return q_active, k_active
+
+        if q_active.is_cuda:
+            if patch_mask is None or rope_idx is None:
+                raise RuntimeError("CUDA active-token RoPE requires precomputed patch_mask and rope_idx")
+            apply_rope_active_inplace_triton(q_active, k_active, rope, patch_mask, rope_idx)
+            return q_active, k_active
+
+        if patch_mask is None:
+            patch_mask = token_idx >= prefix_len
+        if rope_idx is None:
+            rope_idx = (token_idx - prefix_len).clamp_min(0)
+
+        q_dtype = q_active.dtype
+        k_dtype = k_active.dtype
+        sin_sel = sin.index_select(0, rope_idx).unsqueeze(1)
+        cos_sel = cos.index_select(0, rope_idx).unsqueeze(1)
+        patch_mask = patch_mask.view(-1, 1, 1)
+        q_rot = rope_apply(
+            q_active.to(dtype=sin_sel.dtype),
+            sin_sel,
+            cos_sel,
+        ).to(dtype=q_dtype)
+        k_rot = rope_apply(
+            k_active.to(dtype=sin_sel.dtype),
+            sin_sel,
+            cos_sel,
+        ).to(dtype=k_dtype)
+        q_active.copy_(torch.where(patch_mask, q_rot, q_active))
+        k_active.copy_(torch.where(patch_mask, k_rot, k_active))
+        return q_active, k_active
 
     def approx_partial_token(
         self,
@@ -257,49 +322,83 @@ class SelfAttention(nn.Module):
         return x, cache_feature
 
     def correct_partial_token(
-        self, x_sel: Tensor, dindice: Tensor, rope: Tensor, cache_feature: Dict, tag: str
+        self,
+        x_sel: Tensor,
+        dindice: Tensor,
+        rope: Tensor,
+        cache_feature: Dict,
+        tag: str,
+        *,
+        fixed_query_state: QueryStateLike,
+        **_: Dict,
     ) -> Tuple[Tensor, dict]:
-        # Load from cache
-        update_indice = cache_feature[f"{tag}_update_indice"]  # [B, num_update]
-        kv: Tensor = cache_feature[f"{tag}_kv"]     # [B, N, 2*D]
-        
-        # Shapes
-        B, _, C = x_sel.shape
+        kv: Tensor = cache_feature[f"{tag}_kv"]  # [B, N, 2, H, Dh]
+        if x_sel.numel() == 0:
+            return x_sel.new_zeros((0, self.qkv.in_features)), cache_feature
+
+        B = kv.shape[0]
         N = kv.shape[1]
+        head_dim = self.qkv.in_features // self.num_heads
+        num_active = x_sel.shape[0]
+        t_max = fixed_query_state.active_query_pos_padded.shape[1]
 
-        gather_idx_x = update_indice.unsqueeze(-1).expand(-1, -1, C)  # [B, num_update, C]
-        num_update = gather_idx_x.shape[1]
-        gather_idx_qkv = update_indice.view(B, num_update, 1, 1, 1).expand(-1, -1, 3, self.num_heads, C // self.num_heads)  # [B, num_update, 3, H, D//H]
+        qkv_new = self.qkv(x_sel).reshape(num_active, 3, self.num_heads, head_dim)
+        q_new = qkv_new[:, 0]
+        kv_new = qkv_new[:, 1:]
 
-        # Partial update
-        qkv_new = self.qkv(x_sel)  # [B, num_update, 3*D]
-        qkv_new = qkv_new.reshape(B, num_update, 3, self.num_heads, C // self.num_heads)
-        q_new = qkv_new[:, :, 0]
-        kv_new = qkv_new[:, :, 1:]
-
-        q = torch.zeros(B, N, self.num_heads, C // self.num_heads, device=x_sel.device, dtype=q_new.dtype)
-
-        q = q.scatter_(1, gather_idx_qkv[:, :, 0], q_new)  # [B, N, H, D//H]
-        kv = kv.scatter_(1, gather_idx_qkv[:, :, 1:], kv_new)  # [B, N, 2, H, D//H]
-
-        k, v = torch.unbind(kv, 2)
-        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
-
-        # RoPE
         if rope is not None:
-            apply_rope_partial_triton(q, k, rope, update_indice)
+            prefix_len = N - rope[0].shape[0]
+            q_new, _ = self._apply_rope_to_active_tokens(
+                q_new,
+                kv_new[:, 0],
+                rope,
+                fixed_query_state.active_token_idx,
+                prefix_len,
+                patch_mask=getattr(fixed_query_state, "active_patch_mask", None),
+                rope_idx=getattr(fixed_query_state, "active_rope_idx", None),
+            )
 
-        q_sel = q.gather(2, update_indice.view(B, 1, num_update, 1).expand(-1, self.num_heads, -1, C // self.num_heads))
-        q_sel = q_sel.contiguous()
+        kv[
+            fixed_query_state.active_batch_idx,
+            fixed_query_state.active_token_idx,
+        ] = kv_new.to(dtype=kv.dtype)
 
-        # Attention
-        attn_out_new = torch.nn.functional.scaled_dot_product_attention(q_sel, k, v)
-        attn_out_new = attn_out_new.transpose(1, 2).reshape(B, num_update, C)
+        q_padded_shape = (B, t_max, self.num_heads, head_dim)
+        if torch.is_grad_enabled():
+            q_padded = torch.zeros(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
+        else:
+            q_padded = getattr(self, "_partial_token_q_padded", None)
+            if (
+                q_padded is None
+                or tuple(q_padded.shape) != q_padded_shape
+                or q_padded.device != x_sel.device
+                or q_padded.dtype != q_new.dtype
+            ):
+                q_padded = torch.empty(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
+                self._partial_token_q_padded = q_padded
+            q_padded.zero_()
+        q_padded[
+            fixed_query_state.active_batch_idx,
+            fixed_query_state.active_pos_idx,
+        ] = q_new
 
-        # Projection
-        x_sel = self.proj(attn_out_new)
+        q = q_padded.transpose(1, 2).contiguous()
+        k, v = torch.unbind(kv, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        attn_out_padded = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        attn_out_padded = attn_out_padded.transpose(1, 2).contiguous()
+        if fixed_query_state.all_valid:
+            attn_out_active = attn_out_padded.reshape(num_active, self.qkv.in_features)
+        else:
+            attn_out_active = attn_out_padded[
+                fixed_query_state.active_batch_idx,
+                fixed_query_state.active_pos_idx,
+            ].reshape(num_active, self.qkv.in_features)
+
+        x_sel = self.proj(attn_out_active)
         x_sel = self.proj_drop(x_sel)
-
         return x_sel, cache_feature
 
     def approx_partial_channel(
