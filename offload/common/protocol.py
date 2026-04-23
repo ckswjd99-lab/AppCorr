@@ -30,14 +30,43 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
     }
 
 
-def normalize_appcorr_kwargs(appcorr_kwargs: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _inherit_shared_appcorr_kwargs(
+    raw: Dict[str, Any],
+    transmission_kwargs: Dict[str, Any] | None,
+) -> None:
+    if not transmission_kwargs:
+        return
+
+    if 'pyramid_levels' in transmission_kwargs:
+        pyramid_levels = list(transmission_kwargs['pyramid_levels'])
+        if 'pyramid_levels' in raw and list(raw['pyramid_levels']) != pyramid_levels:
+            raise ValueError(
+                "appcorr_kwargs.pyramid_levels must match transmission_kwargs.pyramid_levels"
+            )
+        raw['pyramid_levels'] = pyramid_levels
+
+    if 'num_groups' in transmission_kwargs:
+        num_groups = max(int(transmission_kwargs['num_groups']), 1)
+        if 'num_groups' in raw and max(int(raw['num_groups']), 1) != num_groups:
+            raise ValueError(
+                "appcorr_kwargs.num_groups must match transmission_kwargs.num_groups"
+            )
+        raw['num_groups'] = num_groups
+
+
+def normalize_appcorr_kwargs(
+    appcorr_kwargs: Dict[str, Any] | None = None,
+    transmission_kwargs: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     defaults = default_appcorr_kwargs()
     raw = dict(appcorr_kwargs or {})
     explicit_enabled = raw.pop('enabled', None)
+    enabled_from_appcorr = bool(raw)
+    _inherit_shared_appcorr_kwargs(raw, transmission_kwargs)
 
     options = default_appcorr_kwargs()
     options.update(raw)
-    options['enabled'] = bool(raw) if explicit_enabled is None else bool(explicit_enabled)
+    options['enabled'] = enabled_from_appcorr if explicit_enabled is None else bool(explicit_enabled)
     options['generated_from_client'] = bool(options.get('generated_from_client', defaults['generated_from_client']))
     options['global_source_mode'] = str(options.get('global_source_mode', defaults['global_source_mode']))
     if options['global_source_mode'] not in {'final_correct', 'approx'}:

@@ -354,7 +354,10 @@ class SourceModule(multiprocessing.Process):
             total_partial_token_full_patch / total_partial_token_sample_count
             if total_partial_token_sample_count > 0 else 0.0
         )
-        appcorr_options = normalize_appcorr_kwargs(self.config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(
+            self.config.appcorr_kwargs,
+            self.config.transmission_kwargs,
+        )
         appcorr_method = appcorr_options.get('method', 'partial_token')
         print("=== Cache Usage ===")
         print(f"Avg cache size per offload: {avg_cache_size_bytes / (1024 ** 2):.2f} MB")

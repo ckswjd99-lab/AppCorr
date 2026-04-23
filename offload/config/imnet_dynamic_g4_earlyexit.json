@@ -21,8 +21,6 @@
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
-        "pyramid_levels": [2, 0],
-        "num_groups": 4,
         "token_keep_ratio": 0.4,
         "mobile_pscore": "none",
         "mobile_pscore_weight": 0.0,
