@@ -98,5 +98,5 @@ Interpretation:
 
 ## Log Tools
 
-- `analysis/log_tools/log_visualizer.py`: renders request timelines from `events.jsonl`
+- `analysis/log_tools/log_visualizer.py`: renders request timelines from `events.jsonl` (`--style paper` for single-column paper figures)
 - `analysis/log_tools/simulate_exit.py`: simulates offline early-exit thresholds from logged head outputs
