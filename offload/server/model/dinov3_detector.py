@@ -387,6 +387,18 @@ class DINOv3DetectorExecutor(ModelExecutor):
             and appcorr_options.get('global_source_mode', 'final_correct') == 'approx'
         )
 
+    @classmethod
+    def _is_global_first_source(
+        cls,
+        appcorr_options: Dict[str, Any],
+        source_layout: Dict[str, Any] | None,
+    ) -> bool:
+        return (
+            bool(appcorr_options.get('generated_from_client', False))
+            and cls._is_global_source(source_layout)
+            and appcorr_options.get('global_source_mode', 'global_first') == 'global_first'
+        )
+
     def _run_exact_source_backbone(
         self,
         input_tokens: torch.Tensor,
@@ -431,6 +443,9 @@ class DINOv3DetectorExecutor(ModelExecutor):
             return None
         if len(source_layouts) != len(all_input_tokens):
             return None
+
+        if getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian':
+            return self._build_coco_window_group_maps(context, config)
 
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
         if grouping_strategy != 'grid':
@@ -497,14 +512,46 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         return all_group_maps
 
+    def _build_coco_window_group_maps(
+        self,
+        context: Dict[str, Any],
+        config: Any,
+    ) -> List[torch.Tensor] | None:
+        source_layouts = context.get('all_source_layouts')
+        all_input_tokens = context.get('all_x_backbones')
+        if not isinstance(source_layouts, list) or all_input_tokens is None:
+            return None
+        if len(source_layouts) != len(all_input_tokens):
+            return None
+
+        num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
+        n_windows_w = int(config.transmission_kwargs.get('num_window_cols', 3))
+        all_group_maps: List[torch.Tensor] = []
+        for layout, input_tokens in zip(source_layouts, all_input_tokens):
+            if not isinstance(layout, dict):
+                return None
+            num_tokens = input_tokens.shape[1] - num_pretokens
+            if layout.get('kind') == 'window':
+                window_row = int(layout.get('window_row', 0))
+                window_col = int(layout.get('window_col', 0))
+                group_id = 1 + window_row * n_windows_w + window_col
+            elif layout.get('kind') == 'global':
+                group_id = -1
+            else:
+                return None
+
+            group_map = torch.full(
+                (input_tokens.shape[0], num_tokens),
+                group_id,
+                device=input_tokens.device,
+                dtype=torch.long,
+            )
+            all_group_maps.append(group_map)
+        return all_group_maps
+
     def _build_all_group_maps(self, context: Dict[str, Any], config: Any) -> List[torch.Tensor] | None:
         all_input_tokens = context.get('all_x_backbones')
         if all_input_tokens is None:
-            return None
-
-        grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
-        num_groups = config.transmission_kwargs.get('num_groups', 4)
-        if grouping_strategy not in {'grid', 'uniform', 'geometric'}:
             return None
 
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
@@ -512,6 +559,11 @@ class DINOv3DetectorExecutor(ModelExecutor):
             projected_group_maps = self._project_transmission_groups_to_sources(context, config)
             if projected_group_maps is not None:
                 return projected_group_maps
+
+        grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
+        num_groups = config.transmission_kwargs.get('num_groups', 4)
+        if grouping_strategy not in {'grid', 'uniform', 'geometric'}:
+            return None
 
         all_group_maps = []
         num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
@@ -629,6 +681,22 @@ class DINOv3DetectorExecutor(ModelExecutor):
             if idx is not None and len(idx) < config.batch_size:
                 tensor = tensor[idx]
             context['input_tensor'] = tensor
+            context.pop('input_global_base_tensor', None)
+            if (
+                getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian'
+                and context.get('input_lr_native_np') is not None
+            ):
+                base_tensor = (
+                    torch.from_numpy(context['input_lr_native_np'])
+                    .to(device=self.device, non_blocking=True)
+                    .permute(0, 3, 1, 2)
+                    .float()
+                    / 255.0
+                )
+                base_tensor = (base_tensor - self.norm_mean) / self.norm_std
+                if idx is not None and len(idx) < config.batch_size:
+                    base_tensor = base_tensor[idx]
+                context['input_global_base_tensor'] = base_tensor
             context['transmission_pscore_hint_map'] = self._build_transmission_pscore_hint_map(
                 task,
                 context,
@@ -787,6 +855,8 @@ class DINOv3DetectorExecutor(ModelExecutor):
                 all_x_backbones.append(xb); all_rope_sincos.append(rs)
                 all_source_layouts.append({
                     'kind': 'window',
+                    'window_row': ih,
+                    'window_col': iw,
                     'top': all_h_cum[ih],
                     'left': all_w_cum[iw],
                     'height': all_h[ih],
@@ -807,7 +877,19 @@ class DINOv3DetectorExecutor(ModelExecutor):
             context['window_patch_masks'].append(row_m)
             context['window_patch_tokens'].append(row_x)
 
-        context['global_x'] = NestedTensor(v2.functional.resize(tensors, size=(win_h, win_w)), mask).tensors
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        global_base_tensor = context.get('input_global_base_tensor')
+        use_global_base = (
+            getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian'
+            and global_base_tensor is not None
+            and appcorr_options.get('generated_from_client', False)
+            and appcorr_options.get('global_source_mode', 'global_first') == 'global_first'
+        )
+        context['global_x'] = (
+            global_base_tensor
+            if use_global_base and tuple(global_base_tensor.shape[-2:]) == (win_h, win_w)
+            else v2.functional.resize(tensors, size=(win_h, win_w))
+        )
         g_xb, g_rs = _prep(context['global_x'])
         all_x_backbones.append(g_xb); all_rope_sincos.append(g_rs)
         all_source_layouts.append({
@@ -877,8 +959,22 @@ class DINOv3DetectorExecutor(ModelExecutor):
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
         if start_l == 0 and not global_only:
-            all_current_features = [x for x in all_input_tokens]
-            all_outputs = [[] for _ in range(len(all_input_tokens))]
+            reset_current_features = []
+            reset_outputs = []
+            for x_feature, input_tokens, prev_outputs, source_layout in zip(
+                all_current_features,
+                all_input_tokens,
+                all_outputs,
+                all_source_layouts,
+            ):
+                if self._is_global_first_source(appcorr_options, source_layout):
+                    reset_current_features.append(x_feature)
+                    reset_outputs.append(list(prev_outputs))
+                else:
+                    reset_current_features.append(input_tokens)
+                    reset_outputs.append([])
+            all_current_features = reset_current_features
+            all_outputs = reset_outputs
 
         new_current_features = []
         new_cache_features = []
@@ -909,6 +1005,12 @@ class DINOv3DetectorExecutor(ModelExecutor):
                     new_current_features.append(x_feature)
                     new_cache_features.append(cache)
                     new_all_outputs.append(list(prev_outputs))
+                continue
+
+            if self._is_global_first_source(appcorr_options, source_layout):
+                new_current_features.append(x_feature)
+                new_cache_features.append(cache)
+                new_all_outputs.append(list(prev_outputs))
                 continue
 
             if self._is_approx_global_source(appcorr_options, source_layout):
@@ -1033,7 +1135,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
                 new_all_outputs.append(list(prev_outputs))
                 continue
 
-            if self._is_deferred_global_source(appcorr_options, source_layout):
+            if (
+                self._is_deferred_global_source(appcorr_options, source_layout)
+                or self._is_global_first_source(appcorr_options, source_layout)
+            ):
                 new_current_features.append(x_feature)
                 new_cache_features.append(cache)
                 new_all_outputs.append(list(prev_outputs))
@@ -1052,16 +1157,16 @@ class DINOv3DetectorExecutor(ModelExecutor):
             collected_outputs = [] if start_l == 0 else list(prev_outputs)
 
             if dindice is None:
-                new_current_features.append(input_tokens)
+                new_current_features.append(x_feature)
                 new_cache_features.append(cache)
-                new_all_outputs.append(collected_outputs)
+                new_all_outputs.append(list(prev_outputs))
                 continue
 
             if appcorr_method == 'partial_channel':
                 if plan is None:
-                    new_current_features.append(input_tokens)
+                    new_current_features.append(x_feature)
                     new_cache_features.append(cache)
-                    new_all_outputs.append(collected_outputs)
+                    new_all_outputs.append(list(prev_outputs))
                     continue
                 dindice = plan.pruned_dindice.to(device=self.device, non_blocking=True)
                 plan.pruned_dindice = dindice

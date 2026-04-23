@@ -2,10 +2,17 @@ from typing import Optional
 
 from offload.common.protocol import ExperimentConfig
 from .interface import ISchedulingPolicy, ITransmissionPolicy
-from .scheduling import BatchCountBasedPolicy, GroupTriggerPolicy, DynamicGroupTriggerPolicy
+from .scheduling import (
+    BatchCountBasedPolicy,
+    COCOWindowDynamicPolicy,
+    COCOWindowInterleavedPolicy,
+    DynamicGroupTriggerPolicy,
+    GroupTriggerPolicy,
+)
 from .transmission import (
     RawTransmissionPolicy, 
     ZlibTransmissionPolicy, 
+    COCOWindowProgressiveLaplacianPolicy,
     LaplacianPyramidPolicy, 
     ProgressiveLPyramidPolicy, 
     FullImageCompressionPolicy
@@ -16,6 +23,8 @@ SCHEDULER_REGISTRY = {
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
+    "COCOWindowInterleaved": COCOWindowInterleavedPolicy,
+    "COCOWindowDynamic": COCOWindowDynamicPolicy,
 }
 
 TRANSMISSION_REGISTRY = {
@@ -23,6 +32,7 @@ TRANSMISSION_REGISTRY = {
     "Zlib": ZlibTransmissionPolicy,
     "Laplacian": LaplacianPyramidPolicy,
     "ProgressiveLaplacian": ProgressiveLPyramidPolicy,
+    "COCOWindowProgressiveLaplacian": COCOWindowProgressiveLaplacianPolicy,
     "FullImageCompression": FullImageCompressionPolicy,
 }
 

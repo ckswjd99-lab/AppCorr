@@ -1,0 +1,29 @@
+{
+    "model_name": "dinov3_detector",
+    "dataset_name": "coco2017",
+    "exp_id": "coco_interleaved_dynamic",
+    "batch_size": 1,
+    "image_shape": [1024, 1024, 3],
+    "patch_size": [16, 16],
+    "scheduler_policy_name": "COCOWindowDynamic",
+    "scheduler_kwargs": {
+        "early_exit": false,
+        "ahead_layers": 2,
+        "lowres_sr": false,
+        "lowres_sr_model": "realesr_general_x4v3"
+    },
+    "transmission_policy_name": "COCOWindowProgressiveLaplacian",
+    "transmission_kwargs": {
+        "compression_level": 1
+    },
+    "appcorr_kwargs": {
+        "generated_from_client": true,
+        "token_keep_ratio": 0.3,
+        "mobile_pscore": "none",
+        "mobile_pscore_weight": 0.0,
+        "server_pscore": "patch_attn_prob",
+        "server_pscore_weight": 1.0,
+        "pscore_fusion": "add"
+    },
+    "device": "cuda:0"
+}

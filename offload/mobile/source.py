@@ -14,6 +14,7 @@ from offload.mobile.dataset import get_dataset_loader
 import os
 import json
 import datetime
+import re
 
 def perform_time_sync(output_queue, feedback_queue, rounds=10):
     """Estimate clock offset via ping-pong."""
@@ -47,6 +48,8 @@ def perform_time_sync(output_queue, feedback_queue, rounds=10):
 class SourceModule(multiprocessing.Process):
     """Run experiment loop, handle partial batches, track metrics."""
 
+    _EVENT_GROUP_SUFFIX_RE = re.compile(r"_G\d+$")
+
     def __init__(self, output_queue, feedback_queue, config: ExperimentConfig, data_root: str, loader_batch_size: int):
         super().__init__()
         self.output_queue = output_queue
@@ -72,7 +75,7 @@ class SourceModule(multiprocessing.Process):
         policy_name = self.config.transmission_policy_name
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
-            if policy_name in {"Laplacian", "ProgressiveLaplacian"}:
+            if policy_name in {"Laplacian", "ProgressiveLaplacian", "COCOWindowProgressiveLaplacian"}:
                 return real_imgs_np
 
             server_batch_size = self.config.batch_size
@@ -99,6 +102,14 @@ class SourceModule(multiprocessing.Process):
             label.tolist() if isinstance(label, torch.Tensor) else label
             for label in list(labels)[:curr_bs]
         ]
+
+    @classmethod
+    def _latency_event_type(cls, event_type: str) -> str:
+        if event_type.startswith("MOBILE_ENCODE_G"):
+            return cls._EVENT_GROUP_SUFFIX_RE.sub("", event_type)
+        if event_type.startswith("MOBILE_SEND_G"):
+            return cls._EVENT_GROUP_SUFFIX_RE.sub("", event_type)
+        return event_type
 
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
@@ -248,7 +259,7 @@ class SourceModule(multiprocessing.Process):
             # Aggregate Event Stats (Per Request)
             request_latency_map = {}
             for event in all_events:
-                etype = event['type']
+                etype = self._latency_event_type(event['type'])
                 dur_ms = event.get('duration', 0) * 1000.0 # Convert to ms
                 
                 if etype not in request_latency_map:
