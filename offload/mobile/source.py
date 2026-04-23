@@ -2,6 +2,7 @@ import multiprocessing
 import time
 import torch
 import numpy as np
+import cv2
 from tqdm import tqdm
 from dataclasses import asdict
 
@@ -53,6 +54,51 @@ class SourceModule(multiprocessing.Process):
         self.config = config
         self.data_root = data_root
         self.loader_batch_size = loader_batch_size
+
+    @staticmethod
+    def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
+        if image.ndim != 3:
+            raise RuntimeError(f"Expected image tensor [C,H,W] or [H,W,C], got {tuple(image.shape)}")
+        if image.shape[0] == 3:
+            image = image.permute(1, 2, 0)
+        elif image.shape[-1] != 3:
+            raise RuntimeError(f"Expected 3-channel image tensor, got {tuple(image.shape)}")
+        image_np = image.detach().cpu().numpy()
+        if image_np.dtype != np.uint8:
+            image_np = np.clip(image_np, 0, 255).astype(np.uint8)
+        return np.ascontiguousarray(image_np)
+
+    def _prepare_encode_input(self, images, curr_bs: int):
+        policy_name = self.config.transmission_policy_name
+        if isinstance(images, (list, tuple)):
+            real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
+            if policy_name in {"Laplacian", "ProgressiveLaplacian"}:
+                return real_imgs_np
+
+            server_batch_size = self.config.batch_size
+            img_h, img_w, img_c = self.config.image_shape
+            full_batch_np = np.zeros((server_batch_size, img_h, img_w, img_c), dtype=np.uint8)
+            for idx, image_np in enumerate(real_imgs_np):
+                if image_np.shape[:2] != (img_h, img_w):
+                    image_np = cv2.resize(image_np, (img_w, img_h), interpolation=cv2.INTER_AREA)
+                full_batch_np[idx] = image_np
+            return full_batch_np
+
+        server_batch_size = self.config.batch_size
+        img_h, img_w, img_c = self.config.image_shape
+        full_batch_np = np.zeros((server_batch_size, img_h, img_w, img_c), dtype=np.uint8)
+        real_imgs_np = images.permute(0, 2, 3, 1).numpy()
+        full_batch_np[:curr_bs] = real_imgs_np
+        return full_batch_np
+
+    @staticmethod
+    def _labels_to_list(labels, curr_bs: int):
+        if isinstance(labels, torch.Tensor):
+            return labels[:curr_bs].tolist()
+        return [
+            label.tolist() if isinstance(label, torch.Tensor) else label
+            for label in list(labels)[:curr_bs]
+        ]
 
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
@@ -125,23 +171,15 @@ class SourceModule(multiprocessing.Process):
         # Track event statistics
         event_stats_accumulator = {}
 
-        # Constants for padding
-        SERVER_BATCH_SIZE = self.config.batch_size
-        IMG_H, IMG_W, IMG_C = self.config.image_shape
-
         print("[Source] Starting Batch Evaluation Loop...")
 
         pbar = tqdm(enumerate(loader), total=len(loader), leave=False)
         for batch_idx, (images, labels) in pbar:
-            curr_bs = images.size(0)
+            curr_bs = len(images) if isinstance(images, (list, tuple)) else images.size(0)
             
             # Send Phase
             t_load_start = time.time()
-            # Prepare padded batch container
-            full_batch_np = np.zeros((SERVER_BATCH_SIZE, IMG_H, IMG_W, IMG_C), dtype=np.uint8)
-            
-            real_imgs_np = images.permute(0, 2, 3, 1).numpy()
-            full_batch_np[:curr_bs] = real_imgs_np
+            encode_input = self._prepare_encode_input(images, curr_bs)
             t_load_end = time.time()
             
             # Encode data
@@ -150,7 +188,7 @@ class SourceModule(multiprocessing.Process):
             local_events = [{'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start}]
             
             # Execute generator pipeline
-            encode_gen = policy.encode(full_batch_np, self.config)
+            encode_gen = policy.encode(encode_input, self.config)
             
             group_idx = 0
             t_pipeline_start = time.time()
@@ -230,7 +268,7 @@ class SourceModule(multiprocessing.Process):
 
             # Calculate metrics via DatasetLoader
             valid_preds = result.output[:curr_bs]
-            valid_labels = labels.tolist()
+            valid_labels = self._labels_to_list(labels, curr_bs)
             
             latency = t_result_recv - t_send_start # End-to-End approximation
             total_latency += latency

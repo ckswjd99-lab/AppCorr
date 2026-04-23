@@ -172,7 +172,7 @@ class ExperimentConfig:
     # Dynamic arguments
     scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
-    appcorr_kwargs: Dict[str, Any] = field(default_factory=default_appcorr_kwargs)
+    appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def early_exit_enabled(self) -> bool:
         return bool(self.scheduler_kwargs.get('early_exit', False))
