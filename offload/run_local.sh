@@ -55,35 +55,108 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
 fi
 
 SERVER_PID=""
+MOBILE_PID=""
+STARTED_PID=""
+
+start_in_own_group() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" &
+  else
+    "$@" &
+  fi
+  STARTED_PID=$!
+}
+
+process_group_alive() {
+  local pid="$1"
+  kill -0 -- "-${pid}" 2>/dev/null
+}
+
+wait_for_process_group_exit() {
+  local pid="$1"
+  local attempts="${2:-20}"
+  local i
+  for ((i = 0; i < attempts; i++)); do
+    if ! process_group_alive "${pid}"; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+stop_process_group() {
+  local name="$1"
+  local pid="$2"
+
+  if [[ -z "${pid}" ]]; then
+    return
+  fi
+
+  if process_group_alive "${pid}"; then
+    echo "[run_local] Stopping ${name} process group ${pid}..."
+    kill -INT -- "-${pid}" 2>/dev/null || true
+    if wait_for_process_group_exit "${pid}" 20; then
+      return
+    fi
+
+    echo "[run_local] ${name} did not stop after SIGINT; sending SIGTERM..."
+    kill -TERM -- "-${pid}" 2>/dev/null || true
+    if wait_for_process_group_exit "${pid}" 20; then
+      return
+    fi
+
+    echo "[run_local] ${name} did not stop after SIGTERM; sending SIGKILL..."
+    kill -KILL -- "-${pid}" 2>/dev/null || true
+    wait_for_process_group_exit "${pid}" 10 || true
+  elif kill -0 "${pid}" 2>/dev/null; then
+    echo "[run_local] Stopping ${name} process ${pid}..."
+    kill -INT "${pid}" 2>/dev/null || true
+    sleep 0.5
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill -TERM "${pid}" 2>/dev/null || true
+    fi
+    wait "${pid}" 2>/dev/null || true
+  fi
+}
 
 cleanup() {
   local exit_code=$?
-  if [[ -n "${SERVER_PID}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
-    echo "[run_local] Stopping server process ${SERVER_PID}..."
-    kill "${SERVER_PID}" 2>/dev/null || true
-    wait "${SERVER_PID}" 2>/dev/null || true
-  fi
+  trap - EXIT INT TERM
+  stop_process_group "mobile" "${MOBILE_PID}"
+  stop_process_group "server" "${SERVER_PID}"
   exit "${exit_code}"
 }
 
 trap cleanup EXIT INT TERM
 
 echo "[run_local] Starting local AppCorr server..."
-python offload/server/main.py \
+start_in_own_group python offload/server/main.py \
   --recv-port "${RECV_PORT}" \
-  --send-port "${SEND_PORT}" &
-SERVER_PID=$!
+  --send-port "${SEND_PORT}"
+SERVER_PID="${STARTED_PID}"
 
 echo "[run_local] Server PID: ${SERVER_PID}"
 echo "[run_local] Launching mobile client in ${SERVER_STARTUP}s with config: ${CONFIG_PATH}"
 sleep "${SERVER_STARTUP}"
 
-python offload/mobile/main.py \
+start_in_own_group python offload/mobile/main.py \
   --config "${CONFIG_PATH}" \
   --ip 127.0.0.1 \
   --recv-port "${RECV_PORT}" \
   --send-port "${SEND_PORT}" \
   --data "${DATA_ROOT}"
+MOBILE_PID="${STARTED_PID}"
+
+set +e
+wait "${MOBILE_PID}"
+MOBILE_STATUS=$?
+set -e
+MOBILE_PID=""
+
+if [[ "${MOBILE_STATUS}" -ne 0 ]]; then
+  exit "${MOBILE_STATUS}"
+fi
 
 echo "[run_local] Mobile client finished. Waiting for server shutdown..."
 wait "${SERVER_PID}" 2>/dev/null || true
