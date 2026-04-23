@@ -12,6 +12,7 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
+from ._triton_kernels import apply_rope_active_inplace_triton
 
 
 # RoPE-related functions:
@@ -50,6 +51,8 @@ class QueryStateLike(Protocol):
     active_query_pos_padded: Tensor
     active_query_mask: Tensor
     all_valid: bool
+    active_patch_mask: Tensor | None
+    active_rope_idx: Tensor | None
 
 
 @dataclass
@@ -61,6 +64,8 @@ class PackedQueryState:
     active_query_pos_padded: Tensor
     active_query_mask: Tensor
     all_valid: bool
+    active_patch_mask: Tensor | None = None
+    active_rope_idx: Tensor | None = None
 
 
 class SelfAttention(nn.Module):
@@ -253,33 +258,44 @@ class SelfAttention(nn.Module):
         rope: tuple[Tensor, Tensor] | None,
         token_idx: Tensor,
         prefix_len: int,
+        patch_mask: Tensor | None = None,
+        rope_idx: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         if rope is None or token_idx.numel() == 0:
             return q_active, k_active
 
-        patch_mask = token_idx >= prefix_len
-        if not bool(patch_mask.any().item()):
+        sin, cos = rope
+        if sin.shape[0] == 0:
             return q_active, k_active
 
-        sin, cos = rope
-        rope_idx = token_idx[patch_mask] - prefix_len
-        sin_sel = sin.index_select(0, rope_idx).unsqueeze(1)
-        cos_sel = cos.index_select(0, rope_idx).unsqueeze(1)
+        if q_active.is_cuda:
+            if patch_mask is None or rope_idx is None:
+                raise RuntimeError("CUDA active-token RoPE requires precomputed patch_mask and rope_idx")
+            apply_rope_active_inplace_triton(q_active, k_active, rope, patch_mask, rope_idx)
+            return q_active, k_active
+
+        if patch_mask is None:
+            patch_mask = token_idx >= prefix_len
+        if rope_idx is None:
+            rope_idx = (token_idx - prefix_len).clamp_min(0)
 
         q_dtype = q_active.dtype
         k_dtype = k_active.dtype
-        q_active = q_active.clone()
-        k_active = k_active.clone()
-        q_active[patch_mask] = rope_apply(
-            q_active[patch_mask].to(dtype=sin_sel.dtype),
+        sin_sel = sin.index_select(0, rope_idx).unsqueeze(1)
+        cos_sel = cos.index_select(0, rope_idx).unsqueeze(1)
+        patch_mask = patch_mask.view(-1, 1, 1)
+        q_rot = rope_apply(
+            q_active.to(dtype=sin_sel.dtype),
             sin_sel,
             cos_sel,
         ).to(dtype=q_dtype)
-        k_active[patch_mask] = rope_apply(
-            k_active[patch_mask].to(dtype=sin_sel.dtype),
+        k_rot = rope_apply(
+            k_active.to(dtype=sin_sel.dtype),
             sin_sel,
             cos_sel,
         ).to(dtype=k_dtype)
+        q_active.copy_(torch.where(patch_mask, q_rot, q_active))
+        k_active.copy_(torch.where(patch_mask, k_rot, k_active))
         return q_active, k_active
 
     def approx_partial_token(
@@ -332,26 +348,35 @@ class SelfAttention(nn.Module):
 
         if rope is not None:
             prefix_len = N - rope[0].shape[0]
-            q_new, k_new = self._apply_rope_to_active_tokens(
+            q_new, _ = self._apply_rope_to_active_tokens(
                 q_new,
                 kv_new[:, 0],
                 rope,
                 fixed_query_state.active_token_idx,
                 prefix_len,
+                patch_mask=getattr(fixed_query_state, "active_patch_mask", None),
+                rope_idx=getattr(fixed_query_state, "active_rope_idx", None),
             )
-            kv_new = kv_new.clone()
-            kv_new[:, 0] = k_new
 
         kv[
             fixed_query_state.active_batch_idx,
             fixed_query_state.active_token_idx,
         ] = kv_new.to(dtype=kv.dtype)
 
-        q_padded = torch.zeros(
-            (B, t_max, self.num_heads, head_dim),
-            device=x_sel.device,
-            dtype=q_new.dtype,
-        )
+        q_padded_shape = (B, t_max, self.num_heads, head_dim)
+        if torch.is_grad_enabled():
+            q_padded = torch.zeros(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
+        else:
+            q_padded = getattr(self, "_partial_token_q_padded", None)
+            if (
+                q_padded is None
+                or tuple(q_padded.shape) != q_padded_shape
+                or q_padded.device != x_sel.device
+                or q_padded.dtype != q_new.dtype
+            ):
+                q_padded = torch.empty(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
+                self._partial_token_q_padded = q_padded
+            q_padded.zero_()
         q_padded[
             fixed_query_state.active_batch_idx,
             fixed_query_state.active_pos_idx,
