@@ -1,5 +1,4 @@
 import numpy as np
-import cv2
 import zlib
 from typing import List, Generator
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +35,8 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         return self._compute_patch_residual_rms(crop)
 
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
-        B = images.shape[0]
+        image_list = self._as_image_list(images)
+        B = len(image_list)
         num_groups = config.transmission_kwargs.get('num_groups', 4)
         mobile_pscore = self._resolve_mobile_pscore(config)
 
@@ -46,8 +46,8 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         # Generate base layers
         with ThreadPoolExecutor() as executor:
             futures = [
-                executor.submit(self._process_image_base_layer, b, images[b], config)
-                for b in range(B)
+                executor.submit(self._process_image_base_layer, b, image, config)
+                for b, image in enumerate(image_list)
             ]
             for b, f in enumerate(futures):
                 local_patches, gaussians = f.result()
@@ -179,7 +179,6 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         mobile_pscore,
     ):
         """Compress only patches belonging to target_group for one image."""
-        H, W = config.image_shape[:2]
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
         local_patches = []
@@ -192,8 +191,9 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         struct_idx = 0
         for lvl in levels[1:]:
             curr_g = gaussians[lvl]
-            pred = self._iterative_upsample(prev_img, prev_lvl, lvl, H, W)
+            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
             residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+            residual = self._project_band_to_target(residual, lvl, config, np.int16)
             
             # Identify patches in this level
             ph, pw = config.patch_size
@@ -234,25 +234,21 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         max_lvl = max(levels)
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
         
-        gaussians = {0: image}
-        curr = image
-        for i in range(1, max_lvl + 1):
-            curr = cv2.pyrDown(curr)
-            gaussians[i] = curr
+        gaussians = self._build_native_gaussians(image, max_lvl)
             
         local_patches = []
         base_lvl = levels[0] # Highest level index is the base layer
+        base_band = self._project_band_to_target(gaussians[base_lvl], base_lvl, config, np.uint8)
         
         # Use vectorized creation
         self._create_patches_with_group_vectorized(
-            local_patches, gaussians[base_lvl], b_idx, base_lvl, config, np.uint8, 
+            local_patches, base_band, b_idx, base_lvl, config, np.uint8,
             group_id=0, compression=comp_lvl
         )
         return local_patches, gaussians
 
     def _process_image_residuals(self, b_idx, gaussians, config, mobile_pscore):
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
-        H, W = config.image_shape[:2]
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
         
         local_candidates = []
@@ -265,8 +261,9 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             curr_g = gaussians[lvl]
             
             # Residual Layer: Collect
-            pred = self._iterative_upsample(prev_img, prev_lvl, lvl, H, W)
+            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
             residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+            residual = self._project_band_to_target(residual, lvl, config, np.int16)
             
             # Use vectorized collection
             self._collect_residual_candidates_vectorized(
