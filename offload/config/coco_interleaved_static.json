@@ -1,6 +1,9 @@
 {
     "model_name": "dinov3_detector",
     "dataset_name": "coco2017",
+    "dataset_kwargs": {
+        "num_workers": 0
+    },
     "exp_id": "coco_interleaved_static",
     "batch_size": 1,
     "image_shape": [1024, 1024, 3],
