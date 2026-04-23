@@ -649,7 +649,32 @@ class DINOv3DetectorExecutor(ModelExecutor):
     def _get_vit_backbone(self):
         inner = self.model.detector.backbone[0]
         return inner._backbone.backbone if hasattr(inner, "_backbone") else inner.backbone
-        
+
+    @staticmethod
+    def _get_task_group_id(task: Task | None) -> int | None:
+        if task is not None and getattr(task, 'payload', None):
+            return task.payload[0].group_id
+        return None
+
+    @staticmethod
+    def _has_detector_source_cache(context: Dict[str, Any], batch_size: int) -> bool:
+        required = (
+            'all_x_backbones',
+            'all_rope_sincos',
+            'all_source_layouts',
+            'window_patch_tensors',
+            'window_patch_masks',
+            'window_patch_tokens',
+        )
+        if any(key not in context for key in required):
+            return False
+        all_x_backbones = context['all_x_backbones']
+        if not isinstance(all_x_backbones, list) or len(all_x_backbones) != 10:
+            return False
+        return all(
+            torch.is_tensor(tokens) and tokens.shape[0] == batch_size
+            for tokens in all_x_backbones
+        )
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         if isinstance(batch_data, torch.Tensor):
@@ -819,23 +844,63 @@ class DINOv3DetectorExecutor(ModelExecutor):
         all_w = [win_w] * (win_wrapper._n_windows_w - 1) + [orig_w - win_w * (win_wrapper._n_windows_w - 1)]
         all_h_cum, all_w_cum = [0] + list(np.cumsum(all_h)), [0] + list(np.cumsum(all_w))
 
-        context['window_patch_tensors'], context['window_patch_masks'], context['window_patch_tokens'] = [], [], []
-        all_x_backbones, all_rope_sincos = [], []
-        all_patch_residual_rms = []
-        all_source_layouts = []
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        compute_patch_residual_rms = (
+            appcorr_options["method"] == "partial_channel"
+            and bool(appcorr_options.get("token_prune_enabled", False))
+        )
 
         def _prep(x):
             xb, (H, W) = dino_bb.prepare_tokens_with_masks(x)
             rs = dino_bb.rope_embed(H=H, W=W) if dino_bb.rope_embed else None
             return xb, rs
 
+        group_id = self._get_task_group_id(task)
+        can_update_single_window = (
+            getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian'
+            and group_id is not None
+            and 1 <= group_id <= win_wrapper._n_windows_h * win_wrapper._n_windows_w
+            and self._has_detector_source_cache(context, tensors.shape[0])
+        )
+
+        if can_update_single_window:
+            src_idx = group_id - 1
+            ih, iw = divmod(src_idx, win_wrapper._n_windows_w)
+            wt = v2.functional.crop(tensors, all_h_cum[ih], all_w_cum[iw], all_h[ih], all_w[iw])
+            wm = v2.functional.crop(mask, all_h_cum[ih], all_w_cum[iw], all_h[ih], all_w[iw])
+            x = NestedTensor(wt, wm).tensors
+            xb, rs = _prep(x)
+
+            context['window_patch_tensors'][ih][iw] = wt
+            context['window_patch_masks'][ih][iw] = wm
+            context['window_patch_tokens'][ih][iw] = x
+            context['all_x_backbones'][src_idx] = xb
+            context['all_rope_sincos'][src_idx] = rs
+
+            if len(context.get('all_patch_residual_rms', [])) == len(context['all_x_backbones']):
+                context['all_patch_residual_rms'][src_idx] = None
+            context['all_mobile_pscore_hints'] = self._project_transmission_pscore_hints_to_sources(
+                context.get('transmission_pscore_hint_map'),
+                context,
+                config,
+            )
+            context.pop('all_group_plans', None)
+            context.pop('all_cached_dindices', None)
+            self._ensure_group_maps_and_plans(context, config)
+            return
+
+        context['window_patch_tensors'], context['window_patch_masks'], context['window_patch_tokens'] = [], [], []
+        all_x_backbones, all_rope_sincos = [], []
+        all_patch_residual_rms = []
+        all_source_layouts = []
+
         curr_hr_np = context.get('input_hr_np')
         prev_hr_np = context.get('prev_input_hr_np')
         curr_hr_tensor = None
         prev_hr_tensor = None
-        if curr_hr_np is not None:
+        if compute_patch_residual_rms and curr_hr_np is not None:
             curr_hr_tensor = torch.from_numpy(curr_hr_np).to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float()
-        if prev_hr_np is not None:
+        if compute_patch_residual_rms and prev_hr_np is not None:
             prev_hr_tensor = torch.from_numpy(prev_hr_np).to(device=self.device, non_blocking=True).permute(0, 3, 1, 2).float()
         if curr_hr_tensor is not None:
             active_indices = self._get_active_batch_indices(context, curr_hr_tensor.shape[0])
@@ -872,12 +937,13 @@ class DINOv3DetectorExecutor(ModelExecutor):
                     all_patch_residual_rms.append(
                         self._compute_patch_residual_rms_for_source(curr_src, prev_src, dino_bb.patch_size)
                     )
+                else:
+                    all_patch_residual_rms.append(None)
                 
             context['window_patch_tensors'].append(row_t)
             context['window_patch_masks'].append(row_m)
             context['window_patch_tokens'].append(row_x)
 
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         global_base_tensor = context.get('input_global_base_tensor')
         use_global_base = (
             getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian'
@@ -909,6 +975,8 @@ class DINOv3DetectorExecutor(ModelExecutor):
             all_patch_residual_rms.append(
                 self._compute_patch_residual_rms_for_source(curr_global, prev_global, dino_bb.patch_size)
             )
+        else:
+            all_patch_residual_rms.append(None)
 
         context['all_x_backbones'], context['all_rope_sincos'] = all_x_backbones, all_rope_sincos
         context['all_source_layouts'] = all_source_layouts
