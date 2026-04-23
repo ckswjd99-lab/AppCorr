@@ -2,10 +2,12 @@ import multiprocessing
 import time
 import torch
 import numpy as np
+import cv2
 from tqdm import tqdm
 from dataclasses import asdict
 
 from offload.common import ExperimentConfig
+from offload.common.protocol import normalize_appcorr_kwargs
 from offload.policies import get_transmission
 from offload.mobile.dataset import get_dataset_loader
 
@@ -52,6 +54,51 @@ class SourceModule(multiprocessing.Process):
         self.config = config
         self.data_root = data_root
         self.loader_batch_size = loader_batch_size
+
+    @staticmethod
+    def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
+        if image.ndim != 3:
+            raise RuntimeError(f"Expected image tensor [C,H,W] or [H,W,C], got {tuple(image.shape)}")
+        if image.shape[0] == 3:
+            image = image.permute(1, 2, 0)
+        elif image.shape[-1] != 3:
+            raise RuntimeError(f"Expected 3-channel image tensor, got {tuple(image.shape)}")
+        image_np = image.detach().cpu().numpy()
+        if image_np.dtype != np.uint8:
+            image_np = np.clip(image_np, 0, 255).astype(np.uint8)
+        return np.ascontiguousarray(image_np)
+
+    def _prepare_encode_input(self, images, curr_bs: int):
+        policy_name = self.config.transmission_policy_name
+        if isinstance(images, (list, tuple)):
+            real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
+            if policy_name in {"Laplacian", "ProgressiveLaplacian"}:
+                return real_imgs_np
+
+            server_batch_size = self.config.batch_size
+            img_h, img_w, img_c = self.config.image_shape
+            full_batch_np = np.zeros((server_batch_size, img_h, img_w, img_c), dtype=np.uint8)
+            for idx, image_np in enumerate(real_imgs_np):
+                if image_np.shape[:2] != (img_h, img_w):
+                    image_np = cv2.resize(image_np, (img_w, img_h), interpolation=cv2.INTER_AREA)
+                full_batch_np[idx] = image_np
+            return full_batch_np
+
+        server_batch_size = self.config.batch_size
+        img_h, img_w, img_c = self.config.image_shape
+        full_batch_np = np.zeros((server_batch_size, img_h, img_w, img_c), dtype=np.uint8)
+        real_imgs_np = images.permute(0, 2, 3, 1).numpy()
+        full_batch_np[:curr_bs] = real_imgs_np
+        return full_batch_np
+
+    @staticmethod
+    def _labels_to_list(labels, curr_bs: int):
+        if isinstance(labels, torch.Tensor):
+            return labels[:curr_bs].tolist()
+        return [
+            label.tolist() if isinstance(label, torch.Tensor) else label
+            for label in list(labels)[:curr_bs]
+        ]
 
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
@@ -114,28 +161,25 @@ class SourceModule(multiprocessing.Process):
         total_token_prune_full_patch = 0.0
         total_token_prune_kept_residual_mass = 0.0
         total_token_prune_full_residual_mass = 0.0
+        total_token_pscore_kept_mass = 0.0
+        total_token_pscore_full_mass = 0.0
+        total_partial_token_kept_patch = 0.0
+        total_partial_token_full_patch = 0.0
+        total_partial_token_sample_count = 0.0
         cache_breakdown_accumulator = {}
         
         # Track event statistics
         event_stats_accumulator = {}
 
-        # Constants for padding
-        SERVER_BATCH_SIZE = self.config.batch_size
-        IMG_H, IMG_W, IMG_C = self.config.image_shape
-
         print("[Source] Starting Batch Evaluation Loop...")
 
         pbar = tqdm(enumerate(loader), total=len(loader), leave=False)
         for batch_idx, (images, labels) in pbar:
-            curr_bs = images.size(0)
+            curr_bs = len(images) if isinstance(images, (list, tuple)) else images.size(0)
             
             # Send Phase
             t_load_start = time.time()
-            # Prepare padded batch container
-            full_batch_np = np.zeros((SERVER_BATCH_SIZE, IMG_H, IMG_W, IMG_C), dtype=np.uint8)
-            
-            real_imgs_np = images.permute(0, 2, 3, 1).numpy()
-            full_batch_np[:curr_bs] = real_imgs_np
+            encode_input = self._prepare_encode_input(images, curr_bs)
             t_load_end = time.time()
             
             # Encode data
@@ -144,7 +188,7 @@ class SourceModule(multiprocessing.Process):
             local_events = [{'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start}]
             
             # Execute generator pipeline
-            encode_gen = policy.encode(full_batch_np, self.config)
+            encode_gen = policy.encode(encode_input, self.config)
             
             group_idx = 0
             t_pipeline_start = time.time()
@@ -224,7 +268,7 @@ class SourceModule(multiprocessing.Process):
 
             # Calculate metrics via DatasetLoader
             valid_preds = result.output[:curr_bs]
-            valid_labels = labels.tolist()
+            valid_labels = self._labels_to_list(labels, curr_bs)
             
             latency = t_result_recv - t_send_start # End-to-End approximation
             total_latency += latency
@@ -236,6 +280,11 @@ class SourceModule(multiprocessing.Process):
             token_prune_full_patch = getattr(result, 'token_prune_full_patch', 0.0)
             token_prune_kept_residual_mass = getattr(result, 'token_prune_kept_residual_mass', 0.0)
             token_prune_full_residual_mass = getattr(result, 'token_prune_full_residual_mass', 0.0)
+            token_pscore_kept_mass = getattr(result, 'token_pscore_kept_mass', 0.0)
+            token_pscore_full_mass = getattr(result, 'token_pscore_full_mass', 0.0)
+            partial_token_kept_patch = getattr(result, 'partial_token_kept_patch', 0.0)
+            partial_token_full_patch = getattr(result, 'partial_token_full_patch', 0.0)
+            partial_token_sample_count = getattr(result, 'partial_token_sample_count', 0.0)
             total_cache_size_bytes += cache_size_bytes
             max_cache_size_bytes = max(max_cache_size_bytes, cache_size_bytes)
             total_attn_prob_mass_used += attn_prob_mass_used
@@ -244,6 +293,11 @@ class SourceModule(multiprocessing.Process):
             total_token_prune_full_patch += token_prune_full_patch
             total_token_prune_kept_residual_mass += token_prune_kept_residual_mass
             total_token_prune_full_residual_mass += token_prune_full_residual_mass
+            total_token_pscore_kept_mass += token_pscore_kept_mass
+            total_token_pscore_full_mass += token_pscore_full_mass
+            total_partial_token_kept_patch += partial_token_kept_patch
+            total_partial_token_full_patch += partial_token_full_patch
+            total_partial_token_sample_count += partial_token_sample_count
             for key, value in cache_breakdown_bytes.items():
                 stats = cache_breakdown_accumulator.setdefault(key, {'sum': 0, 'max': 0})
                 stats['sum'] += value
@@ -264,6 +318,11 @@ class SourceModule(multiprocessing.Process):
                 'token_prune_full_patch': token_prune_full_patch,
                 'token_prune_kept_residual_mass': token_prune_kept_residual_mass,
                 'token_prune_full_residual_mass': token_prune_full_residual_mass,
+                'token_pscore_kept_mass': token_pscore_kept_mass,
+                'token_pscore_full_mass': token_pscore_full_mass,
+                'partial_token_kept_patch': partial_token_kept_patch,
+                'partial_token_full_patch': partial_token_full_patch,
+                'partial_token_sample_count': partial_token_sample_count,
                 'group_stats': group_stats,
                 'events': all_events,
                 'labels': valid_labels
@@ -277,7 +336,7 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if (batch_idx+1) == 20:
+            if (batch_idx+1) == 10:
                 break # TEMP
 
         final_summary = self.dataset_loader.get_summary()
@@ -317,6 +376,27 @@ class SourceModule(multiprocessing.Process):
             100.0 * total_token_prune_kept_residual_mass / total_token_prune_full_residual_mass
             if total_token_prune_full_residual_mass > 0 else 100.0
         )
+        avg_token_pscore_coverage_pct = (
+            100.0 * total_token_pscore_kept_mass / total_token_pscore_full_mass
+            if total_token_pscore_full_mass > 0 else None
+        )
+        avg_partial_token_keep_pct = (
+            100.0 * total_partial_token_kept_patch / total_partial_token_full_patch
+            if total_partial_token_full_patch > 0 else 100.0
+        )
+        avg_partial_token_kept_patch_count = (
+            total_partial_token_kept_patch / total_partial_token_sample_count
+            if total_partial_token_sample_count > 0 else 0.0
+        )
+        avg_partial_token_full_patch_count = (
+            total_partial_token_full_patch / total_partial_token_sample_count
+            if total_partial_token_sample_count > 0 else 0.0
+        )
+        appcorr_options = normalize_appcorr_kwargs(
+            self.config.appcorr_kwargs,
+            self.config.transmission_kwargs,
+        )
+        appcorr_method = appcorr_options.get('method', 'partial_token')
         print("=== Cache Usage ===")
         print(f"Avg cache size per offload: {avg_cache_size_bytes / (1024 ** 2):.2f} MB")
         print(f"Max cache size per offload: {max_cache_size_bytes / (1024 ** 2):.2f} MB")
@@ -361,12 +441,30 @@ class SourceModule(multiprocessing.Process):
                 }
         print("")
         print("=== Attention Stats ===")
-        print(f"Configured attention column keep ratio: {attn_col_keep_pct:.2f}%")
-        print(f"Avg attention mass covered during V correction: {avg_attn_prob_coverage_pct:.2f}%")
+        if appcorr_method == 'partial_channel':
+            print(f"Configured attention column keep ratio: {attn_col_keep_pct:.2f}%")
+            print(f"Avg attention mass covered during V correction: {avg_attn_prob_coverage_pct:.2f}%")
+        else:
+            print("Selected queries are recomputed with full attention (partial_token).")
+            print(
+                f"Avg recomputed patch queries per active sample: "
+                f"{avg_partial_token_kept_patch_count:.2f} / {avg_partial_token_full_patch_count:.2f}"
+            )
         print("")
         print("=== Token Prune Stats ===")
-        print(f"Avg patch-token keep ratio during correction: {avg_token_keep_pct:.2f}%")
-        print(f"Avg residual mass covered by kept patches: {avg_token_residual_mass_keep_pct:.2f}%")
+        if appcorr_method == 'partial_channel':
+            print(f"Avg patch-token keep ratio during correction: {avg_token_keep_pct:.2f}%")
+            print(f"Avg residual mass covered by kept patches: {avg_token_residual_mass_keep_pct:.2f}%")
+        else:
+            print(f"Avg patch-token keep ratio during correction: {avg_partial_token_keep_pct:.2f}%")
+            print(
+                f"Avg recomputed patch count per active sample: "
+                f"{avg_partial_token_kept_patch_count:.2f}"
+            )
+            if avg_token_pscore_coverage_pct is None:
+                print("Avg combined pscore covered by recomputed patches: N/A (all candidate pscores were zero)")
+            else:
+                print(f"Avg combined pscore covered by recomputed patches: {avg_token_pscore_coverage_pct:.2f}%")
         print("")
 
         # Write Summary
@@ -381,7 +479,12 @@ class SourceModule(multiprocessing.Process):
             'avg_attn_prob_coverage_pct': avg_attn_prob_coverage_pct,
             'avg_token_keep_pct': avg_token_keep_pct,
             'avg_token_prune_pct': avg_token_prune_pct,
+            'avg_token_pscore_coverage_pct': avg_token_pscore_coverage_pct,
             'avg_token_residual_mass_keep_pct': avg_token_residual_mass_keep_pct,
+            'avg_partial_token_keep_pct': avg_partial_token_keep_pct,
+            'avg_partial_token_kept_patch_count': avg_partial_token_kept_patch_count,
+            'avg_partial_token_full_patch_count': avg_partial_token_full_patch_count,
+            'appcorr_method': appcorr_method,
             'cache_breakdown_bytes_per_offload': cache_breakdown_summary,
             'time_offset_ms': time_offset * 1000,
             'latency_breakdown': latency_breakdown,

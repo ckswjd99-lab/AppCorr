@@ -50,6 +50,44 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             return context['active_indices'].to(device=self.device, dtype=torch.long)
         return torch.arange(full_batch_size, device=self.device, dtype=torch.long)
 
+    def _build_mobile_pscore_hint_map(
+        self,
+        task: Task,
+        context: Dict[str, Any],
+        config: Any,
+        batch_size: int,
+        num_patches: int,
+    ) -> torch.Tensor:
+        hint_map = torch.zeros((batch_size, num_patches), device=self.device, dtype=torch.float32)
+        target_res_level = min(config.transmission_kwargs.get('pyramid_levels', [0]))
+
+        if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
+            active_list = context['active_indices'].tolist()
+            idx_map = {orig: local for local, orig in enumerate(active_list)}
+            valid_payload = [
+                p for p in task.payload
+                if p.image_idx in idx_map and p.res_level == target_res_level and 0 <= p.spatial_idx < num_patches
+            ]
+            if not valid_payload:
+                return hint_map
+            b_list = [idx_map[p.image_idx] for p in valid_payload]
+        else:
+            valid_payload = [
+                p for p in task.payload
+                if p.res_level == target_res_level and 0 <= p.spatial_idx < num_patches
+            ]
+            if not valid_payload:
+                return hint_map
+            b_list = [p.image_idx for p in valid_payload]
+
+        s_list = [p.spatial_idx for p in valid_payload]
+        h_list = [float(getattr(p, 'pscore_hint', 0.0)) for p in valid_payload]
+        b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+        s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+        h_t = torch.tensor(h_list, device=self.device, dtype=torch.float32)
+        hint_map[b_t, s_t] = h_t
+        return self._normalize_patch_score_map(hint_map)
+
     def _compute_patch_residual_rms(
         self,
         context: Dict[str, Any],
@@ -361,6 +399,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                     g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
                     
                     group_map[b_t, s_t] = g_t
+
             else:
                 # Standard full-batch update (Identity mapping)
                 b_list = [p.image_idx for p in task.payload]
@@ -373,6 +412,15 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                     g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
                     
                     group_map[b_t, s_t] = g_t
+
+            num_patches = group_map.shape[1]
+            context['mobile_pscore_hint_map'] = self._build_mobile_pscore_hint_map(
+                task,
+                context,
+                config,
+                tensor.shape[0],
+                num_patches,
+            )
                     
         with torch.cuda.nvtx.range("Preprocess::Dindices"):
             # Build one correction plan per group. Each plan owns:
@@ -381,7 +429,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             # 3) the packed query metadata reused by every correction layer.
             num_pretokens = 1 + self.model.backbone.n_storage_tokens
             B = group_map.shape[0]
-            appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+            appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
             appcorr_method = appcorr_options["method"]
             grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
             num_groups = config.transmission_kwargs.get('num_groups', 4)
@@ -509,7 +557,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         cache = context.get('cache_feature', {})
         
         start_l, end_l = layers[0], layers[1]
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
         
         if start_l == 0:
@@ -556,8 +604,10 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         # logic from worker.py: x_temp starts from input_tokens
         x_temp = context.get('input_tokens')
         
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         token_keep_ratio = appcorr_options["token_keep_ratio"]
+        token_keep_thres = appcorr_options["token_keep_thres"]
+        mobile_pscore_hint = context.get('mobile_pscore_hint_map')
         attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
         fixed_query_state = plan.query_state
         if fixed_query_state is not None:
@@ -588,10 +638,13 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
                 appcorr_method=appcorr_options["method"],
                 token_keep_ratio=token_keep_ratio,
+                token_keep_thres=token_keep_thres,
                 mobile_pscore=appcorr_options["mobile_pscore"],
                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                mobile_pscore_hint=mobile_pscore_hint,
                 server_pscore=appcorr_options["server_pscore"],
                 server_pscore_weight=appcorr_options["server_pscore_weight"],
+                pscore_fusion=appcorr_options["pscore_fusion"],
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 fixed_query_state=fixed_query_state,
                 group_plan=plan,

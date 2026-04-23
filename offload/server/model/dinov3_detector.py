@@ -56,6 +56,50 @@ class DINOv3DetectorExecutor(ModelExecutor):
             return context['active_indices'].to(device=self.device, dtype=torch.long)
         return torch.arange(full_batch_size, device=self.device, dtype=torch.long)
 
+    def _build_transmission_pscore_hint_map(
+        self,
+        task: Task,
+        context: Dict[str, Any],
+        config: Any,
+        batch_size: int,
+    ) -> torch.Tensor:
+        img_h, img_w = config.image_shape[:2]
+        if isinstance(config.patch_size, int):
+            ph = pw = config.patch_size
+        else:
+            ph, pw = config.patch_size
+        num_patches = (img_h // ph) * (img_w // pw)
+        hint_map = torch.zeros((batch_size, num_patches), device=self.device, dtype=torch.float32)
+        target_res_level = min(config.transmission_kwargs.get('pyramid_levels', [0]))
+
+        active_indices = context.get('active_indices')
+        if active_indices is not None and len(active_indices) < config.batch_size:
+            active_list = active_indices.tolist()
+            idx_map = {orig: local for local, orig in enumerate(active_list)}
+            valid_payload = [
+                p for p in task.payload
+                if p.image_idx in idx_map and p.res_level == target_res_level and 0 <= p.spatial_idx < num_patches
+            ]
+            if not valid_payload:
+                return hint_map
+            b_list = [idx_map[p.image_idx] for p in valid_payload]
+        else:
+            valid_payload = [
+                p for p in task.payload
+                if p.res_level == target_res_level and 0 <= p.spatial_idx < num_patches
+            ]
+            if not valid_payload:
+                return hint_map
+            b_list = [p.image_idx for p in valid_payload]
+
+        s_list = [p.spatial_idx for p in valid_payload]
+        h_list = [float(getattr(p, 'pscore_hint', 0.0)) for p in valid_payload]
+        b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+        s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+        h_t = torch.tensor(h_list, device=self.device, dtype=torch.float32)
+        hint_map[b_t, s_t] = h_t
+        return hint_map
+
     def _compute_patch_residual_rms_for_source(
         self,
         curr_source: torch.Tensor,
@@ -72,6 +116,63 @@ class DINOv3DetectorExecutor(ModelExecutor):
         residual = residual.permute(0, 2, 4, 3, 5, 1).contiguous()
         residual_sq_mean = residual.square().mean(dim=(3, 4, 5))
         return torch.sqrt(residual_sq_mean.view(B, gh * gw))
+
+    def _project_transmission_pscore_hints_to_sources(
+        self,
+        transmission_pscore_hints: torch.Tensor | None,
+        context: Dict[str, Any],
+        config: Any,
+    ) -> List[torch.Tensor] | None:
+        source_layouts = context.get('all_source_layouts')
+        all_input_tokens = context.get('all_x_backbones')
+        if transmission_pscore_hints is None or not isinstance(source_layouts, list) or all_input_tokens is None:
+            return None
+        if len(source_layouts) != len(all_input_tokens):
+            return None
+
+        img_h, img_w = config.image_shape[:2]
+        if isinstance(config.patch_size, int):
+            tx_patch_h = tx_patch_w = config.patch_size
+        else:
+            tx_patch_h, tx_patch_w = config.patch_size
+        if img_h % tx_patch_h != 0 or img_w % tx_patch_w != 0:
+            return None
+
+        tx_grid_h = img_h // tx_patch_h
+        tx_grid_w = img_w // tx_patch_w
+        tx_hint_map_2d = transmission_pscore_hints.view(transmission_pscore_hints.shape[0], tx_grid_h, tx_grid_w)
+        vit_patch_size = int(self._get_vit_backbone().patch_size)
+
+        all_projected_hints: List[torch.Tensor] = []
+        for layout, input_tokens in zip(source_layouts, all_input_tokens):
+            token_h = int(layout['token_h'])
+            token_w = int(layout['token_w'])
+            if layout['kind'] == 'window':
+                y_origin = int(layout['top']) + torch.arange(token_h, device=self.device, dtype=torch.long) * vit_patch_size
+                x_origin = int(layout['left']) + torch.arange(token_w, device=self.device, dtype=torch.long) * vit_patch_size
+            elif layout['kind'] == 'global':
+                resized_h = int(layout['resized_h'])
+                resized_w = int(layout['resized_w'])
+                y_origin = (
+                    (torch.arange(token_h, device=self.device, dtype=torch.float32) + 0.5)
+                    * vit_patch_size
+                    * (img_h / float(resized_h))
+                ).floor().to(dtype=torch.long)
+                x_origin = (
+                    (torch.arange(token_w, device=self.device, dtype=torch.float32) + 0.5)
+                    * vit_patch_size
+                    * (img_w / float(resized_w))
+                ).floor().to(dtype=torch.long)
+            else:
+                return None
+
+            y_idx = torch.clamp(y_origin // tx_patch_h, min=0, max=tx_grid_h - 1)
+            x_idx = torch.clamp(x_origin // tx_patch_w, min=0, max=tx_grid_w - 1)
+            source_hint = tx_hint_map_2d.index_select(1, y_idx).index_select(2, x_idx).reshape(input_tokens.shape[0], -1)
+            source_hint = self._normalize_patch_score_map(source_hint.contiguous())
+            all_projected_hints.append(source_hint)
+
+        return all_projected_hints
 
     def _apply_image_residual_token_pruning(
         self,
@@ -242,6 +343,11 @@ class DINOv3DetectorExecutor(ModelExecutor):
             "_token_prune_full_patch_total",
             "_token_prune_kept_residual_mass_total",
             "_token_prune_full_residual_mass_total",
+            "_token_pscore_kept_mass_total",
+            "_token_pscore_full_mass_total",
+            "_partial_token_kept_patch_total",
+            "_partial_token_full_patch_total",
+            "_partial_token_sample_total",
         }
         total_values: Dict[str, Any] = {}
         for src_cache in all_cache_features:
@@ -401,7 +507,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if grouping_strategy not in {'grid', 'uniform', 'geometric'}:
             return None
 
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         if appcorr_options.get('generated_from_client', False):
             projected_group_maps = self._project_transmission_groups_to_sources(context, config)
             if projected_group_maps is not None:
@@ -523,6 +629,12 @@ class DINOv3DetectorExecutor(ModelExecutor):
             if idx is not None and len(idx) < config.batch_size:
                 tensor = tensor[idx]
             context['input_tensor'] = tensor
+            context['transmission_pscore_hint_map'] = self._build_transmission_pscore_hint_map(
+                task,
+                context,
+                config,
+                tensor.shape[0],
+            )
 
 
     def prepare_group_maps_and_dindices(self, task: Task, context: Dict[str, Any], config: Any):
@@ -542,7 +654,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         all_group_plans = []
         num_pretokens = 1 + getattr(self._get_vit_backbone(), 'n_storage_tokens', 0)
         all_patch_residual_rms = context.get('all_patch_residual_rms')
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         token_prune_enabled = appcorr_options["token_prune_enabled"]
         token_prune_threshold = appcorr_options["token_prune_threshold"]
         token_prune_min_keep = appcorr_options["token_prune_min_keep"]
@@ -719,6 +831,11 @@ class DINOv3DetectorExecutor(ModelExecutor):
         context['all_x_backbones'], context['all_rope_sincos'] = all_x_backbones, all_rope_sincos
         context['all_source_layouts'] = all_source_layouts
         context['all_patch_residual_rms'] = all_patch_residual_rms
+        context['all_mobile_pscore_hints'] = self._project_transmission_pscore_hints_to_sources(
+            context.get('transmission_pscore_hint_map'),
+            context,
+            config,
+        )
         context.pop('all_group_plans', None)
         context.pop('all_cached_dindices', None)
 
@@ -746,7 +863,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get('all_group_plans')
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
 
         if all_input_tokens is None or all_rope_sincos is None:
@@ -865,10 +982,11 @@ class DINOv3DetectorExecutor(ModelExecutor):
         all_cache_features = context.get('all_cache_features')
         all_cached_dindices = context.get('all_cached_dindices')
         all_outputs = context.get('all_outputs')
+        all_mobile_pscore_hints = context.get('all_mobile_pscore_hints')
 
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get('all_group_plans')
-        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
 
         if all_input_tokens is None or all_rope_sincos is None:
@@ -892,6 +1010,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
         token_keep_ratio = appcorr_options["token_keep_ratio"]
+        token_keep_thres = appcorr_options["token_keep_thres"]
 
         if appcorr_method == 'partial_channel':
             if all_group_plans is None or not isinstance(all_group_plans, list):
@@ -922,6 +1041,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
             if not torch.is_tensor(group_map) or not isinstance(cached_dindices, dict):
                 return
+
+            mobile_pscore_hint = None
+            if isinstance(all_mobile_pscore_hints, list) and src_idx < len(all_mobile_pscore_hints):
+                mobile_pscore_hint = all_mobile_pscore_hints[src_idx]
 
             dindice = cached_dindices.get(group_id)
             group_plans = all_group_plans[src_idx] if appcorr_method == 'partial_channel' else None
@@ -977,10 +1100,13 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
+                            token_keep_thres=token_keep_thres,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                            mobile_pscore_hint=mobile_pscore_hint,
                             server_pscore=appcorr_options["server_pscore"],
                             server_pscore_weight=appcorr_options["server_pscore_weight"],
+                            pscore_fusion=appcorr_options["pscore_fusion"],
                             attn_col_alive_ratio=attn_col_alive_ratio,
                             fixed_query_state=fixed_query_state,
                             group_plan=plan,
@@ -996,10 +1122,13 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
+                            token_keep_thres=token_keep_thres,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                            mobile_pscore_hint=mobile_pscore_hint,
                             server_pscore=appcorr_options["server_pscore"],
                             server_pscore_weight=appcorr_options["server_pscore_weight"],
+                            pscore_fusion=appcorr_options["pscore_fusion"],
                             debug=False,
                         )
 
