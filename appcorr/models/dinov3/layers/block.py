@@ -713,6 +713,7 @@ class SelfAttentionBlock(nn.Module):
         debug = kwargs.get("debug", False)
         token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
         token_keep_thres = self._resolve_token_keep_threshold(kwargs)
+        sdpa_query_bucket_size = int(kwargs.get("sdpa_query_bucket_size", 0) or 0)
         server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
         server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
         mobile_pscore = str(kwargs.get("mobile_pscore", "none"))
@@ -835,6 +836,7 @@ class SelfAttentionBlock(nn.Module):
                 tag=tag,
                 appcorr_method="partial_token",
                 fixed_query_state=fixed_query_state,
+                sdpa_query_bucket_size=sdpa_query_bucket_size,
             )
             x_sel = x_sel + self._pad_active_tokens(
                 self.ls1(x_attn_sel),

@@ -22,6 +22,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'server_pscore': 'cls_attn_prob',
         'server_pscore_weight': 1.0,
         'pscore_fusion': 'add',
+        'sdpa_query_bucket_size': 0,
         'token_prune_enabled': False,
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
@@ -137,6 +138,8 @@ def normalize_appcorr_kwargs(
     elif pscore_fusion not in {'add', 'multiply', 'geo_mean'}:
         pscore_fusion = defaults['pscore_fusion']
     options['pscore_fusion'] = pscore_fusion
+    sdpa_query_bucket_size = int(options.get('sdpa_query_bucket_size', defaults['sdpa_query_bucket_size']) or 0)
+    options['sdpa_query_bucket_size'] = max(sdpa_query_bucket_size, 0)
     options['token_prune_enabled'] = bool(options.get('token_prune_enabled', defaults['token_prune_enabled']))
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)

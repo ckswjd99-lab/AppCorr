@@ -607,6 +607,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         token_keep_thres = appcorr_options["token_keep_thres"]
+        sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
         mobile_pscore_hint = context.get('mobile_pscore_hint_map')
         attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
         fixed_query_state = plan.query_state
@@ -645,6 +646,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
                 server_pscore=appcorr_options["server_pscore"],
                 server_pscore_weight=appcorr_options["server_pscore_weight"],
                 pscore_fusion=appcorr_options["pscore_fusion"],
+                sdpa_query_bucket_size=sdpa_query_bucket_size,
                 attn_col_alive_ratio=attn_col_alive_ratio,
                 fixed_query_state=fixed_query_state,
                 group_plan=plan,

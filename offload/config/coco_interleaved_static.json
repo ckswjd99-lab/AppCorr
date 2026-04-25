@@ -5,7 +5,7 @@
         "num_workers": 0
     },
     "exp_id": "coco_interleaved_static",
-    "batch_size": 1,
+    "batch_size": 16,
     "image_shape": [1024, 1024, 3],
     "patch_size": [16, 16],
     "scheduler_policy_name": "COCOWindowInterleaved",
@@ -25,7 +25,8 @@
         "mobile_pscore_weight": 1.0,
         "server_pscore": "patch_attn_prob_layermean",
         "server_pscore_weight": 1.0,
-        "pscore_fusion": "geo_mean"
+        "pscore_fusion": "geo_mean",
+        "sdpa_query_bucket_size": 64
     },
     "device": "cuda:0"
 }
