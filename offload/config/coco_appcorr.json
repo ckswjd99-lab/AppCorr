@@ -20,7 +20,6 @@
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
-        "global_source_mode": "final_correct",
         "token_keep_thres": 0.002,
         "mobile_pscore": "residual_energy",
         "mobile_pscore_weight": 1.0,

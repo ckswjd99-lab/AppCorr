@@ -7,3 +7,5 @@ fiftyone
 pycocotools
 einops
 realesrgan
+opencv-python
+git+https://github.com/facebookresearch/dinov3.git
