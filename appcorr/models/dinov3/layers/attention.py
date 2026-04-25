@@ -330,6 +330,7 @@ class SelfAttention(nn.Module):
         tag: str,
         *,
         fixed_query_state: QueryStateLike,
+        sdpa_query_bucket_size: int = 0,
         **_: Dict,
     ) -> Tuple[Tensor, dict]:
         kv: Tensor = cache_feature[f"{tag}_kv"]  # [B, N, 2, H, Dh]
@@ -363,7 +364,14 @@ class SelfAttention(nn.Module):
             fixed_query_state.active_token_idx,
         ] = kv_new.to(dtype=kv.dtype)
 
-        q_padded_shape = (B, t_max, self.num_heads, head_dim)
+        bucket_size = max(int(sdpa_query_bucket_size or 0), 0)
+        t_attn = (
+            ((t_max + bucket_size - 1) // bucket_size) * bucket_size
+            if bucket_size > 0 and t_max > 0
+            else t_max
+        )
+
+        q_padded_shape = (B, t_attn, self.num_heads, head_dim)
         if torch.is_grad_enabled():
             q_padded = torch.zeros(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
         else:
@@ -389,6 +397,8 @@ class SelfAttention(nn.Module):
 
         attn_out_padded = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         attn_out_padded = attn_out_padded.transpose(1, 2).contiguous()
+        if t_attn != t_max:
+            attn_out_padded = attn_out_padded[:, :t_max].contiguous()
         if fixed_query_state.all_valid:
             attn_out_active = attn_out_padded.reshape(num_active, self.qkv.in_features)
         else:

@@ -1181,6 +1181,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         token_keep_thres = appcorr_options["token_keep_thres"]
+        sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
 
         if appcorr_method == 'partial_channel':
             if all_group_plans is None or not isinstance(all_group_plans, list):
@@ -1280,6 +1281,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             server_pscore=appcorr_options["server_pscore"],
                             server_pscore_weight=appcorr_options["server_pscore_weight"],
                             pscore_fusion=appcorr_options["pscore_fusion"],
+                            sdpa_query_bucket_size=sdpa_query_bucket_size,
                             attn_col_alive_ratio=attn_col_alive_ratio,
                             fixed_query_state=fixed_query_state,
                             group_plan=plan,
@@ -1302,6 +1304,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             server_pscore=appcorr_options["server_pscore"],
                             server_pscore_weight=appcorr_options["server_pscore_weight"],
                             pscore_fusion=appcorr_options["pscore_fusion"],
+                            sdpa_query_bucket_size=sdpa_query_bucket_size,
                             debug=False,
                         )
 
