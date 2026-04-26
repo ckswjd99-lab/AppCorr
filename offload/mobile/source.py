@@ -80,10 +80,37 @@ class SourceModule(multiprocessing.Process):
             image_np = np.clip(image_np, 0, 255).astype(np.uint8)
         return np.ascontiguousarray(image_np)
 
-    def _prepare_encode_input(self, images, curr_bs: int):
+    @staticmethod
+    def _metadata_for_label(label):
+        if not isinstance(label, dict):
+            return {}
+        orig_h = label.get('orig_height')
+        orig_w = label.get('orig_width')
+        if orig_h is None or orig_w is None:
+            return {}
+        return {'target_shape': (int(orig_h), int(orig_w))}
+
+    def _prepare_encode_input(self, images, curr_bs: int, labels=None):
         policy_name = self.config.transmission_policy_name
+        preserve_input_shape = bool(self.config.transmission_kwargs.get('preserve_input_shape', False))
+        label_list = self._labels_to_list(labels, curr_bs) if labels is not None else []
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
+            if preserve_input_shape:
+                encoded_items = [
+                    {
+                        'image': image_np,
+                        'metadata': self._metadata_for_label(label_list[idx]) if idx < len(label_list) else {},
+                    }
+                    for idx, image_np in enumerate(real_imgs_np)
+                ]
+                if len(real_imgs_np) < self.config.batch_size and real_imgs_np:
+                    pad_count = self.config.batch_size - len(real_imgs_np)
+                    encoded_items.extend(
+                        {'image': np.zeros_like(real_imgs_np[0]), 'metadata': {}}
+                        for _ in range(pad_count)
+                    )
+                return encoded_items
             if policy_name in {"Laplacian", "ProgressiveLaplacian", "COCOWindowProgressiveLaplacian"}:
                 return real_imgs_np
 
@@ -98,6 +125,25 @@ class SourceModule(multiprocessing.Process):
 
         server_batch_size = self.config.batch_size
         img_h, img_w, img_c = self.config.image_shape
+        if preserve_input_shape:
+            real_imgs_np = [
+                self._tensor_to_hwc_uint8(images[idx])
+                for idx in range(curr_bs)
+            ]
+            encoded_items = [
+                {
+                    'image': image_np,
+                    'metadata': self._metadata_for_label(label_list[idx]) if idx < len(label_list) else {},
+                }
+                for idx, image_np in enumerate(real_imgs_np)
+            ]
+            if curr_bs < self.config.batch_size and real_imgs_np:
+                pad_count = self.config.batch_size - curr_bs
+                encoded_items.extend(
+                    {'image': np.zeros_like(real_imgs_np[0]), 'metadata': {}}
+                    for _ in range(pad_count)
+                )
+            return encoded_items
         full_batch_np = np.zeros((server_batch_size, img_h, img_w, img_c), dtype=np.uint8)
         real_imgs_np = images.permute(0, 2, 3, 1).numpy()
         full_batch_np[:curr_bs] = real_imgs_np
@@ -111,6 +157,25 @@ class SourceModule(multiprocessing.Process):
             label.tolist() if isinstance(label, torch.Tensor) else label
             for label in list(labels)[:curr_bs]
         ]
+
+    @staticmethod
+    def _json_safe_value(value):
+        if isinstance(value, np.ndarray):
+            import hashlib
+
+            value_np = np.ascontiguousarray(value)
+            return {
+                'shape': list(value_np.shape),
+                'dtype': str(value_np.dtype),
+                'sha256': hashlib.sha256(value_np.tobytes()).hexdigest(),
+            }
+        if isinstance(value, torch.Tensor):
+            return SourceModule._json_safe_value(value.detach().cpu().numpy())
+        if isinstance(value, dict):
+            return {key: SourceModule._json_safe_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [SourceModule._json_safe_value(item) for item in value]
+        return value
 
     @classmethod
     def _latency_event_type(cls, event_type: str) -> str:
@@ -127,8 +192,12 @@ class SourceModule(multiprocessing.Process):
         try:
             # Initialize Dataset Loader
             dataset_kwargs = getattr(self.config, 'dataset_kwargs', {})
+            profile_config = self.config.get_input_profile_config()
             # Determine image size from config if possible, or default
-            image_size = self.config.image_shape[0] if self.config.image_shape else 256
+            image_size = profile_config.get(
+                'mobile_resize_short_side',
+                self.config.image_shape[0] if self.config.image_shape else 256,
+            )
             
             self.dataset_loader = get_dataset_loader(
                 dataset_name, 
@@ -199,7 +268,7 @@ class SourceModule(multiprocessing.Process):
             
             # Send Phase
             t_load_start = time.time()
-            encode_input = self._prepare_encode_input(images, curr_bs)
+            encode_input = self._prepare_encode_input(images, curr_bs, labels)
             t_load_end = time.time()
             
             # Encode data
@@ -345,7 +414,7 @@ class SourceModule(multiprocessing.Process):
                 'partial_token_sample_count': partial_token_sample_count,
                 'group_stats': group_stats,
                 'events': all_events,
-                'labels': valid_labels
+                'labels': self._json_safe_value(valid_labels)
             }
             log_entry['latency'] = latency
             events_file.write(json.dumps(log_entry) + "\n")

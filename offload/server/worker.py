@@ -141,9 +141,7 @@ class WorkerModule(multiprocessing.Process):
 
                                 t_decode_start = time.time()
                                 prev_input_hr_np = context.get('input_hr_np')
-                                context['prev_input_hr_np'] = (
-                                    prev_input_hr_np.copy() if prev_input_hr_np is not None else None
-                                )
+                                context['prev_input_hr_np'] = self._copy_input_state_value(prev_input_hr_np)
                                 context['input_hr_np'] = self.policy.decode(
                                     decode_patches, self.config,
                                     canvas=context.get('input_hr_np')
@@ -561,8 +559,26 @@ class WorkerModule(multiprocessing.Process):
         snapshot = {}
         for key in ('prev_input_hr_np', 'input_hr_np', 'input_lr_native_np'):
             value = context.get(key)
-            snapshot[key] = value.copy() if value is not None else None
+            snapshot[key] = self._copy_input_state_value(value)
         return snapshot
+
+    @staticmethod
+    def _copy_input_state_value(value: Any):
+        if value is None:
+            return None
+        if isinstance(value, np.ndarray):
+            return value.copy()
+        if isinstance(value, dict):
+            return {
+                key: WorkerModule._copy_input_state_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                WorkerModule._copy_input_state_value(item)
+                for item in value
+            ]
+        return value.copy() if hasattr(value, 'copy') else value
 
     def _get_task_group_id(self, task: Task) -> Optional[int]:
         if task.payload:

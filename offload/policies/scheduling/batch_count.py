@@ -50,6 +50,9 @@ class BatchCountBasedPolicy(ISchedulingPolicy):
         H, W = config.image_shape[:2]
         ph, pw = config.patch_size
 
+        if bool(config.transmission_kwargs.get('preserve_input_shape', False)):
+            return 1
+
         if config.transmission_policy_name == "Laplacian":
             # Sum patches for all active levels
             levels = config.transmission_kwargs.get('pyramid_levels', [2, 1, 0])
