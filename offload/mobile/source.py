@@ -50,13 +50,22 @@ class SourceModule(multiprocessing.Process):
 
     _EVENT_GROUP_SUFFIX_RE = re.compile(r"_G\d+$")
 
-    def __init__(self, output_queue, feedback_queue, config: ExperimentConfig, data_root: str, loader_batch_size: int):
+    def __init__(
+        self,
+        output_queue,
+        feedback_queue,
+        config: ExperimentConfig,
+        data_root: str,
+        loader_batch_size: int,
+        num_requests: int | None = None,
+    ):
         super().__init__()
         self.output_queue = output_queue
         self.feedback_queue = feedback_queue
         self.config = config
         self.data_root = data_root
         self.loader_batch_size = loader_batch_size
+        self.num_requests = num_requests
 
     @staticmethod
     def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
@@ -347,8 +356,8 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if (batch_idx+1) == 10:
-                break # TEMP
+            if self.num_requests is not None and (batch_idx + 1) >= self.num_requests:
+                break
 
         final_summary = self.dataset_loader.get_summary()
         print(f"[Source] Final Summary: {final_summary}")
