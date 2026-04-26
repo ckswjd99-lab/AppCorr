@@ -193,6 +193,15 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
         base_h, base_w = self._base_hw(config)
 
         final_images = np.zeros((batch_size, h, w, c), dtype=np.uint8) if canvas is None else canvas
+        has_base_patch = any(
+            0 <= patch.image_idx < batch_size
+            and (patch.group_id == 0 or patch.res_level == self._BASE_RES_LEVEL)
+            for patch in patches
+        )
+        if canvas is not None and not has_base_patch:
+            self._apply_residual_patches_in_place(final_images, patches, config)
+            return final_images
+
         patches_per_batch = {b_idx: [] for b_idx in range(batch_size)}
         for patch in patches:
             if 0 <= patch.image_idx < batch_size:
@@ -223,6 +232,43 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
             final_images[b_idx] = np.clip(pred.astype(np.int16) + residual, 0, 255).astype(np.uint8)
 
         return final_images
+
+    def _apply_residual_patches_in_place(
+        self,
+        canvas: np.ndarray,
+        patches: List[Patch],
+        config: ExperimentConfig,
+    ) -> None:
+        _, w, c = config.image_shape
+        ph, pw = self._patch_hw(config)
+        grid_w = (w + pw - 1) // pw
+
+        for patch in patches:
+            if patch.res_level != self._RESIDUAL_RES_LEVEL:
+                continue
+            if not (0 <= patch.image_idx < canvas.shape[0]):
+                continue
+
+            row, col = divmod(patch.spatial_idx, grid_w)
+            y, x = row * ph, col * pw
+            th = min(ph, canvas.shape[1] - y)
+            tw = min(pw, canvas.shape[2] - x)
+            if th <= 0 or tw <= 0:
+                continue
+
+            if hasattr(patch, '_decompressed_cache'):
+                raw = patch._decompressed_cache
+            else:
+                raw = zlib.decompress(patch.data)
+                patch._decompressed_cache = raw
+
+            residual = np.frombuffer(raw, dtype=np.int16).reshape(ph, pw, c)
+            target = canvas[patch.image_idx, y:y + th, x:x + tw]
+            target[...] = np.clip(
+                target.astype(np.int16) + residual[:th, :tw],
+                0,
+                255,
+            ).astype(np.uint8)
 
     def decode_lowres(self, patches: List[Patch], config: ExperimentConfig) -> np.ndarray:
         batch_size = config.batch_size

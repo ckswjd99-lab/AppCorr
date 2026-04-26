@@ -128,9 +128,16 @@ class WorkerModule(multiprocessing.Process):
                                         'params': {}
                                     })
 
-                                if 'patch_buffer' not in context:
-                                    context['patch_buffer'] = []
-                                context['patch_buffer'].extend(task.payload)
+                                incremental_coco_decode = (
+                                    self.config.transmission_policy_name == 'COCOWindowProgressiveLaplacian'
+                                )
+                                if incremental_coco_decode:
+                                    decode_patches = task.payload
+                                else:
+                                    if 'patch_buffer' not in context:
+                                        context['patch_buffer'] = []
+                                    context['patch_buffer'].extend(task.payload)
+                                    decode_patches = context['patch_buffer']
 
                                 t_decode_start = time.time()
                                 prev_input_hr_np = context.get('input_hr_np')
@@ -138,7 +145,7 @@ class WorkerModule(multiprocessing.Process):
                                     prev_input_hr_np.copy() if prev_input_hr_np is not None else None
                                 )
                                 context['input_hr_np'] = self.policy.decode(
-                                    context['patch_buffer'], self.config,
+                                    decode_patches, self.config,
                                     canvas=context.get('input_hr_np')
                                 )
                                 if group_id == 0 and (
