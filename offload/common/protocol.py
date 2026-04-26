@@ -167,6 +167,8 @@ class ExperimentConfig:
     # Image/Patch Specs
     image_shape: Tuple[int, int, int] = (256, 256, 3)
     patch_size: Tuple[int, int] = (16, 16)
+    input_profile_name: str = "fixed_image_shape"
+    input_profile_kwargs: Dict[str, Any] = field(default_factory=dict)
     
     # Policies
     scheduler_policy_name: str = "BatchCountBased"
@@ -176,6 +178,33 @@ class ExperimentConfig:
     scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
     appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def get_input_profile_config(self) -> Dict[str, Any]:
+        name = self.input_profile_name or "fixed_image_shape"
+        if name == "fixed_image_shape":
+            return {"name": name}
+        if name == "dinov3_ade20k_m2f_official":
+            options = {
+                "name": name,
+                "mobile_resize_short_side": 896,
+                "server_inference_mode": "slide",
+                "server_crop_size": 896,
+                "server_stride": 596,
+                "server_eval_mode": "tta",
+                "server_rescale_to": "input",
+                "server_use_tta": True,
+                "server_tta_ratios": [0.9, 0.95, 1.0, 1.05, 1.1],
+                "decoder_head_type": "m2f",
+                "num_classes": 150,
+                "autocast_dtype": "bfloat16",
+                "reduce_zero_label": True,
+            }
+            options.update(self.input_profile_kwargs)
+            return options
+        raise ValueError(f"Unknown input_profile_name: {name}")
+
+    def use_official_ade20k_m2f_profile(self) -> bool:
+        return (self.input_profile_name or "fixed_image_shape") == "dinov3_ade20k_m2f_official"
 
     def early_exit_enabled(self) -> bool:
         return bool(self.scheduler_kwargs.get('early_exit', False))
