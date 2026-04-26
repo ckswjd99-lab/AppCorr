@@ -7,7 +7,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
     return {
         'enabled': False,
         'generated_from_client': False,
-        'global_source_mode': 'final_correct',
+        'global_source_mode': 'global_first',
         'update_attn': False,
         'pyramid_levels': [0],
         'token_res': [1.0],
@@ -22,6 +22,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'server_pscore': 'cls_attn_prob',
         'server_pscore_weight': 1.0,
         'pscore_fusion': 'add',
+        'sdpa_query_bucket_size': 0,
         'token_prune_enabled': False,
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
@@ -69,7 +70,7 @@ def normalize_appcorr_kwargs(
     options['enabled'] = enabled_from_appcorr if explicit_enabled is None else bool(explicit_enabled)
     options['generated_from_client'] = bool(options.get('generated_from_client', defaults['generated_from_client']))
     options['global_source_mode'] = str(options.get('global_source_mode', defaults['global_source_mode']))
-    if options['global_source_mode'] not in {'final_correct', 'approx'}:
+    if options['global_source_mode'] not in {'global_first', 'final_correct', 'approx'}:
         options['global_source_mode'] = defaults['global_source_mode']
     options['update_attn'] = bool(options.get('update_attn', defaults['update_attn']))
     options['pyramid_levels'] = list(options.get('pyramid_levels', defaults['pyramid_levels']))
@@ -137,6 +138,8 @@ def normalize_appcorr_kwargs(
     elif pscore_fusion not in {'add', 'multiply', 'geo_mean'}:
         pscore_fusion = defaults['pscore_fusion']
     options['pscore_fusion'] = pscore_fusion
+    sdpa_query_bucket_size = int(options.get('sdpa_query_bucket_size', defaults['sdpa_query_bucket_size']) or 0)
+    options['sdpa_query_bucket_size'] = max(sdpa_query_bucket_size, 0)
     options['token_prune_enabled'] = bool(options.get('token_prune_enabled', defaults['token_prune_enabled']))
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)

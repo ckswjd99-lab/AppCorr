@@ -14,6 +14,7 @@ from offload.mobile.dataset import get_dataset_loader
 import os
 import json
 import datetime
+import re
 
 def perform_time_sync(output_queue, feedback_queue, rounds=10):
     """Estimate clock offset via ping-pong."""
@@ -47,13 +48,24 @@ def perform_time_sync(output_queue, feedback_queue, rounds=10):
 class SourceModule(multiprocessing.Process):
     """Run experiment loop, handle partial batches, track metrics."""
 
-    def __init__(self, output_queue, feedback_queue, config: ExperimentConfig, data_root: str, loader_batch_size: int):
+    _EVENT_GROUP_SUFFIX_RE = re.compile(r"_G\d+$")
+
+    def __init__(
+        self,
+        output_queue,
+        feedback_queue,
+        config: ExperimentConfig,
+        data_root: str,
+        loader_batch_size: int,
+        num_requests: int | None = None,
+    ):
         super().__init__()
         self.output_queue = output_queue
         self.feedback_queue = feedback_queue
         self.config = config
         self.data_root = data_root
         self.loader_batch_size = loader_batch_size
+        self.num_requests = num_requests
 
     @staticmethod
     def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
@@ -72,7 +84,7 @@ class SourceModule(multiprocessing.Process):
         policy_name = self.config.transmission_policy_name
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
-            if policy_name in {"Laplacian", "ProgressiveLaplacian"}:
+            if policy_name in {"Laplacian", "ProgressiveLaplacian", "COCOWindowProgressiveLaplacian"}:
                 return real_imgs_np
 
             server_batch_size = self.config.batch_size
@@ -99,6 +111,14 @@ class SourceModule(multiprocessing.Process):
             label.tolist() if isinstance(label, torch.Tensor) else label
             for label in list(labels)[:curr_bs]
         ]
+
+    @classmethod
+    def _latency_event_type(cls, event_type: str) -> str:
+        if event_type.startswith("MOBILE_ENCODE_G"):
+            return cls._EVENT_GROUP_SUFFIX_RE.sub("", event_type)
+        if event_type.startswith("MOBILE_SEND_G"):
+            return cls._EVENT_GROUP_SUFFIX_RE.sub("", event_type)
+        return event_type
 
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
@@ -248,7 +268,7 @@ class SourceModule(multiprocessing.Process):
             # Aggregate Event Stats (Per Request)
             request_latency_map = {}
             for event in all_events:
-                etype = event['type']
+                etype = self._latency_event_type(event['type'])
                 dur_ms = event.get('duration', 0) * 1000.0 # Convert to ms
                 
                 if etype not in request_latency_map:
@@ -336,8 +356,8 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if (batch_idx+1) == 10:
-                break # TEMP
+            if self.num_requests is not None and (batch_idx + 1) >= self.num_requests:
+                break
 
         final_summary = self.dataset_loader.get_summary()
         print(f"[Source] Final Summary: {final_summary}")
