@@ -128,9 +128,16 @@ class WorkerModule(multiprocessing.Process):
                                         'params': {}
                                     })
 
-                                if 'patch_buffer' not in context:
-                                    context['patch_buffer'] = []
-                                context['patch_buffer'].extend(task.payload)
+                                incremental_coco_decode = (
+                                    self.config.transmission_policy_name == 'COCOWindowProgressiveLaplacian'
+                                )
+                                if incremental_coco_decode:
+                                    decode_patches = task.payload
+                                else:
+                                    if 'patch_buffer' not in context:
+                                        context['patch_buffer'] = []
+                                    context['patch_buffer'].extend(task.payload)
+                                    decode_patches = context['patch_buffer']
 
                                 t_decode_start = time.time()
                                 prev_input_hr_np = context.get('input_hr_np')
@@ -138,12 +145,16 @@ class WorkerModule(multiprocessing.Process):
                                     prev_input_hr_np.copy() if prev_input_hr_np is not None else None
                                 )
                                 context['input_hr_np'] = self.policy.decode(
-                                    context['patch_buffer'], self.config,
+                                    decode_patches, self.config,
                                     canvas=context.get('input_hr_np')
                                 )
-                                if group_id == 0 and self.config.lowres_sr_enabled():
+                                if group_id == 0 and (
+                                    self.config.lowres_sr_enabled()
+                                    or self.config.transmission_policy_name == 'COCOWindowProgressiveLaplacian'
+                                ):
                                     context['input_lr_native_np'] = self.policy.decode_lowres(task.payload, self.config)
-                                    context['input_sr_tensor'] = None
+                                    if self.config.lowres_sr_enabled():
+                                        context['input_sr_tensor'] = None
                                 t_decode_end = time.time()
 
                                 if 'events' in context:
@@ -248,7 +259,11 @@ class WorkerModule(multiprocessing.Process):
                     context['events'].append(event_data)
 
                 # Feedback: notify scheduler that an approximation pass finished
-                if job.op_type == OpType.APPROX_FORWARD and self.feedback_queue is not None:
+                if (
+                    job.op_type == OpType.APPROX_FORWARD
+                    and self.feedback_queue is not None
+                    and not bool(job.params.get('global_only', False))
+                ):
                     end_layer = job.params.get('layers', (0, 0))[1]
                     self.feedback_queue.put(('APPROX_DONE', job.req_id, end_layer))
 
@@ -267,7 +282,14 @@ class WorkerModule(multiprocessing.Process):
 
     def _finalize_and_send_response(self, task: Task, context: Dict[str, Any]):
         """Called by Reaper Thread after GPU is done and all events are logged."""
-        server_events = context.get('events', [])
+        server_events = []
+        for event in context.get('events', []):
+            event_copy = dict(event)
+            if isinstance(event_copy.get('params'), dict):
+                event_copy['params'] = dict(event_copy['params'])
+            if isinstance(event_copy.get('meta'), dict):
+                event_copy['meta'] = dict(event_copy['meta'])
+            server_events.append(event_copy)
         preds = context.get('_pending_preds', [])
         cache_feature = context.get('cache_feature')
         cache_size_bytes = self._estimate_cache_size_bytes(cache_feature)

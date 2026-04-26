@@ -12,11 +12,13 @@ from offload.mobile.modules import MobileSender, MobileReceiver
 from offload.mobile.source import SourceModule
 from offload.common import ExperimentConfig
 
-def run_mobile(server_ip, recv_port, send_port, data_root, config_path):
+def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_request=None):
     print(f"=== Starting AppCorr Mobile Client ===")
     print(f"[*] Target Server: {server_ip}")
     print(f"[*] ImageNet Root: {data_root}")
     print(f"[*] Config Path: {config_path}")
+    if num_request is not None:
+        print(f"[*] Num Requests: {num_request}")
 
     # Load Configuration
     with open(config_path, 'r') as f:
@@ -40,7 +42,7 @@ def run_mobile(server_ip, recv_port, send_port, data_root, config_path):
     # Initialize processes
     sender = MobileSender(server_ip, recv_port, send_queue)
     receiver = MobileReceiver(server_ip, send_port, feedback_queue)
-    source = SourceModule(send_queue, feedback_queue, config, data_root, config.batch_size)
+    source = SourceModule(send_queue, feedback_queue, config, data_root, config.batch_size, num_request)
 
     procs = [sender, receiver, source]
 
@@ -68,7 +70,10 @@ if __name__ == "__main__":
     parser.add_argument("--send-port", type=int, default=39999, help="Downlink port")
     parser.add_argument("--data", type=str, default="~/data/imagenet_val", help="Path to ImageNet")
     parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
+    parser.add_argument("-nr", "--num-request", type=int, default=None, help="Run only N requests; omit to run all")
     
     args = parser.parse_args()
+    if args.num_request is not None and args.num_request <= 0:
+        parser.error("--num-request must be a positive integer")
     
-    run_mobile(args.ip, args.recv_port, args.send_port, args.data, args.config)
+    run_mobile(args.ip, args.recv_port, args.send_port, args.data, args.config, args.num_request)
