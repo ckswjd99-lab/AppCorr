@@ -366,13 +366,12 @@ class MSDeformAttnPixelDecoder(nn.Module):
         self.lateral_convs = nn.ModuleList(lateral_convs[::-1])
         self.output_convs = nn.ModuleList(output_convs[::-1])
 
-    @autocast(device_type="cuda", enabled=False)
     def forward_features(self, features):
         srcs = []
         pos = []
         # Reverse feature maps into top-down order (from low to high resolution)
         for idx, f in enumerate(self.transformer_in_features[::-1][:-1]):  # TODO remove [:-1]
-            x = features[f].float()  # deformable detr does not support half precision
+            x = features[f]
             srcs.append(self.input_convs[idx](x))
             pos.append(self.pe_layer(x))
 
@@ -396,7 +395,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
         # append `out` with extra FPN levels
         # Reverse feature maps into top-down order (from low to high resolution)
         for idx, f in enumerate(self.in_features[0]):  # TODO re put [:self.num_fpn_levels][::-1]):
-            x = features[f].float()
+            x = features[f]
             lateral_conv = self.lateral_convs[idx]
             output_conv = self.output_convs[idx]
             cur_fpn = lateral_conv(x)

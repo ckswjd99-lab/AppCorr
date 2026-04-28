@@ -391,8 +391,8 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         _, bs, _ = src[0].shape
 
         # QxNxC
-        query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
-        output = self.query_feat.weight.unsqueeze(1).repeat(1, bs, 1)
+        query_embed = self.query_embed.weight.unsqueeze(1).expand(-1, bs, -1)
+        output = self.query_feat.weight.unsqueeze(1).expand(-1, bs, -1).clone()
 
         predictions_class = []
         predictions_mask = []
@@ -454,7 +454,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # must use bool type
         # If a BoolTensor is provided, positions with ``True`` are not allowed to attend while ``False`` values will be unchanged.
         attn_mask = (
-            attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5
+            attn_mask.sigmoid().flatten(2).unsqueeze(1).expand(-1, self.num_heads, -1, -1).flatten(0, 1) < 0.5
         ).bool()
         attn_mask = attn_mask.detach()
 
