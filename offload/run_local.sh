@@ -10,6 +10,7 @@ Runs the AppCorr server and mobile client locally against one config.
 
 Options:
   -nr N, --num-request N  Run only N requests (batches); omit to run all
+  -ns,   --nsys           Profile the server with Nsight Systems (nsys profile)
 
 Environment overrides:
   RECV_PORT       Server receive / mobile upload port. Default: 39998
@@ -19,10 +20,12 @@ Environment overrides:
 Examples:
   offload/run_local.sh offload/config/coco_interleaved_dynamic.json
   offload/run_local.sh offload/config/ade20k_approx_sequential.json -nr 10
+  offload/run_local.sh offload/config/ade20k_approx_sequential.json -nr 10 -ns
 EOF
 }
 
 NUM_REQUEST=""
+USE_NSYS=false
 POSITIONAL_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -35,6 +38,10 @@ while [[ $# -gt 0 ]]; do
       fi
       NUM_REQUEST="$2"
       shift 2
+      ;;
+    -ns|--nsys)
+      USE_NSYS=true
+      shift
       ;;
     -h|--help)
       usage
@@ -158,9 +165,20 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[run_local] Starting local AppCorr server..."
-start_in_own_group python offload/server/main.py \
-  --recv-port "${RECV_PORT}" \
-  --send-port "${SEND_PORT}"
+if [[ "${USE_NSYS}" == true ]]; then
+  echo "[run_local] Nsight Systems profiling enabled → temp_profile.nsys-rep"
+  start_in_own_group nsys profile \
+    --trace=cuda,nvtx \
+    --output=temp_profile \
+    --force-overwrite=true \
+    -- python offload/server/main.py \
+      --recv-port "${RECV_PORT}" \
+      --send-port "${SEND_PORT}"
+else
+  start_in_own_group python offload/server/main.py \
+    --recv-port "${RECV_PORT}" \
+    --send-port "${SEND_PORT}"
+fi
 SERVER_PID="${STARTED_PID}"
 
 echo "[run_local] Server PID: ${SERVER_PID}"
