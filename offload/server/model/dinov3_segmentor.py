@@ -886,9 +886,91 @@ class DINOv3SegmentorExecutor(ModelExecutor):
             f4 = adapter.norm4(final_c4)
         return {"1": f1, "2": f2, "3": f3, "4": f4}
 
+    def _run_adapter_postprocess_batch(
+        self, src_indices: List[int], context: Dict[str, Any]
+    ) -> Dict[str, torch.Tensor]:
+        """Batched version of _run_adapter_postprocess for sources with identical spatial shapes.
+        Returns the multi-scale feature dict with batch dim = len(src_indices)."""
+        adapter = self.model.segmentation_model[0]
+        vit_backbone = adapter.backbone
+
+        N = len(src_indices)
+        s0 = src_indices[0]
+        H_c, W_c, H_toks, W_toks, _ = context["seg_source_shapes"][s0]
+
+        # Batch intermediate_raw: stack per interaction_index
+        n_interactions = len(adapter.interaction_indexes)
+        batched_raw = []
+        for inter_i in range(n_interactions):
+            raws = [context["seg_intermediate_raw"][si][inter_i] for si in src_indices]
+            batched_raw.append(torch.cat(raws, dim=0))
+
+        # Batch spm_c_cat and spm_c1
+        spm_c_cat = torch.cat([context["seg_spm_c_cat"][si].clone() for si in src_indices], dim=0)
+        spm_c1 = torch.cat([context["seg_spm_c1_raw"][si] for si in src_indices], dim=0)
+        c2_len = context["seg_spm_c2_len"][s0]
+        c3_len = context["seg_spm_c3_len"][s0]
+
+        # deform_inputs are identical for same-shape sources, use first
+        deform_in1 = context["seg_deform_in1"][s0]
+        deform_in2 = context["seg_deform_in2"][s0]
+
+        # Norm + split backbone outputs
+        intermediate_normed = []
+        for raw_out in batched_raw:
+            if vit_backbone.untie_cls_and_patch_norms:
+                normed_cls_reg = vit_backbone.cls_norm(raw_out[:, :vit_backbone.n_storage_tokens + 1])
+                normed_patch = vit_backbone.norm(raw_out[:, vit_backbone.n_storage_tokens + 1:])
+                intermediate_normed.append(torch.cat((normed_cls_reg, normed_patch), dim=1))
+            else:
+                intermediate_normed.append(vit_backbone.norm(raw_out))
+
+        backbone_cls_tokens = [out[:, 0] for out in intermediate_normed]
+        backbone_patch_tokens = [out[:, vit_backbone.n_storage_tokens + 1:] for out in intermediate_normed]
+        all_backbone_layers = list(zip(backbone_patch_tokens, backbone_cls_tokens))
+
+        x_for_shape, _ = all_backbone_layers[0]
+        _, _, feat_dim = x_for_shape.shape
+        del x_for_shape
+
+        # InteractionBlocks
+        interaction_outs = []
+        for i, interaction_layer in enumerate(adapter.interactions):
+            layer_x, layer_cls = all_backbone_layers[i]
+            _, spm_c_cat, _ = interaction_layer(
+                layer_x, spm_c_cat, layer_cls,
+                deform_in1, deform_in2,
+                H_c, W_c, H_toks, W_toks,
+            )
+            interaction_outs.append(
+                layer_x.transpose(1, 2).view(N, feat_dim, H_toks, W_toks).contiguous()
+            )
+
+        # Split & Reshape SPM features
+        final_c2 = spm_c_cat[:, 0:c2_len, :].transpose(1, 2).view(N, feat_dim, H_c * 2, W_c * 2).contiguous()
+        final_c3 = spm_c_cat[:, c2_len:c2_len + c3_len, :].transpose(1, 2).view(N, feat_dim, H_c, W_c).contiguous()
+        final_c4 = spm_c_cat[:, c2_len + c3_len:, :].transpose(1, 2).view(N, feat_dim, H_c // 2, W_c // 2).contiguous()
+        final_c1 = adapter.up(final_c2) + spm_c1
+
+        if adapter.add_vit_feature:
+            vit_x1, vit_x2, vit_x3, vit_x4 = interaction_outs
+            vit_x1 = F.interpolate(vit_x1, size=(4 * H_c, 4 * W_c), mode="bilinear", align_corners=False)
+            vit_x2 = F.interpolate(vit_x2, size=(2 * H_c, 2 * W_c), mode="bilinear", align_corners=False)
+            vit_x3 = F.interpolate(vit_x3, size=(1 * H_c, 1 * W_c), mode="bilinear", align_corners=False)
+            vit_x4 = F.interpolate(vit_x4, size=(H_c // 2, W_c // 2), mode="bilinear", align_corners=False)
+            final_c1 = final_c1 + vit_x1
+            final_c2 = final_c2 + vit_x2
+            final_c3 = final_c3 + vit_x3
+            final_c4 = final_c4 + vit_x4
+
+        f1 = adapter.norm1(final_c1)
+        f2 = adapter.norm2(final_c2)
+        f3 = adapter.norm3(final_c3)
+        f4 = adapter.norm4(final_c4)
+        return {"1": f1, "2": f2, "3": f3, "4": f4}
+
     @torch.inference_mode()
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
-        adapter = self.model.segmentation_model[0]
         m2f_head = self.model.segmentation_model[1]
 
         intermediate_raw = context.get("seg_intermediate_raw")
@@ -899,6 +981,47 @@ class DINOv3SegmentorExecutor(ModelExecutor):
         if intermediate_raw is None or image_metas is None:
             raise RuntimeError("Missing context for segmentor head_inference().")
 
+        total_sources = len(intermediate_raw)
+
+        # Phase 1: Batch all sources by shape, run adapter + M2F predict
+        shape_groups = {}
+        for si in range(total_sources):
+            shape = tuple(context["seg_source_shapes"][si])
+            shape_groups.setdefault(shape, []).append(si)
+
+        source_preds = [None] * total_sources
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            for shape_key, src_indices in shape_groups.items():
+                is_single = len(src_indices) == 1
+                with torch.cuda.nvtx.range(f"seg_adapter_batch_{len(src_indices)}src"):
+                    if is_single:
+                        adapter_features = self._run_adapter_postprocess(src_indices[0], context)
+                    else:
+                        adapter_features = self._run_adapter_postprocess_batch(src_indices, context)
+
+                with torch.cuda.nvtx.range(f"seg_m2f_predict_batch{len(src_indices)}"):
+                    crop_hw = context["seg_crop_hw"][src_indices[0]]
+                    batch_pred_dict = m2f_head.predict(adapter_features, rescale_to=crop_hw)
+
+                with torch.cuda.nvtx.range(f"seg_m2f_postprocess_batch{len(src_indices)}"):
+                    if decoder_head_type == "m2f":
+                        mask_pred = batch_pred_dict["pred_masks"]
+                        mask_cls = batch_pred_dict["pred_logits"]
+                        mask_cls_sm = F.softmax(mask_cls, dim=-1)[..., :-1]
+                        mask_pred_sig = mask_pred.sigmoid()
+                        batch_pred = torch.einsum(
+                            "bqc,bqhw->bchw",
+                            mask_cls_sm.to(torch.bfloat16),
+                            mask_pred_sig.to(torch.bfloat16),
+                        )
+                        del mask_cls, mask_pred, mask_cls_sm, mask_pred_sig
+
+                for local_i, si in enumerate(src_indices):
+                    source_preds[si] = batch_pred[local_i].unsqueeze(0)
+                del batch_pred
+
+        # Phase 2: Per-image slide/TTA aggregation
         outputs = []
 
         for image_idx, image_meta in enumerate(image_metas):
@@ -914,68 +1037,27 @@ class DINOv3SegmentorExecutor(ModelExecutor):
                 src_end = tta_range["src_end"]
                 apply_flip = flip_flags[tta_idx]
 
-                with torch.autocast("cuda", self.autocast_dtype):
-                    if tta_range["mode"] == "slide":
-                        h_img = tta_range["h_img"]
-                        w_img = tta_range["w_img"]
-                        slide_crops = tta_range["slide_crops"]
+                if tta_range["mode"] == "slide":
+                    h_img = tta_range["h_img"]
+                    w_img = tta_range["w_img"]
+                    slide_crops = tta_range["slide_crops"]
 
-                        slide_preds = torch.zeros(1, self.num_classes, h_img, w_img, dtype=torch.float32, device=self.device)
-                        slide_count = torch.zeros(1, 1, h_img, w_img, dtype=torch.int8, device=self.device)
+                    slide_preds = torch.zeros(1, self.num_classes, h_img, w_img, dtype=torch.float32, device=self.device)
+                    slide_count = torch.zeros(1, 1, h_img, w_img, dtype=torch.int8, device=self.device)
 
-                        for crop_local_idx, (y1, y2, x1, x2) in enumerate(slide_crops):
-                            src_idx = src_start + crop_local_idx
+                    for crop_local_idx, (y1, y2, x1, x2) in enumerate(slide_crops):
+                        si = src_start + crop_local_idx
+                        slide_preds[:, :, y1:y2, x1:x2] += source_preds[si]
+                        slide_count[:, :, y1:y2, x1:x2] += 1
 
-                            adapter_features = self._run_adapter_postprocess(src_idx, context)
+                    assert (slide_count == 0).sum() == 0
+                    pred = slide_preds / slide_count
+                    pred = F.interpolate(pred, size=rescale_to, mode="bilinear", align_corners=False)
+                    del slide_preds, slide_count
 
-                            with torch.cuda.nvtx.range(f"seg_m2f_predict_src{src_idx}"):
-                                crop_hw = context["seg_crop_hw"][src_idx]
-                                crop_pred_dict = m2f_head.predict(adapter_features, rescale_to=crop_hw)
-
-                            with torch.cuda.nvtx.range(f"seg_m2f_postprocess_src{src_idx}"):
-                                if decoder_head_type == "m2f":
-                                    mask_pred = crop_pred_dict["pred_masks"]
-                                    mask_cls = crop_pred_dict["pred_logits"]
-                                    mask_cls_sm = F.softmax(mask_cls, dim=-1)[..., :-1]
-                                    mask_pred_sig = mask_pred.sigmoid()
-                                    crop_pred = torch.einsum(
-                                        "bqc,bqhw->bchw",
-                                        mask_cls_sm.to(torch.bfloat16),
-                                        mask_pred_sig.to(torch.bfloat16),
-                                    )
-                                    del mask_cls, mask_pred, mask_cls_sm, mask_pred_sig
-
-                            with torch.cuda.nvtx.range(f"seg_slide_aggregate_src{src_idx}"):
-                                slide_preds[:, :, y1:y2, x1:x2] += crop_pred
-                                slide_count[:, :, y1:y2, x1:x2] += 1
-                                del crop_pred
-
-                        with torch.cuda.nvtx.range("seg_slide_reduce"):
-                            assert (slide_count == 0).sum() == 0
-                            pred = slide_preds / slide_count
-                            pred = F.interpolate(pred, size=rescale_to, mode="bilinear", align_corners=False)
-                            del slide_preds, slide_count
-
-                    else:
-                        src_idx = src_start
-
-                        adapter_features = self._run_adapter_postprocess(src_idx, context)
-
-                        with torch.cuda.nvtx.range(f"seg_m2f_predict_src{src_idx}"):
-                            pred_dict = m2f_head.predict(adapter_features, rescale_to=rescale_to)
-
-                        with torch.cuda.nvtx.range(f"seg_m2f_postprocess_src{src_idx}"):
-                            if decoder_head_type == "m2f":
-                                mask_pred = pred_dict["pred_masks"]
-                                mask_cls = pred_dict["pred_logits"]
-                                mask_cls_sm = F.softmax(mask_cls, dim=-1)[..., :-1]
-                                mask_pred_sig = mask_pred.sigmoid()
-                                pred = torch.einsum(
-                                    "bqc,bqhw->bchw",
-                                    mask_cls_sm.to(torch.float),
-                                    mask_pred_sig.to(torch.float),
-                                )
-                                del mask_cls, mask_pred, mask_cls_sm, mask_pred_sig
+                else:
+                    src_idx = src_start
+                    pred = source_preds[src_idx]
 
                 # TTA post-processing
                 if apply_flip:

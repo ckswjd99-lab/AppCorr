@@ -2,7 +2,7 @@
     "model_name": "dinov3_segmentor",
     "dataset_name": "ade20k",
     "exp_id": "ade20k_approx_sequential",
-    "batch_size": 1,
+    "batch_size": 8,
     "image_shape": [896, 896, 3],
     "patch_size": [16, 16],
     "input_profile_name": "dinov3_ade20k_m2f_official",
