@@ -4,9 +4,12 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  offload/run_local.sh CONFIG_PATH [DATA_ROOT]
+  offload/run_local.sh CONFIG_PATH [-nr N]
 
 Runs the AppCorr server and mobile client locally against one config.
+
+Options:
+  -nr N, --num-request N  Run only N requests (batches); omit to run all
 
 Environment overrides:
   RECV_PORT       Server receive / mobile upload port. Default: 39998
@@ -15,16 +18,41 @@ Environment overrides:
 
 Examples:
   offload/run_local.sh offload/config/coco_interleaved_dynamic.json
-  offload/run_local.sh offload/config/imnet_interleaved_g4.json ~/data/imagenet_val
+  offload/run_local.sh offload/config/ade20k_approx_sequential.json -nr 10
 EOF
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  usage
-  exit 0
-fi
+NUM_REQUEST=""
+POSITIONAL_ARGS=()
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -nr|--num-request)
+      if [[ $# -lt 2 ]]; then
+        echo "[run_local] --num-request requires an argument" >&2
+        usage >&2
+        exit 1
+      fi
+      NUM_REQUEST="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "[run_local] Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#POSITIONAL_ARGS[@]} -ne 1 ]]; then
   usage >&2
   exit 1
 fi
@@ -33,8 +61,7 @@ CALLER_DIR="$(pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-CONFIG_PATH_INPUT="$1"
-DATA_ROOT="${2:-~/data/imagenet_val}"
+CONFIG_PATH_INPUT="${POSITIONAL_ARGS[0]}"
 RECV_PORT="${RECV_PORT:-39998}"
 SEND_PORT="${SEND_PORT:-39999}"
 SERVER_STARTUP="${SERVER_STARTUP:-2}"
@@ -145,7 +172,7 @@ start_in_own_group python offload/mobile/main.py \
   --ip 127.0.0.1 \
   --recv-port "${RECV_PORT}" \
   --send-port "${SEND_PORT}" \
-  --data "${DATA_ROOT}"
+  ${NUM_REQUEST:+--num-request "${NUM_REQUEST}"}
 MOBILE_PID="${STARTED_PID}"
 
 set +e

@@ -213,3 +213,4 @@ appcorr/weights
 *.qdstrm
 .vscode
 .codex
+.claude

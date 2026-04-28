@@ -286,16 +286,700 @@ class DINOv3SegmentorExecutor(ModelExecutor):
             "mask": np.ascontiguousarray(pred_np),
         }
 
+    @torch.inference_mode()
+    def _full_inference_analyzed(self, task: Task, context: Dict[str, Any], config: Any):
+        """Decomposed version of full_inference. All steps are inlined so that
+        the function can later be split into prepare_tokens, approx_forward,
+        and head_inference."""
+        from dinov3.eval.segmentation.models.backbone.dinov3_adapter import deform_inputs
+
+        images = context.get("input_images_uint8")
+        if images is None:
+            raise RuntimeError("Missing context['input_images_uint8'] for segmentor _full_inference_analyzed().")
+        target_shapes = context.get("target_shapes") or [None] * len(images)
+
+        profile_config = config.get_input_profile_config()
+        inference_mode = str(profile_config.get("server_inference_mode", "slide"))
+        crop_size = int(profile_config.get("server_crop_size", 896))
+        stride = int(profile_config.get("server_stride", 596))
+        decoder_head_type = str(profile_config.get("decoder_head_type", "m2f"))
+        rescale_mode = str(profile_config.get("server_rescale_to", "input")).lower()
+        if rescale_mode not in {"input", "original"}:
+            raise ValueError(f"Unsupported ADE20K segmentor server_rescale_to: {rescale_mode}")
+
+        # Model components
+        adapter = self.model.segmentation_model[0]   # DINOv3_Adapter
+        m2f_head = self.model.segmentation_model[1]  # Mask2FormerHead
+        vit_backbone = adapter.backbone               # DinoVisionTransformer
+        interaction_indexes = adapter.interaction_indexes
+
+        outputs = []
+
+        for image_idx, image_np in enumerate(images):
+            # ── TTA input preparation ──
+            tta_tensors, flip_flags, rescale_to = self._build_tta_inputs(image_np, profile_config)
+            if rescale_mode == "original" and image_idx < len(target_shapes) and target_shapes[image_idx] is not None:
+                rescale_to = target_shapes[image_idx]
+            aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32)
+
+            for img_tensor, apply_flip in zip(tta_tensors, flip_flags):
+                if inference_mode == "slide":
+                    # ══════════════════════════════════════════════════════════
+                    # Sliding-window inference (inlined from slide_inference)
+                    # ══════════════════════════════════════════════════════════
+                    h_stride = w_stride = stride
+                    h_crop = w_crop = crop_size
+                    batch_size, C, h_img, w_img = img_tensor.shape
+                    if h_crop > h_img and w_crop > w_img:
+                        h_crop, w_crop = min(h_img, w_img), min(h_img, w_img)
+                    assert batch_size == 1
+                    h_grids = max(h_img - h_crop + h_stride - 1, 0) // h_stride + 1
+                    w_grids = max(w_img - w_crop + w_stride - 1, 0) // w_stride + 1
+
+                    slide_preds = img_tensor.new_zeros((1, self.num_classes, h_img, w_img)).cpu()
+                    slide_count = img_tensor.new_zeros((1, 1, h_img, w_img)).to(torch.int8).cpu()
+
+                    for h_idx in range(h_grids):
+                        for w_idx in range(w_grids):
+                            y1 = h_idx * h_stride
+                            x1 = w_idx * w_stride
+                            y2 = min(y1 + h_crop, h_img)
+                            x2 = min(x1 + w_crop, w_img)
+                            y1 = max(y2 - h_crop, 0)
+                            x1 = max(x2 - w_crop, 0)
+                            crop_img = img_tensor[:, :, y1:y2, x1:x2]
+
+                            # ── DINOv3_Adapter.forward(crop_img) inlined ──
+                            with torch.autocast("cuda", torch.bfloat16):
+                                with torch.no_grad():
+                                    # A) deform_inputs for InteractionBlocks
+                                    crop_deform_in1, crop_deform_in2 = deform_inputs(crop_img, adapter.patch_size)
+
+                                    # B) SPM forward
+                                    spm_c1, spm_c2, spm_c3, spm_c4 = adapter.spm(crop_img)
+                                    spm_c2, spm_c3, spm_c4 = adapter._add_level_embed(spm_c2, spm_c3, spm_c4)
+                                    spm_c2_len = spm_c2.shape[1]
+                                    spm_c3_len = spm_c3.shape[1]
+                                    spm_c_cat = torch.cat([spm_c2, spm_c3, spm_c4], dim=1)
+
+                                    crop_H_c = crop_img.shape[2] // 16
+                                    crop_W_c = crop_img.shape[3] // 16
+                                    crop_H_toks = crop_img.shape[2] // adapter.patch_size
+                                    crop_W_toks = crop_img.shape[3] // adapter.patch_size
+                                    crop_bs = crop_img.shape[0]
+
+                                    # C) ViT Backbone forward
+                                    # C.1) prepare_tokens_with_masks
+                                    x_tokens, (tok_H, tok_W) = vit_backbone.prepare_tokens_with_masks(crop_img)
+
+                                    # C.2) Run all ViT blocks, collecting intermediate outputs
+                                    intermediate_raw = []
+                                    for blk_idx, blk in enumerate(vit_backbone.blocks):
+                                        rope_sincos = vit_backbone.rope_embed(H=tok_H, W=tok_W) if vit_backbone.rope_embed else None
+                                        x_tokens = blk(x_tokens, rope_sincos)
+                                        if blk_idx in interaction_indexes:
+                                            intermediate_raw.append(x_tokens)
+
+                                    # C.3) Apply norms and split (from get_intermediate_layers)
+                                    intermediate_normed = []
+                                    for raw_out in intermediate_raw:
+                                        if vit_backbone.untie_cls_and_patch_norms:
+                                            normed_cls_reg = vit_backbone.cls_norm(raw_out[:, :vit_backbone.n_storage_tokens + 1])
+                                            normed_patch = vit_backbone.norm(raw_out[:, vit_backbone.n_storage_tokens + 1:])
+                                            intermediate_normed.append(torch.cat((normed_cls_reg, normed_patch), dim=1))
+                                        else:
+                                            intermediate_normed.append(vit_backbone.norm(raw_out))
+
+                                    backbone_cls_tokens = [out[:, 0] for out in intermediate_normed]
+                                    backbone_patch_tokens = [out[:, vit_backbone.n_storage_tokens + 1:] for out in intermediate_normed]
+                                    all_backbone_layers = list(zip(backbone_patch_tokens, backbone_cls_tokens))
+
+                                    # D) InteractionBlocks (combine SPM + backbone features)
+                                    x_for_shape, _ = all_backbone_layers[0]
+                                    _, _, feat_dim = x_for_shape.shape
+                                    del x_for_shape
+
+                                    interaction_outs = []
+                                    for i, interaction_layer in enumerate(adapter.interactions):
+                                        layer_x, layer_cls = all_backbone_layers[i]
+                                        _, spm_c_cat, _ = interaction_layer(
+                                            layer_x, spm_c_cat, layer_cls,
+                                            crop_deform_in1, crop_deform_in2,
+                                            crop_H_c, crop_W_c, crop_H_toks, crop_W_toks,
+                                        )
+                                        interaction_outs.append(
+                                            layer_x.transpose(1, 2).view(crop_bs, feat_dim, crop_H_toks, crop_W_toks).contiguous()
+                                        )
+
+                                    # E) Split & Reshape SPM features
+                                    final_c2 = spm_c_cat[:, 0:spm_c2_len, :].transpose(1, 2).view(crop_bs, feat_dim, crop_H_c * 2, crop_W_c * 2).contiguous()
+                                    final_c3 = spm_c_cat[:, spm_c2_len:spm_c2_len + spm_c3_len, :].transpose(1, 2).view(crop_bs, feat_dim, crop_H_c, crop_W_c).contiguous()
+                                    final_c4 = spm_c_cat[:, spm_c2_len + spm_c3_len:, :].transpose(1, 2).view(crop_bs, feat_dim, crop_H_c // 2, crop_W_c // 2).contiguous()
+                                    final_c1 = adapter.up(final_c2) + spm_c1
+
+                                    # F) Add ViT features (from InteractionBlocks)
+                                    if adapter.add_vit_feature:
+                                        vit_x1, vit_x2, vit_x3, vit_x4 = interaction_outs
+                                        vit_x1 = F.interpolate(vit_x1, size=(4 * crop_H_c, 4 * crop_W_c), mode="bilinear", align_corners=False)
+                                        vit_x2 = F.interpolate(vit_x2, size=(2 * crop_H_c, 2 * crop_W_c), mode="bilinear", align_corners=False)
+                                        vit_x3 = F.interpolate(vit_x3, size=(1 * crop_H_c, 1 * crop_W_c), mode="bilinear", align_corners=False)
+                                        vit_x4 = F.interpolate(vit_x4, size=(crop_H_c // 2, crop_W_c // 2), mode="bilinear", align_corners=False)
+                                        final_c1 = final_c1 + vit_x1
+                                        final_c2 = final_c2 + vit_x2
+                                        final_c3 = final_c3 + vit_x3
+                                        final_c4 = final_c4 + vit_x4
+
+                                    # G) Final Norm
+                                    f1 = adapter.norm1(final_c1)
+                                    f2 = adapter.norm2(final_c2)
+                                    f3 = adapter.norm3(final_c3)
+                                    f4 = adapter.norm4(final_c4)
+                                    adapter_features = {"1": f1, "2": f2, "3": f3, "4": f4}
+
+                                    # ── Mask2FormerHead.predict ──
+                                    crop_pred_dict = m2f_head.predict(adapter_features, rescale_to=crop_img.shape[2:])
+
+                            # M2F post-processing (from slide_inference)
+                            if decoder_head_type == "m2f":
+                                mask_pred = crop_pred_dict["pred_masks"]
+                                mask_cls = crop_pred_dict["pred_logits"]
+                                mask_cls_softmax = F.softmax(mask_cls, dim=-1)[..., :-1]
+                                mask_pred_sigmoid = mask_pred.sigmoid()
+                                crop_pred = torch.einsum(
+                                    "bqc,bqhw->bchw",
+                                    mask_cls_softmax.to(torch.bfloat16),
+                                    mask_pred_sigmoid.to(torch.bfloat16),
+                                )
+                                del mask_cls, mask_pred, mask_cls_softmax, mask_pred_sigmoid
+
+                            # Slide aggregation
+                            slide_preds += F.pad(
+                                crop_pred,
+                                (int(x1), int(slide_preds.shape[-1] - x2), int(y1), int(slide_preds.shape[-2] - y2)),
+                            ).cpu()
+                            slide_count[:, :, y1:y2, x1:x2] += 1
+                            del crop_img, crop_pred
+
+                    assert (slide_count == 0).sum() == 0
+                    pred = slide_preds / slide_count
+                    # Rescale to target size (from make_inference for slide mode)
+                    pred = F.interpolate(pred, size=rescale_to, mode="bilinear", align_corners=False)
+
+                else:
+                    # ══════════════════════════════════════════════════════════
+                    # Whole-image inference (inlined from make_inference)
+                    # ══════════════════════════════════════════════════════════
+                    resized_input = F.interpolate(img_tensor, size=(512, 512), mode="bilinear", align_corners=False)
+
+                    with torch.autocast("cuda", torch.bfloat16):
+                        with torch.no_grad():
+                            whole_deform_in1, whole_deform_in2 = deform_inputs(resized_input, adapter.patch_size)
+                            spm_c1, spm_c2, spm_c3, spm_c4 = adapter.spm(resized_input)
+                            spm_c2, spm_c3, spm_c4 = adapter._add_level_embed(spm_c2, spm_c3, spm_c4)
+                            spm_c2_len = spm_c2.shape[1]
+                            spm_c3_len = spm_c3.shape[1]
+                            spm_c_cat = torch.cat([spm_c2, spm_c3, spm_c4], dim=1)
+
+                            whole_H_c = resized_input.shape[2] // 16
+                            whole_W_c = resized_input.shape[3] // 16
+                            whole_H_toks = resized_input.shape[2] // adapter.patch_size
+                            whole_W_toks = resized_input.shape[3] // adapter.patch_size
+                            whole_bs = resized_input.shape[0]
+
+                            # ViT Backbone forward
+                            x_tokens, (tok_H, tok_W) = vit_backbone.prepare_tokens_with_masks(resized_input)
+                            intermediate_raw = []
+                            for blk_idx, blk in enumerate(vit_backbone.blocks):
+                                rope_sincos = vit_backbone.rope_embed(H=tok_H, W=tok_W) if vit_backbone.rope_embed else None
+                                x_tokens = blk(x_tokens, rope_sincos)
+                                if blk_idx in interaction_indexes:
+                                    intermediate_raw.append(x_tokens)
+
+                            intermediate_normed = []
+                            for raw_out in intermediate_raw:
+                                if vit_backbone.untie_cls_and_patch_norms:
+                                    normed_cls_reg = vit_backbone.cls_norm(raw_out[:, :vit_backbone.n_storage_tokens + 1])
+                                    normed_patch = vit_backbone.norm(raw_out[:, vit_backbone.n_storage_tokens + 1:])
+                                    intermediate_normed.append(torch.cat((normed_cls_reg, normed_patch), dim=1))
+                                else:
+                                    intermediate_normed.append(vit_backbone.norm(raw_out))
+
+                            backbone_cls_tokens = [out[:, 0] for out in intermediate_normed]
+                            backbone_patch_tokens = [out[:, vit_backbone.n_storage_tokens + 1:] for out in intermediate_normed]
+                            all_backbone_layers = list(zip(backbone_patch_tokens, backbone_cls_tokens))
+
+                            x_for_shape, _ = all_backbone_layers[0]
+                            _, _, feat_dim = x_for_shape.shape
+                            del x_for_shape
+
+                            interaction_outs = []
+                            for i, interaction_layer in enumerate(adapter.interactions):
+                                layer_x, layer_cls = all_backbone_layers[i]
+                                _, spm_c_cat, _ = interaction_layer(
+                                    layer_x, spm_c_cat, layer_cls,
+                                    whole_deform_in1, whole_deform_in2,
+                                    whole_H_c, whole_W_c, whole_H_toks, whole_W_toks,
+                                )
+                                interaction_outs.append(
+                                    layer_x.transpose(1, 2).view(whole_bs, feat_dim, whole_H_toks, whole_W_toks).contiguous()
+                                )
+
+                            final_c2 = spm_c_cat[:, 0:spm_c2_len, :].transpose(1, 2).view(whole_bs, feat_dim, whole_H_c * 2, whole_W_c * 2).contiguous()
+                            final_c3 = spm_c_cat[:, spm_c2_len:spm_c2_len + spm_c3_len, :].transpose(1, 2).view(whole_bs, feat_dim, whole_H_c, whole_W_c).contiguous()
+                            final_c4 = spm_c_cat[:, spm_c2_len + spm_c3_len:, :].transpose(1, 2).view(whole_bs, feat_dim, whole_H_c // 2, whole_W_c // 2).contiguous()
+                            final_c1 = adapter.up(final_c2) + spm_c1
+
+                            if adapter.add_vit_feature:
+                                vit_x1, vit_x2, vit_x3, vit_x4 = interaction_outs
+                                vit_x1 = F.interpolate(vit_x1, size=(4 * whole_H_c, 4 * whole_W_c), mode="bilinear", align_corners=False)
+                                vit_x2 = F.interpolate(vit_x2, size=(2 * whole_H_c, 2 * whole_W_c), mode="bilinear", align_corners=False)
+                                vit_x3 = F.interpolate(vit_x3, size=(1 * whole_H_c, 1 * whole_W_c), mode="bilinear", align_corners=False)
+                                vit_x4 = F.interpolate(vit_x4, size=(whole_H_c // 2, whole_W_c // 2), mode="bilinear", align_corners=False)
+                                final_c1 = final_c1 + vit_x1
+                                final_c2 = final_c2 + vit_x2
+                                final_c3 = final_c3 + vit_x3
+                                final_c4 = final_c4 + vit_x4
+
+                            f1 = adapter.norm1(final_c1)
+                            f2 = adapter.norm2(final_c2)
+                            f3 = adapter.norm3(final_c3)
+                            f4 = adapter.norm4(final_c4)
+                            adapter_features = {"1": f1, "2": f2, "3": f3, "4": f4}
+
+                            pred_dict = m2f_head.predict(adapter_features, rescale_to=rescale_to)
+
+                    # M2F post-processing (float for whole mode, per make_inference)
+                    if decoder_head_type == "m2f":
+                        mask_pred = pred_dict["pred_masks"]
+                        mask_cls = pred_dict["pred_logits"]
+                        mask_cls_softmax = F.softmax(mask_cls, dim=-1)[..., :-1]
+                        mask_pred_sigmoid = mask_pred.sigmoid()
+                        pred = torch.einsum(
+                            "bqc,bqhw->bchw",
+                            mask_cls_softmax.to(torch.float),
+                            mask_pred_sigmoid.to(torch.float),
+                        )
+                        del mask_cls, mask_pred, mask_cls_softmax, mask_pred_sigmoid
+
+                # ── TTA post-processing ──
+                if apply_flip:
+                    pred = F.hflip(pred)
+                pred = F.softmax(pred, dim=1)
+                aggregated_preds += pred.float()
+                del pred
+
+            # Average TTA predictions
+            pred_label = (aggregated_preds / len(tta_tensors)).argmax(dim=1)[0].to(torch.uint8)
+            outputs.append(pred_label.cpu())
+            del aggregated_preds
+
+        return outputs
+
+    def _prepare_single_source(self, input_tensor: torch.Tensor, adapter, vit_backbone) -> Dict[str, Any]:
+        """Compute SPM features, deform inputs, and prepare ViT tokens for one input."""
+        from dinov3.eval.segmentation.models.backbone.dinov3_adapter import deform_inputs
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            d_in1, d_in2 = deform_inputs(input_tensor, adapter.patch_size)
+            spm_c1, spm_c2, spm_c3, spm_c4 = adapter.spm(input_tensor)
+            spm_c2, spm_c3, spm_c4 = adapter._add_level_embed(spm_c2, spm_c3, spm_c4)
+            c2_len = spm_c2.shape[1]
+            c3_len = spm_c3.shape[1]
+            spm_c_cat = torch.cat([spm_c2, spm_c3, spm_c4], dim=1)
+            x_backbone, (tok_H, tok_W) = vit_backbone.prepare_tokens_with_masks(input_tensor)
+            rope = vit_backbone.rope_embed(H=tok_H, W=tok_W) if vit_backbone.rope_embed else None
+
+        H_c = input_tensor.shape[2] // 16
+        W_c = input_tensor.shape[3] // 16
+        H_toks = input_tensor.shape[2] // adapter.patch_size
+        W_toks = input_tensor.shape[3] // adapter.patch_size
+
+        return {
+            "x_backbone": x_backbone,
+            "rope_sincos": rope,
+            "deform_in1": d_in1,
+            "deform_in2": d_in2,
+            "spm_c1_raw": spm_c1,
+            "spm_c_cat": spm_c_cat,
+            "spm_c2_len": c2_len,
+            "spm_c3_len": c3_len,
+            "source_shape": (H_c, W_c, H_toks, W_toks, input_tensor.shape[0]),
+            "crop_hw": (input_tensor.shape[2], input_tensor.shape[3]),
+        }
+
+    @torch.inference_mode()
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
+        images = context.get("input_images_uint8")
+        if images is None:
+            raise RuntimeError("Missing context['input_images_uint8'] for segmentor prepare_tokens().")
+        target_shapes = context.get("target_shapes") or [None] * len(images)
+
+        profile_config = config.get_input_profile_config()
+        inference_mode = str(profile_config.get("server_inference_mode", "slide"))
+        crop_size = int(profile_config.get("server_crop_size", 896))
+        stride = int(profile_config.get("server_stride", 596))
+        decoder_head_type = str(profile_config.get("decoder_head_type", "m2f"))
+        rescale_mode = str(profile_config.get("server_rescale_to", "input")).lower()
+        if rescale_mode not in {"input", "original"}:
+            raise ValueError(f"Unsupported ADE20K segmentor server_rescale_to: {rescale_mode}")
+
+        adapter = self.model.segmentation_model[0]
+        vit_backbone = adapter.backbone
+
+        all_x_backbones = []
+        all_rope_sincos = []
+        all_deform_in1 = []
+        all_deform_in2 = []
+        all_spm_c1_raw = []
+        all_spm_c_cat = []
+        all_spm_c2_len = []
+        all_spm_c3_len = []
+        all_source_shapes = []
+        all_crop_hw = []
+
+        image_metas = []
+
+        for image_idx, image_np in enumerate(images):
+            tta_tensors, flip_flags, rescale_to = self._build_tta_inputs(image_np, profile_config)
+            if rescale_mode == "original" and image_idx < len(target_shapes) and target_shapes[image_idx] is not None:
+                rescale_to = target_shapes[image_idx]
+
+            tta_source_ranges = []
+
+            for tta_idx, (img_tensor, _apply_flip) in enumerate(zip(tta_tensors, flip_flags)):
+                src_start = len(all_x_backbones)
+
+                if inference_mode == "slide":
+                    h_stride = w_stride = stride
+                    h_crop = w_crop = crop_size
+                    _, _, h_img, w_img = img_tensor.shape
+                    if h_crop > h_img and w_crop > w_img:
+                        h_crop, w_crop = min(h_img, w_img), min(h_img, w_img)
+                    h_grids = max(h_img - h_crop + h_stride - 1, 0) // h_stride + 1
+                    w_grids = max(w_img - w_crop + w_stride - 1, 0) // w_stride + 1
+
+                    slide_crops = []
+                    for h_idx in range(h_grids):
+                        for w_idx in range(w_grids):
+                            y1 = h_idx * h_stride
+                            x1 = w_idx * w_stride
+                            y2 = min(y1 + h_crop, h_img)
+                            x2 = min(x1 + w_crop, w_img)
+                            y1 = max(y2 - h_crop, 0)
+                            x1 = max(x2 - w_crop, 0)
+                            crop_img = img_tensor[:, :, y1:y2, x1:x2]
+
+                            src = self._prepare_single_source(crop_img, adapter, vit_backbone)
+                            all_x_backbones.append(src["x_backbone"])
+                            all_rope_sincos.append(src["rope_sincos"])
+                            all_deform_in1.append(src["deform_in1"])
+                            all_deform_in2.append(src["deform_in2"])
+                            all_spm_c1_raw.append(src["spm_c1_raw"])
+                            all_spm_c_cat.append(src["spm_c_cat"])
+                            all_spm_c2_len.append(src["spm_c2_len"])
+                            all_spm_c3_len.append(src["spm_c3_len"])
+                            all_source_shapes.append(src["source_shape"])
+                            all_crop_hw.append(src["crop_hw"])
+                            slide_crops.append((y1, y2, x1, x2))
+
+                    tta_source_ranges.append({
+                        "src_start": src_start,
+                        "src_end": len(all_x_backbones),
+                        "mode": "slide",
+                        "slide_crops": slide_crops,
+                        "h_img": h_img,
+                        "w_img": w_img,
+                    })
+                else:
+                    resized = F.interpolate(img_tensor, size=(512, 512), mode="bilinear", align_corners=False)
+
+                    src = self._prepare_single_source(resized, adapter, vit_backbone)
+                    all_x_backbones.append(src["x_backbone"])
+                    all_rope_sincos.append(src["rope_sincos"])
+                    all_deform_in1.append(src["deform_in1"])
+                    all_deform_in2.append(src["deform_in2"])
+                    all_spm_c1_raw.append(src["spm_c1_raw"])
+                    all_spm_c_cat.append(src["spm_c_cat"])
+                    all_spm_c2_len.append(src["spm_c2_len"])
+                    all_spm_c3_len.append(src["spm_c3_len"])
+                    all_source_shapes.append(src["source_shape"])
+                    all_crop_hw.append(src["crop_hw"])
+
+                    tta_source_ranges.append({
+                        "src_start": src_start,
+                        "src_end": len(all_x_backbones),
+                        "mode": "whole",
+                    })
+
+            image_metas.append({
+                "tta_source_ranges": tta_source_ranges,
+                "flip_flags": flip_flags,
+                "rescale_to": rescale_to,
+                "n_tta": len(tta_tensors),
+            })
+
+        context["seg_x_backbones"] = all_x_backbones
+        context["seg_rope_sincos"] = all_rope_sincos
+        context["seg_deform_in1"] = all_deform_in1
+        context["seg_deform_in2"] = all_deform_in2
+        context["seg_spm_c1_raw"] = all_spm_c1_raw
+        context["seg_spm_c_cat"] = all_spm_c_cat
+        context["seg_spm_c2_len"] = all_spm_c2_len
+        context["seg_spm_c3_len"] = all_spm_c3_len
+        context["seg_source_shapes"] = all_source_shapes
+        context["seg_crop_hw"] = all_crop_hw
+        context["seg_image_metas"] = image_metas
+        context["seg_inference_mode"] = inference_mode
+        context["seg_decoder_head_type"] = decoder_head_type
         return {}
 
+    @torch.inference_mode()
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        start_l, end_l = params.get("layers", (0, 40))
+
+        adapter = self.model.segmentation_model[0]
+        vit_backbone = adapter.backbone
+        interaction_indexes = set(adapter.interaction_indexes)
+
+        all_x_backbones = context.get("seg_x_backbones")
+        all_rope_sincos = context.get("seg_rope_sincos")
+        if all_x_backbones is None or all_rope_sincos is None:
+            return {}
+
+        if "seg_current_features" not in context:
+            context["seg_current_features"] = [x.clone() for x in all_x_backbones]
+        if "seg_intermediate_raw" not in context:
+            context["seg_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
+
+        current_features = context["seg_current_features"]
+        intermediate_raw = context["seg_intermediate_raw"]
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            for src_idx in range(len(all_x_backbones)):
+                x_tokens = current_features[src_idx] if start_l > 0 else all_x_backbones[src_idx].clone()
+                rope = all_rope_sincos[src_idx]
+
+                for lidx in range(start_l, end_l):
+                    blk = vit_backbone.blocks[lidx]
+                    with torch.no_grad():
+                        x_tokens = blk(x_tokens, rope)
+                    if lidx in interaction_indexes:
+                        intermediate_raw[src_idx].append(x_tokens)
+
+                current_features[src_idx] = x_tokens
+
+        context["seg_current_features"] = current_features
+        context["seg_intermediate_raw"] = intermediate_raw
         return {}
 
+    @torch.inference_mode()
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        layers = params.get("layers", (0, 40))
+        start_l, end_l = layers[0], layers[1]
+        source_idx = params.get("group_id", 0)
+
+        adapter = self.model.segmentation_model[0]
+        vit_backbone = adapter.backbone
+        interaction_indexes = set(adapter.interaction_indexes)
+
+        all_x_backbones = context.get("seg_x_backbones")
+        all_rope_sincos = context.get("seg_rope_sincos")
+        if all_x_backbones is None or all_rope_sincos is None:
+            return {}
+        if source_idx >= len(all_x_backbones):
+            return {}
+
+        if "seg_current_features" not in context:
+            context["seg_current_features"] = [x.clone() for x in all_x_backbones]
+        if "seg_intermediate_raw" not in context:
+            context["seg_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
+
+        current_features = context["seg_current_features"]
+        intermediate_raw = context["seg_intermediate_raw"]
+
+        # Re-run from the original input tokens for the specified source
+        x_tokens = all_x_backbones[source_idx].clone()
+        rope = all_rope_sincos[source_idx]
+        intermediate_raw[source_idx] = []
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            for lidx in range(start_l, end_l):
+                blk = vit_backbone.blocks[lidx]
+                with torch.no_grad():
+                    x_tokens = blk(x_tokens, rope)
+                if lidx in interaction_indexes:
+                    intermediate_raw[source_idx].append(x_tokens)
+
+        current_features[source_idx] = x_tokens
         return {}
 
+    def _run_adapter_postprocess(self, src_idx: int, context: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """Run InteractionBlocks + feature assembly for a single source.
+        Returns the multi-scale feature dict {"1": f1, ..., "4": f4}."""
+        adapter = self.model.segmentation_model[0]
+        vit_backbone = adapter.backbone
+
+        intermediate_raw = context["seg_intermediate_raw"][src_idx]
+        spm_c_cat = context["seg_spm_c_cat"][src_idx].clone()
+        spm_c1 = context["seg_spm_c1_raw"][src_idx]
+        c2_len = context["seg_spm_c2_len"][src_idx]
+        c3_len = context["seg_spm_c3_len"][src_idx]
+        H_c, W_c, H_toks, W_toks, bs = context["seg_source_shapes"][src_idx]
+        deform_in1 = context["seg_deform_in1"][src_idx]
+        deform_in2 = context["seg_deform_in2"][src_idx]
+
+        # Apply norms and split backbone outputs
+        intermediate_normed = []
+        for raw_out in intermediate_raw:
+            if vit_backbone.untie_cls_and_patch_norms:
+                normed_cls_reg = vit_backbone.cls_norm(raw_out[:, :vit_backbone.n_storage_tokens + 1])
+                normed_patch = vit_backbone.norm(raw_out[:, vit_backbone.n_storage_tokens + 1:])
+                intermediate_normed.append(torch.cat((normed_cls_reg, normed_patch), dim=1))
+            else:
+                intermediate_normed.append(vit_backbone.norm(raw_out))
+
+        backbone_cls_tokens = [out[:, 0] for out in intermediate_normed]
+        backbone_patch_tokens = [out[:, vit_backbone.n_storage_tokens + 1:] for out in intermediate_normed]
+        all_backbone_layers = list(zip(backbone_patch_tokens, backbone_cls_tokens))
+
+        x_for_shape, _ = all_backbone_layers[0]
+        _, _, feat_dim = x_for_shape.shape
+        del x_for_shape
+
+        # InteractionBlocks
+        interaction_outs = []
+        for i, interaction_layer in enumerate(adapter.interactions):
+            layer_x, layer_cls = all_backbone_layers[i]
+            _, spm_c_cat, _ = interaction_layer(
+                layer_x, spm_c_cat, layer_cls,
+                deform_in1, deform_in2,
+                H_c, W_c, H_toks, W_toks,
+            )
+            interaction_outs.append(
+                layer_x.transpose(1, 2).view(bs, feat_dim, H_toks, W_toks).contiguous()
+            )
+
+        # Split & Reshape SPM features
+        final_c2 = spm_c_cat[:, 0:c2_len, :].transpose(1, 2).view(bs, feat_dim, H_c * 2, W_c * 2).contiguous()
+        final_c3 = spm_c_cat[:, c2_len:c2_len + c3_len, :].transpose(1, 2).view(bs, feat_dim, H_c, W_c).contiguous()
+        final_c4 = spm_c_cat[:, c2_len + c3_len:, :].transpose(1, 2).view(bs, feat_dim, H_c // 2, W_c // 2).contiguous()
+        final_c1 = adapter.up(final_c2) + spm_c1
+
+        # Add ViT features
+        if adapter.add_vit_feature:
+            vit_x1, vit_x2, vit_x3, vit_x4 = interaction_outs
+            vit_x1 = F.interpolate(vit_x1, size=(4 * H_c, 4 * W_c), mode="bilinear", align_corners=False)
+            vit_x2 = F.interpolate(vit_x2, size=(2 * H_c, 2 * W_c), mode="bilinear", align_corners=False)
+            vit_x3 = F.interpolate(vit_x3, size=(1 * H_c, 1 * W_c), mode="bilinear", align_corners=False)
+            vit_x4 = F.interpolate(vit_x4, size=(H_c // 2, W_c // 2), mode="bilinear", align_corners=False)
+            final_c1 = final_c1 + vit_x1
+            final_c2 = final_c2 + vit_x2
+            final_c3 = final_c3 + vit_x3
+            final_c4 = final_c4 + vit_x4
+
+        f1 = adapter.norm1(final_c1)
+        f2 = adapter.norm2(final_c2)
+        f3 = adapter.norm3(final_c3)
+        f4 = adapter.norm4(final_c4)
+        return {"1": f1, "2": f2, "3": f3, "4": f4}
+
+    @torch.inference_mode()
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
+        adapter = self.model.segmentation_model[0]
+        m2f_head = self.model.segmentation_model[1]
+
+        intermediate_raw = context.get("seg_intermediate_raw")
+        image_metas = context.get("seg_image_metas")
+        inference_mode = context.get("seg_inference_mode", "slide")
+        decoder_head_type = context.get("seg_decoder_head_type", "m2f")
+
+        if intermediate_raw is None or image_metas is None:
+            raise RuntimeError("Missing context for segmentor head_inference().")
+
+        outputs = []
+
+        for image_idx, image_meta in enumerate(image_metas):
+            rescale_to = image_meta["rescale_to"]
+            flip_flags = image_meta["flip_flags"]
+            n_tta = image_meta["n_tta"]
+            tta_source_ranges = image_meta["tta_source_ranges"]
+
+            aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32, device=self.device)
+
+            for tta_idx, tta_range in enumerate(tta_source_ranges):
+                src_start = tta_range["src_start"]
+                src_end = tta_range["src_end"]
+                apply_flip = flip_flags[tta_idx]
+
+                with torch.autocast("cuda", self.autocast_dtype):
+                    if tta_range["mode"] == "slide":
+                        h_img = tta_range["h_img"]
+                        w_img = tta_range["w_img"]
+                        slide_crops = tta_range["slide_crops"]
+
+                        slide_preds = torch.zeros(1, self.num_classes, h_img, w_img, dtype=torch.float32)
+                        slide_count = torch.zeros(1, 1, h_img, w_img, dtype=torch.int8)
+
+                        for crop_local_idx, (y1, y2, x1, x2) in enumerate(slide_crops):
+                            src_idx = src_start + crop_local_idx
+
+                            adapter_features = self._run_adapter_postprocess(src_idx, context)
+
+                            crop_hw = context["seg_crop_hw"][src_idx]
+                            crop_pred_dict = m2f_head.predict(adapter_features, rescale_to=crop_hw)
+
+                            if decoder_head_type == "m2f":
+                                mask_pred = crop_pred_dict["pred_masks"]
+                                mask_cls = crop_pred_dict["pred_logits"]
+                                mask_cls_sm = F.softmax(mask_cls, dim=-1)[..., :-1]
+                                mask_pred_sig = mask_pred.sigmoid()
+                                crop_pred = torch.einsum(
+                                    "bqc,bqhw->bchw",
+                                    mask_cls_sm.to(torch.bfloat16),
+                                    mask_pred_sig.to(torch.bfloat16),
+                                )
+                                del mask_cls, mask_pred, mask_cls_sm, mask_pred_sig
+
+                            slide_preds[:, :, y1:y2, x1:x2] += crop_pred.cpu()
+                            slide_count[:, :, y1:y2, x1:x2] += 1
+                            del crop_pred
+
+                        assert (slide_count == 0).sum() == 0
+                        pred = (slide_preds / slide_count).to(device=self.device)
+                        pred = F.interpolate(pred, size=rescale_to, mode="bilinear", align_corners=False)
+                        del slide_preds, slide_count
+
+                    else:
+                        src_idx = src_start
+
+                        adapter_features = self._run_adapter_postprocess(src_idx, context)
+
+                        pred_dict = m2f_head.predict(adapter_features, rescale_to=rescale_to)
+
+                        if decoder_head_type == "m2f":
+                            mask_pred = pred_dict["pred_masks"]
+                            mask_cls = pred_dict["pred_logits"]
+                            mask_cls_sm = F.softmax(mask_cls, dim=-1)[..., :-1]
+                            mask_pred_sig = mask_pred.sigmoid()
+                            pred = torch.einsum(
+                                "bqc,bqhw->bchw",
+                                mask_cls_sm.to(torch.float),
+                                mask_pred_sig.to(torch.float),
+                            )
+                            del mask_cls, mask_pred, mask_cls_sm, mask_pred_sig
+
+                # TTA post-processing
+                if apply_flip:
+                    pred = F.hflip(pred)
+                pred = F.softmax(pred, dim=1)
+                aggregated_preds += pred.float()
+                del pred
+
+            pred_label = (aggregated_preds / n_tta).argmax(dim=1)[0].to(torch.uint8)
+            outputs.append(pred_label.cpu())
+            del aggregated_preds
+
+        context["seg_outputs"] = outputs
         return {}
 
     def decide_exit(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
