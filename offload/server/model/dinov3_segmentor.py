@@ -234,7 +234,7 @@ class DINOv3SegmentorExecutor(ModelExecutor):
             tta_tensors, flip_flags, rescale_to = self._build_tta_inputs(image_np, profile_config)
             if rescale_mode == "original" and image_idx < len(target_shapes) and target_shapes[image_idx] is not None:
                 rescale_to = target_shapes[image_idx]
-            aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32)
+            aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32, device=self.device)
             for img_tensor, apply_flip in zip(tta_tensors, flip_flags):
                 pred = self._make_inference(
                     img_tensor,
@@ -320,7 +320,7 @@ class DINOv3SegmentorExecutor(ModelExecutor):
             tta_tensors, flip_flags, rescale_to = self._build_tta_inputs(image_np, profile_config)
             if rescale_mode == "original" and image_idx < len(target_shapes) and target_shapes[image_idx] is not None:
                 rescale_to = target_shapes[image_idx]
-            aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32)
+            aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32, device=self.device)
 
             for img_tensor, apply_flip in zip(tta_tensors, flip_flags):
                 if inference_mode == "slide":
