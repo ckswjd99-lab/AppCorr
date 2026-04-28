@@ -3,6 +3,7 @@ from typing import Optional
 from offload.common.protocol import ExperimentConfig
 from .interface import ISchedulingPolicy, ITransmissionPolicy
 from .scheduling import (
+    ADE20KSequentialPolicy,
     BatchCountBasedPolicy,
     COCOWindowDynamicPolicy,
     COCOWindowInterleavedPolicy,
@@ -20,6 +21,7 @@ from .transmission import (
 
 # Registry for dynamic instantiation
 SCHEDULER_REGISTRY = {
+    "ADE20KSequential": ADE20KSequentialPolicy,
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
