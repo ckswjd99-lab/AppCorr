@@ -1,0 +1,20 @@
+{
+    "model_name": "dinov3_segmentor_linear",
+    "dataset_name": "ade20k",
+    "exp_id": "ade20k_sequential_linear",
+    "batch_size": 16,
+    "image_shape": [512, 512, 3],
+    "patch_size": [16, 16],
+    "input_profile_name": "dinov3_ade20k_linear_official",
+    "input_profile_kwargs": {
+        "server_rescale_to": "original"
+    },
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "Raw",
+    "transmission_kwargs": {
+        "preserve_input_shape": true
+    },
+    "appcorr_kwargs": {
+        "enabled": false
+    }
+}
