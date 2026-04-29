@@ -201,6 +201,23 @@ class ExperimentConfig:
             }
             options.update(self.input_profile_kwargs)
             return options
+        if name == "dinov3_ade20k_linear_official":
+            options = {
+                "name": name,
+                "mobile_resize_short_side": 512,
+                "server_inference_mode": "slide",
+                "server_crop_size": 512,
+                "server_stride": 341,
+                "server_eval_mode": "single",
+                "server_rescale_to": "input",
+                "server_use_tta": False,
+                "decoder_head_type": "linear",
+                "num_classes": 150,
+                "autocast_dtype": "float32",
+                "reduce_zero_label": True,
+            }
+            options.update(self.input_profile_kwargs)
+            return options
         raise ValueError(f"Unknown input_profile_name: {name}")
 
     def use_official_ade20k_m2f_profile(self) -> bool:
