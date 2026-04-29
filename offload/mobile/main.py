@@ -15,7 +15,7 @@ from offload.common import ExperimentConfig
 def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_request=None):
     print(f"=== Starting AppCorr Mobile Client ===")
     print(f"[*] Target Server: {server_ip}")
-    print(f"[*] ImageNet Root: {data_root}")
+    print(f"[*] Dataset Root: {data_root}")
     print(f"[*] Config Path: {config_path}")
     if num_request is not None:
         print(f"[*] Num Requests: {num_request}")
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     parser.add_argument("--ip", type=str, default="127.0.0.1", help="Target Server IP")
     parser.add_argument("--recv-port", type=int, default=39998, help="Uplink port")
     parser.add_argument("--send-port", type=int, default=39999, help="Downlink port")
-    parser.add_argument("--data", type=str, default="~/data/imagenet_val", help="Path to ImageNet")
+    parser.add_argument("--data", type=str, default=None, help="Path to dataset root (overrides config)")
     parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
     parser.add_argument("-nr", "--num-request", type=int, default=None, help="Run only N requests; omit to run all")
     
@@ -76,4 +76,11 @@ if __name__ == "__main__":
     if args.num_request is not None and args.num_request <= 0:
         parser.error("--num-request must be a positive integer")
     
-    run_mobile(args.ip, args.recv_port, args.send_port, args.data, args.config, args.num_request)
+    # Resolve data_root: CLI arg > config's dataset_kwargs > default
+    config_data_root = args.data
+    if config_data_root is None:
+        with open(args.config, 'r') as f:
+            _cfg = json.load(f)
+        config_data_root = _cfg.get("dataset_kwargs", {}).get("data_root", "~/data/imagenet_val")
+
+    run_mobile(args.ip, args.recv_port, args.send_port, config_data_root, args.config, args.num_request)

@@ -4,12 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  offload/run_local.sh CONFIG_PATH [-nr N]
+  offload/run_local.sh CONFIG_PATH [-nr N] [-d DATA_ROOT]
 
 Runs the AppCorr server and mobile client locally against one config.
 
 Options:
   -nr N, --num-request N  Run only N requests (batches); omit to run all
+  -d PATH, --data PATH    Dataset root path (overrides config's dataset_kwargs.data_root)
   -ns,   --nsys           Profile the server with Nsight Systems (nsys profile)
 
 Environment overrides:
@@ -20,16 +21,27 @@ Environment overrides:
 Examples:
   offload/run_local.sh offload/config/coco_interleaved_dynamic.json
   offload/run_local.sh offload/config/ade20k_approx_sequential.json -nr 10
+  offload/run_local.sh offload/config/nyu_sequential.json -d ~/data/NYU -nr 10
   offload/run_local.sh offload/config/ade20k_approx_sequential.json -nr 10 -ns
 EOF
 }
 
 NUM_REQUEST=""
 USE_NSYS=false
+DATA_ROOT=""
 POSITIONAL_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -d|--data)
+      if [[ $# -lt 2 ]]; then
+        echo "[run_local] --data requires an argument" >&2
+        usage >&2
+        exit 1
+      fi
+      DATA_ROOT="$2"
+      shift 2
+      ;;
     -nr|--num-request)
       if [[ $# -lt 2 ]]; then
         echo "[run_local] --num-request requires an argument" >&2
@@ -190,6 +202,7 @@ start_in_own_group python offload/mobile/main.py \
   --ip 127.0.0.1 \
   --recv-port "${RECV_PORT}" \
   --send-port "${SEND_PORT}" \
+  ${DATA_ROOT:+--data "${DATA_ROOT}"} \
   ${NUM_REQUEST:+--num-request "${NUM_REQUEST}"}
 MOBILE_PID="${STARTED_PID}"
 

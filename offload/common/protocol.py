@@ -183,6 +183,15 @@ class ExperimentConfig:
         name = self.input_profile_name or "fixed_image_shape"
         if name == "fixed_image_shape":
             return {"name": name}
+        if name == "dinov3_nyu_synthmix_dpt":
+            options = {
+                "name": name,
+                "depther_eval_size": 768,
+                "depther_use_tta": True,
+                "autocast_dtype": "bfloat16",
+            }
+            options.update(self.input_profile_kwargs)
+            return options
         if name == "dinov3_ade20k_m2f_official":
             options = {
                 "name": name,

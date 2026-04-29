@@ -519,12 +519,190 @@ class ADE20KLoader(DatasetLoader):
         }
 
 
+class NYUDepthLoader(DatasetLoader):
+    def __init__(self, root: str, batch_size: int, num_workers: int = 4, **kwargs):
+        super().__init__(root, batch_size, **kwargs)
+        self.num_workers = num_workers
+        self.total_samples = 0
+        self.abs_rel_sum = 0.0
+        self.sq_rel_sum = 0.0
+        self.rmse_sum = 0.0
+        self.rmse_log_sum = 0.0
+        self.a1_sum = 0
+        self.a2_sum = 0
+        self.a3_sum = 0
+        self.valid_pixel_count = 0
+
+    def get_loader(self) -> torch.utils.data.DataLoader:
+        from torch.utils.data import Dataset
+        from PIL import Image
+        from torchvision.transforms import v2
+        import os
+
+        data_root = os.path.expanduser(self.root)
+        list_file = os.path.join(data_root, "nyu_test.txt")
+        if not os.path.exists(list_file):
+            raise FileNotFoundError(f"NYU test list not found: {list_file}")
+
+        with open(list_file, "r") as f:
+            lines = [line.strip() for line in f if line.strip()]
+
+        class NYUDepthDataset(Dataset):
+            def __init__(self, data_root, entries):
+                self.data_root = data_root
+                self.entries = entries
+                self.to_image = v2.ToImage()
+                self.to_uint8 = v2.ToDtype(torch.uint8, scale=False)
+
+            def __len__(self):
+                return len(self.entries)
+
+            def __getitem__(self, idx):
+                parts = self.entries[idx].split()
+                rgb_path = os.path.join(self.data_root, parts[0])
+                depth_path = os.path.join(self.data_root, parts[1])
+                focal = float(parts[2]) if len(parts) > 2 else 518.8579
+
+                img = Image.open(rgb_path).convert("RGB")
+                depth = np.array(Image.open(depth_path), dtype=np.float32) / 1000.0
+
+                img_t = self.to_uint8(self.to_image(img))
+                label = {
+                    "idx": int(idx),
+                    "depth": depth,
+                    "focal": focal,
+                }
+                return img_t, label
+
+        dataset = NYUDepthDataset(data_root, lines)
+
+        def collate_nyu(batch):
+            images, labels = zip(*batch)
+            return list(images), list(labels)
+
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collate_nyu,
+        )
+
+    def evaluate_batch(self, preds: List[Any], labels: List[Any], **kwargs) -> Dict[str, Any]:
+        min_depth = 0.001
+        max_depth = 10.0
+
+        for pred, label in zip(preds, labels):
+            if not isinstance(pred, dict) or not isinstance(label, dict):
+                continue
+
+            pred_depth = pred.get("depth")
+            gt_depth = label.get("depth")
+
+            if pred_depth is None or gt_depth is None:
+                continue
+
+            pred_depth = np.asarray(pred_depth, dtype=np.float32)
+            gt_depth = np.asarray(gt_depth, dtype=np.float32)
+
+            # Resize prediction to GT size if needed
+            if pred_depth.shape != gt_depth.shape:
+                pred_t = torch.from_numpy(pred_depth).unsqueeze(0).unsqueeze(0)
+                pred_t = torch.nn.functional.interpolate(
+                    pred_t, size=gt_depth.shape[:2], mode="bilinear", align_corners=False
+                )
+                pred_depth = pred_t[0, 0].numpy()
+
+            # NYU Eigen crop (matches official eval: x=[45, 608], y=[43, 472])
+            h, w = gt_depth.shape
+            if h == 480 and w == 640:
+                gt_crop = gt_depth[43:472, 45:608]
+                pred_crop = pred_depth[43:472, 45:608]
+            else:
+                crop_h = int(0.9375 * h)
+                crop_w = int(0.8125 * w)
+                gt_crop = gt_depth[:crop_h, :crop_w]
+                pred_crop = pred_depth[:crop_h, :crop_w]
+
+            valid = (gt_crop > min_depth) & (gt_crop < max_depth)
+
+            if valid.sum() == 0:
+                continue
+
+            # Least-squares alignment: pred_aligned = scale * pred + shift
+            pred_masked = pred_crop[valid].reshape(-1, 1)
+            gt_masked = gt_crop[valid].reshape(-1, 1)
+            ones = np.ones_like(pred_masked)
+            A = np.concatenate([pred_masked, ones], axis=-1)
+            try:
+                X, _, _, _ = np.linalg.lstsq(A, gt_masked, rcond=None)
+                scale, shift = X[0, 0], X[1, 0]
+            except np.linalg.LinAlgError:
+                scale = np.median(gt_masked) / (np.median(pred_masked) + 1e-8)
+                shift = 0.0
+
+            pred_aligned = pred_crop * scale + shift
+            pred_aligned = np.clip(pred_aligned, min_depth, max_depth)
+
+            gt_val = gt_crop[valid]
+            pred_val = pred_aligned[valid]
+
+            self.total_samples += 1
+            n = float(valid.sum())
+
+            abs_rel = float(np.mean(np.abs(gt_val - pred_val) / gt_val))
+            sq_rel = float(np.mean((gt_val - pred_val) ** 2 / gt_val))
+            rmse = float(np.sqrt(np.mean((gt_val - pred_val) ** 2)))
+            rmse_log = float(np.sqrt(np.mean((np.log(gt_val) - np.log(np.maximum(pred_val, 1e-8))) ** 2)))
+
+            max_ratio = np.maximum(gt_val / (pred_val + 1e-8), pred_val / (gt_val + 1e-8))
+            a1 = float((max_ratio < 1.25).mean())
+            a2 = float((max_ratio < 1.25 ** 2).mean())
+            a3 = float((max_ratio < 1.25 ** 3).mean())
+
+            self.abs_rel_sum += abs_rel * n
+            self.sq_rel_sum += sq_rel * n
+            self.rmse_sum += rmse * n
+            self.rmse_log_sum += rmse_log * n
+            self.a1_sum += a1 * n
+            self.a2_sum += a2 * n
+            self.a3_sum += a3 * n
+            self.valid_pixel_count += n
+
+        return {"depth_images": len(preds)}
+
+    def get_pbar_desc(self) -> str:
+        if self.valid_pixel_count == 0:
+            return f"Processed: {self.total_samples}"
+        abs_rel = self.abs_rel_sum / self.valid_pixel_count
+        return f"AbsRel: {abs_rel:.4f} | Processed: {self.total_samples}"
+
+    def get_summary(self) -> Dict[str, Any]:
+        if self.valid_pixel_count == 0:
+            return {"total_samples": self.total_samples}
+        n = self.valid_pixel_count
+        return {
+            "total_samples": self.total_samples,
+            "abs_rel": self.abs_rel_sum / n,
+            "sq_rel": self.sq_rel_sum / n,
+            "rmse": self.rmse_sum / n,
+            "rmse_log": self.rmse_log_sum / n,
+            "delta_1.25": self.a1_sum / n,
+            "delta_1.25^2": self.a2_sum / n,
+            "delta_1.25^3": self.a3_sum / n,
+        }
+
+
 def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> DatasetLoader:
     if name == 'imagenet-1k':
         return ImageNetLoader(root, batch_size, **kwargs)
     elif name == 'coco2017':
-        return COCO2017Loader(root, batch_size, **kwargs)
+        return COCO201Loader(root, batch_size, **kwargs)
     elif name in {'ade20k', 'scene_parse_150'}:
         return ADE20KLoader(root, batch_size, **kwargs)
+    elif name == 'nyu_depth':
+        return NYUDepthLoader(root, batch_size, **kwargs)
     else:
         raise ValueError(f"Unknown dataset name: {name}")

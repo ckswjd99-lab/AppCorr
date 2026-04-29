@@ -14,6 +14,9 @@ def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
     elif "dinov3_segmentor" in name:
         from .dinov3_segmentor import DINOv3SegmentorExecutor
         return DINOv3SegmentorExecutor(device)
+    elif "dinov3_depther" in name:
+        from .dinov3_depther import DINOv3DeptherExecutor
+        return DINOv3DeptherExecutor(device)
     else:
         if "dinov3" in name:
              from .dinov3_classifier import DINOv3ClassifierExecutor
