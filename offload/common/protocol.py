@@ -201,7 +201,7 @@ class ExperimentConfig:
             }
             options.update(self.input_profile_kwargs)
             return options
-        if name == "dinov3_ade20k_linear_official":
+        if name == "dinov3_ade20k_linhead_official":
             options = {
                 "name": name,
                 "mobile_resize_short_side": 512,
@@ -251,12 +251,13 @@ class Patch:
     image_idx: int
     spatial_idx: int
     data: bytes
-    
+
     res_level: int = 0
     group_id: int = 0
     batch_group_total: int = 0
     arrival_time: float = 0.0
     pscore_hint: float = 0.0
+    target_shape: tuple = ()
 
 class OpType(Enum):
     # --- Computation Ops ---
