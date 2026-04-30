@@ -113,6 +113,12 @@ class WorkerModule(multiprocessing.Process):
 
                     context = self.sessions[req_id]
                     if task.payload:
+                        # Extract target_shape metadata from patches
+                        if 'target_shapes' not in context:
+                            context['target_shapes'] = {}
+                        for p in task.payload:
+                            if hasattr(p, 'target_shape') and p.target_shape and p.image_idx not in context['target_shapes']:
+                                context['target_shapes'][p.image_idx] = p.target_shape
                         for instr in task.instructions:
                             if instr.op_type == OpType.LOAD_INPUT:
                                 group_id = task.payload[0].group_id
@@ -492,6 +498,29 @@ class WorkerModule(multiprocessing.Process):
                                 target_hw=self.config.image_shape[:2],
                             )
                 batch_np = context['input_sr_tensor']
+
+            # Wrap decoded images with target_shape metadata if available
+            target_shapes = context.get('target_shapes')
+            if target_shapes:
+                if isinstance(batch_np, np.ndarray) and batch_np.ndim == 4:
+                    wrapped = []
+                    for idx in range(batch_np.shape[0]):
+                        item = {'image': batch_np[idx]}
+                        ts = target_shapes[idx] if isinstance(target_shapes, list) and idx < len(target_shapes) else target_shapes.get(idx) if isinstance(target_shapes, dict) else None
+                        if ts is not None:
+                            item['target_shape'] = ts
+                        wrapped.append(item)
+                    batch_np = wrapped
+                elif isinstance(batch_np, list):
+                    wrapped = []
+                    for idx, img in enumerate(batch_np):
+                        item = {'image': img}
+                        ts = target_shapes[idx] if isinstance(target_shapes, list) and idx < len(target_shapes) else target_shapes.get(idx) if isinstance(target_shapes, dict) else None
+                        if ts is not None:
+                            item['target_shape'] = ts
+                        wrapped.append(item)
+                    batch_np = wrapped
+
             with torch.cuda.nvtx.range("Preprocess"):
                 self.executor.preprocess(batch_np, task, context, self.config)
 

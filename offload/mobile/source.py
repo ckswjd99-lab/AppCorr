@@ -94,9 +94,17 @@ class SourceModule(multiprocessing.Process):
         policy_name = self.config.transmission_policy_name
         preserve_input_shape = bool(self.config.transmission_kwargs.get('preserve_input_shape', False))
         label_list = self._labels_to_list(labels, curr_bs) if labels is not None else []
+        laplacian_policies = {"Laplacian", "ProgressiveLaplacian", "COCOWindowProgressiveLaplacian"}
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
             if preserve_input_shape:
+                target_shapes = [
+                    (self._metadata_for_label(label_list[idx]) if idx < len(label_list) else {}).get('target_shape')
+                    for idx, _ in enumerate(real_imgs_np)
+                ]
+                self._current_target_shapes = target_shapes
+                if policy_name in laplacian_policies:
+                    return real_imgs_np
                 encoded_items = [
                     {
                         'image': image_np,
@@ -111,7 +119,7 @@ class SourceModule(multiprocessing.Process):
                         for _ in range(pad_count)
                     )
                 return encoded_items
-            if policy_name in {"Laplacian", "ProgressiveLaplacian", "COCOWindowProgressiveLaplacian"}:
+            if policy_name in laplacian_policies:
                 return real_imgs_np
 
             server_batch_size = self.config.batch_size
@@ -130,6 +138,13 @@ class SourceModule(multiprocessing.Process):
                 self._tensor_to_hwc_uint8(images[idx])
                 for idx in range(curr_bs)
             ]
+            target_shapes = [
+                (self._metadata_for_label(label_list[idx]) if idx < len(label_list) else {}).get('target_shape')
+                for idx, _ in enumerate(real_imgs_np)
+            ]
+            self._current_target_shapes = target_shapes
+            if policy_name in laplacian_policies:
+                return real_imgs_np
             encoded_items = [
                 {
                     'image': image_np,
@@ -286,7 +301,13 @@ class SourceModule(multiprocessing.Process):
             for group_patches in encode_gen:
                 t_decode_end = time.time()
                 local_events.append({'type': f'MOBILE_ENCODE_G{group_idx}', 'timestamp': t_pipeline_start, 'duration': t_decode_end - t_pipeline_start})
-                
+
+                # Attach target_shape metadata to patches if available
+                target_shapes = getattr(self, '_current_target_shapes', None)
+                if target_shapes:
+                    for p in group_patches:
+                        if p.image_idx < len(target_shapes) and target_shapes[p.image_idx] is not None:
+                            p.target_shape = target_shapes[p.image_idx]
                 # Send Patches immediately
                 t_tx_start = time.time()
                 for p in group_patches:

@@ -39,14 +39,16 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         B = len(image_list)
         num_groups = config.transmission_kwargs.get('num_groups', 4)
         mobile_pscore = self._resolve_mobile_pscore(config)
+        preserve = self._is_preserve_input_shape(config)
 
         base_patches = []
         gaussians_batch = [None] * B
+        image_hws = [img.shape[:2] for img in image_list] if preserve else [None] * B
 
         # Generate base layers
         with ThreadPoolExecutor() as executor:
             futures = [
-                executor.submit(self._process_image_base_layer, b, image, config)
+                executor.submit(self._process_image_base_layer, b, image, config, image_hws[b])
                 for b, image in enumerate(image_list)
             ]
             for b, f in enumerate(futures):
@@ -68,7 +70,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             batch_candidates = [[] for _ in range(B)]
             with ThreadPoolExecutor() as executor:
                 futures = [
-                    executor.submit(self._process_image_residuals, b, gaussians_batch[b], config, mobile_pscore)
+                    executor.submit(self._process_image_residuals, b, gaussians_batch[b], config, mobile_pscore, image_hws[b])
                     for b in range(B)
                 ]
                 for b, f in enumerate(futures):
@@ -92,11 +94,15 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                     yield grouped[g]
         else:
             # Pipelined transmission for data-independent strategies
-            # Pre-calculate group assignments
-            residual_structure = self._collect_residual_metadata(gaussians_batch[0], config)
-            N = len(residual_structure)
-            group_assignments = self._precompute_group_assignments(grouping_strategy, N, num_groups)
-            
+            # Pre-calculate group assignments per image (may differ with preserve_input_shape)
+            per_image_assignments = []
+            for b in range(B):
+                residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
+                N = len(residual_structure)
+                per_image_assignments.append(
+                    self._precompute_group_assignments(grouping_strategy, N, num_groups)
+                )
+
             # Compress and yield group-by-group
             for g_id in range(1, num_groups + 1):
                 group_patches = []
@@ -106,33 +112,32 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                             self._process_image_group_residuals,
                             b,
                             gaussians_batch[b],
-                            residual_structure,
-                            group_assignments,
+                            per_image_assignments[b],
                             g_id,
                             config,
                             mobile_pscore,
+                            image_hws[b],
                         )
                         for b in range(B)
                     ]
                     for f in futures:
                         group_patches.extend(f.result())
-                
+
                 if group_patches:
                     total_in_group = len(group_patches)
                     for p in group_patches:
                         p.batch_group_total = total_in_group
                     yield group_patches
 
-    def _collect_residual_metadata(self, gaussians, config):
+    def _collect_residual_metadata(self, gaussians, config, image_hw=None):
         """Map pyramid structure to get spatial_idx and res_level."""
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
-        H, W = config.image_shape[:2]
         ph, pw = config.patch_size
-        
+
         structure = []
         for lvl in levels[1:]:
-            scale = 2 ** lvl
-            lh, lw = H // scale, W // scale
+            target_hw = self._target_hw_for_level(config, lvl, image_hw)
+            lh, lw = target_hw
             gh, gw = lh // ph, lw // pw
             num_crops = gh * gw
             for i in range(num_crops):
@@ -172,11 +177,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         self,
         b_idx,
         gaussians,
-        structure,
         group_assignments,
         target_group,
         config,
         mobile_pscore,
+        image_hw=None,
     ):
         """Compress only patches belonging to target_group for one image."""
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
@@ -193,8 +198,8 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             curr_g = gaussians[lvl]
             pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
             residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            residual = self._project_band_to_target(residual, lvl, config, np.int16)
-            
+            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
+
             # Identify patches in this level
             ph, pw = config.patch_size
             rh, rw = residual.shape[:2]
@@ -229,16 +234,16 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         return local_patches
 
 
-    def _process_image_base_layer(self, b_idx, image, config):
+    def _process_image_base_layer(self, b_idx, image, config, image_hw=None):
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
         max_lvl = max(levels)
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
-        
+
         gaussians = self._build_native_gaussians(image, max_lvl)
-            
+
         local_patches = []
         base_lvl = levels[0] # Highest level index is the base layer
-        base_band = self._project_band_to_target(gaussians[base_lvl], base_lvl, config, np.uint8)
+        base_band = self._project_band_to_target(gaussians[base_lvl], base_lvl, config, np.uint8, image_hw)
         
         # Use vectorized creation
         self._create_patches_with_group_vectorized(
@@ -247,23 +252,23 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         )
         return local_patches, gaussians
 
-    def _process_image_residuals(self, b_idx, gaussians, config, mobile_pscore):
+    def _process_image_residuals(self, b_idx, gaussians, config, mobile_pscore, image_hw=None):
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
-        
+
         local_candidates = []
-        
+
         # Start from base layer and upsample
         prev_lvl = levels[0]
         prev_img = gaussians[prev_lvl]
-        
+
         for lvl in levels[1:]:
             curr_g = gaussians[lvl]
-            
+
             # Residual Layer: Collect
             pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
             residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            residual = self._project_band_to_target(residual, lvl, config, np.int16)
+            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
             
             # Use vectorized collection
             self._collect_residual_candidates_vectorized(
