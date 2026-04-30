@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import math
 import os
 import sys
@@ -263,12 +262,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
 
     def _format_segmentation_output(self, pred_label: torch.Tensor) -> Dict[str, Any]:
         pred_np = pred_label.detach().cpu().numpy().astype(np.uint8, copy=False)
-        histogram = torch.bincount(pred_label.long().flatten(), minlength=self.num_classes)[:self.num_classes]
         return {
-            "shape": [int(pred_np.shape[0]), int(pred_np.shape[1])],
-            "num_classes": int(self.num_classes),
-            "sha256": hashlib.sha256(np.ascontiguousarray(pred_np).tobytes()).hexdigest(),
-            "histogram": histogram.cpu().tolist(),
             "mask": np.ascontiguousarray(pred_np),
         }
 
