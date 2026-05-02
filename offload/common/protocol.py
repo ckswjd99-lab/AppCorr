@@ -210,7 +210,6 @@ class ExperimentConfig:
                 "server_stride": 341,
                 "server_eval_mode": "single",
                 "server_rescale_to": "input",
-                "server_use_tta": False,
                 "decoder_head_type": "linear",
                 "num_classes": 150,
                 "autocast_dtype": "float32",

@@ -119,15 +119,15 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
     ) -> tuple[List[torch.Tensor], List[bool], tuple[int, int]]:
         base_image = Image.fromarray(image_np)
         base_h, base_w = image_np.shape[:2]
-        eval_mode = str(profile_config.get("server_eval_mode", "tta")).lower()
+        eval_mode = str(profile_config.get("server_eval_mode", "single")).lower()
         if eval_mode not in {"tta", "single"}:
             raise ValueError(f"Unsupported segmentor-linhead server_eval_mode: {eval_mode}")
-        use_tta = eval_mode == "tta" and bool(profile_config.get("server_use_tta", True))
-
-        if not use_tta:
-            return [self._pil_to_normalized_tensor(base_image)], [False], (base_h, base_w)
-
         base_short_side = int(profile_config.get("mobile_resize_short_side", min(base_h, base_w)))
+
+        if eval_mode == "single":
+            resized = self._resize_short_side(base_image, base_short_side)
+            return [self._pil_to_normalized_tensor(resized)], [False], (base_h, base_w)
+
         tta_ratios = list(profile_config.get("server_tta_ratios", [1.0]))
         resized_images = [
             self._resize_short_side(base_image, self._tta_short_side(base_short_side, float(ratio)))
