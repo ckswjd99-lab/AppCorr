@@ -1,0 +1,31 @@
+{
+    "model_name": "dinov3_segmentor_linhead",
+    "dataset_name": "ade20k",
+    "exp_id": "ade20k_linhead_appcorr",
+    "batch_size": 8,
+    "image_shape": [512, 512, 3],
+    "patch_size": [16, 16],
+    "input_profile_name": "dinov3_ade20k_linhead_official",
+    "input_profile_kwargs": {
+        "server_rescale_to": "original",
+        "server_eval_mode": "single"
+    },
+    "scheduler_policy_name": "ADE20KApproxCorrect",
+    "transmission_policy_name": "ProgressiveLaplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [2, 0],
+        "grouping_strategy": "grid",
+        "num_groups": 1,
+        "compression_level": 1,
+        "preserve_input_shape": true
+    },
+    "appcorr_kwargs": {
+        "generated_from_client": true,
+        "token_keep_thres": 0.002,
+        "mobile_pscore": "residual_energy",
+        "mobile_pscore_weight": 1.0,
+        "server_pscore": "patch_attn_prob_layermean",
+        "server_pscore_weight": 1.0,
+        "pscore_fusion": "geo_mean"
+    }
+}

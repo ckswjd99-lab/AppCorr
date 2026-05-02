@@ -514,11 +514,14 @@ class WorkerModule(multiprocessing.Process):
                 elif isinstance(batch_np, list):
                     wrapped = []
                     for idx, img in enumerate(batch_np):
-                        item = {'image': img}
-                        ts = target_shapes[idx] if isinstance(target_shapes, list) and idx < len(target_shapes) else target_shapes.get(idx) if isinstance(target_shapes, dict) else None
-                        if ts is not None:
-                            item['target_shape'] = ts
-                        wrapped.append(item)
+                        if isinstance(img, dict):
+                            wrapped.append(img)
+                        else:
+                            item = {'image': img}
+                            ts = target_shapes[idx] if isinstance(target_shapes, list) and idx < len(target_shapes) else target_shapes.get(idx) if isinstance(target_shapes, dict) else None
+                            if ts is not None:
+                                item['target_shape'] = ts
+                            wrapped.append(item)
                     batch_np = wrapped
 
             with torch.cuda.nvtx.range("Preprocess"):

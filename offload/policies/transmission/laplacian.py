@@ -98,7 +98,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
         image_list = self._as_image_list(images)
         # Yield patches layer by layer
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
-        
+
         for tgt_lvl_idx, tgt_lvl in enumerate(levels):
             layer_patches = []
             with ThreadPoolExecutor() as executor:
@@ -108,15 +108,21 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
                 ]
                 for f in futures:
                     layer_patches.extend(f.result())
+
+            total_in_layer = len(layer_patches)
+            for p in layer_patches:
+                p.batch_group_total = total_in_layer
+
             yield layer_patches
 
     def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
         B = config.batch_size
         C = config.image_shape[2]
+        preserve = self._is_preserve_input_shape(config)
 
-        # Determine per-image target shapes from patch metadata or config
+        # Determine per-image target shapes from patch metadata
         target_shapes = [None] * B
-        if self._is_preserve_input_shape(config):
+        if preserve:
             for p in patches:
                 if p.target_shape and p.image_idx < B and target_shapes[p.image_idx] is None:
                     target_shapes[p.image_idx] = p.target_shape
@@ -126,19 +132,10 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
         for p in patches:
             layer_data_per_batch[p.image_idx].append(p)
 
-        if canvas is None:
-            if self._is_preserve_input_shape(config) and all(ts is not None for ts in target_shapes):
-                # Allocate per-image canvases with their actual sizes
-                final_images = canvas  # Will be handled per-image in _process_image_decode_preserve
-            else:
-                H, W = config.image_shape[:2]
-                final_images = np.zeros((B, H, W, C), dtype=np.uint8)
-        else:
-            final_images = canvas
-
         # Per-image reconstruction
         with ThreadPoolExecutor() as executor:
-            if self._is_preserve_input_shape(config) and all(ts is not None for ts in target_shapes):
+            if preserve:
+                # Always return variable-size list in preserve mode
                 futures = {
                     executor.submit(self._process_image_decode_preserve, b, layer_data_per_batch[b], config, target_shapes[b]): b
                     for b in range(B)
@@ -147,9 +144,10 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
                 for f in futures:
                     b, img = f.result()
                     results[b] = img
-                # Stack into a list (variable-size images)
                 return [results[b] for b in range(B)]
             else:
+                H, W = config.image_shape[:2]
+                final_images = np.zeros((B, H, W, C), dtype=np.uint8)
                 futures = {
                     executor.submit(self._process_image_decode, b, layer_data_per_batch[b], config): b
                     for b in range(B)
@@ -283,13 +281,16 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             
             prev_lvl = lvl
         
-        if prev_lvl > 0:
+        if prev_lvl > 0 and 0 in levels:
             curr_img = self._iterative_upsample(curr_img, prev_lvl, 0, H, W)
 
         return b_idx, curr_img
 
     def _process_image_decode_preserve(self, b_idx, patches, config, target_shape):
         C = config.image_shape[2]
+        # Fallback target_shape from config if not provided
+        if target_shape is None:
+            target_shape = tuple(config.image_shape[:2])
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 1, 0]), reverse=True)
         strict_base_lvl = levels[0]
 
@@ -331,7 +332,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
             prev_lvl = lvl
 
-        if prev_lvl > 0:
+        if prev_lvl > 0 and 0 in levels:
             tgt_hw = self._target_hw_for_level(config, 0, target_shape)
             curr_img = self._iterative_upsample_to_hw(curr_img, prev_lvl, 0, tgt_hw)
 
