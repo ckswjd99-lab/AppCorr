@@ -10,6 +10,7 @@ from .scheduling import (
     COCOWindowInterleavedPolicy,
     DynamicGroupTriggerPolicy,
     GroupTriggerPolicy,
+    NYUApproxCorrectPolicy,
 )
 from .transmission import (
     RawTransmissionPolicy, 
@@ -24,6 +25,7 @@ from .transmission import (
 SCHEDULER_REGISTRY = {
     "ADE20KApproxCorrect": ADE20KApproxCorrectPolicy,
     "ADE20KSequential": ADE20KSequentialPolicy,
+    "NYUApproxCorrect": NYUApproxCorrectPolicy,
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
