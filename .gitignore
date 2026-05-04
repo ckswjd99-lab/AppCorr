@@ -214,3 +214,7 @@ appcorr/weights
 .vscode
 .codex
 .claude
+.gitattributes
+graphify-out
+AGENTS.md
+CLAUDE.md

@@ -391,7 +391,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
                     pred = F.interpolate(pred.float(), size=rescale_to, mode="bilinear", align_corners=False)
 
                 if apply_flip:
-                    pred = F.hflip(pred)
+                    pred = pred.flip([-1])
                 pred = F.softmax(pred, dim=1)
                 aggregated_preds += pred.float()
                 del pred
@@ -830,7 +830,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
                     pred = source_preds[src_idx]
 
                 if apply_flip:
-                    pred = F.hflip(pred)
+                    pred = pred.flip([-1])
                 pred = F.softmax(pred, dim=1)
                 aggregated_preds += pred.float()
                 del pred

@@ -563,7 +563,7 @@ class DINOv3SegmentorExecutor(ModelExecutor):
 
                 # ── TTA post-processing ──
                 if apply_flip:
-                    pred = F.hflip(pred)
+                    pred = pred.flip([-1])
                 pred = F.softmax(pred, dim=1)
                 aggregated_preds += pred.float()
                 del pred
@@ -1061,7 +1061,7 @@ class DINOv3SegmentorExecutor(ModelExecutor):
 
                 # TTA post-processing
                 if apply_flip:
-                    pred = F.hflip(pred)
+                    pred = pred.flip([-1])
                 pred = F.softmax(pred, dim=1)
                 aggregated_preds += pred.float()
                 del pred
