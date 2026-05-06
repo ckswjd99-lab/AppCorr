@@ -282,6 +282,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
         all_rope_sincos = []
         all_token_shapes = []
         all_mobile_pscore_hints = []
+        all_source_flip_flags = []
         image_metas = []
         mobile_pscore_hint_maps = context.get("depther_mobile_pscore_hint_maps")
 
@@ -310,6 +311,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 all_x_backbones.append(x_tokens)
                 all_rope_sincos.append(rope)
                 all_token_shapes.append((tok_H, tok_W))
+                all_source_flip_flags.append(bool(_apply_flip))
                 hint_entry = (
                     mobile_pscore_hint_maps[image_idx]
                     if isinstance(mobile_pscore_hint_maps, list) and image_idx < len(mobile_pscore_hint_maps)
@@ -342,6 +344,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
         context["depther_rope_sincos"] = all_rope_sincos
         context["depther_token_shapes"] = all_token_shapes
         context["depther_mobile_pscore_hints"] = all_mobile_pscore_hints
+        context["depther_source_flip_flags"] = all_source_flip_flags
         context["depther_image_metas"] = image_metas
         context["depther_out_indices"] = out_indices
         context.pop("depther_group_maps", None)
@@ -823,6 +826,9 @@ class DINOv3DeptherExecutor(ModelExecutor):
             all_cached_dindices = [None] * len(all_x_backbones)
 
         num_groups = appcorr_options.get("num_groups", 1)
+        source_flip_flags = context.get("depther_source_flip_flags")
+        if not isinstance(source_flip_flags, list) or len(source_flip_flags) != len(all_x_backbones):
+            source_flip_flags = [False] * len(all_x_backbones)
 
         for src_idx in range(len(all_x_backbones)):
             if all_group_maps[src_idx] is not None and all_cached_dindices[src_idx] is not None:
@@ -860,8 +866,16 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 else:
                     all_group_plans[src_idx] = {}
             else:
-                group_map = create_group_index(N, num_groups, "grid", self.device, token_hw=(tok_H, tok_W))
-                group_map = group_map.unsqueeze(0).expand(B, -1)
+                group_map_2d = create_group_index(
+                    N,
+                    num_groups,
+                    "grid",
+                    x_tokens.device,
+                    token_hw=(tok_H, tok_W),
+                ).view(tok_H, tok_W)
+                if bool(source_flip_flags[src_idx]):
+                    group_map_2d = torch.flip(group_map_2d, dims=(-1,))
+                group_map = group_map_2d.flatten().unsqueeze(0).expand(B, -1)
                 all_group_maps[src_idx] = group_map
 
                 src_cached_dindices = {}

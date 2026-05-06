@@ -39,6 +39,10 @@ class SchedulerModule(multiprocessing.Process):
                 elif cmd == 'TIME_SYNC':
                      self.worker_queue.put(('TIME_SYNC', data))
 
+                elif cmd == 'STOP':
+                    self.worker_queue.put('STOP')
+                    return
+
             # Drain queue
             while not self.input_queue.empty():
                 try:
