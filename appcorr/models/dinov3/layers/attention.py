@@ -190,7 +190,7 @@ class SelfAttention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
         cache_feature[f"{tag}_kv"] = qkv[:, :, 1:].detach().clone()  # Only k, v, [B, N, 2, H, D//H]
         q, k, v = torch.unbind(qkv, 2)
-        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]    # [B, H, N, D//H]
 
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
@@ -198,6 +198,15 @@ class SelfAttention(nn.Module):
         cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
         if server_pscore in {"patch_attn_prob", "patch_attn_prob_layermean"}:
             attn_prob = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, N, N]
+            server_pscore_tensor = attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.bfloat16)  # [B, N]
+        elif server_pscore in {"patch_pseudo_attn_prob", "patch_pseudo_attn_prob_layermean"}:
+            num_patch_tokens = rope[0].shape[0] if rope is not None else N
+            q_patch = q[:, :, N - num_patch_tokens:, :]
+            q_mean = q_patch.mean(dim=2, keepdim=True)
+            q_mean_norm = q_mean.norm(dim=-1, keepdim=True).clamp_min(torch.finfo(q_mean.dtype).eps)
+            target_norm = q_patch.norm(dim=-1, keepdim=True).mean(dim=2, keepdim=True)
+            q_pseudo = q_mean * (target_norm / q_mean_norm)
+            attn_prob = (q_pseudo @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, 1, N]
             server_pscore_tensor = attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.bfloat16)  # [B, N]
         else:
             cls_attn_score = q[:, :, 0:1, :] @ k.transpose(-2, -1) * self.scale

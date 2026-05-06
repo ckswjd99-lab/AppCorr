@@ -19,12 +19,13 @@
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
-        "token_keep_thres": 0.002,
+        "token_keep_thres": 0.0001,
         "mobile_pscore": "residual_energy",
         "mobile_pscore_weight": 1.0,
-        "server_pscore": "patch_attn_prob_layermean",
+        "server_pscore": "patch_pseudo_attn_prob_layermean",
         "server_pscore_weight": 1.0,
-        "pscore_fusion": "geo_mean"
+        "pscore_fusion": "geo_mean",
+        "sdpa_query_bucket_size": 64
     },
     "device": "cuda:1"
 }

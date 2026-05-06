@@ -55,10 +55,13 @@ class SelfAttentionBlock(nn.Module):
         "cls_attn_prob",
         "patch_attn_prob",
         "patch_attn_prob_layermean",
+        "patch_pseudo_attn_prob",
+        "patch_pseudo_attn_prob_layermean",
         "cls_attn_prob_layermean",
     })
     _LAYERMEAN_SERVER_PSCORES = frozenset({
         "patch_attn_prob_layermean",
+        "patch_pseudo_attn_prob_layermean",
         "cls_attn_prob_layermean",
     })
     _PARTIAL_TOKEN_PLAN_CACHE_KEY = "_partial_token_query_plan_cache"
@@ -657,7 +660,7 @@ class SelfAttentionBlock(nn.Module):
         tag: str,
         server_pscore: str,
     ) -> torch.Tensor:
-        if server_pscore in {"patch_attn_prob_layermean", "cls_attn_prob_layermean"}:
+        if server_pscore in SelfAttentionBlock._LAYERMEAN_SERVER_PSCORES:
             cache_key = f"_shared_{server_pscore}_server_pscore_mean_all_layers"
             signature_key = f"{cache_key}_keys"
             cached_server_pscore = cache_feature.get(cache_key)
