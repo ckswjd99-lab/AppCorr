@@ -70,15 +70,25 @@ class WorkerModule(multiprocessing.Process):
         self.anchor_cpu = time.time()
 
         # Start Decoder Thread
-        decoder_thread = threading.Thread(target=self._decoder_worker, daemon=True)
+        decoder_thread = threading.Thread(target=self._decoder_worker)
         decoder_thread.start()
 
         # Start Reaper Thread
-        reaper_thread = threading.Thread(target=self._reaper_worker, daemon=True)
+        reaper_thread = threading.Thread(target=self._reaper_worker)
         reaper_thread.start()
 
-        with torch.no_grad():
-            self._gpu_worker()
+        try:
+            with torch.no_grad():
+                self._gpu_worker()
+        finally:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize(self.device)
+                    torch.cuda.cudart().cudaProfilerStop()
+            except Exception:
+                pass
+            decoder_thread.join(timeout=5)
+            reaper_thread.join(timeout=5)
 
     # ------------------------------------------------------------------ #
     #  Decoder Thread                                                      #

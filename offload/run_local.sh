@@ -180,8 +180,11 @@ echo "[run_local] Starting local AppCorr server..."
 if [[ "${USE_NSYS}" == true ]]; then
   echo "[run_local] Nsight Systems profiling enabled → temp_profile.nsys-rep"
   start_in_own_group nsys profile \
-    --trace=cuda,nvtx \
-    --output=temp_profile \
+            --sample=none \
+            --cpuctxsw=none \
+            --trace-fork-before-exec=true \
+            --trace=cuda,cuda-hw,nvtx \
+            --output=temp_profile \
     --force-overwrite=true \
     -- python offload/server/main.py \
       --recv-port "${RECV_PORT}" \
