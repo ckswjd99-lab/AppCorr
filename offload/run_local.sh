@@ -4,12 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  offload/run_local.sh CONFIG_PATH [-nr N] [-d DATA_ROOT]
+  offload/run_local.sh CONFIG_PATH [-nr N] [-nw N] [-d DATA_ROOT]
 
 Runs the AppCorr server and mobile client locally against one config.
 
 Options:
   -nr N, --num-request N  Run only N requests (batches); omit to run all
+  -nw N, --num-warmup N   Run N warm-up requests before measurement. Default: 1
   -d PATH, --data PATH    Dataset root path (overrides config's dataset_kwargs.data_root)
   -ns,   --nsys           Profile the server with Nsight Systems (nsys profile)
 
@@ -27,6 +28,7 @@ EOF
 }
 
 NUM_REQUEST=""
+NUM_WARMUP="1"
 USE_NSYS=false
 DATA_ROOT=""
 POSITIONAL_ARGS=()
@@ -49,6 +51,15 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       NUM_REQUEST="$2"
+      shift 2
+      ;;
+    -nw|--num-warmup)
+      if [[ $# -lt 2 ]]; then
+        echo "[run_local] --num-warmup requires an argument" >&2
+        usage >&2
+        exit 1
+      fi
+      NUM_WARMUP="$2"
       shift 2
       ;;
     -ns|--nsys)
@@ -205,6 +216,7 @@ start_in_own_group python offload/mobile/main.py \
   --ip 127.0.0.1 \
   --recv-port "${RECV_PORT}" \
   --send-port "${SEND_PORT}" \
+  --num-warmup "${NUM_WARMUP}" \
   ${DATA_ROOT:+--data "${DATA_ROOT}"} \
   ${NUM_REQUEST:+--num-request "${NUM_REQUEST}"}
 MOBILE_PID="${STARTED_PID}"

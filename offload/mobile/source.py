@@ -58,6 +58,7 @@ class SourceModule(multiprocessing.Process):
         data_root: str,
         loader_batch_size: int,
         num_requests: int | None = None,
+        num_warmup: int = 1,
     ):
         super().__init__()
         self.output_queue = output_queue
@@ -66,6 +67,7 @@ class SourceModule(multiprocessing.Process):
         self.data_root = data_root
         self.loader_batch_size = loader_batch_size
         self.num_requests = num_requests
+        self.num_warmup = max(int(num_warmup), 0)
 
     @staticmethod
     def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
@@ -209,6 +211,96 @@ class SourceModule(multiprocessing.Process):
             return cls._EVENT_GROUP_SUFFIX_RE.sub("", event_type)
         return event_type
 
+    @staticmethod
+    def _current_batch_size(images) -> int:
+        return len(images) if isinstance(images, (list, tuple)) else images.size(0)
+
+    def _execute_request(self, policy, images, labels, curr_bs: int, time_offset: float):
+        t_load_start = time.time()
+        encode_input = self._prepare_encode_input(images, curr_bs, labels)
+        t_load_end = time.time()
+
+        batch_bytes = 0
+        all_patches = []
+        local_events = [{'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start}]
+
+        encode_gen = policy.encode(encode_input, self.config)
+
+        group_idx = 0
+        t_pipeline_start = time.time()
+        t_send_start = t_pipeline_start
+
+        for group_patches in encode_gen:
+            t_decode_end = time.time()
+            local_events.append({
+                'type': f'MOBILE_ENCODE_G{group_idx}',
+                'timestamp': t_pipeline_start,
+                'duration': t_decode_end - t_pipeline_start,
+            })
+
+            target_shapes = getattr(self, '_current_target_shapes', None)
+            if target_shapes:
+                for p in group_patches:
+                    if p.image_idx < len(target_shapes) and target_shapes[p.image_idx] is not None:
+                        p.target_shape = target_shapes[p.image_idx]
+
+            t_tx_start = time.time()
+            for p in group_patches:
+                self.output_queue.put(p)
+            t_tx_end = time.time()
+
+            local_events.append({
+                'type': f'MOBILE_SEND_G{group_idx}',
+                'timestamp': t_tx_start,
+                'duration': t_tx_end - t_tx_start,
+            })
+
+            all_patches.extend(group_patches)
+            batch_bytes += sum(len(p.data) for p in group_patches)
+
+            group_idx += 1
+            t_pipeline_start = time.time()
+
+        result = self.feedback_queue.get()
+        t_result_recv = time.time()
+
+        server_events = []
+        for event in result.server_events:
+            event_copy = dict(event)
+            event_copy['timestamp'] = event_copy['start'] - time_offset
+            event_copy['duration'] = event_copy['end'] - event_copy['start']
+            del event_copy['start'], event_copy['end']
+            server_events.append(event_copy)
+
+        local_events.append({'type': 'MOBILE_RECEIVE', 'timestamp': t_result_recv, 'duration': 0})
+
+        all_events = local_events + server_events
+        all_events.sort(key=lambda x: x.get('timestamp', 0))
+
+        group_stats = {}
+        for p in all_patches:
+            gid = p.group_id
+            if gid not in group_stats:
+                group_stats[gid] = {'count': 0, 'bytes': 0}
+            group_stats[gid]['count'] += 1
+            group_stats[gid]['bytes'] += len(p.data)
+
+        valid_preds = result.output[:curr_bs]
+        valid_labels = self._labels_to_list(labels, curr_bs)
+        latency = t_result_recv - t_send_start
+
+        return {
+            'result': result,
+            'batch_bytes': batch_bytes,
+            'batch_kb': batch_bytes / 1024.0,
+            'all_patches': all_patches,
+            'all_events': all_events,
+            'group_stats': group_stats,
+            'valid_preds': valid_preds,
+            'valid_labels': valid_labels,
+            'latency': latency,
+        }
+
     def run(self):
         dataset_name = getattr(self.config, 'dataset_name', 'imagenet')
         print(f"[Source] Loading {dataset_name} from {self.data_root} (Loader Batch: {self.loader_batch_size})...")
@@ -262,6 +354,24 @@ class SourceModule(multiprocessing.Process):
         time_offset = perform_time_sync(self.output_queue, self.feedback_queue)
 
         policy = get_transmission(self.config.transmission_policy_name)
+
+        completed_warmups = 0
+        if self.num_warmup > 0:
+            print(f"[Source] Running {self.num_warmup} warm-up request(s) (not logged/stat).")
+            warmup_iter = iter(loader)
+            for _ in tqdm(range(self.num_warmup), desc="Warm-up", leave=False):
+                try:
+                    images, labels = next(warmup_iter)
+                except StopIteration:
+                    warmup_iter = iter(loader)
+                    try:
+                        images, labels = next(warmup_iter)
+                    except StopIteration:
+                        break
+                curr_bs = self._current_batch_size(images)
+                self._execute_request(policy, images, labels, curr_bs, time_offset)
+                completed_warmups += 1
+            print(f"[Source] Warm-up complete: {completed_warmups} request(s).")
         
         # Initialize metrics
         total_bytes = 0 
@@ -283,86 +393,24 @@ class SourceModule(multiprocessing.Process):
         
         # Track event statistics
         event_stats_accumulator = {}
+        measured_request_count = 0
 
         print("[Source] Starting Batch Evaluation Loop...")
 
         pbar = tqdm(enumerate(loader), total=len(loader), leave=False)
         for batch_idx, (images, labels) in pbar:
-            curr_bs = len(images) if isinstance(images, (list, tuple)) else images.size(0)
-            
-            # Send Phase
-            t_load_start = time.time()
-            encode_input = self._prepare_encode_input(images, curr_bs, labels)
-            t_load_end = time.time()
-            
-            # Encode data
-            batch_bytes = 0
-            all_patches = []
-            local_events = [{'type': 'MOBILE_LOAD', 'timestamp': t_load_start, 'duration': t_load_end - t_load_start}]
-            
-            # Execute generator pipeline
-            encode_gen = policy.encode(encode_input, self.config)
-            
-            group_idx = 0
-            t_pipeline_start = time.time()
-            t_send_start = t_pipeline_start # Transmission block start
-            
-            for group_patches in encode_gen:
-                t_decode_end = time.time()
-                local_events.append({'type': f'MOBILE_ENCODE_G{group_idx}', 'timestamp': t_pipeline_start, 'duration': t_decode_end - t_pipeline_start})
+            curr_bs = self._current_batch_size(images)
+            request = self._execute_request(policy, images, labels, curr_bs, time_offset)
 
-                # Attach target_shape metadata to patches if available
-                target_shapes = getattr(self, '_current_target_shapes', None)
-                if target_shapes:
-                    for p in group_patches:
-                        if p.image_idx < len(target_shapes) and target_shapes[p.image_idx] is not None:
-                            p.target_shape = target_shapes[p.image_idx]
-                # Send Patches immediately
-                t_tx_start = time.time()
-                for p in group_patches:
-                    self.output_queue.put(p)
-                t_tx_end = time.time()
-                
-                local_events.append({'type': f'MOBILE_SEND_G{group_idx}', 'timestamp': t_tx_start, 'duration': t_tx_end - t_tx_start})
-                
-                all_patches.extend(group_patches)
-                batch_bytes += sum(len(p.data) for p in group_patches)
-                
-                group_idx += 1
-                t_pipeline_start = time.time() # Start timing next group's encode
-                
+            batch_bytes = request['batch_bytes']
             total_bytes += batch_bytes
-            batch_kb = batch_bytes / 1024.0
-            
-            # Wait for Response
-            result = self.feedback_queue.get()
-            
-            # Calculate Metrics
-            t_result_recv = time.time()
-            
-            # Server Events
-            server_events = result.server_events
-            # Adjust timestamps
-            for e in server_events:
-                e['timestamp'] = e['start'] - time_offset # Map to Mobile Time
-                e['duration'] = e['end'] - e['start']
-                del e['start'], e['end']
-            
-            # Final local event addition
-            local_events.append({'type': 'MOBILE_RECEIVE', 'timestamp': t_result_recv, 'duration': 0})
-            
-            # Combine
-            all_events = local_events + server_events
-            all_events.sort(key=lambda x: x.get('timestamp', 0))
-            
-            # Group Stats Calculation
-            group_stats = {}
-            for p in all_patches:
-                gid = p.group_id
-                if gid not in group_stats:
-                    group_stats[gid] = {'count': 0, 'bytes': 0}
-                group_stats[gid]['count'] += 1
-                group_stats[gid]['bytes'] += len(p.data)
+            all_events = request['all_events']
+            group_stats = request['group_stats']
+            result = request['result']
+            valid_preds = request['valid_preds']
+            valid_labels = request['valid_labels']
+            latency = request['latency']
+            measured_request_count += 1
 
             # Aggregate Event Stats (Per Request)
             request_latency_map = {}
@@ -385,11 +433,6 @@ class SourceModule(multiprocessing.Process):
                 stats['min'] = min(stats['min'], total_dur_ms)
                 stats['max'] = max(stats['max'], total_dur_ms)
 
-            # Calculate metrics via DatasetLoader
-            valid_preds = result.output[:curr_bs]
-            valid_labels = self._labels_to_list(labels, curr_bs)
-            
-            latency = t_result_recv - t_send_start # End-to-End approximation
             total_latency += latency
             cache_size_bytes = getattr(result, 'cache_size_bytes', 0)
             cache_breakdown_bytes = getattr(result, 'cache_breakdown_bytes', {})
@@ -455,7 +498,7 @@ class SourceModule(multiprocessing.Process):
             avg_kb = total_bytes/1024/(batch_idx*self.loader_batch_size + curr_bs)
             pbar.set_description(f"{pbar_desc} | Avg. Transfer: {avg_kb:.2f} KB/image")
             
-            if self.num_requests is not None and (batch_idx + 1) >= self.num_requests:
+            if self.num_requests is not None and measured_request_count >= self.num_requests:
                 break
 
         final_summary = self.dataset_loader.get_summary()
@@ -480,7 +523,8 @@ class SourceModule(multiprocessing.Process):
             print(f"{etype:<25} | {avg:<8.2f} | {stats['min']:<8.2f} | {stats['max']:<8.2f} | {stats['count']:<6}")
         print("=" * 65 + "\n")
 
-        avg_cache_size_bytes = total_cache_size_bytes / (batch_idx + 1)
+        request_count = max(measured_request_count, 1)
+        avg_cache_size_bytes = total_cache_size_bytes / request_count
         avg_attn_prob_coverage_pct = (
             100.0 * total_attn_prob_mass_used / total_attn_prob_mass_full
             if total_attn_prob_mass_full > 0 else 0.0
@@ -532,7 +576,7 @@ class SourceModule(multiprocessing.Process):
             other_sum = 0.0
             other_max = 0
             for key, stats in sorted_cache_breakdown:
-                avg_value = stats['sum'] / (batch_idx + 1)
+                avg_value = stats['sum'] / request_count
                 if avg_value < small_entry_threshold_bytes:
                     other_sum += stats['sum']
                     other_max = max(other_max, stats['max'])
@@ -549,7 +593,7 @@ class SourceModule(multiprocessing.Process):
                     'max_bytes': stats['max'],
                 }
             if other_sum > 0:
-                other_avg = other_sum / (batch_idx + 1)
+                other_avg = other_sum / request_count
                 print(
                     f"{'other':<25} | Avg {other_avg / (1024 ** 2):>7.2f} MB"
                     f" | Max {other_max / (1024 ** 2):>7.2f} MB"
@@ -586,12 +630,16 @@ class SourceModule(multiprocessing.Process):
                 print(f"Avg combined pscore covered by recomputed patches: {avg_token_pscore_coverage_pct:.2f}%")
         print("")
 
+        sample_count_for_bytes = final_summary.get('total_samples', 1) or 1
+
         # Write Summary
         summary = {
             'exp_id': self.config.exp_id,
             'dataset_summary': final_summary,
-            'avg_bytes_per_sample': total_bytes / final_summary.get('total_samples', 1),
-            'avg_latency_per_batch': total_latency / (batch_idx + 1),
+            'avg_bytes_per_sample': total_bytes / sample_count_for_bytes,
+            'avg_latency_per_batch': total_latency / request_count,
+            'num_warmup_requests': completed_warmups,
+            'num_measured_requests': measured_request_count,
             'avg_cache_size_bytes_per_offload': avg_cache_size_bytes,
             'max_cache_size_bytes_per_offload': max_cache_size_bytes,
             'attn_col_keep_pct': attn_col_keep_pct,
