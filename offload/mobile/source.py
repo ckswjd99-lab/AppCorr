@@ -94,7 +94,14 @@ class SourceModule(multiprocessing.Process):
         policy_name = self.config.transmission_policy_name
         preserve_input_shape = bool(self.config.transmission_kwargs.get('preserve_input_shape', False))
         label_list = self._labels_to_list(labels, curr_bs) if labels is not None else []
-        laplacian_policies = {"Laplacian", "ProgressiveLaplacian", "COCOWindowProgressiveLaplacian"}
+        laplacian_policies = {
+            "Laplacian",
+            "ProgressiveLaplacian",
+            "COCOWindowProgressiveLaplacian",
+            "NYUAppCorrLaplacian",
+            "NYUAppCorrProgressiveLaplacian",
+            "NYUAppCorrRaw",
+        }
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
             if preserve_input_shape:
