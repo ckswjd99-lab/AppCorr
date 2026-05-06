@@ -111,16 +111,25 @@ def normalize_appcorr_kwargs(
         server_pscore = 'patch_attn_prob'
     if server_pscore == 'patch_attn_prune':
         server_pscore = 'patch_attn_prob'
+    server_pscore_aliases = {
+        'pseudo_patch_attn_prob': 'patch_pseudo_attn_prob',
+        'pseudo_patch_attn_prob_layermean': 'patch_pseudo_attn_prob_layermean',
+    }
+    server_pscore = server_pscore_aliases.get(server_pscore, server_pscore)
     legacy_server_pscore_layer_fusion = str(raw.get('server_pscore_layer_fusion', '')).lower()
     if legacy_server_pscore_layer_fusion in {'mean', 'avg', 'all_layer_mean', 'layer_mean', 'mean_all_layers'}:
         if server_pscore == 'patch_attn_prob':
             server_pscore = 'patch_attn_prob_layermean'
+        elif server_pscore == 'patch_pseudo_attn_prob':
+            server_pscore = 'patch_pseudo_attn_prob_layermean'
         elif server_pscore == 'cls_attn_prob':
             server_pscore = 'cls_attn_prob_layermean'
     valid_server_pscores = {
         'cls_attn_prob',
         'patch_attn_prob',
         'patch_attn_prob_layermean',
+        'patch_pseudo_attn_prob',
+        'patch_pseudo_attn_prob_layermean',
         'cls_attn_prob_layermean',
     }
     if server_pscore not in valid_server_pscores:

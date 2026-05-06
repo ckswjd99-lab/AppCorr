@@ -91,18 +91,6 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         images, target_shapes = self._as_image_list(batch_data)
-        active_indices = context.get("active_indices")
-        if active_indices is not None:
-            indices = active_indices.detach().cpu().tolist()
-            filtered_images = []
-            filtered_target_shapes = []
-            for idx in indices:
-                idx = int(idx)
-                if idx < len(images):
-                    filtered_images.append(images[idx])
-                    filtered_target_shapes.append(target_shapes[idx] if idx < len(target_shapes) else None)
-            images = filtered_images
-            target_shapes = filtered_target_shapes
         context["input_images_uint8"] = [np.ascontiguousarray(image) for image in images]
         context["target_shapes"] = target_shapes
 
@@ -653,17 +641,9 @@ class DINOv3DeptherExecutor(ModelExecutor):
         if outputs is None:
             return {}
 
-        active_indices = context.get("active_indices")
-        if active_indices is None:
-            indices = list(range(len(outputs)))
-        else:
-            indices = active_indices.detach().cpu().tolist()
-
         results = {}
-        for local_idx, orig_idx in enumerate(indices):
-            if local_idx >= len(outputs):
-                break
-            results[int(orig_idx)] = self._format_depth_output(outputs[local_idx])
+        for local_idx, output in enumerate(outputs):
+            results[local_idx] = self._format_depth_output(output)
         return results
 
     def _format_depth_output(self, depth_map: torch.Tensor) -> Dict[str, Any]:
@@ -741,12 +721,32 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 all_group_maps[src_idx] = None
                 all_group_plans[src_idx] = {}
                 all_cached_dindices[src_idx] = {}
-            else:
-                if num_groups == 1:
-                    group_map = torch.zeros(B, N, dtype=torch.long, device=self.device)
+            elif num_groups == 1:
+                group_map = torch.zeros(B, N, dtype=torch.long, device=x_tokens.device)
+                all_group_maps[src_idx] = group_map
+
+                pre_indices = torch.arange(
+                    num_pretokens, device=x_tokens.device, dtype=torch.long,
+                ).unsqueeze(0).expand(B, -1)
+                patch_indices = torch.arange(
+                    num_pretokens,
+                    num_pretokens + N,
+                    device=x_tokens.device,
+                    dtype=torch.long,
+                ).unsqueeze(0).expand(B, -1)
+                all_cached_dindices[src_idx] = {
+                    0: torch.cat([pre_indices, patch_indices], dim=1),
+                }
+
+                if appcorr_method == "partial_channel":
+                    all_group_plans[src_idx] = self._build_group_plans(
+                        x_tokens, group_map, num_groups, appcorr_options
+                    )
                 else:
-                    group_map = create_group_index(N, num_groups, "grid", self.device, token_hw=(tok_H, tok_W))
-                    group_map = group_map.unsqueeze(0).expand(B, -1)
+                    all_group_plans[src_idx] = {}
+            else:
+                group_map = create_group_index(N, num_groups, "grid", self.device, token_hw=(tok_H, tok_W))
+                group_map = group_map.unsqueeze(0).expand(B, -1)
                 all_group_maps[src_idx] = group_map
 
                 src_cached_dindices = {}
