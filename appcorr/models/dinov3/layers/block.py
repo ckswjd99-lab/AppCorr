@@ -8,18 +8,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
-try:
-    import nvtx
-except ModuleNotFoundError:
-    class _NvtxFallback:
-        @staticmethod
-        def annotate(*args, **kwargs):
-            def decorator(fn):
-                return fn
-
-            return decorator
-
-    nvtx = _NvtxFallback()
+import nvtx
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 

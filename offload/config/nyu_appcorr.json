@@ -19,7 +19,7 @@
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
-        "token_keep_thres": -0.002,
+        "token_keep_thres": 0.002,
         "mobile_pscore": "residual_energy",
         "mobile_pscore_weight": 1.0,
         "server_pscore": "patch_attn_prob_layermean",

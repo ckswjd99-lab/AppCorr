@@ -100,7 +100,8 @@ class SourceModule(multiprocessing.Process):
             if preserve_input_shape:
                 target_shapes = [
                     (self._metadata_for_label(label_list[idx]) if idx < len(label_list) else {}).get('target_shape')
-                    for idx, _ in enumerate(real_imgs_np)
+                    or tuple(int(v) for v in image_np.shape[:2])
+                    for idx, image_np in enumerate(real_imgs_np)
                 ]
                 self._current_target_shapes = target_shapes
                 if policy_name in laplacian_policies:
@@ -140,7 +141,8 @@ class SourceModule(multiprocessing.Process):
             ]
             target_shapes = [
                 (self._metadata_for_label(label_list[idx]) if idx < len(label_list) else {}).get('target_shape')
-                for idx, _ in enumerate(real_imgs_np)
+                or tuple(int(v) for v in image_np.shape[:2])
+                for idx, image_np in enumerate(real_imgs_np)
             ]
             self._current_target_shapes = target_shapes
             if policy_name in laplacian_policies:

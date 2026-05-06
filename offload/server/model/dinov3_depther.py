@@ -256,7 +256,6 @@ class DINOv3DeptherExecutor(ModelExecutor):
         context["depther_token_shapes"] = all_token_shapes
         context["depther_image_metas"] = image_metas
         context["depther_out_indices"] = out_indices
-        context.pop("depther_current_features", None)
         context.pop("depther_group_maps", None)
         context.pop("depther_group_plans", None)
         context.pop("depther_cached_dindices", None)
@@ -371,85 +370,197 @@ class DINOv3DeptherExecutor(ModelExecutor):
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         token_keep_thres = appcorr_options["token_keep_thres"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
+        skip_patch_correction = self._partial_token_threshold_forces_no_patch_keep(appcorr_options)
 
         new_current_features = []
         new_cache_features = []
         new_intermediate_outputs = []
 
         for src_idx in range(len(all_x_backbones)):
-            x_feature = current_features[src_idx]
             input_tokens = all_x_backbones[src_idx]
             rope = all_rope_sincos[src_idx]
             cache = all_cache_features[src_idx]
             intermediates = dict(all_intermediate_outputs[src_idx])
 
-            group_plans = all_group_plans[src_idx] if all_group_plans is not None else None
-            cached_dindices = all_cached_dindices[src_idx] if all_cached_dindices is not None else None
+            src_cached_dindices = (
+                all_cached_dindices[src_idx]
+                if isinstance(all_cached_dindices, list) and src_idx < len(all_cached_dindices)
+                else {}
+            )
+            src_group_plans = (
+                all_group_plans[src_idx]
+                if isinstance(all_group_plans, list) and src_idx < len(all_group_plans)
+                else {}
+            )
 
-            plan = group_plans.get(group_id) if group_plans is not None else None
-            if plan is not None:
-                prefix_dindice = plan.prefix_dindice
-                group_patch_dindice = plan.group_patch_dindice
-                full_dindice = plan.full_dindice
+            if group_id in src_cached_dindices:
+                target_gids = [group_id]
             else:
-                prefix_dindice = None
-                group_patch_dindice = None
-                full_dindice = None
+                target_gids = sorted(src_cached_dindices.keys())
 
-            with torch.cuda.nvtx.range(f"depther_correct_src{src_idx}_g{group_id}_L{start_l}-{end_l}"):
-                for lidx in range(start_l, end_l):
-                    blk = vit_backbone.blocks[lidx]
+            if not target_gids:
+                new_current_features.append(current_features[src_idx])
+                new_cache_features.append(cache)
+                new_intermediate_outputs.append(intermediates)
+                continue
 
-                    B, N = x_feature.shape[:2]
-                    dindice = torch.arange(N, device=x_feature.device).unsqueeze(0).expand(B, -1)
+            all_dindices_for_src = []
+            for gid in target_gids:
+                d = src_cached_dindices.get(gid)
+                if d is not None:
+                    all_dindices_for_src.append(d)
 
-                    if appcorr_method == "partial_channel":
-                        x_feature, cache = blk.correct(
-                            x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
-                            appcorr_method=appcorr_method,
-                            token_keep_ratio=token_keep_ratio,
-                            token_keep_thres=token_keep_thres,
-                            mobile_pscore=appcorr_options["mobile_pscore"],
-                            mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
-                            mobile_pscore_hint=None,
-                            server_pscore=appcorr_options["server_pscore"],
-                            server_pscore_weight=appcorr_options["server_pscore_weight"],
-                            pscore_fusion=appcorr_options["pscore_fusion"],
-                            sdpa_query_bucket_size=sdpa_query_bucket_size,
-                            attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
-                            fixed_query_state=None,
-                            group_plan=plan,
-                            attn_cache_key=group_id,
-                            debug=False,
-                        )
-                    else:
-                        x_feature, cache = blk.correct(
-                            x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
-                            appcorr_method=appcorr_method,
-                            token_keep_ratio=token_keep_ratio,
-                            token_keep_thres=token_keep_thres,
-                            mobile_pscore=appcorr_options["mobile_pscore"],
-                            mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
-                            mobile_pscore_hint=None,
-                            server_pscore=appcorr_options["server_pscore"],
-                            server_pscore_weight=appcorr_options["server_pscore_weight"],
-                            pscore_fusion=appcorr_options["pscore_fusion"],
-                            sdpa_query_bucket_size=sdpa_query_bucket_size,
-                            attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
-                            debug=False,
-                        )
+            if not all_dindices_for_src:
+                new_current_features.append(current_features[src_idx])
+                new_cache_features.append(cache)
+                new_intermediate_outputs.append(intermediates)
+                continue
 
-                    if lidx in out_indices:
-                        intermediates[lidx] = x_feature.clone()
+            dindice = all_dindices_for_src[0] if len(all_dindices_for_src) == 1 else torch.cat(all_dindices_for_src, dim=1)
+            dindice = dindice.to(device=self.device, non_blocking=True)
+            plan = src_group_plans.get(target_gids[0]) if appcorr_method == "partial_channel" else None
 
-            new_current_features.append(x_feature)
-            new_cache_features.append(cache)
-            new_intermediate_outputs.append(intermediates)
+            if dindice is None:
+                new_current_features.append(current_features[src_idx])
+                new_cache_features.append(cache)
+                new_intermediate_outputs.append(intermediates)
+                continue
+
+            if appcorr_method == "partial_channel":
+                if plan is None:
+                    new_current_features.append(current_features[src_idx])
+                    new_cache_features.append(cache)
+                    new_intermediate_outputs.append(intermediates)
+                    continue
+                dindice = plan.pruned_dindice.to(device=self.device, non_blocking=True)
+                plan.pruned_dindice = dindice
+                fixed_query_state = plan.query_state
+                attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
+            else:
+                fixed_query_state = None
+                attn_col_alive_ratio = 1.0
+
+            if skip_patch_correction:
+                self._record_zero_patch_correction_stats(
+                    cache,
+                    dindice,
+                    input_tokens,
+                    rope,
+                    num_layers=end_l - start_l,
+                )
+                new_current_features.append(current_features[src_idx])
+                new_cache_features.append(cache)
+                new_intermediate_outputs.append(intermediates)
+                continue
+
+            x_feature = input_tokens
+
+            with torch.autocast("cuda", self.autocast_dtype):
+                with torch.cuda.nvtx.range(f"depther_correct_src{src_idx}_g{group_id}_L{start_l}-{end_l}"):
+                    for lidx in range(start_l, end_l):
+                        blk = vit_backbone.blocks[lidx]
+
+                        if appcorr_method == "partial_channel":
+                            x_feature, cache = blk.correct(
+                                x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                                appcorr_method=appcorr_method,
+                                token_keep_ratio=token_keep_ratio,
+                                token_keep_thres=token_keep_thres,
+                                mobile_pscore=appcorr_options["mobile_pscore"],
+                                mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                                mobile_pscore_hint=None,
+                                server_pscore=appcorr_options["server_pscore"],
+                                server_pscore_weight=appcorr_options["server_pscore_weight"],
+                                pscore_fusion=appcorr_options["pscore_fusion"],
+                                sdpa_query_bucket_size=sdpa_query_bucket_size,
+                                attn_col_alive_ratio=attn_col_alive_ratio,
+                                fixed_query_state=fixed_query_state,
+                                group_plan=plan,
+                                attn_cache_key=group_id,
+                                debug=False,
+                            )
+                        else:
+                            x_feature, cache = blk.correct(
+                                x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                                appcorr_method=appcorr_method,
+                                token_keep_ratio=token_keep_ratio,
+                                token_keep_thres=token_keep_thres,
+                                mobile_pscore=appcorr_options["mobile_pscore"],
+                                mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                                mobile_pscore_hint=None,
+                                server_pscore=appcorr_options["server_pscore"],
+                                server_pscore_weight=appcorr_options["server_pscore_weight"],
+                                pscore_fusion=appcorr_options["pscore_fusion"],
+                                sdpa_query_bucket_size=sdpa_query_bucket_size,
+                                attn_col_alive_ratio=attn_col_alive_ratio,
+                                debug=False,
+                            )
+
+                        if lidx in out_indices:
+                            intermediates[lidx] = x_feature.clone()
+
+                new_current_features.append(x_feature)
+                new_cache_features.append(cache)
+                new_intermediate_outputs.append(intermediates)
 
         context["depther_current_features"] = new_current_features
         context["depther_cache_features"] = new_cache_features
         context["depther_intermediate_outputs"] = new_intermediate_outputs
+        context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
         return {}
+
+    @staticmethod
+    def _partial_token_threshold_forces_no_patch_keep(appcorr_options: Dict[str, Any]) -> bool:
+        if appcorr_options.get("method") != "partial_token":
+            return False
+        token_keep_thres = appcorr_options.get("token_keep_thres")
+        if token_keep_thres in {None, "", "null", "None"}:
+            try:
+                return float(appcorr_options.get("token_keep_ratio", 0.2)) <= 0.0
+            except (TypeError, ValueError):
+                return False
+        try:
+            threshold = float(token_keep_thres)
+        except (TypeError, ValueError):
+            return False
+
+        # Depther currently has no mobile pscore hint, so partial-token scores are
+        # bounded by the server attention-probability score and its configured weight.
+        server_weight = max(float(appcorr_options.get("server_pscore_weight", 1.0)), 0.0)
+        return threshold > server_weight
+
+    @staticmethod
+    def _record_zero_patch_correction_stats(
+        cache: Dict[str, Any],
+        dindice: torch.Tensor,
+        input_tokens: torch.Tensor,
+        rope: Any,
+        *,
+        num_layers: int,
+    ) -> None:
+        if dindice.ndim != 2 or num_layers <= 0:
+            return
+
+        if rope is not None:
+            num_pretokens = input_tokens.shape[1] - rope[0].shape[0]
+        else:
+            num_pretokens = 0
+        num_patch_candidates = max(int(dindice.shape[1]) - int(num_pretokens), 0)
+        batch_size = int(dindice.shape[0])
+
+        zero = input_tokens.new_zeros((), dtype=torch.float32)
+        full_patch_total = input_tokens.new_tensor(
+            float(batch_size * num_patch_candidates * num_layers),
+            dtype=torch.float32,
+        )
+        sample_total = input_tokens.new_tensor(
+            float(batch_size * num_layers),
+            dtype=torch.float32,
+        )
+
+        cache["_partial_token_kept_patch_total"] = cache.get("_partial_token_kept_patch_total", zero) + zero
+        cache["_partial_token_full_patch_total"] = cache.get("_partial_token_full_patch_total", zero) + full_patch_total
+        cache["_partial_token_sample_total"] = cache.get("_partial_token_sample_total", zero) + sample_total
 
     @torch.inference_mode()
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any):
@@ -568,9 +679,6 @@ class DINOv3DeptherExecutor(ModelExecutor):
     # ── AppCorr group map / plan helpers ────────────────────────────────
 
     def _ensure_group_maps_and_plans(self, context: Dict[str, Any], config: Any):
-        if "depther_group_maps" in context and "depther_group_plans" in context:
-            return
-
         from appcorr.models.dinov3.models.vision_transformer import create_group_index
 
         all_x_backbones = context.get("depther_x_backbones")
@@ -579,37 +687,88 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
+        num_pretokens = 1 + self.model.encoder.backbone.n_storage_tokens
 
         all_group_maps = context.get("depther_group_maps")
         all_group_plans = context.get("depther_group_plans")
         all_cached_dindices = context.get("depther_cached_dindices")
 
-        if all_group_maps is None:
+        valid_group_maps = (
+            isinstance(all_group_maps, list)
+            and len(all_group_maps) == len(all_x_backbones)
+            and all(
+                torch.is_tensor(group_map)
+                and group_map.ndim == 2
+                and group_map.shape[0] == input_tokens.shape[0]
+                and group_map.shape[1] == input_tokens.shape[1] - num_pretokens
+                for group_map, input_tokens in zip(all_group_maps, all_x_backbones)
+            )
+        )
+        valid_cached_dindices = (
+            isinstance(all_cached_dindices, list)
+            and len(all_cached_dindices) == len(all_x_backbones)
+            and all(isinstance(src_dindices, dict) for src_dindices in all_cached_dindices)
+        )
+        valid_group_plans = (
+            appcorr_method != "partial_channel"
+            or (
+                isinstance(all_group_plans, list)
+                and len(all_group_plans) == len(all_x_backbones)
+                and all(isinstance(src_plans, dict) for src_plans in all_group_plans)
+            )
+        )
+        if valid_group_maps and valid_cached_dindices and valid_group_plans:
+            return
+
+        if not valid_group_maps:
             all_group_maps = [None] * len(all_x_backbones)
-        if all_group_plans is None:
+        if not isinstance(all_group_plans, list) or len(all_group_plans) != len(all_x_backbones):
             all_group_plans = [None] * len(all_x_backbones)
-        if all_cached_dindices is None:
+        if not valid_cached_dindices:
             all_cached_dindices = [None] * len(all_x_backbones)
 
         num_groups = appcorr_options.get("num_groups", 1)
 
         for src_idx in range(len(all_x_backbones)):
-            if all_group_maps[src_idx] is not None:
+            if all_group_maps[src_idx] is not None and all_cached_dindices[src_idx] is not None:
                 continue
             x_tokens = all_x_backbones[src_idx]
             tok_H, tok_W = context["depther_token_shapes"][src_idx]
             N = tok_H * tok_W
+            B = x_tokens.shape[0]
 
             if num_groups < 1:
                 all_group_maps[src_idx] = None
                 all_group_plans[src_idx] = {}
+                all_cached_dindices[src_idx] = {}
             else:
                 if num_groups == 1:
-                    group_map = torch.zeros(x_tokens.shape[0], N, dtype=torch.long, device=self.device)
+                    group_map = torch.zeros(B, N, dtype=torch.long, device=self.device)
                 else:
                     group_map = create_group_index(N, num_groups, "grid", self.device, token_hw=(tok_H, tok_W))
-                    group_map = group_map.unsqueeze(0).expand(x_tokens.shape[0], -1)
+                    group_map = group_map.unsqueeze(0).expand(B, -1)
                 all_group_maps[src_idx] = group_map
+
+                src_cached_dindices = {}
+                group_ids = torch.unique(group_map)
+                group_ids = group_ids[group_ids >= 0]
+                for gid_tensor in group_ids:
+                    gid = int(gid_tensor.item())
+                    nonzero_indices = torch.nonzero(group_map == gid, as_tuple=False)
+                    if nonzero_indices.numel() == 0:
+                        continue
+                    try:
+                        spatial_indices = nonzero_indices[:, 1].view(B, -1)
+                    except RuntimeError:
+                        continue
+                    patch_indices = spatial_indices + num_pretokens
+                    pre_indices = torch.arange(
+                        num_pretokens, device=x_tokens.device, dtype=torch.long,
+                    ).unsqueeze(0).expand(B, -1)
+                    dindice = torch.cat([pre_indices, patch_indices], dim=1)
+                    src_cached_dindices[gid] = dindice
+
+                all_cached_dindices[src_idx] = src_cached_dindices
 
                 if appcorr_method == "partial_channel":
                     all_group_plans[src_idx] = self._build_group_plans(
@@ -617,8 +776,6 @@ class DINOv3DeptherExecutor(ModelExecutor):
                     )
                 else:
                     all_group_plans[src_idx] = {}
-
-            all_cached_dindices[src_idx] = {}
 
         context["depther_group_maps"] = all_group_maps
         context["depther_group_plans"] = all_group_plans
@@ -646,13 +803,27 @@ class DINOv3DeptherExecutor(ModelExecutor):
     @staticmethod
     def _aggregate_cache_features(all_cache_features):
         if not all_cache_features:
-            return None
-        counts = {}
-        for cache in all_cache_features:
-            for k, v in cache.items():
-                if k not in counts:
-                    counts[k] = {"sum": v, "n": 1}
+            return {}
+        total_keys = {
+            "_attn_prob_mass_used_total",
+            "_attn_prob_mass_full_total",
+            "_token_prune_kept_patch_total",
+            "_token_prune_full_patch_total",
+            "_token_prune_kept_residual_mass_total",
+            "_token_prune_full_residual_mass_total",
+            "_token_pscore_kept_mass_total",
+            "_token_pscore_full_mass_total",
+            "_partial_token_kept_patch_total",
+            "_partial_token_full_patch_total",
+            "_partial_token_sample_total",
+        }
+        merged = {}
+        total_values = {}
+        for src_cache in all_cache_features:
+            for key, value in src_cache.items():
+                if key in total_keys:
+                    total_values[key] = total_values.get(key, 0.0) + value
                 else:
-                    counts[k]["sum"] += v
-                    counts[k]["n"] += 1
-        return {k: v["sum"] / v["n"] for k, v in counts.items()}
+                    merged[key] = value
+        merged.update(total_values)
+        return merged
