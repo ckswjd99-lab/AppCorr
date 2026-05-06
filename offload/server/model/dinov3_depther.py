@@ -91,8 +91,93 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         images, target_shapes = self._as_image_list(batch_data)
-        context["input_images_uint8"] = [np.ascontiguousarray(image) for image in images]
+        images = [np.ascontiguousarray(image) for image in images]
+        context["input_images_uint8"] = images
         context["target_shapes"] = target_shapes
+        context["depther_mobile_pscore_hint_maps"] = self._build_mobile_pscore_hint_maps(
+            task,
+            images,
+            config,
+        )
+
+    def _build_mobile_pscore_hint_maps(
+        self,
+        task: Task,
+        images: List[np.ndarray],
+        config: Any,
+    ) -> List[tuple[torch.Tensor, tuple[int, int]] | None] | None:
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        if appcorr_options["mobile_pscore"] == "none" or appcorr_options["mobile_pscore_weight"] == 0.0:
+            return None
+
+        if not task.payload:
+            return None
+
+        if isinstance(config.patch_size, int):
+            ph = pw = int(config.patch_size)
+        else:
+            ph, pw = (int(v) for v in config.patch_size)
+
+        target_res_level = min(config.transmission_kwargs.get("pyramid_levels", [0]))
+        hint_maps: List[torch.Tensor | None] = []
+        hint_shapes: List[tuple[int, int] | None] = []
+        for image in images:
+            img_h, img_w = image.shape[:2]
+            grid_h = img_h // ph
+            grid_w = img_w // pw
+            if grid_h <= 0 or grid_w <= 0:
+                hint_maps.append(None)
+                hint_shapes.append(None)
+                continue
+            hint_maps.append(torch.zeros((1, grid_h * grid_w), device=self.device, dtype=torch.float32))
+            hint_shapes.append((grid_h, grid_w))
+
+        for patch in task.payload:
+            image_idx = int(getattr(patch, "image_idx", -1))
+            if image_idx < 0 or image_idx >= len(hint_maps):
+                continue
+            if int(getattr(patch, "res_level", target_res_level)) != target_res_level:
+                continue
+            hint_map = hint_maps[image_idx]
+            hint_shape = hint_shapes[image_idx]
+            if hint_map is None or hint_shape is None:
+                continue
+            spatial_idx = int(getattr(patch, "spatial_idx", -1))
+            if 0 <= spatial_idx < hint_map.shape[1]:
+                hint_map[0, spatial_idx] = float(getattr(patch, "pscore_hint", 0.0))
+
+        projected_input_maps: List[tuple[torch.Tensor, tuple[int, int]] | None] = []
+        for hint_map, hint_shape in zip(hint_maps, hint_shapes):
+            if hint_map is None or hint_shape is None:
+                projected_input_maps.append(None)
+            else:
+                projected_input_maps.append((self._normalize_patch_score_map(hint_map), hint_shape))
+        return projected_input_maps
+
+    def _project_mobile_pscore_hint_to_tokens(
+        self,
+        hint_entry: tuple[torch.Tensor, tuple[int, int]] | None,
+        token_hw: tuple[int, int],
+        *,
+        apply_flip: bool,
+    ) -> torch.Tensor | None:
+        if hint_entry is None:
+            return None
+
+        hint_map, hint_hw = hint_entry
+        hint_h, hint_w = hint_hw
+        tok_h, tok_w = token_hw
+        if hint_h <= 0 or hint_w <= 0 or tok_h <= 0 or tok_w <= 0:
+            return None
+
+        hint_2d = hint_map.view(1, 1, hint_h, hint_w)
+        if apply_flip:
+            hint_2d = torch.flip(hint_2d, dims=(-1,))
+        if (hint_h, hint_w) != (tok_h, tok_w):
+            hint_2d = F.interpolate(hint_2d, size=(tok_h, tok_w), mode="bilinear", align_corners=False)
+
+        source_hint = hint_2d.reshape(1, tok_h * tok_w).contiguous()
+        return self._normalize_patch_score_map(source_hint)
 
     def _as_image_list(self, batch_data: Any) -> tuple[List[np.ndarray], List[tuple[int, int] | None]]:
         if isinstance(batch_data, list):
@@ -196,7 +281,9 @@ class DINOv3DeptherExecutor(ModelExecutor):
         all_x_backbones = []
         all_rope_sincos = []
         all_token_shapes = []
+        all_mobile_pscore_hints = []
         image_metas = []
+        mobile_pscore_hint_maps = context.get("depther_mobile_pscore_hint_maps")
 
         for image_idx, image_np in enumerate(images):
             target_shape = target_shapes[image_idx] if image_idx < len(target_shapes) else None
@@ -223,6 +310,18 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 all_x_backbones.append(x_tokens)
                 all_rope_sincos.append(rope)
                 all_token_shapes.append((tok_H, tok_W))
+                hint_entry = (
+                    mobile_pscore_hint_maps[image_idx]
+                    if isinstance(mobile_pscore_hint_maps, list) and image_idx < len(mobile_pscore_hint_maps)
+                    else None
+                )
+                all_mobile_pscore_hints.append(
+                    self._project_mobile_pscore_hint_to_tokens(
+                        hint_entry,
+                        (tok_H, tok_W),
+                        apply_flip=bool(_apply_flip),
+                    )
+                )
 
                 tta_source_ranges.append({
                     "src_start": src_start,
@@ -242,6 +341,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
         context["depther_x_backbones"] = all_x_backbones
         context["depther_rope_sincos"] = all_rope_sincos
         context["depther_token_shapes"] = all_token_shapes
+        context["depther_mobile_pscore_hints"] = all_mobile_pscore_hints
         context["depther_image_metas"] = image_metas
         context["depther_out_indices"] = out_indices
         context.pop("depther_group_maps", None)
@@ -348,6 +448,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
         all_cached_dindices = context.get("depther_cached_dindices")
         all_group_plans = context.get("depther_group_plans")
+        all_mobile_pscore_hints = context.get("depther_mobile_pscore_hints")
 
         self._ensure_group_maps_and_plans(context, config)
         all_cached_dindices = context.get("depther_cached_dindices")
@@ -428,6 +529,10 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 fixed_query_state = None
                 attn_col_alive_ratio = 1.0
 
+            mobile_pscore_hint = None
+            if isinstance(all_mobile_pscore_hints, list) and src_idx < len(all_mobile_pscore_hints):
+                mobile_pscore_hint = all_mobile_pscore_hints[src_idx]
+
             if skip_patch_correction:
                 self._record_zero_patch_correction_stats(
                     cache,
@@ -456,7 +561,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 token_keep_thres=token_keep_thres,
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
-                                mobile_pscore_hint=None,
+                                mobile_pscore_hint=mobile_pscore_hint,
                                 server_pscore=appcorr_options["server_pscore"],
                                 server_pscore_weight=appcorr_options["server_pscore_weight"],
                                 pscore_fusion=appcorr_options["pscore_fusion"],
@@ -475,7 +580,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 token_keep_thres=token_keep_thres,
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
-                                mobile_pscore_hint=None,
+                                mobile_pscore_hint=mobile_pscore_hint,
                                 server_pscore=appcorr_options["server_pscore"],
                                 server_pscore_weight=appcorr_options["server_pscore_weight"],
                                 pscore_fusion=appcorr_options["pscore_fusion"],
@@ -512,10 +617,20 @@ class DINOv3DeptherExecutor(ModelExecutor):
         except (TypeError, ValueError):
             return False
 
-        # Depther currently has no mobile pscore hint, so partial-token scores are
-        # bounded by the server attention-probability score and its configured weight.
         server_weight = max(float(appcorr_options.get("server_pscore_weight", 1.0)), 0.0)
-        return threshold > server_weight
+        mobile_weight = max(float(appcorr_options.get("mobile_pscore_weight", 0.0)), 0.0)
+        has_mobile_score = appcorr_options.get("mobile_pscore") != "none" and mobile_weight != 0.0
+        if not has_mobile_score:
+            max_score = server_weight
+        else:
+            pscore_fusion = appcorr_options.get("pscore_fusion", "add")
+            if pscore_fusion == "multiply":
+                max_score = server_weight * mobile_weight
+            elif pscore_fusion == "geo_mean":
+                max_score = (server_weight * mobile_weight) ** 0.5
+            else:
+                max_score = server_weight + mobile_weight
+        return threshold > max_score
 
     @staticmethod
     def _record_zero_patch_correction_stats(

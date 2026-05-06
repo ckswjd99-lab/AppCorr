@@ -17,6 +17,9 @@ from .transmission import (
     ZlibTransmissionPolicy, 
     COCOWindowProgressiveLaplacianPolicy,
     LaplacianPyramidPolicy, 
+    NYUAppCorrLaplacianPolicy,
+    NYUAppCorrProgressiveLaplacianPolicy,
+    NYUAppCorrRawTransmissionPolicy,
     ProgressiveLPyramidPolicy, 
     FullImageCompressionPolicy
 )
@@ -35,9 +38,12 @@ SCHEDULER_REGISTRY = {
 
 TRANSMISSION_REGISTRY = {
     "Raw": RawTransmissionPolicy,
+    "NYUAppCorrRaw": NYUAppCorrRawTransmissionPolicy,
     "Zlib": ZlibTransmissionPolicy,
     "Laplacian": LaplacianPyramidPolicy,
+    "NYUAppCorrLaplacian": NYUAppCorrLaplacianPolicy,
     "ProgressiveLaplacian": ProgressiveLPyramidPolicy,
+    "NYUAppCorrProgressiveLaplacian": NYUAppCorrProgressiveLaplacianPolicy,
     "COCOWindowProgressiveLaplacian": COCOWindowProgressiveLaplacianPolicy,
     "FullImageCompression": FullImageCompressionPolicy,
 }

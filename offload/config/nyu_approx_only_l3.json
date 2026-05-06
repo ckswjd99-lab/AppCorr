@@ -9,7 +9,7 @@
     "input_profile_name": "dinov3_nyu_synthmix_dpt",
     "input_profile_kwargs": {"depther_use_tta": true},
     "scheduler_policy_name": "BatchCountBased",
-    "transmission_policy_name": "Laplacian",
+    "transmission_policy_name": "NYUAppCorrLaplacian",
     "transmission_kwargs": {
         "pyramid_levels": [3],
         "compression_level": 1,

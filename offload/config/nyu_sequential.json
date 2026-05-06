@@ -9,7 +9,7 @@
     "input_profile_name": "dinov3_nyu_synthmix_dpt",
     "input_profile_kwargs": {"depther_use_tta": true},
     "scheduler_policy_name": "BatchCountBased",
-    "transmission_policy_name": "Raw",
+    "transmission_policy_name": "NYUAppCorrRaw",
     "transmission_kwargs": {
         "preserve_input_shape": true
     },
