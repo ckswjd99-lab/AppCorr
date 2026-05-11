@@ -12,11 +12,12 @@ from offload.mobile.modules import MobileSender, MobileReceiver
 from offload.mobile.source import SourceModule
 from offload.common import ExperimentConfig
 
-def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_request=None):
+def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_request=None, num_warmup=1):
     print(f"=== Starting AppCorr Mobile Client ===")
     print(f"[*] Target Server: {server_ip}")
-    print(f"[*] ImageNet Root: {data_root}")
+    print(f"[*] Dataset Root: {data_root}")
     print(f"[*] Config Path: {config_path}")
+    print(f"[*] Warm-up Requests: {num_warmup}")
     if num_request is not None:
         print(f"[*] Num Requests: {num_request}")
 
@@ -42,7 +43,15 @@ def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_requ
     # Initialize processes
     sender = MobileSender(server_ip, recv_port, send_queue)
     receiver = MobileReceiver(server_ip, send_port, feedback_queue)
-    source = SourceModule(send_queue, feedback_queue, config, data_root, config.batch_size, num_request)
+    source = SourceModule(
+        send_queue,
+        feedback_queue,
+        config,
+        data_root,
+        config.batch_size,
+        num_request,
+        num_warmup,
+    )
 
     procs = [sender, receiver, source]
 
@@ -68,12 +77,30 @@ if __name__ == "__main__":
     parser.add_argument("--ip", type=str, default="127.0.0.1", help="Target Server IP")
     parser.add_argument("--recv-port", type=int, default=39998, help="Uplink port")
     parser.add_argument("--send-port", type=int, default=39999, help="Downlink port")
-    parser.add_argument("--data", type=str, default="~/data/imagenet_val", help="Path to ImageNet")
+    parser.add_argument("--data", type=str, default=None, help="Path to dataset root (overrides config)")
     parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
     parser.add_argument("-nr", "--num-request", type=int, default=None, help="Run only N requests; omit to run all")
+    parser.add_argument("-nw", "--num-warmup", type=int, default=1, help="Run N warm-up requests before measurement")
     
     args = parser.parse_args()
     if args.num_request is not None and args.num_request <= 0:
         parser.error("--num-request must be a positive integer")
+    if args.num_warmup < 0:
+        parser.error("--num-warmup must be zero or a positive integer")
     
-    run_mobile(args.ip, args.recv_port, args.send_port, args.data, args.config, args.num_request)
+    # Resolve data_root: CLI arg > config's dataset_kwargs > default
+    config_data_root = args.data
+    if config_data_root is None:
+        with open(args.config, 'r') as f:
+            _cfg = json.load(f)
+        config_data_root = _cfg.get("dataset_kwargs", {}).get("data_root", "~/data/imagenet_val")
+
+    run_mobile(
+        args.ip,
+        args.recv_port,
+        args.send_port,
+        config_data_root,
+        args.config,
+        args.num_request,
+        args.num_warmup,
+    )

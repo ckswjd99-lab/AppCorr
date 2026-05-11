@@ -3,23 +3,32 @@ from typing import Optional
 from offload.common.protocol import ExperimentConfig
 from .interface import ISchedulingPolicy, ITransmissionPolicy
 from .scheduling import (
+    ADE20KApproxCorrectPolicy,
+    ADE20KSequentialPolicy,
     BatchCountBasedPolicy,
     COCOWindowDynamicPolicy,
     COCOWindowInterleavedPolicy,
     DynamicGroupTriggerPolicy,
     GroupTriggerPolicy,
+    NYUApproxCorrectPolicy,
 )
 from .transmission import (
     RawTransmissionPolicy, 
     ZlibTransmissionPolicy, 
     COCOWindowProgressiveLaplacianPolicy,
     LaplacianPyramidPolicy, 
+    NYUAppCorrLaplacianPolicy,
+    NYUAppCorrProgressiveLaplacianPolicy,
+    NYUAppCorrRawTransmissionPolicy,
     ProgressiveLPyramidPolicy, 
     FullImageCompressionPolicy
 )
 
 # Registry for dynamic instantiation
 SCHEDULER_REGISTRY = {
+    "ADE20KApproxCorrect": ADE20KApproxCorrectPolicy,
+    "ADE20KSequential": ADE20KSequentialPolicy,
+    "NYUApproxCorrect": NYUApproxCorrectPolicy,
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
@@ -29,9 +38,12 @@ SCHEDULER_REGISTRY = {
 
 TRANSMISSION_REGISTRY = {
     "Raw": RawTransmissionPolicy,
+    "NYUAppCorrRaw": NYUAppCorrRawTransmissionPolicy,
     "Zlib": ZlibTransmissionPolicy,
     "Laplacian": LaplacianPyramidPolicy,
+    "NYUAppCorrLaplacian": NYUAppCorrLaplacianPolicy,
     "ProgressiveLaplacian": ProgressiveLPyramidPolicy,
+    "NYUAppCorrProgressiveLaplacian": NYUAppCorrProgressiveLaplacianPolicy,
     "COCOWindowProgressiveLaplacian": COCOWindowProgressiveLaplacianPolicy,
     "FullImageCompression": FullImageCompressionPolicy,
 }

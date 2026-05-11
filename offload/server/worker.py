@@ -70,15 +70,25 @@ class WorkerModule(multiprocessing.Process):
         self.anchor_cpu = time.time()
 
         # Start Decoder Thread
-        decoder_thread = threading.Thread(target=self._decoder_worker, daemon=True)
+        decoder_thread = threading.Thread(target=self._decoder_worker)
         decoder_thread.start()
 
         # Start Reaper Thread
-        reaper_thread = threading.Thread(target=self._reaper_worker, daemon=True)
+        reaper_thread = threading.Thread(target=self._reaper_worker)
         reaper_thread.start()
 
-        with torch.no_grad():
-            self._gpu_worker()
+        try:
+            with torch.no_grad():
+                self._gpu_worker()
+        finally:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize(self.device)
+                    torch.cuda.cudart().cudaProfilerStop()
+            except Exception:
+                pass
+            decoder_thread.join(timeout=5)
+            reaper_thread.join(timeout=5)
 
     # ------------------------------------------------------------------ #
     #  Decoder Thread                                                      #
@@ -113,6 +123,12 @@ class WorkerModule(multiprocessing.Process):
 
                     context = self.sessions[req_id]
                     if task.payload:
+                        # Extract target_shape metadata from patches
+                        if 'target_shapes' not in context:
+                            context['target_shapes'] = {}
+                        for p in task.payload:
+                            if hasattr(p, 'target_shape') and p.target_shape and p.image_idx not in context['target_shapes']:
+                                context['target_shapes'][p.image_idx] = p.target_shape
                         for instr in task.instructions:
                             if instr.op_type == OpType.LOAD_INPUT:
                                 group_id = task.payload[0].group_id
@@ -125,13 +141,17 @@ class WorkerModule(multiprocessing.Process):
                                         'type': 'SERVER_RECEIVE',
                                         'start': max_arrival_time,
                                         'end': max_arrival_time,
-                                        'params': {}
+                                        'params': {},
+                                        'timer': 'cpu',
+                                        'detail': False,
+                                        'include_in_latency_stats': True,
                                     })
 
-                                incremental_coco_decode = (
-                                    self.config.transmission_policy_name == 'COCOWindowProgressiveLaplacian'
-                                )
-                                if incremental_coco_decode:
+                                incremental_decode = self.config.transmission_policy_name in {
+                                    'COCOWindowProgressiveLaplacian',
+                                    'NYUAppCorrProgressiveLaplacian',
+                                }
+                                if incremental_decode:
                                     decode_patches = task.payload
                                 else:
                                     if 'patch_buffer' not in context:
@@ -141,9 +161,7 @@ class WorkerModule(multiprocessing.Process):
 
                                 t_decode_start = time.time()
                                 prev_input_hr_np = context.get('input_hr_np')
-                                context['prev_input_hr_np'] = (
-                                    prev_input_hr_np.copy() if prev_input_hr_np is not None else None
-                                )
+                                context['prev_input_hr_np'] = self._copy_input_state_value(prev_input_hr_np)
                                 context['input_hr_np'] = self.policy.decode(
                                     decode_patches, self.config,
                                     canvas=context.get('input_hr_np')
@@ -162,7 +180,10 @@ class WorkerModule(multiprocessing.Process):
                                         'type': 'Decode',
                                         'start': t_decode_start,
                                         'end': t_decode_end,
-                                        'params': {}
+                                        'params': {},
+                                        'timer': 'cpu',
+                                        'detail': False,
+                                        'include_in_latency_stats': True,
                                     })
                                 break
 
@@ -253,6 +274,9 @@ class WorkerModule(multiprocessing.Process):
                         'start': ts_start,
                         'end': ts_end,
                         'params': job.params,
+                        'timer': 'cuda',
+                        'detail': False,
+                        'include_in_latency_stats': True,
                     }
                     if job.meta:
                         event_data['meta'] = job.meta
@@ -433,31 +457,60 @@ class WorkerModule(multiprocessing.Process):
         context = self.sessions[req_id]
 
         try:
-            for instr in task.instructions:
-                start_ev = torch.cuda.Event(enable_timing=True)
-                end_ev   = torch.cuda.Event(enable_timing=True)
+            session_range = f"APPCORR_SESSION|req={req_id}|task={task.task_id}"
+            with torch.cuda.nvtx.range(session_range):
+                for instr in task.instructions:
+                    nsys_seq = int(context.get('_nsys_seq', 0))
+                    context['_nsys_seq'] = nsys_seq + 1
+                    nsys_range = (
+                        f"APPCORR_INSTR|req={req_id}|task={task.task_id}|"
+                        f"seq={nsys_seq}|op={instr.op_type.name}"
+                    )
 
-                start_ev.record()
-                with torch.cuda.nvtx.range(instr.op_type.name):
-                    meta = self._dispatch(instr, task, context)
-                end_ev.record()
+                    start_ev = torch.cuda.Event(enable_timing=True)
+                    end_ev   = torch.cuda.Event(enable_timing=True)
 
-                # Hand off to Reaper Thread immediately; GPU Worker moves on.
-                self.monitor_queue.put(_MonitorJob(
-                    op_type=instr.op_type,
-                    start_ev=start_ev,
-                    end_ev=end_ev,
-                    req_id=req_id,
-                    task=task,
-                    params=instr.params.copy(),
-                    meta=meta,
-                ))
+                    start_ev.record()
+                    with torch.cuda.nvtx.range(nsys_range):
+                        with torch.cuda.nvtx.range(instr.op_type.name):
+                            meta = self._dispatch(instr, task, context)
+                    end_ev.record()
+
+                    meta = self._merge_nsys_event_meta(
+                        meta,
+                        request_id=req_id,
+                        task_id=task.task_id,
+                        nsys_seq=nsys_seq,
+                        nsys_range=nsys_range,
+                    )
+
+                    # Hand off to Reaper Thread immediately; GPU Worker moves on.
+                    self.monitor_queue.put(_MonitorJob(
+                        op_type=instr.op_type,
+                        start_ev=start_ev,
+                        end_ev=end_ev,
+                        req_id=req_id,
+                        task=task,
+                        params=instr.params.copy(),
+                        meta=meta,
+                    ))
 
         except Exception as e:
             print(f"!!! [Worker] Pipeline Error (Req {req_id}): {e}")
             traceback.print_exc()
             if req_id in self.sessions:
                 del self.sessions[req_id]
+
+    @staticmethod
+    def _merge_nsys_event_meta(meta: Any, **nsys_fields) -> Dict[str, Any]:
+        if isinstance(meta, dict):
+            merged = dict(meta)
+        elif meta is None:
+            merged = {}
+        else:
+            merged = {'executor_meta': meta}
+        merged.update(nsys_fields)
+        return merged
 
     def _dispatch(self, instr: Instruction, task: Task, context: Dict[str, Any]):
         if 'active_indices' not in context:
@@ -494,11 +547,37 @@ class WorkerModule(multiprocessing.Process):
                                 target_hw=self.config.image_shape[:2],
                             )
                 batch_np = context['input_sr_tensor']
+
+            # Wrap decoded images with target_shape metadata if available
+            target_shapes = context.get('target_shapes')
+            if target_shapes:
+                if isinstance(batch_np, np.ndarray) and batch_np.ndim == 4:
+                    wrapped = []
+                    for idx in range(batch_np.shape[0]):
+                        item = {'image': batch_np[idx]}
+                        ts = target_shapes[idx] if isinstance(target_shapes, list) and idx < len(target_shapes) else target_shapes.get(idx) if isinstance(target_shapes, dict) else None
+                        if ts is not None:
+                            item['target_shape'] = ts
+                        wrapped.append(item)
+                    batch_np = wrapped
+                elif isinstance(batch_np, list):
+                    wrapped = []
+                    for idx, img in enumerate(batch_np):
+                        if isinstance(img, dict):
+                            wrapped.append(img)
+                        else:
+                            item = {'image': img}
+                            ts = target_shapes[idx] if isinstance(target_shapes, list) and idx < len(target_shapes) else target_shapes.get(idx) if isinstance(target_shapes, dict) else None
+                            if ts is not None:
+                                item['target_shape'] = ts
+                            wrapped.append(item)
+                    batch_np = wrapped
+
             with torch.cuda.nvtx.range("Preprocess"):
-                self.executor.preprocess(batch_np, task, context, self.config)
+                return self.executor.preprocess(batch_np, task, context, self.config)
 
         elif op == OpType.PREPARE_TOKENS:
-            self.executor.prepare_tokens(task, context, self.config)
+            return self.executor.prepare_tokens(task, context, self.config)
 
         elif op == OpType.SEND_RESPONSE:
             # Collect results now (may involve GPU ops); actual queue.put is
@@ -561,8 +640,26 @@ class WorkerModule(multiprocessing.Process):
         snapshot = {}
         for key in ('prev_input_hr_np', 'input_hr_np', 'input_lr_native_np'):
             value = context.get(key)
-            snapshot[key] = value.copy() if value is not None else None
+            snapshot[key] = self._copy_input_state_value(value)
         return snapshot
+
+    @staticmethod
+    def _copy_input_state_value(value: Any):
+        if value is None:
+            return None
+        if isinstance(value, np.ndarray):
+            return value.copy()
+        if isinstance(value, dict):
+            return {
+                key: WorkerModule._copy_input_state_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                WorkerModule._copy_input_state_value(item)
+                for item in value
+            ]
+        return value.copy() if hasattr(value, 'copy') else value
 
     def _get_task_group_id(self, task: Task) -> Optional[int]:
         if task.payload:

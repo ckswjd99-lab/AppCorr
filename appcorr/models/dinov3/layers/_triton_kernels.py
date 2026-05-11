@@ -438,6 +438,8 @@ def masked_token_update_triton(
     x_attn_sel: torch.Tensor,
     x_delta: torch.Tensor,
     query_valid_mask: torch.Tensor,
+    *,
+    clone_base: bool = True,
 ) -> torch.Tensor:
     if (
         not x_base.is_cuda
@@ -446,7 +448,7 @@ def masked_token_update_triton(
         or not x_delta.is_cuda
         or not query_valid_mask.is_cuda
     ):
-        x_out = x_base.clone()
+        x_out = x_base.clone() if clone_base else x_base
         for b in range(x_base.shape[0]):
             valid = query_valid_mask[b]
             if not torch.any(valid):
@@ -455,7 +457,7 @@ def masked_token_update_triton(
             x_out[b, idx] = (x_attn_sel[b, valid] + x_delta[b, valid]).to(dtype=x_out.dtype)
         return x_out
 
-    x_out = x_base.clone()
+    x_out = x_base.clone() if clone_base else x_base
     dindice_sel = dindice_sel.contiguous()
     x_attn_sel = x_attn_sel.to(dtype=x_out.dtype).contiguous()
     x_delta = x_delta.to(dtype=x_out.dtype).contiguous()
@@ -478,6 +480,99 @@ def masked_token_update_triton(
             dindice_sel.stride(0), dindice_sel.stride(1),
             query_valid_mask.stride(0), query_valid_mask.stride(1),
             num_tokens_sel,
+            dim_c,
+            BLOCK_C=block_c,
+        )
+
+    return x_out
+
+
+@triton.jit
+def _active_token_update_kernel(
+    x_out_ptr,
+    batch_idx_ptr,
+    token_idx_ptr,
+    x_attn_ptr,
+    x_delta_ptr,
+    stride_xout_b, stride_xout_n, stride_xout_c,
+    stride_xattn_t, stride_xattn_c,
+    stride_xdelta_t, stride_xdelta_c,
+    num_active,
+    dim_c,
+    BLOCK_C: tl.constexpr,
+):
+    pid_t = tl.program_id(0)
+    pid_c = tl.program_id(1)
+
+    if pid_t >= num_active:
+        return
+
+    batch_idx = tl.load(batch_idx_ptr + pid_t)
+    token_idx = tl.load(token_idx_ptr + pid_t)
+    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    c_mask = offs_c < dim_c
+
+    x_attn = tl.load(
+        x_attn_ptr + pid_t * stride_xattn_t + offs_c * stride_xattn_c,
+        mask=c_mask,
+    )
+    x_delta = tl.load(
+        x_delta_ptr + pid_t * stride_xdelta_t + offs_c * stride_xdelta_c,
+        mask=c_mask,
+    )
+    tl.store(
+        x_out_ptr + batch_idx * stride_xout_b + token_idx * stride_xout_n + offs_c * stride_xout_c,
+        x_attn + x_delta,
+        mask=c_mask,
+    )
+
+
+def active_token_update_triton(
+    x_base: torch.Tensor,
+    active_batch_idx: torch.Tensor,
+    active_token_idx: torch.Tensor,
+    x_attn_active: torch.Tensor,
+    x_delta_active: torch.Tensor,
+    *,
+    clone_base: bool = True,
+) -> torch.Tensor:
+    if active_batch_idx.numel() == 0:
+        return x_base.clone() if clone_base else x_base
+
+    if (
+        not x_base.is_cuda
+        or not active_batch_idx.is_cuda
+        or not active_token_idx.is_cuda
+        or not x_attn_active.is_cuda
+        or not x_delta_active.is_cuda
+    ):
+        x_out = x_base.clone() if clone_base else x_base
+        x_out[active_batch_idx, active_token_idx] = (
+            x_attn_active + x_delta_active
+        ).to(dtype=x_out.dtype)
+        return x_out
+
+    x_out = x_base.clone() if clone_base else x_base
+    active_batch_idx = active_batch_idx.contiguous()
+    active_token_idx = active_token_idx.contiguous()
+    x_attn_active = x_attn_active.to(dtype=x_out.dtype).contiguous()
+    x_delta_active = x_delta_active.to(dtype=x_out.dtype).contiguous()
+
+    num_active, dim_c = x_attn_active.shape
+    block_c = 128
+    grid = (num_active, triton.cdiv(dim_c, block_c))
+
+    with torch.cuda.device(x_base.device):
+        _active_token_update_kernel[grid](
+            x_out,
+            active_batch_idx,
+            active_token_idx,
+            x_attn_active,
+            x_delta_active,
+            x_out.stride(0), x_out.stride(1), x_out.stride(2),
+            x_attn_active.stride(0), x_attn_active.stride(1),
+            x_delta_active.stride(0), x_delta_active.stride(1),
+            num_active,
             dim_c,
             BLOCK_C=block_c,
         )

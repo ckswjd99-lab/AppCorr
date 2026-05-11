@@ -210,6 +210,12 @@ logs
 appcorr/datasets
 appcorr/weights
 *.nsys-rep
+*.sqlite
 *.qdstrm
 .vscode
 .codex
+.claude
+.gitattributes
+graphify-out
+AGENTS.md
+CLAUDE.md

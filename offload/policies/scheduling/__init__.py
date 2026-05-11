@@ -2,3 +2,6 @@ from .batch_count import BatchCountBasedPolicy
 from .group_trigger import GroupTriggerPolicy
 from .dynamic_group_trigger import DynamicGroupTriggerPolicy
 from .coco_window_trigger import COCOWindowDynamicPolicy, COCOWindowInterleavedPolicy
+from .ade20k_approx_correct import ADE20KApproxCorrectPolicy
+from .ade20k_sequential import ADE20KSequentialPolicy
+from .nyu_approx_correct import NYUApproxCorrectPolicy

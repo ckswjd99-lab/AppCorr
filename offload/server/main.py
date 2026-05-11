@@ -33,6 +33,21 @@ def run_server(recv_port, send_port):
     
     procs = [receiver, scheduler, worker, sender]
 
+    def request_graceful_shutdown():
+        """Let child processes exit through their normal loops so profilers flush."""
+        try:
+            control_q.put(('STOP', None))
+        except Exception:
+            pass
+        try:
+            worker_q.put('STOP')
+        except Exception:
+            pass
+        try:
+            result_q.put('STOP')
+        except Exception:
+            pass
+
     try:
         for p in procs:
             p.start()
@@ -46,6 +61,10 @@ def run_server(recv_port, send_port):
         print("\n[Main] Interrupted by User...")
         
     finally:
+        request_graceful_shutdown()
+        for p in procs:
+            if p.is_alive():
+                p.join(timeout=10)
         for p in procs:
             if p.is_alive():
                 p.terminate()
