@@ -141,13 +141,17 @@ class WorkerModule(multiprocessing.Process):
                                         'type': 'SERVER_RECEIVE',
                                         'start': max_arrival_time,
                                         'end': max_arrival_time,
-                                        'params': {}
+                                        'params': {},
+                                        'timer': 'cpu',
+                                        'detail': False,
+                                        'include_in_latency_stats': True,
                                     })
 
-                                incremental_coco_decode = (
-                                    self.config.transmission_policy_name == 'COCOWindowProgressiveLaplacian'
-                                )
-                                if incremental_coco_decode:
+                                incremental_decode = self.config.transmission_policy_name in {
+                                    'COCOWindowProgressiveLaplacian',
+                                    'NYUAppCorrProgressiveLaplacian',
+                                }
+                                if incremental_decode:
                                     decode_patches = task.payload
                                 else:
                                     if 'patch_buffer' not in context:
@@ -176,7 +180,10 @@ class WorkerModule(multiprocessing.Process):
                                         'type': 'Decode',
                                         'start': t_decode_start,
                                         'end': t_decode_end,
-                                        'params': {}
+                                        'params': {},
+                                        'timer': 'cpu',
+                                        'detail': False,
+                                        'include_in_latency_stats': True,
                                     })
                                 break
 
@@ -267,6 +274,9 @@ class WorkerModule(multiprocessing.Process):
                         'start': ts_start,
                         'end': ts_end,
                         'params': job.params,
+                        'timer': 'cuda',
+                        'detail': False,
+                        'include_in_latency_stats': True,
                     }
                     if job.meta:
                         event_data['meta'] = job.meta
@@ -447,31 +457,60 @@ class WorkerModule(multiprocessing.Process):
         context = self.sessions[req_id]
 
         try:
-            for instr in task.instructions:
-                start_ev = torch.cuda.Event(enable_timing=True)
-                end_ev   = torch.cuda.Event(enable_timing=True)
+            session_range = f"APPCORR_SESSION|req={req_id}|task={task.task_id}"
+            with torch.cuda.nvtx.range(session_range):
+                for instr in task.instructions:
+                    nsys_seq = int(context.get('_nsys_seq', 0))
+                    context['_nsys_seq'] = nsys_seq + 1
+                    nsys_range = (
+                        f"APPCORR_INSTR|req={req_id}|task={task.task_id}|"
+                        f"seq={nsys_seq}|op={instr.op_type.name}"
+                    )
 
-                start_ev.record()
-                with torch.cuda.nvtx.range(instr.op_type.name):
-                    meta = self._dispatch(instr, task, context)
-                end_ev.record()
+                    start_ev = torch.cuda.Event(enable_timing=True)
+                    end_ev   = torch.cuda.Event(enable_timing=True)
 
-                # Hand off to Reaper Thread immediately; GPU Worker moves on.
-                self.monitor_queue.put(_MonitorJob(
-                    op_type=instr.op_type,
-                    start_ev=start_ev,
-                    end_ev=end_ev,
-                    req_id=req_id,
-                    task=task,
-                    params=instr.params.copy(),
-                    meta=meta,
-                ))
+                    start_ev.record()
+                    with torch.cuda.nvtx.range(nsys_range):
+                        with torch.cuda.nvtx.range(instr.op_type.name):
+                            meta = self._dispatch(instr, task, context)
+                    end_ev.record()
+
+                    meta = self._merge_nsys_event_meta(
+                        meta,
+                        request_id=req_id,
+                        task_id=task.task_id,
+                        nsys_seq=nsys_seq,
+                        nsys_range=nsys_range,
+                    )
+
+                    # Hand off to Reaper Thread immediately; GPU Worker moves on.
+                    self.monitor_queue.put(_MonitorJob(
+                        op_type=instr.op_type,
+                        start_ev=start_ev,
+                        end_ev=end_ev,
+                        req_id=req_id,
+                        task=task,
+                        params=instr.params.copy(),
+                        meta=meta,
+                    ))
 
         except Exception as e:
             print(f"!!! [Worker] Pipeline Error (Req {req_id}): {e}")
             traceback.print_exc()
             if req_id in self.sessions:
                 del self.sessions[req_id]
+
+    @staticmethod
+    def _merge_nsys_event_meta(meta: Any, **nsys_fields) -> Dict[str, Any]:
+        if isinstance(meta, dict):
+            merged = dict(meta)
+        elif meta is None:
+            merged = {}
+        else:
+            merged = {'executor_meta': meta}
+        merged.update(nsys_fields)
+        return merged
 
     def _dispatch(self, instr: Instruction, task: Task, context: Dict[str, Any]):
         if 'active_indices' not in context:
@@ -535,10 +574,10 @@ class WorkerModule(multiprocessing.Process):
                     batch_np = wrapped
 
             with torch.cuda.nvtx.range("Preprocess"):
-                self.executor.preprocess(batch_np, task, context, self.config)
+                return self.executor.preprocess(batch_np, task, context, self.config)
 
         elif op == OpType.PREPARE_TOKENS:
-            self.executor.prepare_tokens(task, context, self.config)
+            return self.executor.prepare_tokens(task, context, self.config)
 
         elif op == OpType.SEND_RESPONSE:
             # Collect results now (may involve GPU ops); actual queue.put is

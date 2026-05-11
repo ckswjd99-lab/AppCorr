@@ -15,11 +15,18 @@ PAPER_COLORS = {
 }
 LATENCY_MARKER_COLOR = "#8B0000"
 PAPER_ROWS = ["Mobile", "Network", "Server (CPU)", "Server (GPU)"]
+DEFAULT_LOG_ROOT = os.path.join("logs", "offload")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Visualize offload events timeline")
-    parser.add_argument("log_dir", type=str, help="Directory containing events.jsonl")
+    parser.add_argument(
+        "log_dir",
+        type=str,
+        nargs="?",
+        default=None,
+        help=f"Directory containing events.jsonl. Default: latest directory under {DEFAULT_LOG_ROOT}",
+    )
     parser.add_argument(
         "--max_sessions",
         type=int,
@@ -32,7 +39,58 @@ def parse_args():
         default="default",
         help="Visualization style to render (default: default)",
     )
+    parser.add_argument(
+        "--include-detail",
+        action="store_true",
+        help="Include internal Prepare::/Preprocess:: detail events in the plots.",
+    )
+    parser.add_argument(
+        "--events-file",
+        type=str,
+        default=None,
+        help=(
+            "Events JSONL file to visualize. Relative paths are resolved inside log_dir. "
+            "Default: events_nsys.jsonl when present, otherwise events.jsonl."
+        ),
+    )
     return parser.parse_args()
+
+
+def _log_dir_sort_time(log_dir):
+    candidates = [
+        os.path.join(log_dir, "events_nsys.jsonl"),
+        os.path.join(log_dir, "events.jsonl"),
+        os.path.join(log_dir, "summary.json"),
+        log_dir,
+    ]
+    mtimes = [os.path.getmtime(path) for path in candidates if os.path.exists(path)]
+    return max(mtimes) if mtimes else 0.0
+
+
+def find_latest_log_dir(log_root=DEFAULT_LOG_ROOT):
+    if not os.path.isdir(log_root):
+        return None
+    candidates = [
+        os.path.join(log_root, name)
+        for name in os.listdir(log_root)
+        if os.path.isdir(os.path.join(log_root, name))
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (_log_dir_sort_time(path), path))
+
+
+def resolve_log_dir(log_dir_arg):
+    if log_dir_arg:
+        return log_dir_arg
+
+    log_dir = find_latest_log_dir()
+    if log_dir is None:
+        print(f"Error: no log directory found under {DEFAULT_LOG_ROOT}.")
+        sys.exit(1)
+
+    print(f"Using latest log directory: {log_dir}")
+    return log_dir
 
 
 def import_matplotlib():
@@ -47,7 +105,16 @@ def import_matplotlib():
     return plt, mpatches
 
 
-def classify_event(event_name):
+def is_detail_event(event):
+    event_name = event.get("type", "") if isinstance(event, dict) else str(event)
+    if isinstance(event, dict) and event.get("detail") is True:
+        return True
+    return event_name.startswith(("Prepare::", "Preprocess::"))
+
+
+def classify_event(event):
+    event_name = event.get("type", "") if isinstance(event, dict) else str(event)
+    timer = event.get("timer") if isinstance(event, dict) else None
     server_gpu_events = {
         "LOAD_INPUT",
         "PREPARE_TOKENS",
@@ -71,6 +138,8 @@ def classify_event(event_name):
     if event_name in {"SERVER_RECEIVE", "SERVER_SEND"}:
         return "Network"
     if event_name == "Decode":
+        return "Server (CPU)"
+    if timer == "cpu" or event_name.endswith("CPU"):
         return "Server (CPU)"
     if event_name in server_gpu_events or event_name.startswith("Preprocess::"):
         return "Server (GPU)"
@@ -121,12 +190,14 @@ def get_color(event_name, color_map):
     return color_map[event_name]
 
 
-def normalize_events(request_data):
+def normalize_events(request_data, include_detail=False):
     events = request_data if isinstance(request_data, list) else request_data.get("events", [])
     valid_events = []
 
     for event in events:
         if "type" not in event:
+            continue
+        if not include_detail and is_detail_event(event):
             continue
 
         start_time = None
@@ -352,9 +423,9 @@ def build_paper_data(valid_events):
     }
 
 
-def plot_timeline(request_index, request_data, output_dir, color_map):
+def plot_timeline(request_index, request_data, output_dir, color_map, include_detail=False):
     plt, mpatches = import_matplotlib()
-    valid_events = normalize_events(request_data)
+    valid_events = normalize_events(request_data, include_detail=include_detail)
     if not valid_events:
         print(f"Warning: No valid events found in request {request_index}")
         return
@@ -370,7 +441,7 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         start = event["start"] - base_time
         end = event["end"] - base_time
         duration = max(end - start, 0.0001)
-        category = classify_event(name)
+        category = classify_event(event)
         base_name = re.sub(r"_G\d+$", "", name)
         color = get_color(base_name, color_map)
         y = y_pos[category]
@@ -443,14 +514,14 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
         if net_dur > 0.01:
             ax.text(segment["start"] + net_dur / 2, y_pos["Network"] - 0.25, f"UL {idx}", ha="center", fontsize=7)
 
-    total_mobile = sum(event["end"] - event["start"] for event in valid_events if classify_event(event["type"]) == "Mobile")
+    total_mobile = sum(event["end"] - event["start"] for event in valid_events if classify_event(event) == "Mobile")
     total_cpu = sum(
-        event["end"] - event["start"] for event in valid_events if classify_event(event["type"]) == "Server (CPU)"
+        event["end"] - event["start"] for event in valid_events if classify_event(event) == "Server (CPU)"
     )
     total_gpu_no_correct = sum(
         event["end"] - event["start"]
         for event in valid_events
-        if classify_event(event["type"]) == "Server (GPU)" and "CORRECT_FORWARD" not in event["type"]
+        if classify_event(event) == "Server (GPU)" and "CORRECT_FORWARD" not in event["type"]
     )
     total_ul = sum(segment["end"] - segment["start"] for segment in uplink_segments)
 
@@ -516,7 +587,7 @@ def plot_timeline(request_index, request_data, output_dir, color_map):
     print(f"Saved: {out_path}")
 
 
-def plot_paper_figure(request_index, request_data, output_dir):
+def plot_paper_figure(request_index, request_data, output_dir, include_detail=False):
     plt, _ = import_matplotlib()
     plt.rcParams.update(
         {
@@ -529,7 +600,7 @@ def plot_paper_figure(request_index, request_data, output_dir):
             "legend.fontsize": 8,
         }
     )
-    valid_events = normalize_events(request_data)
+    valid_events = normalize_events(request_data, include_detail=include_detail)
     if not valid_events:
         print(f"Warning: No valid events found in request {request_index}")
         return
@@ -705,8 +776,14 @@ def plot_paper_figure(request_index, request_data, output_dir):
 
 def main():
     args = parse_args()
-    log_dir = args.log_dir
-    events_file = os.path.join(log_dir, "events.jsonl")
+    log_dir = resolve_log_dir(args.log_dir)
+    if args.events_file:
+        events_file = args.events_file
+        if not os.path.isabs(events_file):
+            events_file = os.path.join(log_dir, events_file)
+    else:
+        nsys_events_file = os.path.join(log_dir, "events_nsys.jsonl")
+        events_file = nsys_events_file if os.path.exists(nsys_events_file) else os.path.join(log_dir, "events.jsonl")
     if not os.path.exists(events_file):
         print(f"Error: {events_file} not found.")
         sys.exit(1)
@@ -719,9 +796,9 @@ def main():
     color_map = {}
     for idx, req in enumerate(requests):
         if args.style in {"default", "both"}:
-            plot_timeline(idx, req, log_dir, color_map)
+            plot_timeline(idx, req, log_dir, color_map, include_detail=args.include_detail)
         if args.style in {"paper", "both"}:
-            plot_paper_figure(idx, req, log_dir)
+            plot_paper_figure(idx, req, log_dir, include_detail=args.include_detail)
 
     print("All timelines generated successfully.")
 

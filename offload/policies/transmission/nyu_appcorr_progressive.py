@@ -1,3 +1,4 @@
+import zlib
 from typing import Any, Generator, List
 
 import cv2
@@ -125,5 +126,65 @@ class NYUAppCorrProgressiveLaplacianPolicy(_NYUAppCorrFixedGridMixin, Progressiv
     """Progressive Laplacian NYU AppCorr transmission on the fixed model grid."""
 
     def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
+        if self._can_apply_residuals_in_place(patches, config, canvas):
+            self._apply_fullres_residuals_in_place(canvas, patches, config)
+            return canvas
+
         decoded = super().decode(patches, config, canvas=canvas)
         return self._resize_decoded_to_model_grid(decoded, config)
+
+    @staticmethod
+    def _can_apply_residuals_in_place(
+        patches: List[Patch],
+        config: ExperimentConfig,
+        canvas: np.ndarray | None,
+    ) -> bool:
+        if canvas is None or not isinstance(canvas, np.ndarray) or not patches:
+            return False
+        levels = sorted(config.transmission_kwargs.get("pyramid_levels", [2, 0]), reverse=True)
+        if len(levels) != 2 or levels[-1] != 0:
+            return False
+        base_level = levels[0]
+        for patch in patches:
+            if patch.group_id == 0 or patch.res_level == base_level:
+                return False
+            if patch.res_level != 0:
+                return False
+        return True
+
+    @staticmethod
+    def _apply_fullres_residuals_in_place(
+        canvas: np.ndarray,
+        patches: List[Patch],
+        config: ExperimentConfig,
+    ) -> None:
+        ph, pw = config.patch_size
+        _height, width, channels = config.image_shape
+        grid_w = (width + pw - 1) // pw
+
+        for patch in patches:
+            if patch.res_level != 0:
+                continue
+            if not (0 <= patch.image_idx < canvas.shape[0]):
+                continue
+
+            row, col = divmod(patch.spatial_idx, grid_w)
+            y, x = row * ph, col * pw
+            th = min(ph, canvas.shape[1] - y)
+            tw = min(pw, canvas.shape[2] - x)
+            if th <= 0 or tw <= 0:
+                continue
+
+            if hasattr(patch, "_decompressed_cache"):
+                raw = patch._decompressed_cache
+            else:
+                raw = zlib.decompress(patch.data)
+                patch._decompressed_cache = raw
+
+            residual = np.frombuffer(raw, dtype=np.int16).reshape(ph, pw, channels)
+            target = canvas[patch.image_idx, y:y + th, x:x + tw]
+            target[...] = np.clip(
+                target.astype(np.int16) + residual[:th, :tw],
+                0,
+                255,
+            ).astype(np.uint8)

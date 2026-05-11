@@ -15,6 +15,7 @@ import os
 import json
 import datetime
 import re
+from typing import Any, Dict
 
 def perform_time_sync(output_queue, feedback_queue, rounds=10):
     """Estimate clock offset via ping-pong."""
@@ -210,6 +211,17 @@ class SourceModule(multiprocessing.Process):
         if event_type.startswith("MOBILE_SEND_G"):
             return cls._EVENT_GROUP_SUFFIX_RE.sub("", event_type)
         return event_type
+
+    @staticmethod
+    def _include_latency_event(event: Dict[str, Any]) -> bool:
+        if event.get('include_in_latency_stats') is False:
+            return False
+        if event.get('detail') is True:
+            return False
+        event_type = event.get('type', '')
+        if event_type.startswith(('Prepare::', 'Preprocess::')):
+            return False
+        return True
 
     @staticmethod
     def _current_batch_size(images) -> int:
@@ -415,6 +427,8 @@ class SourceModule(multiprocessing.Process):
             # Aggregate Event Stats (Per Request)
             request_latency_map = {}
             for event in all_events:
+                if not self._include_latency_event(event):
+                    continue
                 etype = self._latency_event_type(event['type'])
                 dur_ms = event.get('duration', 0) * 1000.0 # Convert to ms
                 
@@ -504,9 +518,16 @@ class SourceModule(multiprocessing.Process):
         final_summary = self.dataset_loader.get_summary()
         print(f"[Source] Final Summary: {final_summary}")
         
-        # Calculate Latency Breakdown
+        # Calculate per-request event duration sums. These are useful for work
+        # accounting, but are not critical-path latency contributions because
+        # stages may overlap with transmission, decode, or other GPU work.
         latency_breakdown = {}
-        print("\n=== Latency Breakdown (ms) ===")
+        latency_breakdown_note = (
+            "Per-request event duration sums; detail events are excluded, and "
+            "values are not critical-path latency contributions."
+        )
+        print("\n=== Event Duration Breakdown (ms, non-detail) ===")
+        print(f"[Source] {latency_breakdown_note}")
         print(f"{'Event Type':<25} | {'Avg':<8} | {'Min':<8} | {'Max':<8} | {'Count':<6}")
         print("-" * 65)
         
@@ -655,6 +676,8 @@ class SourceModule(multiprocessing.Process):
             'cache_breakdown_bytes_per_offload': cache_breakdown_summary,
             'time_offset_ms': time_offset * 1000,
             'latency_breakdown': latency_breakdown,
+            'latency_breakdown_note': latency_breakdown_note,
+            'event_duration_breakdown': latency_breakdown,
             'config': asdict(self.config)
         }
         with open(summary_log_path, "w") as f:

@@ -380,7 +380,7 @@ class SelfAttention(nn.Module):
             else t_max
         )
 
-        q_padded_shape = (B, t_attn, self.num_heads, head_dim)
+        q_padded_shape = (B, self.num_heads, t_attn, head_dim)
         if torch.is_grad_enabled():
             q_padded = torch.zeros(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
         else:
@@ -393,28 +393,25 @@ class SelfAttention(nn.Module):
             ):
                 q_padded = torch.empty(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
                 self._partial_token_q_padded = q_padded
-            q_padded.zero_()
         q_padded[
             fixed_query_state.active_batch_idx,
+            :,
             fixed_query_state.active_pos_idx,
         ] = q_new
 
-        q = q_padded.transpose(1, 2).contiguous()
+        q = q_padded
         k, v = torch.unbind(kv, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
         attn_out_padded = torch.nn.functional.scaled_dot_product_attention(q, k, v)
-        attn_out_padded = attn_out_padded.transpose(1, 2).contiguous()
         if t_attn != t_max:
-            attn_out_padded = attn_out_padded[:, :t_max].contiguous()
-        if fixed_query_state.all_valid:
-            attn_out_active = attn_out_padded.reshape(num_active, self.qkv.in_features)
-        else:
-            attn_out_active = attn_out_padded[
-                fixed_query_state.active_batch_idx,
-                fixed_query_state.active_pos_idx,
-            ].reshape(num_active, self.qkv.in_features)
+            attn_out_padded = attn_out_padded[:, :, :t_max, :]
+        attn_out_active = attn_out_padded[
+            fixed_query_state.active_batch_idx,
+            :,
+            fixed_query_state.active_pos_idx,
+        ].reshape(num_active, self.qkv.in_features)
 
         x_sel = self.proj(attn_out_active)
         x_sel = self.proj_drop(x_sel)
