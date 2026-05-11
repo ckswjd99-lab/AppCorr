@@ -22,6 +22,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
         self.norm_mean = torch.tensor(self.normalize_avg * 255.0).view(1, 3, 1, 1).to(self.device).float()
         self.norm_std = torch.tensor(self.normalize_std * 255.0).view(1, 3, 1, 1).to(self.device).float()
         self.autocast_dtype = torch.bfloat16
+        self._sdpa_warmup_done = False
 
     @staticmethod
     def _ensure_dinov3_import_path():
@@ -88,12 +89,121 @@ class DINOv3DeptherExecutor(ModelExecutor):
             raise e
 
         self.model.eval()
+        self._sdpa_warmup_done = False
+
+    def _maybe_warmup_sdpa_buckets(self, config: Any):
+        if self._sdpa_warmup_done or not torch.cuda.is_available():
+            return
+
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        bucket_size = int(appcorr_options.get("sdpa_query_bucket_size", 0) or 0)
+        if bucket_size <= 0 or not bool(appcorr_options.get("sdpa_warmup", True)):
+            self._sdpa_warmup_done = True
+            return
+
+        vit_backbone = self.model.encoder.backbone
+        first_block = vit_backbone.blocks[0]
+        num_heads = int(first_block.attn.num_heads)
+        hidden_dim = int(first_block.attn.qkv.in_features)
+        head_dim = hidden_dim // num_heads
+        num_pretokens = 1 + int(getattr(vit_backbone, "n_storage_tokens", 0))
+
+        profile_config = config.get_input_profile_config()
+        eval_size = int(profile_config.get("depther_eval_size", 768))
+        model_patch_size = getattr(vit_backbone, "patch_size", None)
+        if model_patch_size is None and hasattr(vit_backbone, "patch_embed"):
+            model_patch_size = getattr(vit_backbone.patch_embed, "patch_size", None)
+        if isinstance(model_patch_size, (tuple, list)):
+            ph, pw = (int(v) for v in model_patch_size)
+        else:
+            ph = pw = int(model_patch_size or 16)
+        patch_tokens = (eval_size // ph) * (eval_size // pw)
+        num_groups = max(int(config.transmission_kwargs.get("num_groups", 1)), 1)
+        group_tokens = (patch_tokens + num_groups - 1) // num_groups
+        max_query_tokens = num_pretokens + group_tokens
+        max_bucket = ((max_query_tokens + bucket_size - 1) // bucket_size) * bucket_size
+        key_tokens = num_pretokens + patch_tokens
+
+        with torch.cuda.device(self.device):
+            with torch.cuda.nvtx.range("depther_sdpa_bucket_warmup"):
+                k = torch.empty(
+                    (1, num_heads, key_tokens, head_dim),
+                    device=self.device,
+                    dtype=self.autocast_dtype,
+                )
+                v = torch.empty_like(k)
+                for query_tokens in range(bucket_size, max_bucket + 1, bucket_size):
+                    with torch.cuda.nvtx.range(f"sdpa_bucket_T{query_tokens}"):
+                        q = torch.empty(
+                            (1, num_heads, query_tokens, head_dim),
+                            device=self.device,
+                            dtype=self.autocast_dtype,
+                        )
+                        torch.nn.functional.scaled_dot_product_attention(q, k, v)
+                torch.cuda.synchronize(self.device)
+
+        print(
+            f"[Executor] Warmed SDPA correction buckets: "
+            f"T={bucket_size}..{max_bucket} step {bucket_size}, K={key_tokens}, H={num_heads}, D={head_dim}"
+        )
+        self._sdpa_warmup_done = True
+
+    @staticmethod
+    def _bool_option(config: Any, key: str, default: bool = False) -> bool:
+        appcorr_kwargs = getattr(config, "appcorr_kwargs", {}) or {}
+        transmission_kwargs = getattr(config, "transmission_kwargs", {}) or {}
+        if key in appcorr_kwargs:
+            return bool(appcorr_kwargs[key])
+        if key in transmission_kwargs:
+            return bool(transmission_kwargs[key])
+        return bool(default)
+
+    @staticmethod
+    def _profile_prepare_detail(config: Any) -> bool:
+        return DINOv3DeptherExecutor._bool_option(config, "profile_prepare_detail", False)
+
+    @staticmethod
+    def _stage_input_in_preprocess(config: Any) -> bool:
+        return DINOv3DeptherExecutor._bool_option(config, "depther_stage_input_in_preprocess", True)
+
+    @staticmethod
+    def _incremental_input_in_preprocess(config: Any) -> bool:
+        return DINOv3DeptherExecutor._bool_option(config, "depther_incremental_input_in_preprocess", False)
+
+    @staticmethod
+    def _nvtx_range(name: str):
+        return torch.cuda.nvtx.range(name)
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         images, target_shapes = self._as_image_list(batch_data)
         images = [np.ascontiguousarray(image) for image in images]
         context["input_images_uint8"] = images
         context["target_shapes"] = target_shapes
+        stage_full_input = self._stage_input_in_preprocess(config)
+        stage_incremental_input = self._incremental_input_in_preprocess(config)
+        if not (stage_full_input or stage_incremental_input):
+            context.pop("depther_input_batch", None)
+        else:
+            profile_config = config.get_input_profile_config()
+            eval_size = int(profile_config.get("depther_eval_size", 768))
+            profile_detail = self._profile_prepare_detail(config)
+            updated_input = None
+            if stage_incremental_input:
+                updated_input = self._try_update_input_batch_from_patches(
+                    images,
+                    task,
+                    context,
+                    config,
+                    eval_size,
+                )
+            if updated_input is None:
+                context["depther_input_batch"] = self._build_input_batch_from_images(
+                    images,
+                    eval_size,
+                    profile_detail,
+                    "Preprocess",
+                    batch_source=self._get_batch_source(batch_data, images, context),
+                )
         context["depther_mobile_pscore_hint_maps"] = self._build_mobile_pscore_hint_maps(
             task,
             images,
@@ -119,39 +229,50 @@ class DINOv3DeptherExecutor(ModelExecutor):
             ph, pw = (int(v) for v in config.patch_size)
 
         target_res_level = min(config.transmission_kwargs.get("pyramid_levels", [0]))
-        hint_maps: List[torch.Tensor | None] = []
+        hint_maps_cpu: List[np.ndarray | None] = []
         hint_shapes: List[tuple[int, int] | None] = []
-        for image in images:
+        shape_to_indices: dict[tuple[int, int], List[int]] = {}
+        for image_idx, image in enumerate(images):
             img_h, img_w = image.shape[:2]
             grid_h = img_h // ph
             grid_w = img_w // pw
             if grid_h <= 0 or grid_w <= 0:
-                hint_maps.append(None)
+                hint_maps_cpu.append(None)
                 hint_shapes.append(None)
                 continue
-            hint_maps.append(torch.zeros((1, grid_h * grid_w), device=self.device, dtype=torch.float32))
-            hint_shapes.append((grid_h, grid_w))
+            hint_shape = (grid_h, grid_w)
+            hint_maps_cpu.append(np.zeros((grid_h * grid_w,), dtype=np.float32))
+            hint_shapes.append(hint_shape)
+            shape_to_indices.setdefault(hint_shape, []).append(image_idx)
 
         for patch in task.payload:
             image_idx = int(getattr(patch, "image_idx", -1))
-            if image_idx < 0 or image_idx >= len(hint_maps):
+            if image_idx < 0 or image_idx >= len(hint_maps_cpu):
                 continue
             if int(getattr(patch, "res_level", target_res_level)) != target_res_level:
                 continue
-            hint_map = hint_maps[image_idx]
+            hint_map = hint_maps_cpu[image_idx]
             hint_shape = hint_shapes[image_idx]
             if hint_map is None or hint_shape is None:
                 continue
             spatial_idx = int(getattr(patch, "spatial_idx", -1))
-            if 0 <= spatial_idx < hint_map.shape[1]:
-                hint_map[0, spatial_idx] = float(getattr(patch, "pscore_hint", 0.0))
+            if 0 <= spatial_idx < hint_map.shape[0]:
+                hint_map[spatial_idx] = float(getattr(patch, "pscore_hint", 0.0))
 
-        projected_input_maps: List[tuple[torch.Tensor, tuple[int, int]] | None] = []
-        for hint_map, hint_shape in zip(hint_maps, hint_shapes):
-            if hint_map is None or hint_shape is None:
-                projected_input_maps.append(None)
-            else:
-                projected_input_maps.append((self._normalize_patch_score_map(hint_map), hint_shape))
+        projected_input_maps: List[tuple[torch.Tensor, tuple[int, int]] | None] = [None] * len(images)
+        for hint_shape, image_indices in shape_to_indices.items():
+            stacked_cpu = np.stack(
+                [hint_maps_cpu[image_idx] for image_idx in image_indices],
+                axis=0,
+            )
+            hint_batch = torch.from_numpy(stacked_cpu).to(
+                device=self.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            )
+            normalized_batch = self._normalize_patch_score_map(hint_batch)
+            for row_idx, image_idx in enumerate(image_indices):
+                projected_input_maps[image_idx] = (normalized_batch[row_idx:row_idx + 1], hint_shape)
         return projected_input_maps
 
     def _project_mobile_pscore_hint_to_tokens(
@@ -178,6 +299,54 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
         source_hint = hint_2d.reshape(1, tok_h * tok_w).contiguous()
         return self._normalize_patch_score_map(source_hint)
+
+    def _project_mobile_pscore_hints_to_source(
+        self,
+        hint_entries: List[tuple[torch.Tensor, tuple[int, int]] | None] | None,
+        token_hw: tuple[int, int],
+        *,
+        apply_flip: bool,
+        batch_size: int,
+        ref_tensor: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not isinstance(hint_entries, list) or batch_size <= 0:
+            return None
+
+        grouped_entries: dict[tuple[int, int], List[tuple[int, torch.Tensor]]] = {}
+        for image_idx in range(batch_size):
+            hint_entry = hint_entries[image_idx] if image_idx < len(hint_entries) else None
+            if hint_entry is None:
+                continue
+            hint_map, hint_hw = hint_entry
+            if hint_map is None or hint_hw is None:
+                continue
+            grouped_entries.setdefault(hint_hw, []).append((image_idx, hint_map))
+
+        if not grouped_entries:
+            return None
+
+        tok_h, tok_w = token_hw
+        source_hint = ref_tensor.new_zeros((batch_size, tok_h * tok_w), dtype=torch.float32)
+        for (hint_h, hint_w), entries in grouped_entries.items():
+            rows = [image_idx for image_idx, _hint_map in entries]
+            hint_batch = torch.cat(
+                [
+                    hint_map.to(device=self.device, dtype=torch.float32, non_blocking=True)
+                    for _image_idx, hint_map in entries
+                ],
+                dim=0,
+            )
+            hint_2d = hint_batch.view(len(entries), 1, hint_h, hint_w)
+            if apply_flip:
+                hint_2d = torch.flip(hint_2d, dims=(-1,))
+            if (hint_h, hint_w) != (tok_h, tok_w):
+                hint_2d = F.interpolate(hint_2d, size=(tok_h, tok_w), mode="bilinear", align_corners=False)
+
+            projected = hint_2d.reshape(len(entries), tok_h * tok_w).contiguous()
+            projected = self._normalize_patch_score_map(projected)
+            row_indices = torch.as_tensor(rows, device=self.device, dtype=torch.long)
+            source_hint.index_copy_(0, row_indices, projected)
+        return source_hint
 
     def _as_image_list(self, batch_data: Any) -> tuple[List[np.ndarray], List[tuple[int, int] | None]]:
         if isinstance(batch_data, list):
@@ -220,10 +389,227 @@ class DINOv3DeptherExecutor(ModelExecutor):
         return normalized, target_shapes
 
     def _pil_to_normalized_tensor(self, image_np: np.ndarray) -> torch.Tensor:
-        tensor = torch.from_numpy(image_np).to(device=self.device, non_blocking=True)
+        cpu_tensor = torch.from_numpy(image_np)
+        if hasattr(cpu_tensor, "pin_memory"):
+            cpu_tensor = cpu_tensor.pin_memory()
+        tensor = cpu_tensor.to(device=self.device, non_blocking=True)
         tensor = tensor.permute(2, 0, 1).unsqueeze(0).float()
         tensor = (tensor - self.norm_mean) / self.norm_std
         return tensor.to(dtype=self.autocast_dtype)
+
+    def _pil_to_normalized_tensor_profiled(
+        self,
+        image_np: np.ndarray,
+        prefix: str = "Prepare",
+    ) -> torch.Tensor:
+        cpu_tensor = torch.from_numpy(image_np)
+        if hasattr(cpu_tensor, "pin_memory"):
+            cpu_tensor = cpu_tensor.pin_memory()
+        with self._nvtx_range(f"{prefix}::ImageH2D"):
+            tensor = cpu_tensor.to(device=self.device, non_blocking=True)
+        with self._nvtx_range(f"{prefix}::ImageCastFloat"):
+            tensor = tensor.permute(2, 0, 1).unsqueeze(0).float()
+        with self._nvtx_range(f"{prefix}::ImageNormalize"):
+            tensor = (tensor - self.norm_mean) / self.norm_std
+        with self._nvtx_range(f"{prefix}::ImageCastAutocast"):
+            tensor = tensor.to(dtype=self.autocast_dtype)
+        return tensor
+
+    @staticmethod
+    def _get_batch_source(
+        batch_data: Any,
+        images: List[np.ndarray],
+        context: Dict[str, Any],
+    ) -> np.ndarray | None:
+        if not images:
+            return None
+
+        candidates = []
+        if isinstance(batch_data, np.ndarray):
+            candidates.append(batch_data)
+        input_hr_np = context.get("input_hr_np")
+        if (batch_data is None or isinstance(batch_data, list)) and isinstance(input_hr_np, np.ndarray):
+            candidates.append(input_hr_np)
+
+        expected_shape = images[0].shape
+        for candidate in candidates:
+            if (
+                isinstance(candidate, np.ndarray)
+                and candidate.ndim == 4
+                and candidate.shape[0] == len(images)
+                and candidate.shape[1:] == expected_shape
+                and all(image.shape == expected_shape for image in images)
+            ):
+                return np.ascontiguousarray(candidate)
+        return None
+
+    def _normalize_input_batch_tensor(
+        self,
+        cpu_tensor: torch.Tensor,
+        eval_size: int,
+        prefix: str,
+    ) -> torch.Tensor:
+        with self._nvtx_range(f"{prefix}::BatchH2D"):
+            tensor = cpu_tensor.to(device=self.device, non_blocking=True)
+        with self._nvtx_range(f"{prefix}::BatchCastFloat"):
+            tensor = tensor.permute(0, 3, 1, 2).float()
+        with self._nvtx_range(f"{prefix}::BatchNormalize"):
+            tensor = (tensor - self.norm_mean) / self.norm_std
+        with self._nvtx_range(f"{prefix}::BatchCastAutocast"):
+            tensor = tensor.to(dtype=self.autocast_dtype)
+        with self._nvtx_range(f"{prefix}::ResizeInput"):
+            if tuple(tensor.shape[-2:]) != (eval_size, eval_size):
+                tensor = F.interpolate(tensor, size=(eval_size, eval_size), mode="bilinear", align_corners=False)
+        return tensor.contiguous()
+
+    def _build_input_batch_from_images(
+        self,
+        images: List[np.ndarray],
+        eval_size: int,
+        profile_prepare: bool,
+        prefix: str,
+        batch_source: np.ndarray | None = None,
+    ) -> torch.Tensor:
+        if not images:
+            return torch.empty((0, 3, eval_size, eval_size), dtype=self.autocast_dtype, device=self.device)
+
+        if batch_source is not None:
+            with self._nvtx_range(f"{prefix}::BatchToTensor"):
+                cpu_tensor = torch.from_numpy(batch_source)
+                if hasattr(cpu_tensor, "pin_memory"):
+                    cpu_tensor = cpu_tensor.pin_memory()
+            return self._normalize_input_batch_tensor(cpu_tensor, eval_size, prefix)
+
+        same_shape = all(image.shape == images[0].shape for image in images)
+        if same_shape:
+            with self._nvtx_range(f"{prefix}::BatchStack"):
+                batch_np = np.ascontiguousarray(np.stack(images, axis=0))
+            with self._nvtx_range(f"{prefix}::BatchToTensor"):
+                cpu_tensor = torch.from_numpy(batch_np)
+                if hasattr(cpu_tensor, "pin_memory"):
+                    cpu_tensor = cpu_tensor.pin_memory()
+            return self._normalize_input_batch_tensor(cpu_tensor, eval_size, prefix)
+
+        normalized_inputs = []
+        for image_np in images:
+            with torch.cuda.nvtx.range(f"{prefix}::ImageToTensor"):
+                if profile_prepare:
+                    img_tensor = self._pil_to_normalized_tensor_profiled(
+                        image_np,
+                        prefix=prefix,
+                    )
+                else:
+                    img_tensor = self._pil_to_normalized_tensor(image_np)
+            with self._nvtx_range(f"{prefix}::ResizeInput"):
+                input_tensor = F.interpolate(img_tensor, size=(eval_size, eval_size), mode="bilinear", align_corners=False)
+            normalized_inputs.append(input_tensor)
+        with self._nvtx_range(f"{prefix}::StackInput"):
+            return torch.cat(normalized_inputs, dim=0).contiguous()
+
+    def _try_update_input_batch_from_patches(
+        self,
+        images: List[np.ndarray],
+        task: Task,
+        context: Dict[str, Any],
+        config: Any,
+        eval_size: int,
+    ) -> torch.Tensor | None:
+        input_batch = context.get("depther_input_batch")
+        if not torch.is_tensor(input_batch):
+            return None
+        if input_batch.ndim != 4 or tuple(input_batch.shape[-2:]) != (eval_size, eval_size):
+            return None
+        if input_batch.shape[0] != len(images):
+            return None
+        if not task.payload:
+            return input_batch
+
+        if isinstance(config.patch_size, int):
+            ph = pw = int(config.patch_size)
+        else:
+            ph, pw = (int(v) for v in config.patch_size)
+        if ph <= 0 or pw <= 0:
+            return None
+
+        channels = int(input_batch.shape[1])
+        if channels != 3:
+            return None
+
+        for image in images:
+            if image.shape[:2] != (eval_size, eval_size) or image.shape[2] != channels:
+                return None
+
+        image_indices = []
+        rows = []
+        cols = []
+        grid_w = (eval_size + pw - 1) // pw
+        for patch in task.payload:
+            image_idx = int(getattr(patch, "image_idx", -1))
+            if image_idx < 0 or image_idx >= len(images):
+                continue
+            if int(getattr(patch, "group_id", -1)) == 0:
+                return None
+            if int(getattr(patch, "res_level", 0)) != 0:
+                return None
+            spatial_idx = int(getattr(patch, "spatial_idx", -1))
+            if spatial_idx < 0:
+                return None
+            row, col = divmod(spatial_idx, grid_w)
+            y, x = row * ph, col * pw
+            if y < 0 or x < 0 or y + ph > eval_size or x + pw > eval_size:
+                return None
+            image_indices.append(image_idx)
+            rows.append(row)
+            cols.append(col)
+
+        if not image_indices:
+            return input_batch
+
+        images_np = context.get("input_hr_np")
+        if not (
+            isinstance(images_np, np.ndarray)
+            and images_np.ndim == 4
+            and images_np.shape[0] == len(images)
+            and images_np.shape[1:4] == (eval_size, eval_size, channels)
+        ):
+            images_np = np.stack(images, axis=0)
+        images_np = np.ascontiguousarray(images_np)
+        image_indices = np.asarray(image_indices, dtype=np.int64)
+        rows = np.asarray(rows, dtype=np.int64)
+        cols = np.asarray(cols, dtype=np.int64)
+        grid_h = eval_size // ph
+        grid_w = eval_size // pw
+        s_b, s_h, s_w, s_c = images_np.strides
+        patch_view_np = np.lib.stride_tricks.as_strided(
+            images_np,
+            shape=(images_np.shape[0], grid_h, grid_w, ph, pw, channels),
+            strides=(s_b, ph * s_h, pw * s_w, s_h, s_w, s_c),
+            writeable=False,
+        )
+        crops = np.ascontiguousarray(patch_view_np[image_indices, rows, cols])
+
+        crops_cpu = torch.from_numpy(crops)
+        if hasattr(crops_cpu, "pin_memory"):
+            crops_cpu = crops_cpu.pin_memory()
+        with self._nvtx_range("Preprocess::PatchBatchH2D"):
+            crop_tensor = crops_cpu.to(device=self.device, non_blocking=True)
+        with self._nvtx_range("Preprocess::PatchNormalize"):
+            crop_tensor = crop_tensor.permute(0, 3, 1, 2).float()
+            crop_tensor = (crop_tensor - self.norm_mean) / self.norm_std
+            crop_tensor = crop_tensor.to(dtype=input_batch.dtype)
+
+        image_idx_t = torch.from_numpy(image_indices).to(device=self.device, non_blocking=True)
+        row_t = torch.from_numpy(rows).to(device=self.device, non_blocking=True)
+        col_t = torch.from_numpy(cols).to(device=self.device, non_blocking=True)
+        with self._nvtx_range("Preprocess::PatchScatter"):
+            s_b, s_c, s_h, s_w = input_batch.stride()
+            patch_view = input_batch.as_strided(
+                (input_batch.shape[0], eval_size // ph, eval_size // pw, channels, ph, pw),
+                (s_b, ph * s_h, pw * s_w, s_c, s_h, s_w),
+            )
+            patch_view[image_idx_t, row_t, col_t] = crop_tensor
+
+        return input_batch
 
     # ── Full inference (single-pass) ────────────────────────────────────
 
@@ -239,27 +625,34 @@ class DINOv3DeptherExecutor(ModelExecutor):
         use_tta = bool(profile_config.get("depther_use_tta", True))
 
         outputs = []
+        input_batch = context.get("depther_input_batch")
+        if not torch.is_tensor(input_batch):
+            input_batch = self._build_input_batch_from_images(
+                images,
+                eval_size,
+                profile_prepare=False,
+                prefix="FullInference",
+                batch_source=self._get_batch_source(None, images, context),
+            )
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            if use_tta:
+                flipped = torch.flip(input_batch, [-1]).contiguous()
+                pred = self.model(input_batch)
+                pred_flip = self.model(flipped)
+                pred_flip = torch.flip(pred_flip, [-1])
+                depth_batch = (pred + pred_flip) / 2.0
+            else:
+                depth_batch = self.model(input_batch)
+
         for image_idx, image_np in enumerate(images):
             target_shape = target_shapes[image_idx] if image_idx < len(target_shapes) else None
-            img_tensor = self._pil_to_normalized_tensor(image_np)
-            input_tensor = F.interpolate(img_tensor, size=(eval_size, eval_size), mode="bilinear", align_corners=False)
-
-            with torch.autocast("cuda", self.autocast_dtype):
-                if use_tta:
-                    flipped = torch.flip(input_tensor, [-1])
-                    pred = self.model(input_tensor)
-                    pred_flip = self.model(flipped)
-                    pred_flip = torch.flip(pred_flip, [-1])
-                    depth = (pred + pred_flip) / 2.0
-                else:
-                    depth = self.model(input_tensor)
-
             rescale_to = target_shape if target_shape is not None else image_np.shape[:2]
+            depth = depth_batch[image_idx:image_idx + 1]
             if depth.shape[-2:] != rescale_to:
                 depth = F.interpolate(depth, size=rescale_to, mode="bilinear", align_corners=False)
 
-            outputs.append(depth[0, 0].cpu())
-            del img_tensor, input_tensor, depth
+            outputs.append(depth[0, 0].detach())
 
         context["depth_outputs"] = outputs
 
@@ -274,71 +667,83 @@ class DINOv3DeptherExecutor(ModelExecutor):
         profile_config = config.get_input_profile_config()
         eval_size = int(profile_config.get("depther_eval_size", 768))
         use_tta = bool(profile_config.get("depther_use_tta", True))
+        profile_prepare = self._profile_prepare_detail(config)
 
         vit_backbone = self.model.encoder.backbone
         out_indices = self.model.encoder.backbone_out_indices
+        self._maybe_warmup_sdpa_buckets(config)
+
+        image_metas = []
+        mobile_pscore_hint_maps = context.get("depther_mobile_pscore_hint_maps")
+        rope_cache = context.setdefault("depther_rope_cache", {})
+
+        for image_idx, image_np in enumerate(images):
+            target_shape = target_shapes[image_idx] if image_idx < len(target_shapes) else None
+            rescale_to = target_shape if target_shape is not None else image_np.shape[:2]
+            image_metas.append({
+                "rescale_to": rescale_to,
+                "tta_entries": [],
+            })
+
+        input_batch = context.get("depther_input_batch")
+        if input_batch is None:
+            input_batch = self._build_input_batch_from_images(
+                images,
+                eval_size,
+                profile_prepare,
+                "Prepare",
+                batch_source=self._get_batch_source(None, images, context),
+            )
+
+        source_inputs = [(input_batch, False)]
+        if use_tta:
+            with self._nvtx_range("Prepare::FlipInput"):
+                source_inputs.append((torch.flip(input_batch, [-1]).contiguous(), True))
 
         all_x_backbones = []
         all_rope_sincos = []
         all_token_shapes = []
         all_mobile_pscore_hints = []
         all_source_flip_flags = []
-        image_metas = []
-        mobile_pscore_hint_maps = context.get("depther_mobile_pscore_hint_maps")
 
-        for image_idx, image_np in enumerate(images):
-            target_shape = target_shapes[image_idx] if image_idx < len(target_shapes) else None
-            img_tensor = self._pil_to_normalized_tensor(image_np)
-            input_tensor = F.interpolate(img_tensor, size=(eval_size, eval_size), mode="bilinear", align_corners=False)
+        for src_idx, (src_tensor, apply_flip) in enumerate(source_inputs):
+            with torch.cuda.nvtx.range(f"depther_prepare_src{src_idx}"):
+                with torch.autocast("cuda", self.autocast_dtype):
+                    with self._nvtx_range("Prepare::PatchEmbed"):
+                        x_tokens, (tok_H, tok_W) = vit_backbone.prepare_tokens_with_masks(src_tensor)
+                    if vit_backbone.rope_embed:
+                        rope_key = (tok_H, tok_W)
+                        rope = rope_cache.get(rope_key)
+                        if rope is None:
+                            with self._nvtx_range("Prepare::RopeMiss"):
+                                rope = vit_backbone.rope_embed(H=tok_H, W=tok_W)
+                            rope_cache[rope_key] = rope
+                    else:
+                        rope = None
 
-            tta_tensors = [input_tensor]
-            flip_flags = [False]
-            if use_tta:
-                tta_tensors.append(torch.flip(input_tensor, [-1]))
-                flip_flags.append(True)
+            all_x_backbones.append(x_tokens)
+            all_rope_sincos.append(rope)
+            all_token_shapes.append((tok_H, tok_W))
+            all_source_flip_flags.append(bool(apply_flip))
 
-            rescale_to = target_shape if target_shape is not None else image_np.shape[:2]
-
-            tta_source_ranges = []
-            for tta_idx, (img_t, _apply_flip) in enumerate(zip(tta_tensors, flip_flags)):
-                src_start = len(all_x_backbones)
-
-                with torch.cuda.nvtx.range(f"depther_prepare_src{len(all_x_backbones)}"):
-                    with torch.autocast("cuda", self.autocast_dtype):
-                        x_tokens, (tok_H, tok_W) = vit_backbone.prepare_tokens_with_masks(img_t)
-                        rope = vit_backbone.rope_embed(H=tok_H, W=tok_W) if vit_backbone.rope_embed else None
-
-                all_x_backbones.append(x_tokens)
-                all_rope_sincos.append(rope)
-                all_token_shapes.append((tok_H, tok_W))
-                all_source_flip_flags.append(bool(_apply_flip))
-                hint_entry = (
-                    mobile_pscore_hint_maps[image_idx]
-                    if isinstance(mobile_pscore_hint_maps, list) and image_idx < len(mobile_pscore_hint_maps)
-                    else None
-                )
+            with self._nvtx_range("Prepare::HintProject"):
                 all_mobile_pscore_hints.append(
-                    self._project_mobile_pscore_hint_to_tokens(
-                        hint_entry,
+                    self._project_mobile_pscore_hints_to_source(
+                        mobile_pscore_hint_maps,
                         (tok_H, tok_W),
-                        apply_flip=bool(_apply_flip),
+                        apply_flip=bool(apply_flip),
+                        batch_size=len(images),
+                        ref_tensor=x_tokens,
                     )
                 )
-
-                tta_source_ranges.append({
-                    "src_start": src_start,
-                    "src_end": len(all_x_backbones),
-                    "mode": "whole",
+            for image_idx in range(len(images)):
+                image_metas[image_idx]["tta_entries"].append({
+                    "src_idx": src_idx,
+                    "batch_idx": image_idx,
+                    "apply_flip": bool(apply_flip),
                 })
 
-            image_metas.append({
-                "tta_source_ranges": tta_source_ranges,
-                "flip_flags": flip_flags,
-                "rescale_to": rescale_to,
-                "n_tta": len(tta_tensors),
-            })
-
-            del img_tensor, input_tensor
+        del input_batch
 
         context["depther_x_backbones"] = all_x_backbones
         context["depther_rope_sincos"] = all_rope_sincos
@@ -347,11 +752,8 @@ class DINOv3DeptherExecutor(ModelExecutor):
         context["depther_source_flip_flags"] = all_source_flip_flags
         context["depther_image_metas"] = image_metas
         context["depther_out_indices"] = out_indices
-        context.pop("depther_group_maps", None)
-        context.pop("depther_group_plans", None)
-        context.pop("depther_cached_dindices", None)
-        self._ensure_group_maps_and_plans(context, config)
-        return {}
+        with self._nvtx_range("Prepare::GroupPlan"):
+            self._ensure_group_maps_and_plans(context, config)
 
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         start_l, end_l = params.get("layers", (0, 40))
@@ -573,6 +975,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 fixed_query_state=fixed_query_state,
                                 group_plan=plan,
                                 attn_cache_key=group_id,
+                                partial_token_plan_stat_scale=end_l - start_l,
                                 debug=False,
                             )
                         else:
@@ -589,6 +992,8 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 pscore_fusion=appcorr_options["pscore_fusion"],
                                 sdpa_query_bucket_size=sdpa_query_bucket_size,
                                 attn_col_alive_ratio=attn_col_alive_ratio,
+                                partial_token_plan_stat_scale=end_l - start_l,
+                                inplace_residual_add=lidx > start_l,
                                 debug=False,
                             )
 
@@ -687,65 +1092,58 @@ class DINOv3DeptherExecutor(ModelExecutor):
         outputs = []
         for image_idx, image_meta in enumerate(image_metas):
             rescale_to = image_meta["rescale_to"]
-            flip_flags = image_meta["flip_flags"]
-            n_tta = image_meta["n_tta"]
-            tta_source_ranges = image_meta["tta_source_ranges"]
+            tta_entries = image_meta["tta_entries"]
+            if not tta_entries:
+                continue
 
             aggregated_depth = torch.zeros(1, 1, *rescale_to, dtype=torch.float32, device=self.device)
 
-            for tta_idx, tta_range in enumerate(tta_source_ranges):
-                src_start = tta_range["src_start"]
-                src_end = tta_range["src_end"]
-                apply_flip = flip_flags[tta_idx]
+            for tta_entry in tta_entries:
+                si = int(tta_entry["src_idx"])
+                batch_idx = int(tta_entry["batch_idx"])
+                apply_flip = bool(tta_entry["apply_flip"])
+                x_tokens = current_features[si]
+                intermediates = all_intermediate_outputs[si] if all_intermediate_outputs else {}
 
-                # Collect intermediate features from all sources in this TTA pass
-                # and run DPT head per source, then average
-                for si in range(src_start, src_end):
-                    x_tokens = current_features[si]
-                    intermediates = all_intermediate_outputs[si] if all_intermediate_outputs else {}
+                with torch.autocast("cuda", self.autocast_dtype):
+                    layer_outputs = []
+                    for layer_idx in out_indices:
+                        if layer_idx in intermediates:
+                            out = intermediates[layer_idx]
+                        else:
+                            out = x_tokens
+                        out = out[batch_idx:batch_idx + 1]
 
-                    # Apply backbone norm + reshape, mimicking DinoVisionTransformerWrapper.forward
-                    with torch.autocast("cuda", self.autocast_dtype):
-                        layer_outputs = []
-                        for layer_idx in out_indices:
-                            if layer_idx in intermediates:
-                                out = intermediates[layer_idx]
+                        if encoder_wrapper.final_norm:
+                            if vit_backbone.untie_cls_and_patch_norms:
+                                x_norm_cls_reg = vit_backbone.cls_norm(out[:, :vit_backbone.n_storage_tokens + 1])
+                                x_norm_patch = vit_backbone.norm(out[:, vit_backbone.n_storage_tokens + 1:])
+                                out = torch.cat((x_norm_cls_reg, x_norm_patch), dim=1)
                             else:
-                                out = x_tokens
+                                out = vit_backbone.norm(out)
 
-                            # Norm
-                            if encoder_wrapper.final_norm:
-                                if vit_backbone.untie_cls_and_patch_norms:
-                                    x_norm_cls_reg = vit_backbone.cls_norm(out[:, :vit_backbone.n_storage_tokens + 1])
-                                    x_norm_patch = vit_backbone.norm(out[:, vit_backbone.n_storage_tokens + 1:])
-                                    out = torch.cat((x_norm_cls_reg, x_norm_patch), dim=1)
-                                else:
-                                    out = vit_backbone.norm(out)
+                        cls_token = out[:, 0]
+                        patch_out = out[:, vit_backbone.n_storage_tokens + 1:]
 
-                            # Extract patch tokens and cls token
-                            cls_token = out[:, 0]
-                            patch_out = out[:, vit_backbone.n_storage_tokens + 1:]
+                        tok_H, tok_W = token_shapes[si]
+                        patch_spatial = patch_out.reshape(1, tok_H, tok_W, -1).permute(0, 3, 1, 2).contiguous()
 
-                            tok_H, tok_W = token_shapes[si]
-                            patch_spatial = patch_out.reshape(1, tok_H, tok_W, -1).permute(0, 3, 1, 2).contiguous()
+                        layer_outputs.append((patch_spatial, cls_token))
 
-                            layer_outputs.append((patch_spatial, cls_token))
+                    depth_logits = decoder(layer_outputs)
+                    depth = features_to_depth(depth_logits)
 
-                        # DPT decoder
-                        depth_logits = decoder(layer_outputs)
-                        depth = features_to_depth(depth_logits)
+                if apply_flip:
+                    depth = depth.flip([-1])
 
-                    if apply_flip:
-                        depth = depth.flip([-1])
+                if depth.shape[-2:] != rescale_to:
+                    depth = F.interpolate(depth, size=rescale_to, mode="bilinear", align_corners=False)
 
-                    if depth.shape[-2:] != rescale_to:
-                        depth = F.interpolate(depth, size=rescale_to, mode="bilinear", align_corners=False)
+                aggregated_depth += depth.float()
+                del depth, layer_outputs
 
-                    aggregated_depth += depth.float()
-                    del depth, layer_outputs
-
-            depth_avg = aggregated_depth / (n_tta * (src_end - src_start))
-            outputs.append(depth_avg[0, 0].cpu())
+            depth_avg = aggregated_depth / len(tta_entries)
+            outputs.append(depth_avg[0, 0].detach())
             del aggregated_depth
 
         context["depth_outputs"] = outputs
@@ -777,8 +1175,6 @@ class DINOv3DeptherExecutor(ModelExecutor):
     # ── AppCorr group map / plan helpers ────────────────────────────────
 
     def _ensure_group_maps_and_plans(self, context: Dict[str, Any], config: Any):
-        from appcorr.models.dinov3.models.vision_transformer import create_group_index
-
         all_x_backbones = context.get("depther_x_backbones")
         if all_x_backbones is None:
             return
@@ -866,34 +1262,29 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 else:
                     all_group_plans[src_idx] = {}
             else:
-                group_map_2d = create_group_index(
-                    N,
-                    num_groups,
-                    "grid",
-                    x_tokens.device,
-                    token_hw=(tok_H, tok_W),
-                ).view(tok_H, tok_W)
+                s = int(num_groups ** 0.5)
+                pattern = torch.arange(1, num_groups + 1, dtype=torch.long).view(s, s)
+                rep_h = (tok_H + s - 1) // s
+                rep_w = (tok_W + s - 1) // s
+                group_map_2d_cpu = pattern.repeat(rep_h, rep_w)[:tok_H, :tok_W]
                 if bool(source_flip_flags[src_idx]):
-                    group_map_2d = torch.flip(group_map_2d, dims=(-1,))
-                group_map = group_map_2d.flatten().unsqueeze(0).expand(B, -1)
+                    group_map_2d_cpu = torch.flip(group_map_2d_cpu, dims=(-1,))
+                group_map_1d_cpu = group_map_2d_cpu.flatten().contiguous()
+                group_map_1d = group_map_1d_cpu.to(device=x_tokens.device, non_blocking=True)
+                group_map = group_map_1d.unsqueeze(0).expand(B, -1)
                 all_group_maps[src_idx] = group_map
 
                 src_cached_dindices = {}
-                group_ids = torch.unique(group_map)
-                group_ids = group_ids[group_ids >= 0]
-                for gid_tensor in group_ids:
-                    gid = int(gid_tensor.item())
-                    nonzero_indices = torch.nonzero(group_map == gid, as_tuple=False)
-                    if nonzero_indices.numel() == 0:
+                pre_indices = torch.arange(
+                    num_pretokens, device=x_tokens.device, dtype=torch.long,
+                ).unsqueeze(0).expand(B, -1)
+                for gid in range(1, num_groups + 1):
+                    spatial_indices_cpu = torch.nonzero(group_map_1d_cpu == gid, as_tuple=False).flatten()
+                    if spatial_indices_cpu.numel() == 0:
                         continue
-                    try:
-                        spatial_indices = nonzero_indices[:, 1].view(B, -1)
-                    except RuntimeError:
-                        continue
+                    spatial_indices = spatial_indices_cpu.to(device=x_tokens.device, non_blocking=True)
+                    spatial_indices = spatial_indices.unsqueeze(0).expand(B, -1)
                     patch_indices = spatial_indices + num_pretokens
-                    pre_indices = torch.arange(
-                        num_pretokens, device=x_tokens.device, dtype=torch.long,
-                    ).unsqueeze(0).expand(B, -1)
                     dindice = torch.cat([pre_indices, patch_indices], dim=1)
                     src_cached_dindices[gid] = dindice
 

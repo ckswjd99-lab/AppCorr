@@ -699,7 +699,7 @@ def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> Datas
     if name == 'imagenet-1k':
         return ImageNetLoader(root, batch_size, **kwargs)
     elif name == 'coco2017':
-        return COCO201Loader(root, batch_size, **kwargs)
+        return COCO2017Loader(root, batch_size, **kwargs)
     elif name in {'ade20k', 'scene_parse_150'}:
         return ADE20KLoader(root, batch_size, **kwargs)
     elif name == 'nyu_depth':

@@ -114,6 +114,18 @@ fi
 SERVER_PID=""
 MOBILE_PID=""
 STARTED_PID=""
+BASE_EXP_ID="$(python - "${CONFIG_PATH}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r") as f:
+    data = json.load(f)
+print(data.get("exp_id") or "exp")
+PY
+)"
+RUN_START_TS="$(date +%s)"
+NSYS_FINALIZED=false
+NSYS_TEMP_PROFILE="${REPO_ROOT}/temp_profile.nsys-rep"
 
 start_in_own_group() {
   if command -v setsid >/dev/null 2>&1; then
@@ -177,19 +189,163 @@ stop_process_group() {
   fi
 }
 
+describe_port_usage() {
+  local port="$1"
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true
+    return
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -H -ltnp "sport = :${port}" 2>/dev/null || true
+    return
+  fi
+
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltnp 2>/dev/null | awk -v port=":${port}" '$4 ~ port "$"'
+    return
+  fi
+}
+
+port_listener_pids() {
+  local port="$1"
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -t -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true
+    return
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -H -ltnp "sport = :${port}" 2>/dev/null \
+      | sed -nE 's/.*pid=([0-9]+).*/\1/p' \
+      | sort -u
+    return
+  fi
+
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltnp 2>/dev/null \
+      | awk -v port=":${port}" '$4 ~ port "$" { split($7, proc, "/"); if (proc[1] ~ /^[0-9]+$/) print proc[1] }' \
+      | sort -u
+    return
+  fi
+}
+
+ensure_port_free() {
+  local label="$1"
+  local port="$2"
+  local usage
+  local pids
+
+  usage="$(describe_port_usage "${port}")"
+  if [[ -z "${usage}" ]]; then
+    return
+  fi
+
+  echo "[run_local] ${label}=${port} is already in use; aborting before startup." >&2
+  echo "[run_local] Listener using port ${port}:" >&2
+  echo "${usage}" | sed 's/^/[run_local]   /' >&2
+
+  pids="$(port_listener_pids "${port}" | sort -u | xargs || true)"
+  if [[ -n "${pids}" ]]; then
+    echo "[run_local] To stop the occupying process(es), run:" >&2
+    echo "[run_local]   kill ${pids}" >&2
+    echo "[run_local]   # if needed: kill -9 ${pids}" >&2
+  else
+    echo "[run_local] Could not determine PID. Try:" >&2
+    echo "[run_local]   lsof -nP -iTCP:${port} -sTCP:LISTEN" >&2
+  fi
+
+  exit 1
+}
+
+find_latest_log_dir() {
+  python - "${BASE_EXP_ID}" "${RUN_START_TS}" <<'PY'
+import sys
+from pathlib import Path
+
+base_exp_id = sys.argv[1]
+run_start_ts = float(sys.argv[2])
+root = Path("logs") / "offload"
+if not root.exists():
+    print("")
+    raise SystemExit(0)
+
+candidates = [
+    path
+    for path in root.iterdir()
+    if path.is_dir() and path.name.startswith(f"{base_exp_id}_")
+]
+if not candidates:
+    print("")
+    raise SystemExit(0)
+
+def candidate_key(path: Path):
+    events_path = path / "events.jsonl"
+    mtime = events_path.stat().st_mtime if events_path.exists() else path.stat().st_mtime
+    return (mtime >= run_start_ts - 60, mtime)
+
+candidates.sort(key=candidate_key, reverse=True)
+print(candidates[0])
+PY
+}
+
+finalize_nsys_profile() {
+  if [[ "${USE_NSYS}" != true || "${NSYS_FINALIZED}" == true ]]; then
+    return 0
+  fi
+  NSYS_FINALIZED=true
+
+  if [[ ! -f "${NSYS_TEMP_PROFILE}" ]]; then
+    echo "[run_local] Warning: Nsight profile not found at ${NSYS_TEMP_PROFILE}" >&2
+    return 0
+  fi
+
+  local log_dir
+  log_dir="$(find_latest_log_dir || true)"
+  if [[ -z "${log_dir}" ]]; then
+    echo "[run_local] Warning: could not find log directory for exp_id=${BASE_EXP_ID}; leaving ${NSYS_TEMP_PROFILE} in place." >&2
+    return 0
+  fi
+
+  local dest_profile="${log_dir}/server_profile.nsys-rep"
+  if mv -f "${NSYS_TEMP_PROFILE}" "${dest_profile}"; then
+    echo "[run_local] Moved Nsight profile to ${dest_profile}"
+  else
+    echo "[run_local] Warning: failed to move Nsight profile to ${dest_profile}" >&2
+    return 0
+  fi
+
+  if python -m analysis.log_tools.nsys_events "${log_dir}" --profile "${dest_profile}"; then
+    echo "[run_local] Generated ${log_dir}/events_nsys.jsonl"
+  else
+    echo "[run_local] Warning: failed to generate events_nsys.jsonl from ${dest_profile}" >&2
+  fi
+}
+
 cleanup() {
   local exit_code=$?
   trap - EXIT INT TERM
   stop_process_group "mobile" "${MOBILE_PID}"
   stop_process_group "server" "${SERVER_PID}"
+  finalize_nsys_profile || true
   exit "${exit_code}"
 }
 
 trap cleanup EXIT INT TERM
 
+if [[ "${RECV_PORT}" == "${SEND_PORT}" ]]; then
+  echo "[run_local] RECV_PORT and SEND_PORT must be different; both are ${RECV_PORT}." >&2
+  exit 1
+fi
+
+ensure_port_free "RECV_PORT" "${RECV_PORT}"
+ensure_port_free "SEND_PORT" "${SEND_PORT}"
+
 echo "[run_local] Starting local AppCorr server..."
 if [[ "${USE_NSYS}" == true ]]; then
-  echo "[run_local] Nsight Systems profiling enabled → temp_profile.nsys-rep"
+  echo "[run_local] Nsight Systems profiling enabled -> temp_profile.nsys-rep"
+  rm -f "${NSYS_TEMP_PROFILE}" "${REPO_ROOT}/temp_profile.sqlite"
   start_in_own_group nsys profile \
             --sample=none \
             --cpuctxsw=none \

@@ -210,6 +210,7 @@ logs
 appcorr/datasets
 appcorr/weights
 *.nsys-rep
+*.sqlite
 *.qdstrm
 .vscode
 .codex
