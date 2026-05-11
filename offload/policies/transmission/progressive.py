@@ -98,9 +98,8 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             per_image_assignments = []
             for b in range(B):
                 residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
-                N = len(residual_structure)
                 per_image_assignments.append(
-                    self._precompute_group_assignments(grouping_strategy, N, num_groups)
+                    self._precompute_group_assignments(grouping_strategy, residual_structure, num_groups)
                 )
 
             # Compress and yield group-by-group
@@ -141,14 +140,37 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             gh, gw = lh // ph, lw // pw
             num_crops = gh * gw
             for i in range(num_crops):
-                structure.append({'spatial_idx': i, 'res_level': lvl})
+                row, col = divmod(i, gw)
+                structure.append({
+                    'spatial_idx': i,
+                    'res_level': lvl,
+                    'grid_hw': (gh, gw),
+                    'row': row,
+                    'col': col,
+                })
         return structure
 
-    def _precompute_group_assignments(self, strategy, N, num_groups):
+    def _precompute_group_assignments(self, strategy, residual_structure, num_groups):
         """Pre-calculate group ID for N items based on strategy."""
+        if isinstance(residual_structure, int):
+            N = residual_structure
+            structure = None
+        else:
+            structure = list(residual_structure)
+            N = len(structure)
+
         if strategy == 'grid':
-            # Simplified grid: side of total tokens
             s = int(num_groups ** 0.5)
+            if s * s != num_groups:
+                raise ValueError(f"grid grouping requires a square num_groups, got {num_groups}")
+            if structure is not None and all('row' in item and 'col' in item for item in structure):
+                pattern = np.arange(1, num_groups + 1).reshape(s, s)
+                return np.asarray(
+                    [pattern[int(item['row']) % s, int(item['col']) % s] for item in structure],
+                    dtype=int,
+                )
+
+            # Legacy square fallback for callers that only provide N.
             side = int(N ** 0.5)
             pattern = np.arange(1, num_groups + 1).reshape(s, s)
             rep_h = (side + s - 1) // s
