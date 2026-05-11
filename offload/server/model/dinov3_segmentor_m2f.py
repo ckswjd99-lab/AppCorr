@@ -644,6 +644,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_source_shapes = []
         all_token_shapes = []
         all_crop_hw = []
+        all_source_group_contexts = []
 
         image_metas = []
 
@@ -691,6 +692,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                             all_source_shapes.append(src["source_shape"])
                             all_token_shapes.append(src["token_shape"])
                             all_crop_hw.append(src["crop_hw"])
+                            all_source_group_contexts.append({
+                                "mode": "slide",
+                                "crop": (y1, y2, x1, x2),
+                                "image_hw": (h_img, w_img),
+                                "apply_flip": bool(_apply_flip),
+                            })
                             slide_crops.append((y1, y2, x1, x2))
 
                     tta_source_ranges.append({
@@ -717,6 +724,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                     all_source_shapes.append(src["source_shape"])
                     all_token_shapes.append(src["token_shape"])
                     all_crop_hw.append(src["crop_hw"])
+                    all_source_group_contexts.append({
+                        "mode": "whole",
+                        "crop": (0, resized.shape[2], 0, resized.shape[3]),
+                        "image_hw": (resized.shape[2], resized.shape[3]),
+                        "apply_flip": bool(_apply_flip),
+                    })
 
                     tta_source_ranges.append({
                         "src_start": src_start,
@@ -731,6 +744,19 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 "n_tta": len(tta_tensors),
             })
 
+        old_current_features = context.get("m2f_current_features")
+        old_intermediate_raw = context.get("m2f_intermediate_raw")
+        old_current_layer = context.get("m2f_current_layer")
+        preserve_layer_state = (
+            isinstance(old_current_features, list)
+            and len(old_current_features) == len(all_x_backbones)
+            and all(
+                torch.is_tensor(old_feature)
+                and old_feature.shape == new_tokens.shape
+                for old_feature, new_tokens in zip(old_current_features, all_x_backbones)
+            )
+        )
+
         context["m2f_x_backbones"] = all_x_backbones
         context["m2f_rope_sincos"] = all_rope_sincos
         context["m2f_deform_in1"] = all_deform_in1
@@ -742,14 +768,25 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_source_shapes"] = all_source_shapes
         context["m2f_token_shapes"] = all_token_shapes
         context["m2f_crop_hw"] = all_crop_hw
+        context["m2f_source_group_contexts"] = all_source_group_contexts
         context["m2f_image_metas"] = image_metas
         context["m2f_inference_mode"] = inference_mode
         context["m2f_decoder_head_type"] = decoder_head_type
         context.pop("m2f_group_maps", None)
         context.pop("m2f_group_plans", None)
         context.pop("m2f_cached_dindices", None)
-        context.pop("m2f_current_features", None)
-        context.pop("m2f_intermediate_raw", None)
+        if preserve_layer_state:
+            context["m2f_current_features"] = old_current_features
+            if isinstance(old_intermediate_raw, list) and len(old_intermediate_raw) == len(all_x_backbones):
+                context["m2f_intermediate_raw"] = old_intermediate_raw
+            else:
+                context["m2f_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
+            if old_current_layer is not None:
+                context["m2f_current_layer"] = int(old_current_layer)
+        else:
+            context.pop("m2f_current_features", None)
+            context.pop("m2f_intermediate_raw", None)
+            context.pop("m2f_current_layer", None)
         self._ensure_group_maps_and_plans(context, config)
         return {}
 
@@ -770,9 +807,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             context["m2f_current_features"] = [x.clone() for x in all_x_backbones]
         if "m2f_intermediate_raw" not in context:
             context["m2f_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
+        if "m2f_current_layer" not in context:
+            context["m2f_current_layer"] = 0
         if start_l == 0:
             context["m2f_current_features"] = [x.clone() for x in all_x_backbones]
             context["m2f_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
+            context["m2f_current_layer"] = 0
 
         current_features = context["m2f_current_features"]
         intermediate_raw = context["m2f_intermediate_raw"]
@@ -821,6 +861,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_current_features"] = current_features
         context["m2f_intermediate_raw"] = intermediate_raw
         context["m2f_cache_features"] = all_cache_features
+        context["m2f_current_layer"] = end_l
         context["cache_feature"] = self._aggregate_cache_features(all_cache_features)
         return {}
 
@@ -829,6 +870,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         layers = params.get("layers", (0, 40))
         start_l, end_l = layers[0], layers[1]
         group_id = params.get("group_id", 0)
+        correct_all_groups = bool(params.get("all_groups", False))
 
         adapter = self.model.segmentation_model[0]
         vit_backbone = adapter.backbone
@@ -843,8 +885,11 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             context["m2f_current_features"] = [x.clone() for x in all_x_backbones]
         if "m2f_intermediate_raw" not in context:
             context["m2f_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
+        if "m2f_current_layer" not in context:
+            context["m2f_current_layer"] = 0
 
         current_features = context["m2f_current_features"]
+        current_layer = int(context.get("m2f_current_layer", 0))
         intermediate_raw = context["m2f_intermediate_raw"]
         all_cache_features = context.get("m2f_cache_features")
         if all_cache_features is None or len(all_cache_features) != len(all_x_backbones):
@@ -880,7 +925,9 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 else {}
             )
 
-            if group_id in cached_dindices:
+            if correct_all_groups:
+                target_gids = sorted(cached_dindices.keys())
+            elif group_id in cached_dindices:
                 target_gids = [group_id]
             else:
                 target_gids = sorted(cached_dindices.keys())
@@ -892,7 +939,11 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 new_intermediate_raw.append(intermediate_raw[src_idx])
                 continue
 
-            dindice = all_dindices_for_src[0] if len(all_dindices_for_src) == 1 else torch.cat(all_dindices_for_src, dim=1)
+            dindice = (
+                all_dindices_for_src[0]
+                if len(all_dindices_for_src) == 1
+                else self._union_dindices(all_dindices_for_src)
+            )
             dindice = dindice.to(device=self.device, non_blocking=True)
             plan = src_group_plans.get(target_gids[0]) if appcorr_method == "partial_channel" else None
 
@@ -971,15 +1022,89 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                         if lidx in interaction_indexes:
                             corrected_intermediates.append(x_tokens)
 
-            new_current_features.append(x_tokens)
+            can_merge_current = current_layer == end_l and x_feature.shape == x_tokens.shape
+            if can_merge_current:
+                x_out = self._merge_dindice_tokens(x_feature, x_tokens, dindice)
+                intermediate_out = self._merge_corrected_intermediates(
+                    intermediate_raw[src_idx],
+                    corrected_intermediates,
+                    dindice,
+                    start_l,
+                    end_l,
+                    interaction_indexes,
+                )
+            else:
+                x_out = x_tokens
+                intermediate_out = corrected_intermediates if start_l == 0 else intermediate_raw[src_idx] + corrected_intermediates
+
+            new_current_features.append(x_out)
             new_cache_features.append(cache)
-            new_intermediate_raw.append(corrected_intermediates if start_l == 0 else intermediate_raw[src_idx] + corrected_intermediates)
+            new_intermediate_raw.append(intermediate_out)
 
         context["m2f_current_features"] = new_current_features
         context["m2f_cache_features"] = new_cache_features
         context["m2f_intermediate_raw"] = new_intermediate_raw
+        context["m2f_current_layer"] = end_l
         context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
         return {}
+
+    @staticmethod
+    def _merge_dindice_tokens(base: torch.Tensor, update: torch.Tensor, dindice: torch.Tensor) -> torch.Tensor:
+        if (
+            base is None
+            or update is None
+            or dindice is None
+            or base.shape != update.shape
+            or dindice.numel() == 0
+        ):
+            return update
+
+        dindice = dindice.to(device=base.device, non_blocking=True)
+        merged = base.clone()
+        batch_indices = torch.arange(
+            dindice.shape[0],
+            device=base.device,
+            dtype=torch.long,
+        ).unsqueeze(1).expand_as(dindice)
+        merged[batch_indices, dindice] = update[batch_indices, dindice].to(dtype=base.dtype)
+        return merged
+
+    @classmethod
+    def _merge_corrected_intermediates(
+        cls,
+        existing_intermediates: List[torch.Tensor],
+        corrected_intermediates: List[torch.Tensor],
+        dindice: torch.Tensor,
+        start_l: int,
+        end_l: int,
+        interaction_indexes: set[int],
+    ) -> List[torch.Tensor]:
+        if not corrected_intermediates:
+            return list(existing_intermediates)
+
+        merged = list(existing_intermediates)
+        ordered_interactions = sorted(interaction_indexes)
+        corrected_layers = [lidx for lidx in ordered_interactions if start_l <= lidx < end_l]
+
+        for corrected, layer_idx in zip(corrected_intermediates, corrected_layers):
+            target_pos = ordered_interactions.index(layer_idx)
+            if target_pos < len(merged):
+                merged[target_pos] = cls._merge_dindice_tokens(merged[target_pos], corrected, dindice)
+            elif target_pos == len(merged):
+                merged.append(corrected)
+            else:
+                merged.append(corrected)
+        return merged
+
+    @staticmethod
+    def _union_dindices(dindices: List[torch.Tensor]) -> torch.Tensor:
+        if not dindices:
+            raise ValueError("Cannot union an empty dindice list")
+        merged = torch.cat(dindices, dim=1)
+        rows = [torch.unique(row, sorted=True) for row in merged]
+        if any(row.numel() != rows[0].numel() for row in rows):
+            raise RuntimeError("Cannot union dindices with different per-batch lengths")
+        return torch.stack(rows, dim=0)
 
     @staticmethod
     def _aggregate_cache_features(all_cache_features: List[Dict[str, Any]] | None) -> Dict[str, Any]:
@@ -1050,8 +1175,11 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
     def _build_all_group_maps(self, context: Dict[str, Any], config: Any) -> List[torch.Tensor] | None:
         all_input_tokens = context.get("m2f_x_backbones")
         token_shapes = context.get("m2f_token_shapes")
+        source_group_contexts = context.get("m2f_source_group_contexts")
         if all_input_tokens is None or token_shapes is None:
             return None
+        if not isinstance(source_group_contexts, list) or len(source_group_contexts) != len(all_input_tokens):
+            source_group_contexts = [None] * len(all_input_tokens)
 
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         if not appcorr_options.get("generated_from_client", False):
@@ -1067,10 +1195,18 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if grouping_strategy == "uniform_diff":
             grouping_strategy = "grid"
         all_group_maps = []
-        for input_tokens, (tok_h, tok_w) in zip(all_input_tokens, token_shapes):
+        for input_tokens, (tok_h, tok_w), group_context in zip(all_input_tokens, token_shapes, source_group_contexts):
             num_tokens = tok_h * tok_w
             if num_groups == 1:
                 group_map = torch.zeros(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
+            elif grouping_strategy == "grid":
+                group_map = self._build_crop_grid_group_map(
+                    input_tokens,
+                    tok_h,
+                    tok_w,
+                    num_groups,
+                    group_context,
+                )
             else:
                 group_map = create_group_index(
                     num_tokens,
@@ -1082,6 +1218,41 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 group_map = group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
             all_group_maps.append(group_map)
         return all_group_maps
+
+    def _build_crop_grid_group_map(
+        self,
+        input_tokens: torch.Tensor,
+        tok_h: int,
+        tok_w: int,
+        num_groups: int,
+        group_context: Dict[str, Any] | None,
+    ) -> torch.Tensor:
+        num_tokens = tok_h * tok_w
+        side = int(num_groups ** 0.5)
+        if side * side != num_groups:
+            raise ValueError(f"grid grouping requires a square num_groups, got {num_groups}")
+        if not group_context:
+            group_map = create_group_index(num_tokens, num_groups, "grid", self.device, token_hw=(tok_h, tok_w))
+            return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
+
+        y1, y2, x1, x2 = (int(v) for v in group_context.get("crop", (0, tok_h * 16, 0, tok_w * 16)))
+        _h_img, w_img = (int(v) for v in group_context.get("image_hw", (y2 - y1, x2 - x1)))
+        apply_flip = bool(group_context.get("apply_flip", False))
+
+        patch_h = max((y2 - y1) // max(tok_h, 1), 1)
+        patch_w = max((x2 - x1) // max(tok_w, 1), 1)
+
+        row_centers = y1 + torch.arange(tok_h, device=self.device, dtype=torch.long) * patch_h + patch_h // 2
+        col_centers = x1 + torch.arange(tok_w, device=self.device, dtype=torch.long) * patch_w + patch_w // 2
+        if apply_flip:
+            col_centers = (w_img - 1) - col_centers
+
+        patch_rows = torch.div(row_centers.clamp_min(0), patch_h, rounding_mode="floor")
+        patch_cols = torch.div(col_centers.clamp_min(0), patch_w, rounding_mode="floor")
+        pattern = torch.arange(1, num_groups + 1, device=self.device, dtype=torch.long).view(side, side)
+        group_2d = pattern[patch_rows.remainder(side).unsqueeze(1), patch_cols.remainder(side).unsqueeze(0)]
+        group_map = group_2d.reshape(-1)
+        return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
 
     def prepare_group_maps_and_dindices(self, task: Task | None, context: Dict[str, Any], config: Any):
         all_input_tokens = context.get("m2f_x_backbones")
