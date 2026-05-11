@@ -13,7 +13,10 @@ import torch
 import torch.nn.functional as F
 
 from offload.common import Task
+from offload.common.protocol import normalize_appcorr_kwargs
+from appcorr.models.dinov3.models.vision_transformer import create_group_index
 from .base import ModelExecutor
+from .dinov3_segmentor_linhead import GroupCorrectionPlan, QueryState
 from .utils import load_weight_mmap
 
 
@@ -194,11 +197,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if eval_mode not in {"tta", "single"}:
             raise ValueError(f"Unsupported ADE20K segmentor-m2f server_eval_mode: {eval_mode}")
         use_tta = eval_mode == "tta" and bool(profile_config.get("server_use_tta", True))
+        base_short_side = int(profile_config.get("mobile_resize_short_side", min(base_h, base_w)))
 
         if not use_tta:
-            return [self._pil_to_normalized_tensor(base_image)], [False], (base_h, base_w)
+            resized = self._resize_short_side(base_image, base_short_side)
+            return [self._pil_to_normalized_tensor(resized)], [False], (base_h, base_w)
 
-        base_short_side = int(profile_config.get("mobile_resize_short_side", min(base_h, base_w)))
         tta_ratios = list(profile_config.get("server_tta_ratios", [1.0]))
         resized_images = [
             self._resize_short_side(base_image, self._tta_short_side(base_short_side, float(ratio)))
@@ -606,6 +610,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             "spm_c2_len": c2_len,
             "spm_c3_len": c3_len,
             "source_shape": (H_c, W_c, H_toks, W_toks, input_tensor.shape[0]),
+            "token_shape": (H_toks, W_toks),
             "crop_hw": (input_tensor.shape[2], input_tensor.shape[3]),
         }
 
@@ -637,6 +642,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_spm_c2_len = []
         all_spm_c3_len = []
         all_source_shapes = []
+        all_token_shapes = []
         all_crop_hw = []
 
         image_metas = []
@@ -683,6 +689,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                             all_spm_c2_len.append(src["spm_c2_len"])
                             all_spm_c3_len.append(src["spm_c3_len"])
                             all_source_shapes.append(src["source_shape"])
+                            all_token_shapes.append(src["token_shape"])
                             all_crop_hw.append(src["crop_hw"])
                             slide_crops.append((y1, y2, x1, x2))
 
@@ -708,6 +715,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                     all_spm_c2_len.append(src["spm_c2_len"])
                     all_spm_c3_len.append(src["spm_c3_len"])
                     all_source_shapes.append(src["source_shape"])
+                    all_token_shapes.append(src["token_shape"])
                     all_crop_hw.append(src["crop_hw"])
 
                     tta_source_ranges.append({
@@ -732,10 +740,17 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_spm_c2_len"] = all_spm_c2_len
         context["m2f_spm_c3_len"] = all_spm_c3_len
         context["m2f_source_shapes"] = all_source_shapes
+        context["m2f_token_shapes"] = all_token_shapes
         context["m2f_crop_hw"] = all_crop_hw
         context["m2f_image_metas"] = image_metas
         context["m2f_inference_mode"] = inference_mode
         context["m2f_decoder_head_type"] = decoder_head_type
+        context.pop("m2f_group_maps", None)
+        context.pop("m2f_group_plans", None)
+        context.pop("m2f_cached_dindices", None)
+        context.pop("m2f_current_features", None)
+        context.pop("m2f_intermediate_raw", None)
+        self._ensure_group_maps_and_plans(context, config)
         return {}
 
     @torch.inference_mode()
@@ -755,34 +770,65 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             context["m2f_current_features"] = [x.clone() for x in all_x_backbones]
         if "m2f_intermediate_raw" not in context:
             context["m2f_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
+        if start_l == 0:
+            context["m2f_current_features"] = [x.clone() for x in all_x_backbones]
+            context["m2f_intermediate_raw"] = [[] for _ in range(len(all_x_backbones))]
 
         current_features = context["m2f_current_features"]
         intermediate_raw = context["m2f_intermediate_raw"]
+        all_cache_features = context.get("m2f_cache_features")
+        if all_cache_features is None or len(all_cache_features) != len(all_x_backbones):
+            all_cache_features = [dict() for _ in range(len(all_x_backbones))]
+
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        appcorr_method = appcorr_options["method"]
+        self._ensure_group_maps_and_plans(context, config)
+        all_group_plans = context.get("m2f_group_plans")
 
         with torch.autocast("cuda", self.autocast_dtype):
             for src_idx in range(len(all_x_backbones)):
                 x_tokens = current_features[src_idx] if start_l > 0 else all_x_backbones[src_idx].clone()
                 rope = all_rope_sincos[src_idx]
+                cache = all_cache_features[src_idx]
+                group_plans = (
+                    all_group_plans[src_idx]
+                    if appcorr_method == "partial_channel" and all_group_plans is not None
+                    else None
+                )
+                attn_cache_candidates = (
+                    {gid: plan.full_dindice for gid, plan in group_plans.items()}
+                    if group_plans is not None else None
+                )
 
                 with torch.cuda.nvtx.range(f"m2f_vit_src{src_idx}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
                         blk = vit_backbone.blocks[lidx]
-                        with torch.no_grad():
-                            x_tokens = blk(x_tokens, rope)
+                        x_tokens, cache = blk.approx(
+                            x_tokens, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                            appcorr_method=appcorr_method,
+                            attn_cache_candidates=attn_cache_candidates,
+                            group_plans=group_plans,
+                            server_pscore=appcorr_options["server_pscore"],
+                            attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
+                            debug=False,
+                        )
                         if lidx in interaction_indexes:
                             intermediate_raw[src_idx].append(x_tokens)
 
                 current_features[src_idx] = x_tokens
+                all_cache_features[src_idx] = cache
 
         context["m2f_current_features"] = current_features
         context["m2f_intermediate_raw"] = intermediate_raw
+        context["m2f_cache_features"] = all_cache_features
+        context["cache_feature"] = self._aggregate_cache_features(all_cache_features)
         return {}
 
     @torch.inference_mode()
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get("layers", (0, 40))
         start_l, end_l = layers[0], layers[1]
-        source_idx = params.get("group_id", 0)
+        group_id = params.get("group_id", 0)
 
         adapter = self.model.segmentation_model[0]
         vit_backbone = adapter.backbone
@@ -792,8 +838,6 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_rope_sincos = context.get("m2f_rope_sincos")
         if all_x_backbones is None or all_rope_sincos is None:
             return {}
-        if source_idx >= len(all_x_backbones):
-            return {}
 
         if "m2f_current_features" not in context:
             context["m2f_current_features"] = [x.clone() for x in all_x_backbones]
@@ -802,22 +846,381 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         current_features = context["m2f_current_features"]
         intermediate_raw = context["m2f_intermediate_raw"]
+        all_cache_features = context.get("m2f_cache_features")
+        if all_cache_features is None or len(all_cache_features) != len(all_x_backbones):
+            all_cache_features = [dict() for _ in range(len(all_x_backbones))]
 
-        # Re-run from the original input tokens for the specified source
-        x_tokens = all_x_backbones[source_idx].clone()
-        rope = all_rope_sincos[source_idx]
-        intermediate_raw[source_idx] = []
+        self._ensure_group_maps_and_plans(context, config)
+        all_cached_dindices = context.get("m2f_cached_dindices")
+        all_group_plans = context.get("m2f_group_plans")
 
-        with torch.autocast("cuda", self.autocast_dtype):
-            for lidx in range(start_l, end_l):
-                blk = vit_backbone.blocks[lidx]
-                with torch.no_grad():
-                    x_tokens = blk(x_tokens, rope)
-                if lidx in interaction_indexes:
-                    intermediate_raw[source_idx].append(x_tokens)
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        appcorr_method = appcorr_options["method"]
+        token_keep_ratio = appcorr_options["token_keep_ratio"]
+        token_keep_thres = appcorr_options["token_keep_thres"]
+        sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
 
-        current_features[source_idx] = x_tokens
+        new_current_features = []
+        new_cache_features = []
+        new_intermediate_raw = []
+
+        for src_idx in range(len(all_x_backbones)):
+            x_feature = current_features[src_idx]
+            input_tokens = all_x_backbones[src_idx]
+            rope = all_rope_sincos[src_idx]
+            cache = all_cache_features[src_idx]
+            cached_dindices = (
+                all_cached_dindices[src_idx]
+                if isinstance(all_cached_dindices, list) and src_idx < len(all_cached_dindices)
+                else {}
+            )
+            src_group_plans = (
+                all_group_plans[src_idx]
+                if isinstance(all_group_plans, list) and src_idx < len(all_group_plans)
+                else {}
+            )
+
+            if group_id in cached_dindices:
+                target_gids = [group_id]
+            else:
+                target_gids = sorted(cached_dindices.keys())
+
+            all_dindices_for_src = [cached_dindices[gid] for gid in target_gids if cached_dindices.get(gid) is not None]
+            if not all_dindices_for_src:
+                new_current_features.append(x_feature)
+                new_cache_features.append(cache)
+                new_intermediate_raw.append(intermediate_raw[src_idx])
+                continue
+
+            dindice = all_dindices_for_src[0] if len(all_dindices_for_src) == 1 else torch.cat(all_dindices_for_src, dim=1)
+            dindice = dindice.to(device=self.device, non_blocking=True)
+            plan = src_group_plans.get(target_gids[0]) if appcorr_method == "partial_channel" else None
+
+            if appcorr_method == "partial_channel":
+                if plan is None:
+                    new_current_features.append(x_feature)
+                    new_cache_features.append(cache)
+                    new_intermediate_raw.append(intermediate_raw[src_idx])
+                    continue
+                dindice = plan.pruned_dindice.to(device=self.device, non_blocking=True)
+                plan.pruned_dindice = dindice
+                fixed_query_state = plan.query_state
+                attn_col_alive_ratio = appcorr_options["attn_col_alive_ratio"]
+                cache["_token_prune_kept_patch_total"] = (
+                    cache.get("_token_prune_kept_patch_total", input_tokens.new_zeros((), dtype=torch.float32))
+                    + plan.kept_patch_count.sum(dtype=torch.float32)
+                )
+                cache["_token_prune_full_patch_total"] = (
+                    cache.get("_token_prune_full_patch_total", input_tokens.new_zeros((), dtype=torch.float32))
+                    + plan.full_patch_count.sum(dtype=torch.float32)
+                )
+                cache["_token_prune_kept_residual_mass_total"] = (
+                    cache.get("_token_prune_kept_residual_mass_total", input_tokens.new_zeros((), dtype=torch.float32))
+                    + plan.kept_residual_mass.sum(dtype=torch.float32)
+                )
+                cache["_token_prune_full_residual_mass_total"] = (
+                    cache.get("_token_prune_full_residual_mass_total", input_tokens.new_zeros((), dtype=torch.float32))
+                    + plan.full_residual_mass.sum(dtype=torch.float32)
+                )
+            else:
+                fixed_query_state = None
+                attn_col_alive_ratio = 1.0
+
+            x_tokens = input_tokens
+            corrected_intermediates = []
+
+            with torch.autocast("cuda", self.autocast_dtype):
+                with torch.cuda.nvtx.range(f"m2f_correct_src{src_idx}_g{group_id}_L{start_l}-{end_l}"):
+                    for lidx in range(start_l, end_l):
+                        blk = vit_backbone.blocks[lidx]
+                        if appcorr_method == "partial_channel":
+                            x_tokens, cache = blk.correct(
+                                x_tokens, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                                appcorr_method=appcorr_method,
+                                token_keep_ratio=token_keep_ratio,
+                                token_keep_thres=token_keep_thres,
+                                mobile_pscore=appcorr_options["mobile_pscore"],
+                                mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                                mobile_pscore_hint=None,
+                                server_pscore=appcorr_options["server_pscore"],
+                                server_pscore_weight=appcorr_options["server_pscore_weight"],
+                                pscore_fusion=appcorr_options["pscore_fusion"],
+                                sdpa_query_bucket_size=sdpa_query_bucket_size,
+                                attn_col_alive_ratio=attn_col_alive_ratio,
+                                fixed_query_state=fixed_query_state,
+                                group_plan=plan,
+                                attn_cache_key=target_gids[0],
+                                debug=False,
+                            )
+                        else:
+                            x_tokens, cache = blk.correct(
+                                x_tokens, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                                appcorr_method=appcorr_method,
+                                token_keep_ratio=token_keep_ratio,
+                                token_keep_thres=token_keep_thres,
+                                mobile_pscore=appcorr_options["mobile_pscore"],
+                                mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                                mobile_pscore_hint=None,
+                                server_pscore=appcorr_options["server_pscore"],
+                                server_pscore_weight=appcorr_options["server_pscore_weight"],
+                                pscore_fusion=appcorr_options["pscore_fusion"],
+                                sdpa_query_bucket_size=sdpa_query_bucket_size,
+                                attn_col_alive_ratio=attn_col_alive_ratio,
+                                debug=False,
+                            )
+                        if lidx in interaction_indexes:
+                            corrected_intermediates.append(x_tokens)
+
+            new_current_features.append(x_tokens)
+            new_cache_features.append(cache)
+            new_intermediate_raw.append(corrected_intermediates if start_l == 0 else intermediate_raw[src_idx] + corrected_intermediates)
+
+        context["m2f_current_features"] = new_current_features
+        context["m2f_cache_features"] = new_cache_features
+        context["m2f_intermediate_raw"] = new_intermediate_raw
+        context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
         return {}
+
+    @staticmethod
+    def _aggregate_cache_features(all_cache_features: List[Dict[str, Any]] | None) -> Dict[str, Any]:
+        if not all_cache_features:
+            return {}
+        total_keys = {
+            "_attn_prob_mass_used_total",
+            "_attn_prob_mass_full_total",
+            "_token_prune_kept_patch_total",
+            "_token_prune_full_patch_total",
+            "_token_prune_kept_residual_mass_total",
+            "_token_prune_full_residual_mass_total",
+            "_token_pscore_kept_mass_total",
+            "_token_pscore_full_mass_total",
+            "_partial_token_kept_patch_total",
+            "_partial_token_full_patch_total",
+            "_partial_token_sample_total",
+        }
+        merged: Dict[str, Any] = {}
+        total_values: Dict[str, Any] = {}
+        for src_cache in all_cache_features:
+            for key, value in src_cache.items():
+                if key in total_keys:
+                    total_values[key] = total_values.get(key, 0.0) + value
+                else:
+                    merged[key] = value
+        merged.update(total_values)
+        return merged
+
+    def _ensure_group_maps_and_plans(self, context: Dict[str, Any], config: Any) -> None:
+        all_input_tokens = context.get("m2f_x_backbones")
+        if all_input_tokens is None:
+            return
+
+        adapter = self.model.segmentation_model[0]
+        vit_backbone = adapter.backbone
+        num_pretokens = 1 + vit_backbone.n_storage_tokens
+
+        all_group_maps = context.get("m2f_group_maps")
+        valid_group_maps = (
+            isinstance(all_group_maps, list)
+            and len(all_group_maps) == len(all_input_tokens)
+            and all(
+                torch.is_tensor(group_map)
+                and group_map.shape[0] == input_tokens.shape[0]
+                and group_map.shape[1] == (input_tokens.shape[1] - num_pretokens)
+                for group_map, input_tokens in zip(all_group_maps, all_input_tokens)
+            )
+        )
+
+        rebuilt_group_maps = False
+        if not valid_group_maps:
+            rebuilt = self._build_all_group_maps(context, config)
+            if rebuilt is not None:
+                context["m2f_group_maps"] = rebuilt
+                rebuilt_group_maps = True
+
+        all_group_plans = context.get("m2f_group_plans")
+        valid_group_plans = (
+            not rebuilt_group_maps
+            and isinstance(all_group_plans, list)
+            and len(all_group_plans) == len(all_input_tokens)
+            and all(isinstance(src_plans, dict) for src_plans in all_group_plans)
+        )
+        if not valid_group_plans:
+            self.prepare_group_maps_and_dindices(None, context, config)
+
+    def _build_all_group_maps(self, context: Dict[str, Any], config: Any) -> List[torch.Tensor] | None:
+        all_input_tokens = context.get("m2f_x_backbones")
+        token_shapes = context.get("m2f_token_shapes")
+        if all_input_tokens is None or token_shapes is None:
+            return None
+
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        if not appcorr_options.get("generated_from_client", False):
+            return None
+
+        num_groups = max(int(appcorr_options.get("num_groups", 1)), 1)
+        grouping_strategy = str(
+            config.transmission_kwargs.get(
+                "grouping_strategy",
+                appcorr_options.get("group_strategy", "grid"),
+            )
+        )
+        if grouping_strategy == "uniform_diff":
+            grouping_strategy = "grid"
+        all_group_maps = []
+        for input_tokens, (tok_h, tok_w) in zip(all_input_tokens, token_shapes):
+            num_tokens = tok_h * tok_w
+            if num_groups == 1:
+                group_map = torch.zeros(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
+            else:
+                group_map = create_group_index(
+                    num_tokens,
+                    num_groups,
+                    grouping_strategy,
+                    self.device,
+                    token_hw=(tok_h, tok_w),
+                )
+                group_map = group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
+            all_group_maps.append(group_map)
+        return all_group_maps
+
+    def prepare_group_maps_and_dindices(self, task: Task | None, context: Dict[str, Any], config: Any):
+        all_input_tokens = context.get("m2f_x_backbones")
+        all_group_maps = context.get("m2f_group_maps")
+        if all_input_tokens is None or all_group_maps is None:
+            return
+        if not isinstance(all_group_maps, list) or len(all_group_maps) != len(all_input_tokens):
+            return
+
+        adapter = self.model.segmentation_model[0]
+        num_pretokens = 1 + adapter.backbone.n_storage_tokens
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        token_prune_enabled = appcorr_options["token_prune_enabled"]
+        token_prune_threshold = appcorr_options["token_prune_threshold"]
+        token_prune_min_keep = appcorr_options["token_prune_min_keep"]
+
+        all_cached_dindices = []
+        all_group_plans = []
+
+        for input_tokens, group_map in zip(all_input_tokens, all_group_maps):
+            if not torch.is_tensor(group_map):
+                return
+            if group_map.ndim != 2 or group_map.shape[0] != input_tokens.shape[0]:
+                return
+            expected_tokens = input_tokens.shape[1] - num_pretokens
+            if group_map.shape[1] != expected_tokens:
+                return
+
+            src_cached_dindices = {}
+            src_group_plans = {}
+            group_ids = torch.unique(group_map)
+            group_ids = group_ids[group_ids >= 0]
+
+            for gid_tensor in group_ids:
+                gid = int(gid_tensor.item())
+                nonzero_indices = torch.nonzero(group_map == gid, as_tuple=False)
+                if nonzero_indices.numel() == 0:
+                    continue
+
+                batch_size = input_tokens.shape[0]
+                try:
+                    spatial_indices = nonzero_indices[:, 1].view(batch_size, -1)
+                except RuntimeError:
+                    return
+
+                patch_indices = spatial_indices + num_pretokens
+                pre_indices = torch.arange(
+                    num_pretokens,
+                    device=input_tokens.device,
+                    dtype=torch.long,
+                ).unsqueeze(0).expand(batch_size, -1)
+                dindice = torch.cat([pre_indices, patch_indices], dim=1)
+                src_cached_dindices[gid] = dindice
+                src_group_plans[gid] = self._build_group_plan(
+                    dindice,
+                    spatial_indices,
+                    num_pretokens,
+                    token_prune_enabled,
+                    token_prune_threshold,
+                    token_prune_min_keep,
+                )
+
+            all_cached_dindices.append(src_cached_dindices)
+            all_group_plans.append(src_group_plans)
+
+        context["m2f_cached_dindices"] = all_cached_dindices
+        context["m2f_group_plans"] = all_group_plans
+
+    def _build_group_plan(
+        self,
+        dindice: torch.Tensor,
+        spatial_indices: torch.Tensor,
+        num_pretokens: int,
+        token_prune_enabled: bool,
+        token_prune_threshold: float,
+        token_prune_min_keep: int,
+    ) -> GroupCorrectionPlan:
+        del token_prune_enabled, token_prune_threshold, token_prune_min_keep
+        batch_size = spatial_indices.shape[0]
+        kept_patch_count = torch.full(
+            (batch_size,),
+            spatial_indices.shape[1],
+            device=self.device,
+            dtype=torch.int32,
+        )
+        full_patch_count = kept_patch_count.clone()
+        kept_residual_mass = torch.zeros((batch_size,), device=self.device, dtype=torch.float32)
+        full_residual_mass = torch.zeros((batch_size,), device=self.device, dtype=torch.float32)
+        group_patch_keep_local_idx = torch.arange(
+            spatial_indices.shape[1],
+            device=self.device,
+            dtype=torch.long,
+        ).unsqueeze(0).expand(batch_size, -1)
+
+        return GroupCorrectionPlan(
+            num_pretokens=num_pretokens,
+            prefix_dindice=dindice[:, :num_pretokens],
+            group_patch_dindice=dindice[:, num_pretokens:],
+            group_patch_keep_local_idx=group_patch_keep_local_idx,
+            full_dindice=dindice,
+            pruned_dindice=dindice,
+            query_state=self._build_fixed_query_state(dindice, kept_patch_count, num_pretokens),
+            kept_patch_count=kept_patch_count,
+            full_patch_count=full_patch_count,
+            kept_residual_mass=kept_residual_mass,
+            full_residual_mass=full_residual_mass,
+        )
+
+    @staticmethod
+    def _build_fixed_query_state(
+        dindice: torch.Tensor,
+        kept_patch_count: torch.Tensor,
+        num_pretokens: int,
+    ) -> QueryState:
+        batch_size, query_len = dindice.shape
+        device = dindice.device
+        query_pos_idx = torch.arange(query_len, device=device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
+        valid_lengths = kept_patch_count.to(device=device, dtype=torch.long) + num_pretokens
+        query_valid_mask = query_pos_idx < valid_lengths.unsqueeze(1)
+        active_batch_idx, active_pos_idx = query_valid_mask.nonzero(as_tuple=True)
+        active_token_idx = dindice[active_batch_idx, active_pos_idx]
+        max_active = int(valid_lengths.max().item()) if valid_lengths.numel() > 0 else 0
+        if max_active > 0:
+            active_query_pos_padded = torch.arange(max_active, device=device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
+            active_query_mask = active_query_pos_padded < valid_lengths.unsqueeze(1)
+        else:
+            active_query_pos_padded = torch.empty((batch_size, 0), device=device, dtype=torch.long)
+            active_query_mask = torch.empty((batch_size, 0), device=device, dtype=torch.bool)
+        return QueryState(
+            query_pos_idx=query_pos_idx,
+            query_valid_mask=query_valid_mask,
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            active_query_pos=active_pos_idx,
+            active_query_pos_padded=active_query_pos_padded,
+            active_query_mask=active_query_mask,
+            all_valid=bool(torch.all(valid_lengths == query_len).item()) if valid_lengths.numel() > 0 else True,
+        )
 
     def _run_adapter_postprocess(self, src_idx: int, context: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         """Run InteractionBlocks + feature assembly for a single source.
@@ -988,7 +1391,13 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         # Phase 1: Batch all sources by shape, run adapter + M2F predict
         shape_groups = {}
         for si in range(total_sources):
-            shape = tuple(context["m2f_source_shapes"][si])
+            shape = (
+                tuple(context["m2f_source_shapes"][si]),
+                tuple(context["m2f_crop_hw"][si]),
+                int(context["m2f_spm_c2_len"][si]),
+                int(context["m2f_spm_c3_len"][si]),
+                int(context["m2f_spm_c_cat"][si].shape[1]),
+            )
             shape_groups.setdefault(shape, []).append(si)
 
         source_preds = [None] * total_sources
