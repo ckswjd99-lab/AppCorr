@@ -21,9 +21,9 @@ Environment overrides:
 
 Examples:
   offload/run_local.sh offload/config/coco_interleaved_dynamic.json
-  offload/run_local.sh offload/config/ade20k_approx_sequential.json -nr 10
+  offload/run_local.sh offload/config/ade20k_m2f_sequential.json -nr 10
   offload/run_local.sh offload/config/nyu_sequential.json -d ~/data/NYU -nr 10
-  offload/run_local.sh offload/config/ade20k_approx_sequential.json -nr 10 -ns
+  offload/run_local.sh offload/config/ade20k_m2f_sequential.json -nr 10 -ns
 EOF
 }
 

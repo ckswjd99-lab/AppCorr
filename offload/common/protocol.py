@@ -165,7 +165,7 @@ class ExperimentConfig:
     exp_id: str = "exp"
     
     # Model Settings
-    model_name: str = "dinov3_classifier"  # "dinov3_classifier", etc.
+    model_name: str = "dinov3_classifier"  # e.g. "dinov3_segmentor_m2f", "dinov3_segmentor_linhead"
     device: str = None  # User can specify "cuda:0", "cpu", etc. Default is None (auto-detect)
     
     # Dataset Settings

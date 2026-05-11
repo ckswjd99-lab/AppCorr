@@ -51,7 +51,7 @@ class GroupCorrectionPlan:
 class DINOv3SegmentorLinheadExecutor(ModelExecutor):
     """Segmentation executor using a frozen ViT backbone + linear probe head.
 
-    Unlike DINOv3SegmentorExecutor which uses the M2F adapter + Mask2FormerHead,
+    Unlike DINOv3SegmentorM2FExecutor which uses the M2F adapter + Mask2FormerHead,
     this executor uses a simple LinearHead (SyncBatchNorm + 1x1 Conv) on top of
     the last ViT block output — significantly faster at head inference time.
     """
@@ -161,7 +161,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
             else:
                 raise ValueError(f"Expected 3D/4D numpy image input, got {batch_data.shape}")
         else:
-            raise TypeError(f"Unsupported segmentor input type: {type(batch_data)}")
+            raise TypeError(f"Unsupported segmentor-linhead input type: {type(batch_data)}")
 
         normalized = []
         target_shapes = []
@@ -172,7 +172,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
                 image = item.get("image")
                 target_shape = item.get("target_shape")
             if image is None:
-                raise ValueError("Segmentor received an empty image slot.")
+                raise ValueError("Segmentor-Linhead received an empty image slot.")
             if image.ndim != 3 or image.shape[2] != 3:
                 raise ValueError(f"Expected HWC image with 3 channels, got {image.shape}")
             if image.dtype != np.uint8:
