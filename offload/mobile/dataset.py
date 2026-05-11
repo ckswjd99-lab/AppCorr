@@ -283,6 +283,7 @@ class ADE20KLoader(DatasetLoader):
         self.num_classes = int(kwargs.get('num_classes', 150))
         self.ignore_index = int(kwargs.get('ignore_index', 255))
         self.reduce_zero_label = bool(kwargs.get('reduce_zero_label', True))
+        self.emit_original_image = bool(kwargs.get('emit_original_image', False))
         self.total_samples = 0
         self.total_area_intersect = torch.zeros(self.num_classes, dtype=torch.float64)
         self.total_area_union = torch.zeros(self.num_classes, dtype=torch.float64)
@@ -325,10 +326,11 @@ class ADE20KLoader(DatasetLoader):
         hf_dataset = load_dataset(self.dataset_name, **load_kwargs)
 
         class HFADE20KDataset(torch.utils.data.Dataset):
-            def __init__(self, dataset, image_size: int, resize_fn):
+            def __init__(self, dataset, image_size: int, resize_fn, emit_original_image: bool):
                 self.dataset = dataset
                 self.image_size = image_size
                 self.resize_fn = resize_fn
+                self.emit_original_image = emit_original_image
                 self.to_image = v2.ToImage()
                 self.to_uint8 = v2.ToDtype(torch.uint8, scale=False)
 
@@ -345,7 +347,8 @@ class ADE20KLoader(DatasetLoader):
                 resized_w, resized_h = resized.size
                 annotation = ADE20KLoader._resize_mask(annotation, resized.size)
                 annotation_np = np.asarray(annotation, dtype=np.uint8)
-                image_t = self.to_uint8(self.to_image(resized))
+                image_for_output = image if self.emit_original_image else resized
+                image_t = self.to_uint8(self.to_image(image_for_output))
                 label = {
                     'idx': int(idx),
                     'orig_width': int(orig_w),
@@ -358,7 +361,12 @@ class ADE20KLoader(DatasetLoader):
                 }
                 return image_t, label
 
-        dataset = HFADE20KDataset(hf_dataset, self.image_size, self._resize_short_side)
+        dataset = HFADE20KDataset(
+            hf_dataset,
+            self.image_size,
+            self._resize_short_side,
+            self.emit_original_image,
+        )
 
         def collate_variable(batch):
             images, labels = zip(*batch)

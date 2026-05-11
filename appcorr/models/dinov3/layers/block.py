@@ -505,6 +505,12 @@ class SelfAttentionBlock(nn.Module):
     def _tensor_cache_signature(tensor: torch.Tensor | None) -> tuple | None:
         if tensor is None:
             return None
+        try:
+            version = tensor._version
+        except RuntimeError as exc:
+            if "Inference tensors do not track version counter" not in str(exc):
+                raise
+            version = None
         return (
             tensor.data_ptr(),
             tuple(tensor.shape),
@@ -512,7 +518,7 @@ class SelfAttentionBlock(nn.Module):
             tensor.storage_offset(),
             str(tensor.device),
             str(tensor.dtype),
-            getattr(tensor, "_version", 0),
+            version,
         )
 
     @classmethod

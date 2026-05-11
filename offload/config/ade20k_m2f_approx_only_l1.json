@@ -4,7 +4,7 @@
     "dataset_kwargs": {
         "emit_original_image": true
     },
-    "exp_id": "ade20k_m2f_full_inference",
+    "exp_id": "ade20k_m2f_approx_only_l1",
     "batch_size": 1,
     "image_shape": [896, 896, 3],
     "patch_size": [16, 16],
@@ -14,8 +14,10 @@
         "server_rescale_to": "original"
     },
     "scheduler_policy_name": "BatchCountBased",
-    "transmission_policy_name": "Raw",
+    "transmission_policy_name": "Laplacian",
     "transmission_kwargs": {
+        "pyramid_levels": [1],
+        "compression_level": 1,
         "preserve_input_shape": true
     },
     "appcorr_kwargs": {
