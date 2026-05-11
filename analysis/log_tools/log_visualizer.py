@@ -152,6 +152,18 @@ def classify_event(event):
     return "Server (GPU)"
 
 
+def compute_gpu_no_correct_span(valid_events):
+    gpu_events = [event for event in valid_events if classify_event(event) == "Server (GPU)"]
+    if not gpu_events:
+        return 0.0
+
+    gpu_span = max(event["end"] for event in gpu_events) - min(event["start"] for event in gpu_events)
+    correct_duration = sum(
+        event["end"] - event["start"] for event in gpu_events if "CORRECT_FORWARD" in event.get("type", "")
+    )
+    return max(0.0, gpu_span - correct_duration)
+
+
 def read_events(file_path):
     requests = []
     with open(file_path, "r") as f:
@@ -366,11 +378,21 @@ def build_paper_data(valid_events):
             encode_rows[1]["duration"] += encode_rows[0]["duration"]
             encode_rows = encode_rows[1:]
 
+    gpu_no_correct_duration = compute_gpu_no_correct_span(valid_events)
     sequential_components = {
         "Encode": encode_rows,
         "Transmission": sorted(raw_stage_segments["Transmission"], key=lambda seg: seg["start"]),
         "Decode": sorted(raw_stage_segments["Decode"], key=lambda seg: seg["start"]),
-        "Inference": sorted(stage_segments["Inference"], key=lambda seg: seg["start"]),
+        "Inference": [
+            {
+                "stage": "Inference",
+                "start": 0.0,
+                "end": gpu_no_correct_duration,
+                "duration": gpu_no_correct_duration,
+                "group": None,
+                "source_type": "GPU_SPAN_NO_CORRECT",
+            }
+        ],
     }
 
     row_count = max((len(segments) for segments in sequential_components.values()), default=0)
@@ -518,11 +540,7 @@ def plot_timeline(request_index, request_data, output_dir, color_map, include_de
     total_cpu = sum(
         event["end"] - event["start"] for event in valid_events if classify_event(event) == "Server (CPU)"
     )
-    total_gpu_no_correct = sum(
-        event["end"] - event["start"]
-        for event in valid_events
-        if classify_event(event) == "Server (GPU)" and "CORRECT_FORWARD" not in event["type"]
-    )
+    total_gpu_no_correct = compute_gpu_no_correct_span(valid_events)
     total_ul = sum(segment["end"] - segment["start"] for segment in uplink_segments)
 
     sequential_time = total_mobile + total_ul + total_cpu + total_gpu_no_correct
