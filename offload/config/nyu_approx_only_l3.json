@@ -1,0 +1,22 @@
+{
+    "model_name": "dinov3_depther",
+    "dataset_name": "nyu_depth",
+    "dataset_kwargs": {"data_root": "~/data/NYU"},
+    "exp_id": "nyu_approx_only_l3",
+    "batch_size": 1,
+    "image_shape": [768, 768, 3],
+    "patch_size": [16, 16],
+    "input_profile_name": "dinov3_nyu_synthmix_dpt",
+    "input_profile_kwargs": {"depther_use_tta": true},
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "NYUAppCorrLaplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [3],
+        "compression_level": 1,
+        "preserve_input_shape": true
+    },
+    "appcorr_kwargs": {
+        "enabled": false
+    },
+    "device": "cuda:1"
+}

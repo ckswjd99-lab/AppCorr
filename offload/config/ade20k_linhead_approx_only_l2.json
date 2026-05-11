@@ -1,0 +1,23 @@
+{
+    "model_name": "dinov3_segmentor_linhead",
+    "dataset_name": "ade20k",
+    "exp_id": "ade20k_linhead_approx_only_l2",
+    "batch_size": 8,
+    "image_shape": [512, 512, 3],
+    "patch_size": [16, 16],
+    "input_profile_name": "dinov3_ade20k_linhead_official",
+    "input_profile_kwargs": {
+        "server_rescale_to": "original",
+        "server_eval_mode": "single"
+    },
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "Laplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [2],
+        "compression_level": 1,
+        "preserve_input_shape": true
+    },
+    "appcorr_kwargs": {
+        "enabled": false
+    }
+}

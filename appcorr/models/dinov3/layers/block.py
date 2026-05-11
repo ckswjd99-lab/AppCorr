@@ -8,22 +8,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
-try:
-    import nvtx
-except ModuleNotFoundError:
-    class _NvtxFallback:
-        @staticmethod
-        def annotate(*args, **kwargs):
-            def decorator(fn):
-                return fn
-
-            return decorator
-
-    nvtx = _NvtxFallback()
+import nvtx
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 
 from ._triton_kernels import (
+    active_token_update_triton,
     fused_layerscale_add,
     masked_residual_add_triton,
     masked_token_update_triton,
@@ -66,10 +56,13 @@ class SelfAttentionBlock(nn.Module):
         "cls_attn_prob",
         "patch_attn_prob",
         "patch_attn_prob_layermean",
+        "patch_pseudo_attn_prob",
+        "patch_pseudo_attn_prob_layermean",
         "cls_attn_prob_layermean",
     })
     _LAYERMEAN_SERVER_PSCORES = frozenset({
         "patch_attn_prob_layermean",
+        "patch_pseudo_attn_prob_layermean",
         "cls_attn_prob_layermean",
     })
     _PARTIAL_TOKEN_PLAN_CACHE_KEY = "_partial_token_query_plan_cache"
@@ -608,41 +601,55 @@ class SelfAttentionBlock(nn.Module):
     def _accumulate_partial_token_plan_stats(
         cache_feature: Dict,
         plan: PartialTokenQueryPlan,
+        scale: float = 1.0,
     ) -> None:
+        if scale != 1.0:
+            kept_pscore_mass = plan.kept_pscore_mass * scale
+            full_pscore_mass = plan.full_pscore_mass * scale
+            kept_patch_total = plan.kept_patch_total * scale
+            full_patch_total = plan.full_patch_total * scale
+            sample_total = plan.sample_total * scale
+        else:
+            kept_pscore_mass = plan.kept_pscore_mass
+            full_pscore_mass = plan.full_pscore_mass
+            kept_patch_total = plan.kept_patch_total
+            full_patch_total = plan.full_patch_total
+            sample_total = plan.sample_total
+
         cache_feature["_token_pscore_kept_mass_total"] = (
             cache_feature.get(
                 "_token_pscore_kept_mass_total",
                 plan.kept_pscore_mass.new_zeros((), dtype=torch.float32),
             )
-            + plan.kept_pscore_mass
+            + kept_pscore_mass
         )
         cache_feature["_token_pscore_full_mass_total"] = (
             cache_feature.get(
                 "_token_pscore_full_mass_total",
                 plan.full_pscore_mass.new_zeros((), dtype=torch.float32),
             )
-            + plan.full_pscore_mass
+            + full_pscore_mass
         )
         cache_feature["_partial_token_kept_patch_total"] = (
             cache_feature.get(
                 "_partial_token_kept_patch_total",
                 plan.kept_patch_total.new_zeros((), dtype=torch.float32),
             )
-            + plan.kept_patch_total
+            + kept_patch_total
         )
         cache_feature["_partial_token_full_patch_total"] = (
             cache_feature.get(
                 "_partial_token_full_patch_total",
                 plan.full_patch_total.new_zeros((), dtype=torch.float32),
             )
-            + plan.full_patch_total
+            + full_patch_total
         )
         cache_feature["_partial_token_sample_total"] = (
             cache_feature.get(
                 "_partial_token_sample_total",
                 plan.sample_total.new_zeros((), dtype=torch.float32),
             )
-            + plan.sample_total
+            + sample_total
         )
 
     @staticmethod
@@ -668,7 +675,7 @@ class SelfAttentionBlock(nn.Module):
         tag: str,
         server_pscore: str,
     ) -> torch.Tensor:
-        if server_pscore in {"patch_attn_prob_layermean", "cls_attn_prob_layermean"}:
+        if server_pscore in SelfAttentionBlock._LAYERMEAN_SERVER_PSCORES:
             cache_key = f"_shared_{server_pscore}_server_pscore_mean_all_layers"
             signature_key = f"{cache_key}_keys"
             cached_server_pscore = cache_feature.get(cache_key)
@@ -748,10 +755,12 @@ class SelfAttentionBlock(nn.Module):
             pscore_fusion=pscore_fusion,
         )
         query_plan = None
+        query_plan_cache_hit = False
         if plan_cache_key is not None:
             query_plan = self._get_partial_token_plan_cache(cache_feature).get(plan_cache_key)
             if query_plan is not None and not isinstance(query_plan, PartialTokenQueryPlan):
                 raise RuntimeError("Corrupt partial-token query-plan cache entry")
+            query_plan_cache_hit = query_plan is not None
 
         if query_plan is None:
             mobile_patch_scores = None
@@ -813,7 +822,9 @@ class SelfAttentionBlock(nn.Module):
             if plan_cache_key is not None:
                 self._get_partial_token_plan_cache(cache_feature)[plan_cache_key] = query_plan
 
-        self._accumulate_partial_token_plan_stats(cache_feature, query_plan)
+        if not query_plan_cache_hit:
+            stat_scale = float(kwargs.get("partial_token_plan_stat_scale", 1.0)) if plan_cache_key is not None else 1.0
+            self._accumulate_partial_token_plan_stats(cache_feature, query_plan, scale=stat_scale)
         self._record_partial_token_plan_debug(
             cache_feature,
             tag,
@@ -822,11 +833,12 @@ class SelfAttentionBlock(nn.Module):
         )
         update_indice = query_plan.update_indice
         fixed_query_state = query_plan.fixed_query_state
+        active_batch_idx = fixed_query_state.active_batch_idx
+        active_token_idx = fixed_query_state.active_token_idx
         
         with torch.cuda.nvtx.range("correct_attn"):
-            gather_idx_x = update_indice.unsqueeze(-1).expand(-1, -1, C)  # [B, num_update, C]
-            x_sel = x.gather(1, gather_idx_x).contiguous()  # [B, num_update, C]
-            x_norm_sel = self.norm1(self._select_active_tokens(x_sel, fixed_query_state))
+            x_active = x[active_batch_idx, active_token_idx].contiguous()
+            x_norm_sel = self.norm1(x_active)
 
             x_attn_sel, cache_feature = self.attn.correct(
                 x_norm_sel,
@@ -838,31 +850,30 @@ class SelfAttentionBlock(nn.Module):
                 fixed_query_state=fixed_query_state,
                 sdpa_query_bucket_size=sdpa_query_bucket_size,
             )
-            x_sel = x_sel + self._pad_active_tokens(
-                self.ls1(x_attn_sel),
-                x_sel,
-                fixed_query_state,
-            )
+            x_attn_active = x_active + self.ls1(x_attn_sel).to(dtype=x_active.dtype)
             
             if debug:
                 torch.cuda.synchronize()
 
         with torch.cuda.nvtx.range("correct_ffn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
-            x_attn_active = self._select_active_tokens(x_sel, fixed_query_state)
             mlp_out_new = self.ls2(self.mlp(self.norm2(x_attn_active)))
-            x_ls2 = self._pad_active_tokens(
-                mlp_out_new,
-                x_sel,
-                fixed_query_state,
-            )
+            residual = blocks_out_sum
+            if residual.dtype != x.dtype:
+                residual = residual.to(dtype=x.dtype)
+            if bool(kwargs.get("inplace_residual_add", False)) and not torch.is_grad_enabled():
+                x_base = x
+                x_base.add_(residual)
+            else:
+                x_base = x + residual
 
-            x = masked_token_update_triton(
-                x + blocks_out_sum.to(x.dtype),
-                update_indice,
-                x_sel,
-                x_ls2,
-                fixed_query_state.query_valid_mask,
+            x = active_token_update_triton(
+                x_base,
+                active_batch_idx,
+                active_token_idx,
+                x_attn_active,
+                mlp_out_new,
+                clone_base=False,
             )
 
             if debug:

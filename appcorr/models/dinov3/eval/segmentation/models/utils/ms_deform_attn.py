@@ -30,13 +30,17 @@ class MSDeformAttnFunction(Function):
         ctx, value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights, im2col_step
     ):
         ctx.im2col_step = im2col_step
-        output = ms_deform_attn_core_pytorch(
-            value,
-            value_spatial_shapes,
-            #  value_level_start_index,
-            sampling_locations,
-            attention_weights,
-        )
+        if MSDA is not None:
+            output = MSDA.ms_deform_attn_forward(
+                value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights, im2col_step
+            )
+        else:
+            output = ms_deform_attn_core_pytorch(
+                value,
+                value_spatial_shapes,
+                sampling_locations,
+                attention_weights,
+            )
         ctx.save_for_backward(
             value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights
         )
