@@ -11,9 +11,13 @@ def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
     elif "dinov3_segmentor_linhead" in name:
         from .dinov3_segmentor_linhead import DINOv3SegmentorLinheadExecutor
         return DINOv3SegmentorLinheadExecutor(device)
+    elif "dinov3_segmentor_m2f" in name:
+        from .dinov3_segmentor_m2f import DINOv3SegmentorM2FExecutor
+        return DINOv3SegmentorM2FExecutor(device)
     elif "dinov3_segmentor" in name:
-        from .dinov3_segmentor import DINOv3SegmentorExecutor
-        return DINOv3SegmentorExecutor(device)
+        # Legacy name for the M2F executor; prefer "dinov3_segmentor_m2f".
+        from .dinov3_segmentor_m2f import DINOv3SegmentorM2FExecutor
+        return DINOv3SegmentorM2FExecutor(device)
     elif "dinov3_depther" in name:
         from .dinov3_depther import DINOv3DeptherExecutor
         return DINOv3DeptherExecutor(device)

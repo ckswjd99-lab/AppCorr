@@ -1,5 +1,5 @@
 {
-    "model_name": "dinov3_segmentor",
+    "model_name": "dinov3_segmentor_m2f",
     "dataset_name": "ade20k",
     "exp_id": "ade20k_m2f_sequential",
     "batch_size": 1,
@@ -7,7 +7,7 @@
     "patch_size": [16, 16],
     "input_profile_name": "dinov3_ade20k_m2f_official",
     "input_profile_kwargs": {
-        "server_eval_mode": "tta",
+        "server_eval_mode": "single",
         "server_rescale_to": "original"
     },
     "scheduler_policy_name": "ADE20KSequential",
