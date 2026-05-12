@@ -139,19 +139,29 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         images, target_shapes = self._as_image_list(batch_data)
         active_indices = context.get("active_indices")
+        selected_image_indices = list(range(len(images)))
         if active_indices is not None:
             indices = active_indices.detach().cpu().tolist()
             filtered_images = []
             filtered_target_shapes = []
+            filtered_image_indices = []
             for idx in indices:
                 idx = int(idx)
                 if idx < len(images):
                     filtered_images.append(images[idx])
                     filtered_target_shapes.append(target_shapes[idx] if idx < len(target_shapes) else None)
+                    filtered_image_indices.append(idx)
             images = filtered_images
             target_shapes = filtered_target_shapes
+            selected_image_indices = filtered_image_indices
         context["input_images_uint8"] = [np.ascontiguousarray(image) for image in images]
         context["target_shapes"] = target_shapes
+        context["m2f_mobile_pscore_hint_maps"] = self._build_mobile_pscore_hint_maps(
+            task,
+            images,
+            config,
+            selected_image_indices,
+        )
 
     def _as_image_list(self, batch_data: Any) -> tuple[List[np.ndarray], List[tuple[int, int] | None]]:
         if isinstance(batch_data, list):
@@ -192,6 +202,77 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             normalized.append(image)
             target_shapes.append(tuple(int(v) for v in target_shape) if target_shape is not None else None)
         return normalized, target_shapes
+
+    def _build_mobile_pscore_hint_maps(
+        self,
+        task: Task,
+        images: List[np.ndarray],
+        config: Any,
+        selected_image_indices: List[int],
+    ) -> List[tuple[torch.Tensor, tuple[int, int]] | None] | None:
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        if appcorr_options["mobile_pscore"] == "none" or appcorr_options["mobile_pscore_weight"] == 0.0:
+            return None
+        if not task.payload:
+            return None
+
+        if isinstance(config.patch_size, int):
+            ph = pw = int(config.patch_size)
+        else:
+            ph, pw = (int(v) for v in config.patch_size)
+
+        target_res_level = min(config.transmission_kwargs.get("pyramid_levels", [0]))
+        original_to_local = {
+            int(original_idx): local_idx
+            for local_idx, original_idx in enumerate(selected_image_indices)
+        }
+
+        hint_maps_cpu: List[np.ndarray | None] = []
+        hint_shapes: List[tuple[int, int] | None] = []
+        shape_to_indices: dict[tuple[int, int], List[int]] = {}
+        for image_idx, image in enumerate(images):
+            img_h, img_w = image.shape[:2]
+            grid_h = img_h // ph
+            grid_w = img_w // pw
+            if grid_h <= 0 or grid_w <= 0:
+                hint_maps_cpu.append(None)
+                hint_shapes.append(None)
+                continue
+            hint_shape = (grid_h, grid_w)
+            hint_maps_cpu.append(np.zeros((grid_h * grid_w,), dtype=np.float32))
+            hint_shapes.append(hint_shape)
+            shape_to_indices.setdefault(hint_shape, []).append(image_idx)
+
+        for patch in task.payload:
+            if int(getattr(patch, "res_level", target_res_level)) != target_res_level:
+                continue
+            patch_image_idx = int(getattr(patch, "image_idx", -1))
+            image_idx = original_to_local.get(patch_image_idx)
+            if image_idx is None:
+                continue
+            hint_map = hint_maps_cpu[image_idx]
+            hint_shape = hint_shapes[image_idx]
+            if hint_map is None or hint_shape is None:
+                continue
+            spatial_idx = int(getattr(patch, "spatial_idx", -1))
+            if 0 <= spatial_idx < hint_map.shape[0]:
+                hint_map[spatial_idx] = float(getattr(patch, "pscore_hint", 0.0))
+
+        projected_input_maps: List[tuple[torch.Tensor, tuple[int, int]] | None] = [None] * len(images)
+        for hint_shape, image_indices in shape_to_indices.items():
+            stacked_cpu = np.stack(
+                [hint_maps_cpu[image_idx] for image_idx in image_indices],
+                axis=0,
+            )
+            hint_batch = torch.from_numpy(stacked_cpu).to(
+                device=self.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            )
+            normalized_batch = self._normalize_patch_score_map(hint_batch)
+            for row_idx, image_idx in enumerate(image_indices):
+                projected_input_maps[image_idx] = (normalized_batch[row_idx:row_idx + 1], hint_shape)
+        return projected_input_maps
 
     def _pil_to_normalized_tensor(self, image: Image.Image) -> torch.Tensor:
         image_np = np.array(image, dtype=np.uint8, copy=True)
@@ -710,6 +791,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                                 "mode": "slide",
                                 "crop": (y1, y2, x1, x2),
                                 "image_hw": (h_img, w_img),
+                                "image_idx": image_idx,
                                 "apply_flip": bool(_apply_flip),
                             })
                             slide_crops.append((y1, y2, x1, x2))
@@ -742,6 +824,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                         "mode": "whole",
                         "crop": (0, resized.shape[2], 0, resized.shape[3]),
                         "image_hw": (resized.shape[2], resized.shape[3]),
+                        "image_idx": image_idx,
                         "apply_flip": bool(_apply_flip),
                     })
 
@@ -786,6 +869,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_image_metas"] = image_metas
         context["m2f_inference_mode"] = inference_mode
         context["m2f_decoder_head_type"] = decoder_head_type
+        context["m2f_mobile_pscore_hints"] = self._project_mobile_pscore_hints_to_sources(
+            context.get("m2f_mobile_pscore_hint_maps"),
+            all_x_backbones,
+            all_token_shapes,
+            all_source_group_contexts,
+        )
         context.pop("m2f_group_maps", None)
         context.pop("m2f_group_plans", None)
         context.pop("m2f_cached_dindices", None)
@@ -908,6 +997,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_cache_features = context.get("m2f_cache_features")
         if all_cache_features is None or len(all_cache_features) != len(all_x_backbones):
             all_cache_features = [dict() for _ in range(len(all_x_backbones))]
+        all_mobile_pscore_hints = context.get("m2f_mobile_pscore_hints")
 
         self._ensure_group_maps_and_plans(context, config)
         all_cached_dindices = context.get("m2f_cached_dindices")
@@ -933,6 +1023,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 intermediate_raw=intermediate_raw,
                 all_cache_features=all_cache_features,
                 all_cached_dindices=all_cached_dindices,
+                all_mobile_pscore_hints=all_mobile_pscore_hints,
                 appcorr_options=appcorr_options,
                 context=context,
             ):
@@ -947,6 +1038,9 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             input_tokens = all_x_backbones[src_idx]
             rope = all_rope_sincos[src_idx]
             cache = all_cache_features[src_idx]
+            mobile_pscore_hint = None
+            if isinstance(all_mobile_pscore_hints, list) and src_idx < len(all_mobile_pscore_hints):
+                mobile_pscore_hint = all_mobile_pscore_hints[src_idx]
             cached_dindices = (
                 all_cached_dindices[src_idx]
                 if isinstance(all_cached_dindices, list) and src_idx < len(all_cached_dindices)
@@ -1025,7 +1119,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                                 token_keep_thres=token_keep_thres,
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
-                                mobile_pscore_hint=None,
+                                mobile_pscore_hint=mobile_pscore_hint,
                                 server_pscore=appcorr_options["server_pscore"],
                                 server_pscore_weight=appcorr_options["server_pscore_weight"],
                                 pscore_fusion=appcorr_options["pscore_fusion"],
@@ -1044,7 +1138,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                                 token_keep_thres=token_keep_thres,
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
-                                mobile_pscore_hint=None,
+                                mobile_pscore_hint=mobile_pscore_hint,
                                 server_pscore=appcorr_options["server_pscore"],
                                 server_pscore_weight=appcorr_options["server_pscore_weight"],
                                 pscore_fusion=appcorr_options["pscore_fusion"],
@@ -1096,6 +1190,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         intermediate_raw: List[List[torch.Tensor]],
         all_cache_features: List[Dict[str, Any]],
         all_cached_dindices: Any,
+        all_mobile_pscore_hints: Any,
         appcorr_options: Dict[str, Any],
         context: Dict[str, Any],
     ) -> bool:
@@ -1112,6 +1207,9 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         for src_idx, (x_feature, input_tokens, rope, cache) in enumerate(
             zip(current_features, all_x_backbones, all_rope_sincos, all_cache_features)
         ):
+            mobile_pscore_hint = None
+            if isinstance(all_mobile_pscore_hints, list) and src_idx < len(all_mobile_pscore_hints):
+                mobile_pscore_hint = all_mobile_pscore_hints[src_idx]
             cached_dindices = (
                 all_cached_dindices[src_idx]
                 if isinstance(all_cached_dindices, list) and src_idx < len(all_cached_dindices)
@@ -1148,6 +1246,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 str(input_tokens.dtype),
                 str(x_feature.dtype),
                 self._m2f_rope_batch_key(rope),
+                self._m2f_mobile_hint_batch_key(mobile_pscore_hint),
             )
             buckets.setdefault(key, []).append({
                 "src_idx": src_idx,
@@ -1156,6 +1255,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 "rope": rope,
                 "cache": cache,
                 "dindice": dindice,
+                "mobile_pscore_hint": mobile_pscore_hint,
             })
 
         bucket_records = []
@@ -1176,6 +1276,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             dindice = torch.cat([item["dindice"] for item in items], dim=0)
             batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
             rope = items[0]["rope"]
+            batch_mobile_pscore_hint = self._cat_mobile_pscore_hints(items)
             corrected_intermediates = []
 
             with torch.autocast("cuda", self.autocast_dtype):
@@ -1194,7 +1295,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                             token_keep_thres=token_keep_thres,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
-                            mobile_pscore_hint=None,
+                            mobile_pscore_hint=batch_mobile_pscore_hint,
                             server_pscore=appcorr_options["server_pscore"],
                             server_pscore_weight=appcorr_options["server_pscore_weight"],
                             pscore_fusion=appcorr_options["pscore_fusion"],
@@ -1262,6 +1363,33 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if rope is None:
             return None
         return tuple((tuple(t.shape), str(t.dtype), str(t.device)) for t in rope)
+
+    @staticmethod
+    def _m2f_mobile_hint_batch_key(mobile_pscore_hint: Any) -> Any:
+        if mobile_pscore_hint is None:
+            return None
+        if not torch.is_tensor(mobile_pscore_hint):
+            return "non_tensor"
+        return (tuple(mobile_pscore_hint.shape[1:]), str(mobile_pscore_hint.dtype), str(mobile_pscore_hint.device))
+
+    @staticmethod
+    def _cat_mobile_pscore_hints(items: List[Dict[str, Any]]) -> torch.Tensor | None:
+        hints = [item.get("mobile_pscore_hint") for item in items]
+        if not hints or any(hint is None for hint in hints):
+            return None
+        if not all(torch.is_tensor(hint) for hint in hints):
+            return None
+        base_shape = tuple(hints[0].shape[1:])
+        base_dtype = hints[0].dtype
+        base_device = hints[0].device
+        if any(
+            tuple(hint.shape[1:]) != base_shape
+            or hint.dtype != base_dtype
+            or hint.device != base_device
+            for hint in hints
+        ):
+            return None
+        return torch.cat(hints, dim=0)
 
     @staticmethod
     def _cat_cache_tensors(tensors: List[torch.Tensor]) -> torch.Tensor | None:
@@ -1510,6 +1638,80 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 group_map = group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
             all_group_maps.append(group_map)
         return all_group_maps
+
+    def _project_mobile_pscore_hints_to_sources(
+        self,
+        hint_entries: List[tuple[torch.Tensor, tuple[int, int]] | None] | None,
+        all_input_tokens: List[torch.Tensor],
+        token_shapes: List[tuple[int, int]],
+        source_group_contexts: List[Dict[str, Any] | None],
+    ) -> List[torch.Tensor | None] | None:
+        if not isinstance(hint_entries, list):
+            return None
+        if len(all_input_tokens) != len(token_shapes) or len(all_input_tokens) != len(source_group_contexts):
+            return None
+
+        projected_hints: List[torch.Tensor | None] = []
+        any_hint = False
+        for input_tokens, token_hw, group_context in zip(all_input_tokens, token_shapes, source_group_contexts):
+            source_hint = self._project_mobile_pscore_hint_to_source(
+                hint_entries,
+                token_hw,
+                group_context,
+                batch_size=int(input_tokens.shape[0]),
+                ref_tensor=input_tokens,
+            )
+            any_hint = any_hint or source_hint is not None
+            projected_hints.append(source_hint)
+        return projected_hints if any_hint else None
+
+    def _project_mobile_pscore_hint_to_source(
+        self,
+        hint_entries: List[tuple[torch.Tensor, tuple[int, int]] | None],
+        token_hw: tuple[int, int],
+        group_context: Dict[str, Any] | None,
+        *,
+        batch_size: int,
+        ref_tensor: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if group_context is None or batch_size <= 0:
+            return None
+
+        image_idx = int(group_context.get("image_idx", 0))
+        if image_idx < 0 or image_idx >= len(hint_entries):
+            return None
+        hint_entry = hint_entries[image_idx]
+        if hint_entry is None:
+            return None
+
+        hint_map, (hint_h, hint_w) = hint_entry
+        tok_h, tok_w = token_hw
+        if hint_h <= 0 or hint_w <= 0 or tok_h <= 0 or tok_w <= 0:
+            return None
+
+        y1, y2, x1, x2 = (int(v) for v in group_context.get("crop", (0, tok_h * 16, 0, tok_w * 16)))
+        image_h, image_w = (int(v) for v in group_context.get("image_hw", (y2 - y1, x2 - x1)))
+        apply_flip = bool(group_context.get("apply_flip", False))
+
+        patch_h = max((y2 - y1) // max(tok_h, 1), 1)
+        patch_w = max((x2 - x1) // max(tok_w, 1), 1)
+        tx_patch_h = max(image_h // hint_h, 1)
+        tx_patch_w = max(image_w // hint_w, 1)
+
+        row_centers = y1 + torch.arange(tok_h, device=self.device, dtype=torch.long) * patch_h + patch_h // 2
+        col_centers = x1 + torch.arange(tok_w, device=self.device, dtype=torch.long) * patch_w + patch_w // 2
+        if apply_flip:
+            col_centers = (image_w - 1) - col_centers
+
+        y_idx = torch.clamp(torch.div(row_centers, tx_patch_h, rounding_mode="floor"), min=0, max=hint_h - 1)
+        x_idx = torch.clamp(torch.div(col_centers, tx_patch_w, rounding_mode="floor"), min=0, max=hint_w - 1)
+
+        hint_2d = hint_map.to(device=self.device, dtype=torch.float32, non_blocking=True).view(1, hint_h, hint_w)
+        source_hint = hint_2d[:, y_idx.unsqueeze(1), x_idx.unsqueeze(0)].reshape(1, tok_h * tok_w).contiguous()
+        source_hint = self._normalize_patch_score_map(source_hint)
+        if batch_size != 1:
+            source_hint = source_hint.expand(batch_size, -1).contiguous()
+        return source_hint.to(device=ref_tensor.device, dtype=torch.float32, non_blocking=True)
 
     def _build_crop_grid_group_map(
         self,
