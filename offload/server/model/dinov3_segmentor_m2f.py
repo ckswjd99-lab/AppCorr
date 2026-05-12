@@ -2039,6 +2039,247 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         f4 = adapter.norm4(final_c4)
         return {"1": f1, "2": f2, "3": f3, "4": f4}
 
+    @staticmethod
+    def _m2f_feature_hw_for_image(feature_key: str, image_hw: tuple[int, int]) -> tuple[int, int]:
+        h_img, w_img = image_hw
+        h_c = max(int(h_img) // 16, 1)
+        w_c = max(int(w_img) // 16, 1)
+        if feature_key == "1":
+            return h_c * 4, w_c * 4
+        if feature_key == "2":
+            return h_c * 2, w_c * 2
+        if feature_key == "3":
+            return h_c, w_c
+        if feature_key == "4":
+            return max(h_c // 2, 1), max(w_c // 2, 1)
+        raise ValueError(f"Unsupported M2F feature key: {feature_key}")
+
+    @staticmethod
+    def _m2f_feature_start(feature_key: str, coord: int) -> int:
+        cell = max(int(coord) // 16, 0)
+        if feature_key == "1":
+            return cell * 4
+        if feature_key == "2":
+            return cell * 2
+        if feature_key == "3":
+            return cell
+        if feature_key == "4":
+            return cell // 2
+        raise ValueError(f"Unsupported M2F feature key: {feature_key}")
+
+    @classmethod
+    def _m2f_feature_rect_for_crop(
+        cls,
+        feature_key: str,
+        crop: tuple[int, int, int, int],
+        image_hw: tuple[int, int],
+        crop_feature_hw: tuple[int, int],
+        global_feature_hw: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        y1, y2, x1, x2 = (int(v) for v in crop)
+        h_img, w_img = (int(v) for v in image_hw)
+        feat_h, feat_w = (int(v) for v in crop_feature_hw)
+        global_h, global_w = (int(v) for v in global_feature_hw)
+
+        gy1 = cls._m2f_feature_start(feature_key, y1)
+        gx1 = cls._m2f_feature_start(feature_key, x1)
+        gy2 = gy1 + feat_h
+        gx2 = gx1 + feat_w
+
+        if y2 >= h_img:
+            gy2 = global_h
+            gy1 = gy2 - feat_h
+        if x2 >= w_img:
+            gx2 = global_w
+            gx1 = gx2 - feat_w
+
+        gy1 = max(min(gy1, global_h), 0)
+        gx1 = max(min(gx1, global_w), 0)
+        gy2 = max(min(gy2, global_h), gy1)
+        gx2 = max(min(gx2, global_w), gx1)
+        return gy1, gy2, gx1, gx2
+
+    def _accumulate_m2f_adapter_feature_crop(
+        self,
+        feature_sums: Dict[str, torch.Tensor],
+        feature_counts: Dict[str, torch.Tensor],
+        crop_features: Dict[str, torch.Tensor],
+        crop: tuple[int, int, int, int],
+        image_hw: tuple[int, int],
+    ) -> None:
+        for key, feature in crop_features.items():
+            global_hw = self._m2f_feature_hw_for_image(key, image_hw)
+            if key not in feature_sums:
+                feature_sums[key] = feature.new_zeros((1, feature.shape[1], *global_hw))
+                feature_counts[key] = feature.new_zeros((1, 1, *global_hw))
+
+            gy1, gy2, gx1, gx2 = self._m2f_feature_rect_for_crop(
+                key,
+                crop,
+                image_hw,
+                tuple(feature.shape[-2:]),
+                global_hw,
+            )
+            if gy2 <= gy1 or gx2 <= gx1:
+                continue
+
+            feature_to_add = feature
+            target_hw = (gy2 - gy1, gx2 - gx1)
+            if tuple(feature_to_add.shape[-2:]) != target_hw:
+                feature_to_add = F.interpolate(
+                    feature_to_add,
+                    size=target_hw,
+                    mode="bilinear",
+                    align_corners=False,
+                )
+
+            feature_sums[key][:, :, gy1:gy2, gx1:gx2] += feature_to_add.to(dtype=feature_sums[key].dtype)
+            feature_counts[key][:, :, gy1:gy2, gx1:gx2] += 1
+
+    def _run_m2f_head_predict(
+        self,
+        m2f_head,
+        adapter_features: Dict[str, torch.Tensor],
+        decoder_head_type: str,
+        rescale_to: tuple[int, int],
+    ) -> torch.Tensor:
+        with torch.cuda.nvtx.range("m2f_head_predict"):
+            pred_dict = m2f_head.predict(adapter_features, rescale_to=rescale_to)
+        if decoder_head_type != "m2f":
+            return pred_dict
+
+        with torch.cuda.nvtx.range("m2f_head_postprocess"):
+            mask_pred = pred_dict["pred_masks"]
+            mask_cls = pred_dict["pred_logits"]
+            mask_cls_sm = F.softmax(mask_cls, dim=-1)[..., :-1]
+            mask_pred_sig = mask_pred.sigmoid()
+            pred = torch.einsum(
+                "bqc,bqhw->bchw",
+                mask_cls_sm.to(torch.bfloat16),
+                mask_pred_sig.to(torch.bfloat16),
+            )
+            del mask_cls, mask_pred, mask_cls_sm, mask_pred_sig
+        return pred
+
+    def _run_m2f_pre_head_slide_predict(
+        self,
+        src_start: int,
+        slide_crops: List[tuple[int, int, int, int]],
+        image_hw: tuple[int, int],
+        context: Dict[str, Any],
+        m2f_head,
+        decoder_head_type: str,
+    ) -> torch.Tensor:
+        shape_groups: Dict[Any, List[int]] = {}
+        for crop_local_idx in range(len(slide_crops)):
+            si = src_start + crop_local_idx
+            shape = (
+                tuple(context["m2f_source_shapes"][si]),
+                tuple(context["m2f_crop_hw"][si]),
+                int(context["m2f_spm_c2_len"][si]),
+                int(context["m2f_spm_c3_len"][si]),
+                int(context["m2f_spm_c_cat"][si].shape[1]),
+            )
+            shape_groups.setdefault(shape, []).append(si)
+
+        feature_sums: Dict[str, torch.Tensor] = {}
+        feature_counts: Dict[str, torch.Tensor] = {}
+        for src_indices in shape_groups.values():
+            with torch.cuda.nvtx.range(f"m2f_pre_head_adapter_batch_{len(src_indices)}src"):
+                if len(src_indices) == 1:
+                    batch_features = self._run_adapter_postprocess(src_indices[0], context)
+                else:
+                    batch_features = self._run_adapter_postprocess_batch(src_indices, context)
+
+            with torch.cuda.nvtx.range(f"m2f_pre_head_feature_accumulate_{len(src_indices)}src"):
+                for local_i, si in enumerate(src_indices):
+                    crop = slide_crops[si - src_start]
+                    crop_features = {
+                        key: value[local_i:local_i + 1]
+                        for key, value in batch_features.items()
+                    }
+                    self._accumulate_m2f_adapter_feature_crop(
+                        feature_sums,
+                        feature_counts,
+                        crop_features,
+                        crop,
+                        image_hw,
+                    )
+            del batch_features
+
+        with torch.cuda.nvtx.range("m2f_pre_head_feature_average"):
+            merged_features = {
+                key: feature_sums[key] / feature_counts[key].clamp_min(1)
+                for key in feature_sums
+            }
+        with torch.cuda.nvtx.range("m2f_pre_head_head_once"):
+            pred = self._run_m2f_head_predict(
+                m2f_head,
+                merged_features,
+                decoder_head_type,
+                rescale_to=image_hw,
+            )
+        del merged_features, feature_sums, feature_counts
+        return pred
+
+    def _head_inference_pre_head_merge(
+        self,
+        context: Dict[str, Any],
+        m2f_head,
+        decoder_head_type: str,
+        image_metas: List[Dict[str, Any]],
+    ) -> List[torch.Tensor]:
+        outputs = []
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            for image_meta in image_metas:
+                rescale_to = image_meta["rescale_to"]
+                flip_flags = image_meta["flip_flags"]
+                n_tta = image_meta["n_tta"]
+                tta_source_ranges = image_meta["tta_source_ranges"]
+
+                aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32, device=self.device)
+
+                for tta_idx, tta_range in enumerate(tta_source_ranges):
+                    src_start = tta_range["src_start"]
+                    apply_flip = flip_flags[tta_idx]
+
+                    if tta_range["mode"] == "slide":
+                        h_img = int(tta_range["h_img"])
+                        w_img = int(tta_range["w_img"])
+                        with torch.cuda.nvtx.range(f"m2f_pre_head_slide_tta{tta_idx}"):
+                            pred = self._run_m2f_pre_head_slide_predict(
+                                src_start,
+                                tta_range["slide_crops"],
+                                (h_img, w_img),
+                                context,
+                                m2f_head,
+                                decoder_head_type,
+                            )
+                            pred = F.interpolate(pred, size=rescale_to, mode="bilinear", align_corners=False)
+                    else:
+                        with torch.cuda.nvtx.range(f"m2f_pre_head_whole_tta{tta_idx}"):
+                            adapter_features = self._run_adapter_postprocess(src_start, context)
+                            pred = self._run_m2f_head_predict(
+                                m2f_head,
+                                adapter_features,
+                                decoder_head_type,
+                                rescale_to=rescale_to,
+                            )
+                        del adapter_features
+
+                    if apply_flip:
+                        pred = pred.flip([-1])
+                    pred = F.softmax(pred, dim=1)
+                    aggregated_preds += pred.float()
+                    del pred
+
+                pred_label = (aggregated_preds / n_tta).argmax(dim=1)[0].to(torch.uint8)
+                outputs.append(pred_label.cpu())
+                del aggregated_preds
+
+        return outputs
+
     @torch.inference_mode()
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
         m2f_head = self.model.segmentation_model[1]
@@ -2050,6 +2291,19 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         if intermediate_raw is None or image_metas is None:
             raise RuntimeError("Missing context for segmentor-m2f head_inference().")
+
+        profile_config = config.get_input_profile_config()
+        slide_merge_stage = str(profile_config.get("m2f_slide_merge_stage", "post_head")).lower()
+        if slide_merge_stage in {"pre_head", "adapter_feature", "adapter_features", "m2f_pre_head"}:
+            context["m2f_outputs"] = self._head_inference_pre_head_merge(
+                context,
+                m2f_head,
+                decoder_head_type,
+                image_metas,
+            )
+            return {}
+        if slide_merge_stage not in {"post_head", "head", "m2f_post_head"}:
+            raise ValueError(f"Unsupported m2f_slide_merge_stage: {slide_merge_stage}")
 
         total_sources = len(intermediate_raw)
 
@@ -2078,20 +2332,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
                 with torch.cuda.nvtx.range(f"m2f_head_predict_batch{len(src_indices)}"):
                     crop_hw = context["m2f_crop_hw"][src_indices[0]]
-                    batch_pred_dict = m2f_head.predict(adapter_features, rescale_to=crop_hw)
-
-                with torch.cuda.nvtx.range(f"m2f_head_postprocess_batch{len(src_indices)}"):
-                    if decoder_head_type == "m2f":
-                        mask_pred = batch_pred_dict["pred_masks"]
-                        mask_cls = batch_pred_dict["pred_logits"]
-                        mask_cls_sm = F.softmax(mask_cls, dim=-1)[..., :-1]
-                        mask_pred_sig = mask_pred.sigmoid()
-                        batch_pred = torch.einsum(
-                            "bqc,bqhw->bchw",
-                            mask_cls_sm.to(torch.bfloat16),
-                            mask_pred_sig.to(torch.bfloat16),
-                        )
-                        del mask_cls, mask_pred, mask_cls_sm, mask_pred_sig
+                    batch_pred = self._run_m2f_head_predict(
+                        m2f_head,
+                        adapter_features,
+                        decoder_head_type,
+                        rescale_to=crop_hw,
+                    )
 
                 for local_i, si in enumerate(src_indices):
                     source_preds[si] = batch_pred[local_i].unsqueeze(0)
