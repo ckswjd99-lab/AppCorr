@@ -23,6 +23,20 @@ from .utils import load_weight_mmap
 class DINOv3SegmentorM2FExecutor(ModelExecutor):
     """ADE20K segmentation executor using the M2F adapter + Mask2Former head."""
 
+    _CACHE_TOTAL_KEYS = frozenset({
+        "_attn_prob_mass_used_total",
+        "_attn_prob_mass_full_total",
+        "_token_prune_kept_patch_total",
+        "_token_prune_full_patch_total",
+        "_token_prune_kept_residual_mass_total",
+        "_token_prune_full_residual_mass_total",
+        "_token_pscore_kept_mass_total",
+        "_token_pscore_full_mass_total",
+        "_partial_token_kept_patch_total",
+        "_partial_token_full_patch_total",
+        "_partial_token_sample_total",
+    })
+
     def __init__(self, device: torch.device):
         super().__init__(device)
         self.normalize_avg = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -905,6 +919,25 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         token_keep_thres = appcorr_options["token_keep_thres"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
 
+        if appcorr_method == "partial_token":
+            if self._correct_forward_partial_token_batched(
+                start_l=start_l,
+                end_l=end_l,
+                group_id=group_id,
+                correct_all_groups=correct_all_groups,
+                interaction_indexes=interaction_indexes,
+                all_x_backbones=all_x_backbones,
+                all_rope_sincos=all_rope_sincos,
+                current_features=current_features,
+                current_layer=current_layer,
+                intermediate_raw=intermediate_raw,
+                all_cache_features=all_cache_features,
+                all_cached_dindices=all_cached_dindices,
+                appcorr_options=appcorr_options,
+                context=context,
+            ):
+                return {}
+
         new_current_features = []
         new_cache_features = []
         new_intermediate_raw = []
@@ -1048,6 +1081,278 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
         return {}
 
+    def _correct_forward_partial_token_batched(
+        self,
+        *,
+        start_l: int,
+        end_l: int,
+        group_id: int,
+        correct_all_groups: bool,
+        interaction_indexes: set[int],
+        all_x_backbones: List[torch.Tensor],
+        all_rope_sincos: List[Any],
+        current_features: List[torch.Tensor],
+        current_layer: int,
+        intermediate_raw: List[List[torch.Tensor]],
+        all_cache_features: List[Dict[str, Any]],
+        all_cached_dindices: Any,
+        appcorr_options: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> bool:
+        vit_backbone = self.model.segmentation_model[0].backbone
+        token_keep_ratio = appcorr_options["token_keep_ratio"]
+        token_keep_thres = appcorr_options["token_keep_thres"]
+        sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
+
+        new_current_features: List[torch.Tensor | None] = [None] * len(all_x_backbones)
+        new_cache_features: List[Dict[str, Any] | None] = [None] * len(all_x_backbones)
+        new_intermediate_raw: List[List[torch.Tensor] | None] = [None] * len(all_x_backbones)
+        buckets: Dict[Any, List[Dict[str, Any]]] = {}
+
+        for src_idx, (x_feature, input_tokens, rope, cache) in enumerate(
+            zip(current_features, all_x_backbones, all_rope_sincos, all_cache_features)
+        ):
+            cached_dindices = (
+                all_cached_dindices[src_idx]
+                if isinstance(all_cached_dindices, list) and src_idx < len(all_cached_dindices)
+                else {}
+            )
+
+            if correct_all_groups:
+                target_gids = sorted(cached_dindices.keys())
+            elif group_id in cached_dindices:
+                target_gids = [group_id]
+            else:
+                target_gids = sorted(cached_dindices.keys())
+
+            all_dindices_for_src = [cached_dindices[gid] for gid in target_gids if cached_dindices.get(gid) is not None]
+            if not all_dindices_for_src:
+                new_current_features[src_idx] = x_feature
+                new_cache_features[src_idx] = cache
+                new_intermediate_raw[src_idx] = intermediate_raw[src_idx]
+                continue
+
+            dindice = (
+                all_dindices_for_src[0]
+                if len(all_dindices_for_src) == 1
+                else self._union_dindices(all_dindices_for_src)
+            ).to(device=self.device, non_blocking=True)
+
+            if dindice.ndim != 2 or dindice.shape[0] != input_tokens.shape[0]:
+                return False
+
+            key = (
+                tuple(input_tokens.shape[1:]),
+                tuple(x_feature.shape[1:]),
+                int(dindice.shape[1]),
+                str(input_tokens.dtype),
+                str(x_feature.dtype),
+                self._m2f_rope_batch_key(rope),
+            )
+            buckets.setdefault(key, []).append({
+                "src_idx": src_idx,
+                "x_feature": x_feature,
+                "input_tokens": input_tokens,
+                "rope": rope,
+                "cache": cache,
+                "dindice": dindice,
+            })
+
+        bucket_records = []
+        for items in buckets.values():
+            batch_cache = self._build_m2f_correct_batch_cache(
+                items,
+                start_l,
+                end_l,
+                server_pscore=appcorr_options["server_pscore"],
+                server_pscore_weight=appcorr_options["server_pscore_weight"],
+            )
+            if batch_cache is None:
+                return False
+            bucket_records.append((items, batch_cache))
+
+        for items, batch_cache in bucket_records:
+            x_tokens = torch.cat([item["input_tokens"] for item in items], dim=0)
+            dindice = torch.cat([item["dindice"] for item in items], dim=0)
+            batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
+            rope = items[0]["rope"]
+            corrected_intermediates = []
+
+            with torch.autocast("cuda", self.autocast_dtype):
+                with torch.cuda.nvtx.range(f"m2f_correct_batch{len(items)}_g{group_id}_L{start_l}-{end_l}"):
+                    for lidx in range(start_l, end_l):
+                        blk = vit_backbone.blocks[lidx]
+                        tag = f"batch_layer{lidx}"
+                        x_tokens, batch_cache = blk.correct(
+                            x_tokens,
+                            dindice,
+                            rope,
+                            batch_cache,
+                            tag=tag,
+                            appcorr_method="partial_token",
+                            token_keep_ratio=token_keep_ratio,
+                            token_keep_thres=token_keep_thres,
+                            mobile_pscore=appcorr_options["mobile_pscore"],
+                            mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                            mobile_pscore_hint=None,
+                            server_pscore=appcorr_options["server_pscore"],
+                            server_pscore_weight=appcorr_options["server_pscore_weight"],
+                            pscore_fusion=appcorr_options["pscore_fusion"],
+                            sdpa_query_bucket_size=sdpa_query_bucket_size,
+                            attn_col_alive_ratio=1.0,
+                            debug=False,
+                        )
+                        if lidx in interaction_indexes:
+                            corrected_intermediates.append(x_tokens)
+
+            self._scatter_m2f_correct_batch_cache(items, batch_cache, start_l, end_l)
+            self._add_m2f_batch_total_stats(items[0]["cache"], batch_cache)
+
+            x_splits = torch.split(x_tokens, batch_sizes, dim=0)
+            intermediate_splits = [
+                torch.split(intermediate, batch_sizes, dim=0)
+                for intermediate in corrected_intermediates
+            ]
+            dindice_splits = torch.split(dindice, batch_sizes, dim=0)
+
+            for local_idx, item in enumerate(items):
+                src_idx = item["src_idx"]
+                x_feature = item["x_feature"]
+                x_src = x_splits[local_idx]
+                dindice_src = dindice_splits[local_idx]
+                corrected_src_intermediates = [
+                    split_group[local_idx] for split_group in intermediate_splits
+                ]
+
+                can_merge_current = current_layer == end_l and x_feature.shape == x_src.shape
+                if can_merge_current:
+                    x_out = self._merge_dindice_tokens(x_feature, x_src, dindice_src)
+                    intermediate_out = self._merge_corrected_intermediates(
+                        intermediate_raw[src_idx],
+                        corrected_src_intermediates,
+                        dindice_src,
+                        start_l,
+                        end_l,
+                        interaction_indexes,
+                    )
+                else:
+                    x_out = x_src
+                    intermediate_out = (
+                        corrected_src_intermediates
+                        if start_l == 0
+                        else intermediate_raw[src_idx] + corrected_src_intermediates
+                    )
+
+                new_current_features[src_idx] = x_out
+                new_cache_features[src_idx] = item["cache"]
+                new_intermediate_raw[src_idx] = intermediate_out
+
+        if any(value is None for value in new_current_features):
+            return False
+
+        context["m2f_current_features"] = new_current_features
+        context["m2f_cache_features"] = new_cache_features
+        context["m2f_intermediate_raw"] = new_intermediate_raw
+        context["m2f_current_layer"] = end_l
+        context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
+        return True
+
+    @staticmethod
+    def _m2f_rope_batch_key(rope: Any) -> Any:
+        if rope is None:
+            return None
+        return tuple((tuple(t.shape), str(t.dtype), str(t.device)) for t in rope)
+
+    @staticmethod
+    def _cat_cache_tensors(tensors: List[torch.Tensor]) -> torch.Tensor | None:
+        if not tensors:
+            return None
+        base_shape = tuple(tensors[0].shape[1:])
+        base_dtype = tensors[0].dtype
+        base_device = tensors[0].device
+        if any(
+            tuple(tensor.shape[1:]) != base_shape
+            or tensor.dtype != base_dtype
+            or tensor.device != base_device
+            for tensor in tensors
+        ):
+            return None
+        return torch.cat(tensors, dim=0)
+
+    def _build_m2f_correct_batch_cache(
+        self,
+        items: List[Dict[str, Any]],
+        start_l: int,
+        end_l: int,
+        *,
+        server_pscore: str,
+        server_pscore_weight: float,
+    ) -> Dict[str, Any] | None:
+        batch_cache: Dict[str, Any] = {}
+        include_layermean_scores = server_pscore.endswith("_layermean")
+        server_score_layers = range(0, end_l) if include_layermean_scores else range(start_l, end_l)
+
+        for lidx in server_score_layers:
+            tensors = []
+            for item in items:
+                key = f"src{item['src_idx']}_layer{lidx}_server_pscore"
+                tensor = item["cache"].get(key)
+                if tensor is None:
+                    if server_pscore_weight != 0.0 and start_l <= lidx < end_l:
+                        return None
+                    tensors = []
+                    break
+                tensors.append(tensor)
+            if tensors:
+                cat = self._cat_cache_tensors(tensors)
+                if cat is None:
+                    return None
+                batch_cache[f"batch_layer{lidx}_server_pscore"] = cat
+
+        for lidx in range(start_l, end_l):
+            for suffix in ("_kv", "_blocks_out_sum"):
+                tensors = []
+                for item in items:
+                    key = f"src{item['src_idx']}_layer{lidx}{suffix}"
+                    tensor = item["cache"].get(key)
+                    if tensor is None:
+                        return None
+                    tensors.append(tensor)
+                cat = self._cat_cache_tensors(tensors)
+                if cat is None:
+                    return None
+                batch_cache[f"batch_layer{lidx}{suffix}"] = cat
+
+        return batch_cache
+
+    @staticmethod
+    def _scatter_m2f_correct_batch_cache(
+        items: List[Dict[str, Any]],
+        batch_cache: Dict[str, Any],
+        start_l: int,
+        end_l: int,
+    ) -> None:
+        batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
+        offsets = [0]
+        for size in batch_sizes[:-1]:
+            offsets.append(offsets[-1] + size)
+
+        for lidx in range(start_l, end_l):
+            batch_kv = batch_cache.get(f"batch_layer{lidx}_kv")
+            if batch_kv is None:
+                continue
+            for item, offset, size in zip(items, offsets, batch_sizes):
+                key = f"src{item['src_idx']}_layer{lidx}_kv"
+                item["cache"][key] = batch_kv[offset:offset + size].detach().clone()
+
+    @classmethod
+    def _add_m2f_batch_total_stats(cls, dst_cache: Dict[str, Any], batch_cache: Dict[str, Any]) -> None:
+        for key in cls._CACHE_TOTAL_KEYS:
+            value = batch_cache.get(key)
+            if value is None:
+                continue
+            dst_cache[key] = dst_cache.get(key, value.new_zeros((), dtype=torch.float32)) + value
+
     @staticmethod
     def _merge_dindice_tokens(base: torch.Tensor, update: torch.Tensor, dindice: torch.Tensor) -> torch.Tensor:
         if (
@@ -1110,24 +1415,11 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
     def _aggregate_cache_features(all_cache_features: List[Dict[str, Any]] | None) -> Dict[str, Any]:
         if not all_cache_features:
             return {}
-        total_keys = {
-            "_attn_prob_mass_used_total",
-            "_attn_prob_mass_full_total",
-            "_token_prune_kept_patch_total",
-            "_token_prune_full_patch_total",
-            "_token_prune_kept_residual_mass_total",
-            "_token_prune_full_residual_mass_total",
-            "_token_pscore_kept_mass_total",
-            "_token_pscore_full_mass_total",
-            "_partial_token_kept_patch_total",
-            "_partial_token_full_patch_total",
-            "_partial_token_sample_total",
-        }
         merged: Dict[str, Any] = {}
         total_values: Dict[str, Any] = {}
         for src_cache in all_cache_features:
             for key, value in src_cache.items():
-                if key in total_keys:
+                if key in DINOv3SegmentorM2FExecutor._CACHE_TOTAL_KEYS:
                     total_values[key] = total_values.get(key, 0.0) + value
                 else:
                     merged[key] = value
