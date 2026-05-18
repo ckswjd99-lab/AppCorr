@@ -12,7 +12,7 @@ import nvtx
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 
-from ._triton_kernels import (
+from .triton_kernels import (
     active_token_update_triton,
     fused_layerscale_add,
     masked_residual_add_triton,
@@ -303,6 +303,9 @@ class SelfAttentionBlock(nn.Module):
         # check debug
         debug = kwargs.get("debug", False)
         server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
+        server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
+        if server_pscore_weight == 0.0:
+            server_pscore = "none"
         self._invalidate_partial_token_derived_caches(cache_feature)
 
         with torch.cuda.nvtx.range("approx_attn"):

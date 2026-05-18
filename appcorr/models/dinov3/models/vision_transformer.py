@@ -13,7 +13,7 @@ from torch import Tensor, nn
 
 from offload.common.protocol import normalize_appcorr_kwargs
 from ..layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
-from ..layers._triton_kernels import token_prune_select_compact_triton
+from ..layers.triton_kernels import token_prune_select_compact_triton
 from ..utils import named_apply
 from ..utils.hier_token import HierarchicalToken
 

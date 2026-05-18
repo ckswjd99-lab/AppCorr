@@ -1120,6 +1120,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                         attn_cache_candidates=attn_cache_candidates,
                         group_plans=group_plans,
                         server_pscore=appcorr_options["server_pscore"],
+                        server_pscore_weight=appcorr_options["server_pscore_weight"],
                         attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
                         debug=False
                     )

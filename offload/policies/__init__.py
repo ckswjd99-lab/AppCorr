@@ -4,6 +4,7 @@ from offload.common.protocol import ExperimentConfig
 from .interface import ISchedulingPolicy, ITransmissionPolicy
 from .scheduling import (
     ADE20KApproxCorrectPolicy,
+    ADE20KInterleavedDynamicPolicy,
     ADE20KSequentialPolicy,
     BatchCountBasedPolicy,
     COCOWindowDynamicPolicy,
@@ -27,6 +28,7 @@ from .transmission import (
 # Registry for dynamic instantiation
 SCHEDULER_REGISTRY = {
     "ADE20KApproxCorrect": ADE20KApproxCorrectPolicy,
+    "ADE20KInterleavedDynamic": ADE20KInterleavedDynamicPolicy,
     "ADE20KSequential": ADE20KSequentialPolicy,
     "NYUApproxCorrect": NYUApproxCorrectPolicy,
     "BatchCountBased": BatchCountBasedPolicy,
