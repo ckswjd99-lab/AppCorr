@@ -64,9 +64,11 @@ class WorkerModule(multiprocessing.Process):
         self.monitor_queue = queue.Queue()
 
         # Global timing anchor: ties CPU wall-clock to the CUDA timeline.
-        # anchor_cpu + anchor_ev.elapsed_time(ev) / 1000.0 → absolute timestamp.
-        self.anchor_ev = torch.cuda.Event(enable_timing=True)
-        self.anchor_ev.record()
+        # anchor_cpu + anchor_ev.elapsed_time(ev) / 1000.0 -> absolute timestamp.
+        self.anchor_ev = None
+        if self.device.type == 'cuda':
+            self.anchor_ev = torch.cuda.Event(enable_timing=True)
+            self.anchor_ev.record()
         self.anchor_cpu = time.time()
 
         # Start Decoder Thread

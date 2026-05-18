@@ -12,9 +12,24 @@ from offload.mobile.modules import MobileSender, MobileReceiver
 from offload.mobile.source import SourceModule
 from offload.common import ExperimentConfig
 
-def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_request=None, num_warmup=1):
+def run_mobile(
+    server_ip,
+    recv_port,
+    send_port,
+    data_root,
+    config_path,
+    num_request=None,
+    num_warmup=1,
+    reverse_connect=False,
+    listen_host="0.0.0.0",
+):
     print(f"=== Starting AppCorr Mobile Client ===")
-    print(f"[*] Target Server: {server_ip}")
+    if reverse_connect:
+        print(f"[*] Reverse Connect: listening on {listen_host}")
+        print(f"[*] Data Uplink Port: {recv_port}")
+        print(f"[*] Result Downlink Port: {send_port}")
+    else:
+        print(f"[*] Target Server: {server_ip}")
     print(f"[*] Dataset Root: {data_root}")
     print(f"[*] Config Path: {config_path}")
     print(f"[*] Warm-up Requests: {num_warmup}")
@@ -41,8 +56,20 @@ def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_requ
     feedback_queue = multiprocessing.Queue()
 
     # Initialize processes
-    sender = MobileSender(server_ip, recv_port, send_queue)
-    receiver = MobileReceiver(server_ip, send_port, feedback_queue)
+    sender = MobileSender(
+        server_ip,
+        recv_port,
+        send_queue,
+        listen=reverse_connect,
+        listen_host=listen_host,
+    )
+    receiver = MobileReceiver(
+        server_ip,
+        send_port,
+        feedback_queue,
+        listen=reverse_connect,
+        listen_host=listen_host,
+    )
     source = SourceModule(
         send_queue,
         feedback_queue,
@@ -61,6 +88,7 @@ def run_mobile(server_ip, recv_port, send_port, data_root, config_path, num_requ
         
         source.join()
         print("[Main] Source module finished.")
+        sender.join(timeout=5)
         
     except KeyboardInterrupt:
         print("\n[Main] Stopping client...")
@@ -75,8 +103,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AppCorr Mobile Client")
     
     parser.add_argument("--ip", type=str, default="127.0.0.1", help="Target Server IP")
-    parser.add_argument("--recv-port", type=int, default=39998, help="Uplink port")
-    parser.add_argument("--send-port", type=int, default=39999, help="Downlink port")
+    parser.add_argument("--recv-port", type=int, default=39990, help="Uplink port")
+    parser.add_argument("--send-port", type=int, default=39991, help="Downlink port")
+    parser.add_argument("--listen-host", type=str, default="0.0.0.0", help="Host/IP to bind when --reverse-connect is enabled")
+    parser.add_argument("-rc", "--reverse-connect", action="store_true", help="Listen for the server instead of connecting to it")
     parser.add_argument("--data", type=str, default=None, help="Path to dataset root (overrides config)")
     parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
     parser.add_argument("-nr", "--num-request", type=int, default=None, help="Run only N requests; omit to run all")
@@ -93,7 +123,9 @@ if __name__ == "__main__":
     if config_data_root is None:
         with open(args.config, 'r') as f:
             _cfg = json.load(f)
-        config_data_root = _cfg.get("dataset_kwargs", {}).get("data_root", "~/data/imagenet_val")
+        config_data_root = _cfg.get("dataset_kwargs", {}).get("data_root")
+        if config_data_root is None and _cfg.get("dataset_name", "imagenet-1k") == "imagenet-1k":
+            config_data_root = "~/data/imagenet_val"
 
     run_mobile(
         args.ip,
@@ -103,4 +135,6 @@ if __name__ == "__main__":
         args.config,
         args.num_request,
         args.num_warmup,
+        reverse_connect=args.reverse_connect,
+        listen_host=args.listen_host,
     )
