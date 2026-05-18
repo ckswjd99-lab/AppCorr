@@ -12,7 +12,7 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
-from ._triton_kernels import apply_rope_active_inplace_triton
+from .triton_kernels import apply_rope_active_inplace_triton, sdpa_with_pscore_triton
 
 
 # RoPE-related functions:
@@ -196,6 +196,24 @@ class SelfAttention(nn.Module):
             q, k = self.apply_rope(q, k, rope)
 
         cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
+        if server_pscore in {"none", "disabled"}:
+            x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+            x = x.transpose(1, 2)
+            return x.reshape([B, N, C])
+
+        if server_pscore == "patch_attn_prob_layermean":
+            fused_result = None
+            try:
+                fused_result = sdpa_with_pscore_triton(q, k, v, self.scale, debug_name=tag)
+            except RuntimeError:
+                fused_result = None
+            if fused_result is not None:
+                x, server_pscore_tensor = fused_result
+                cache_feature[f"{tag}_server_pscore"] = server_pscore_tensor.detach()
+                x = x.transpose(1, 2)
+                return x.reshape([B, N, C])
+            server_pscore = "patch_attn_prob_layermean"
+
         if server_pscore in {"patch_attn_prob", "patch_attn_prob_layermean"}:
             attn_prob = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, N, N]
             server_pscore_tensor = attn_prob.mean(dim=1).mean(dim=1).to(dtype=torch.bfloat16)  # [B, N]
