@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  offload/run_local.sh CONFIG_PATH [-nr N] [-nw N] [-d DATA_ROOT]
+  offload/run_local.sh CONFIG_PATH [-nr N] [-nw N] [-d DATA_ROOT] [--set KEY=VALUE]
 
 Runs the AppCorr server and mobile client locally against one config.
 
@@ -12,13 +12,15 @@ Options:
   -nr N, --num-request N  Run only N requests (batches); omit to run all
   -nw N, --num-warmup N   Run N warm-up requests before measurement. Default: 1
   -d PATH, --data PATH    Dataset root path (overrides config's dataset_kwargs.data_root)
+  --set KEY=VALUE         Override a config value using dot paths. Can be repeated
+                          Example: --set appcorr_kwargs.token_keep_thres=0.0002
   -ns,   --nsys           Profile the server with Nsight Systems (nsys profile)
   -rc,   --reverse-connect
                           Make mobile listen and server connect
 
 Environment overrides:
-  RECV_PORT       Server receive / mobile upload port. Default: 39998
-  SEND_PORT       Server send / mobile download port. Default: 39999
+  RECV_PORT       Server receive / mobile upload port. Default: 39990
+  SEND_PORT       Server send / mobile download port. Default: 39991
   SERVER_STARTUP  Seconds to wait before launching mobile. Default: 2
   REVERSE_CONNECT Set to 1/true to make mobile listen and server connect
   MOBILE_IP       Mobile address for server reverse-connect mode. Default: 127.0.0.1
@@ -37,6 +39,7 @@ NUM_REQUEST=""
 NUM_WARMUP="1"
 USE_NSYS=false
 DATA_ROOT=""
+CONFIG_OVERRIDES=()
 POSITIONAL_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -72,6 +75,15 @@ while [[ $# -gt 0 ]]; do
       USE_NSYS=true
       shift
       ;;
+    --set|--config-override)
+      if [[ $# -lt 2 ]]; then
+        echo "[run_local] --set requires an argument" >&2
+        usage >&2
+        exit 1
+      fi
+      CONFIG_OVERRIDES+=(--set "$2")
+      shift 2
+      ;;
     -rc|--reverse-connect)
       REVERSE_CONNECT="1"
       shift
@@ -102,8 +114,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CONFIG_PATH_INPUT="${POSITIONAL_ARGS[0]}"
-RECV_PORT="${RECV_PORT:-39998}"
-SEND_PORT="${SEND_PORT:-39999}"
+RECV_PORT="${RECV_PORT:-39990}"
+SEND_PORT="${SEND_PORT:-39991}"
 SERVER_STARTUP="${SERVER_STARTUP:-2}"
 REVERSE_CONNECT="${REVERSE_CONNECT:-0}"
 MOBILE_IP="${MOBILE_IP:-127.0.0.1}"
@@ -127,12 +139,24 @@ fi
 SERVER_PID=""
 MOBILE_PID=""
 STARTED_PID=""
-BASE_EXP_ID="$(python - "${CONFIG_PATH}" <<'PY'
+BASE_EXP_ID="$(python - "${CONFIG_PATH}" "${CONFIG_OVERRIDES[@]}" <<'PY'
 import json
 import sys
+from offload.common.config_overrides import apply_config_overrides
 
 with open(sys.argv[1], "r") as f:
     data = json.load(f)
+
+overrides = []
+args = sys.argv[2:]
+i = 0
+while i < len(args):
+    if args[i] == "--set" and i + 1 < len(args):
+        overrides.append(args[i + 1])
+        i += 2
+    else:
+        i += 1
+apply_config_overrides(data, overrides)
 print(data.get("exp_id") or "exp")
 PY
 )"
@@ -370,6 +394,7 @@ if is_truthy "${REVERSE_CONNECT}"; then
   echo "[run_local] Starting local AppCorr mobile listener..."
   start_in_own_group python offload/mobile/main.py \
     --config "${CONFIG_PATH}" \
+    "${CONFIG_OVERRIDES[@]}" \
     --ip 127.0.0.1 \
     --recv-port "${RECV_PORT}" \
     --send-port "${SEND_PORT}" \
@@ -438,6 +463,7 @@ else
 
   start_in_own_group python offload/mobile/main.py \
     --config "${CONFIG_PATH}" \
+    "${CONFIG_OVERRIDES[@]}" \
     --ip 127.0.0.1 \
     --recv-port "${RECV_PORT}" \
     --send-port "${SEND_PORT}" \

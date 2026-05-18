@@ -11,6 +11,7 @@ sys.path.append(os.getcwd())
 from offload.mobile.modules import MobileSender, MobileReceiver
 from offload.mobile.source import SourceModule
 from offload.common import ExperimentConfig
+from offload.common.config_overrides import apply_config_overrides
 
 def run_mobile(
     server_ip,
@@ -22,6 +23,7 @@ def run_mobile(
     num_warmup=1,
     reverse_connect=False,
     listen_host="0.0.0.0",
+    config_overrides=None,
 ):
     print(f"=== Starting AppCorr Mobile Client ===")
     if reverse_connect:
@@ -39,6 +41,7 @@ def run_mobile(
     # Load Configuration
     with open(config_path, 'r') as f:
         config_data = json.load(f)
+    apply_config_overrides(config_data, config_overrides)
     
     # Check and convert types (Lists to Tuples for shapes)
     if 'image_shape' in config_data:
@@ -50,6 +53,8 @@ def run_mobile(
     config = ExperimentConfig(**config_data)
 
     print(f"[*] Batch Size (Images): {config.batch_size}")
+    if config_overrides:
+        print(f"[*] Config Overrides: {config_overrides}")
 
     # IPC Queues
     send_queue = multiprocessing.Queue()
@@ -111,6 +116,14 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="offload/config/sequential.json", help="Path to Config JSON")
     parser.add_argument("-nr", "--num-request", type=int, default=None, help="Run only N requests; omit to run all")
     parser.add_argument("-nw", "--num-warmup", type=int, default=1, help="Run N warm-up requests before measurement")
+    parser.add_argument(
+        "--set",
+        dest="config_overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a config value using dot paths, e.g. --set appcorr_kwargs.token_keep_thres=0.0002",
+    )
     
     args = parser.parse_args()
     if args.num_request is not None and args.num_request <= 0:
@@ -123,6 +136,7 @@ if __name__ == "__main__":
     if config_data_root is None:
         with open(args.config, 'r') as f:
             _cfg = json.load(f)
+        apply_config_overrides(_cfg, args.config_overrides)
         config_data_root = _cfg.get("dataset_kwargs", {}).get("data_root")
         if config_data_root is None and _cfg.get("dataset_name", "imagenet-1k") == "imagenet-1k":
             config_data_root = "~/data/imagenet_val"
@@ -137,4 +151,5 @@ if __name__ == "__main__":
         args.num_warmup,
         reverse_connect=args.reverse_connect,
         listen_host=args.listen_host,
+        config_overrides=args.config_overrides,
     )
