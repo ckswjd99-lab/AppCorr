@@ -154,16 +154,16 @@ def classify_event(event):
     return "Server (GPU)"
 
 
-def compute_gpu_no_correct_span(valid_events):
+def compute_gpu_no_correct_duration(valid_events):
     gpu_events = [event for event in valid_events if classify_event(event) == "Server (GPU)"]
     if not gpu_events:
         return 0.0
 
-    gpu_span = max(event["end"] for event in gpu_events) - min(event["start"] for event in gpu_events)
-    correct_duration = sum(
-        event["end"] - event["start"] for event in gpu_events if "CORRECT_FORWARD" in event.get("type", "")
+    return sum(
+        event["end"] - event["start"]
+        for event in gpu_events
+        if "CORRECT_FORWARD" not in event.get("type", "")
     )
-    return max(0.0, gpu_span - correct_duration)
 
 
 def read_events(file_path):
@@ -380,7 +380,7 @@ def build_paper_data(valid_events):
             encode_rows[1]["duration"] += encode_rows[0]["duration"]
             encode_rows = encode_rows[1:]
 
-    gpu_no_correct_duration = compute_gpu_no_correct_span(valid_events)
+    gpu_no_correct_duration = compute_gpu_no_correct_duration(valid_events)
     sequential_components = {
         "Encode": encode_rows,
         "Transmission": sorted(raw_stage_segments["Transmission"], key=lambda seg: seg["start"]),
@@ -392,7 +392,7 @@ def build_paper_data(valid_events):
                 "end": gpu_no_correct_duration,
                 "duration": gpu_no_correct_duration,
                 "group": None,
-                "source_type": "GPU_SPAN_NO_CORRECT",
+                "source_type": "GPU_DURATION_NO_CORRECT",
             }
         ],
     }
@@ -489,10 +489,14 @@ def plot_timeline(request_index, request_data, output_dir, color_map, include_de
         elif "Decode" in name:
             display_name = f"DEC\nG{decode_idx}"
             decode_idx += 1
-        elif "ENCODE" in name or name.startswith("MOBILE_SEND"):
+        elif "ENCODE" in name:
             match = re.search(r"[G_](\d+)$", name)
             gid = match.group(1) if match else event.get("params", {}).get("group_id", "?")
             display_name = f"ENC\nG{gid}"
+        elif name.startswith("MOBILE_SEND"):
+            match = re.search(r"[G_](\d+)$", name)
+            gid = match.group(1) if match else event.get("params", {}).get("group_id", "?")
+            display_name = f"TX\nG{gid}"
 
         bar = ax.barh(
             y,
@@ -542,7 +546,7 @@ def plot_timeline(request_index, request_data, output_dir, color_map, include_de
     total_cpu = sum(
         event["end"] - event["start"] for event in valid_events if classify_event(event) == "Server (CPU)"
     )
-    total_gpu_no_correct = compute_gpu_no_correct_span(valid_events)
+    total_gpu_no_correct = compute_gpu_no_correct_duration(valid_events)
     total_ul = sum(segment["end"] - segment["start"] for segment in uplink_segments)
 
     sequential_time = total_mobile + total_ul + total_cpu + total_gpu_no_correct
