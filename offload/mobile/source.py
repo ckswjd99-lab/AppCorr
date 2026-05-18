@@ -335,10 +335,21 @@ class SourceModule(multiprocessing.Process):
                 **dataset_kwargs
             )
             loader = self.dataset_loader.get_loader()
+            try:
+                loader_len = len(loader)
+            except TypeError:
+                loader_len = None
+            if loader_len == 0:
+                raise RuntimeError(
+                    f"Dataset loader for {dataset_name} produced 0 batches. "
+                    "Check the dataset path/cache and split configuration."
+                )
         except Exception as e:
             print(f"[Source] Failed to load dataset {dataset_name}: {e}")
             import traceback
             traceback.print_exc()
+            self.output_queue.put(('ERROR', f"Failed to load dataset {dataset_name}: {e}"))
+            self.output_queue.put('STOP')
             return
 
         # Generate Timestamp: YYYYMMDD_HHMMSS

@@ -126,10 +126,37 @@ class COCO2017Loader(DatasetLoader):
         import os
 
         print("[COCOLoader] Loading FiftyOne COCO-2017 Validation Split...")
-        # Note: 'root' argument is ignored as FiftyOne manages its own dataset path.
-        self.fo_dataset = foz.load_zoo_dataset("coco-2017", split="validation")
+        load_kwargs = {
+            "split": kwargs.get("split", "validation"),
+            "download_if_necessary": kwargs.get("download_if_necessary", True),
+        }
+        dataset_dir = kwargs.get("fo_dataset_dir") or kwargs.get("dataset_dir")
+        if dataset_dir is None and root and root != "~/data/imagenet_val":
+            dataset_dir = root
+        if dataset_dir:
+            load_kwargs["dataset_dir"] = os.path.expanduser(dataset_dir)
+        dataset_name = kwargs.get("fo_dataset_name") or kwargs.get("dataset_name")
+        if dataset_name:
+            load_kwargs["dataset_name"] = dataset_name
+        self.fo_dataset = foz.load_zoo_dataset("coco-2017", **load_kwargs)
+        sample_count = len(self.fo_dataset)
+        if sample_count == 0:
+            dataset_source = load_kwargs.get("dataset_dir", "FiftyOne default zoo directory")
+            print(
+                f"!!! [COCOLoader] COCO validation split is empty at {dataset_source}. "
+                "Dropping the empty FiftyOne dataset and reloading from disk."
+            )
+            reload_kwargs = dict(load_kwargs)
+            reload_kwargs["drop_existing_dataset"] = True
+            self.fo_dataset = foz.load_zoo_dataset("coco-2017", **reload_kwargs)
+            sample_count = len(self.fo_dataset)
+        print(f"[COCOLoader] Loaded {sample_count} samples.")
+        if sample_count == 0:
+            dataset_source = load_kwargs.get("dataset_dir", "FiftyOne default zoo directory")
+            raise RuntimeError(f"COCO validation split is empty at {dataset_source}.")
         
-        self.ann_file = os.path.expanduser("~/fiftyone/coco-2017/raw/instances_val2017.json")
+        ann_file = kwargs.get("ann_file") or kwargs.get("annotation_file")
+        self.ann_file = os.path.expanduser(ann_file or "~/fiftyone/coco-2017/raw/instances_val2017.json")
         if not os.path.exists(self.ann_file):
             print(f"!!! [COCOLoader] Annotation file not found at {self.ann_file}. Evaluation might fail.")
         else:

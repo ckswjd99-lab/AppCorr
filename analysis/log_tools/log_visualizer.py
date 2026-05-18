@@ -102,6 +102,8 @@ def import_matplotlib():
             "matplotlib is required for visualization, but the active environment "
             f"could not import it cleanly: {type(exc).__name__}: {exc}"
         ) from exc
+    plt.rcParams["pdf.fonttype"] = 42
+    plt.rcParams["ps.fonttype"] = 42
     return plt, mpatches
 
 
