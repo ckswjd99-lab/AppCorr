@@ -344,13 +344,36 @@ class ADE20KLoader(DatasetLoader):
         import os
 
         cache_dir = os.path.expanduser(self.root) if self.root else None
-        load_kwargs = {
-            'split': self.split,
-            'cache_dir': cache_dir,
-        }
-        if self.dataset_config is not None:
-            load_kwargs['name'] = self.dataset_config
-        hf_dataset = load_dataset(self.dataset_name, **load_kwargs)
+
+        def load_hf_dataset(dataset_cache_dir):
+            load_kwargs = {
+                'split': self.split,
+                'cache_dir': dataset_cache_dir,
+            }
+            if self.dataset_config is not None:
+                load_kwargs['name'] = self.dataset_config
+            return load_dataset(self.dataset_name, **load_kwargs)
+
+        try:
+            hf_dataset = load_hf_dataset(cache_dir)
+        except PermissionError as exc:
+            active_cache_dir = cache_dir or os.environ.get('HF_DATASETS_CACHE')
+            fallback_cache_dir = os.path.expanduser(
+                os.environ.get(
+                    'APPCORR_HF_DATASETS_CACHE',
+                    '~/.cache/appcorr/huggingface/datasets',
+                )
+            )
+            if active_cache_dir and os.path.abspath(active_cache_dir) == os.path.abspath(fallback_cache_dir):
+                raise
+
+            os.makedirs(fallback_cache_dir, exist_ok=True)
+            cache_label = active_cache_dir or 'default Hugging Face cache'
+            print(
+                "!!! [ADE20KLoader] Permission denied using Hugging Face dataset "
+                f"cache {cache_label}: {exc}. Retrying with {fallback_cache_dir}."
+            )
+            hf_dataset = load_hf_dataset(fallback_cache_dir)
 
         class HFADE20KDataset(torch.utils.data.Dataset):
             def __init__(self, dataset, image_size: int, resize_fn, emit_original_image: bool):
