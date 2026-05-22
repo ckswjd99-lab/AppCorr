@@ -46,6 +46,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         self.autocast_dtype = torch.bfloat16
         self.num_classes = 150
         self._make_inference = None
+        self._correct_warmup_done = False
 
     @staticmethod
     def _ensure_dinov3_import_path():
@@ -135,6 +136,162 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         self.model.eval()
         self._make_inference = make_inference
+        self._correct_warmup_done = False
+
+    def _maybe_warmup_correct_buckets(self, config: Any, context: Dict[str, Any]) -> None:
+        if self._correct_warmup_done or not torch.cuda.is_available():
+            return
+
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        bucket_size = int(appcorr_options.get("sdpa_query_bucket_size", 0) or 0)
+        runs = int(appcorr_options.get("correct_warmup_runs", 1) or 0)
+        if (
+            bucket_size <= 0
+            or runs <= 0
+            or not bool(appcorr_options.get("sdpa_warmup", True))
+            or appcorr_options.get("method") != "partial_token"
+        ):
+            self._correct_warmup_done = True
+            return
+
+        all_input_tokens = context.get("m2f_x_backbones")
+        all_rope_sincos = context.get("m2f_rope_sincos")
+        all_group_plans = context.get("m2f_group_plans")
+        if (
+            not isinstance(all_input_tokens, list)
+            or not all_input_tokens
+            or not isinstance(all_rope_sincos, list)
+            or not isinstance(all_group_plans, list)
+        ):
+            return
+
+        adapter = self.model.segmentation_model[0]
+        vit_backbone = adapter.backbone
+        first_block = vit_backbone.blocks[0]
+        num_heads = int(first_block.attn.num_heads)
+        hidden_dim = int(first_block.attn.qkv.in_features)
+        head_dim = hidden_dim // num_heads
+
+        warmup_records = []
+        seen_records = set()
+        for input_tokens, rope, src_plans in zip(all_input_tokens, all_rope_sincos, all_group_plans):
+            if not torch.is_tensor(input_tokens) or input_tokens.ndim != 3 or not isinstance(src_plans, dict):
+                continue
+            for plan in src_plans.values():
+                dindice = getattr(plan, "full_dindice", None)
+                if not torch.is_tensor(dindice) or dindice.ndim != 2 or dindice.shape[0] != input_tokens.shape[0]:
+                    continue
+                record_key = (
+                    tuple(input_tokens.shape),
+                    int(dindice.shape[1]),
+                    self._m2f_rope_batch_key(rope),
+                )
+                if record_key in seen_records:
+                    continue
+                seen_records.add(record_key)
+                warmup_records.append((input_tokens, rope, dindice))
+
+        if not warmup_records:
+            self._correct_warmup_done = True
+            return
+
+        warmup_threshold = appcorr_options["token_keep_thres"]
+        if warmup_threshold is None:
+            warmup_threshold = 0.5
+        warmed_shapes: set[tuple[int, int, int]] = set()
+
+        with torch.cuda.device(self.device):
+            with torch.autocast("cuda", self.autocast_dtype):
+                with torch.cuda.nvtx.range("m2f_correct_function_warmup"):
+                    for input_tokens, rope, dindice in warmup_records:
+                        batch_size, key_token_count, hidden_dim = input_tokens.shape
+                        num_pretokens = key_token_count - int(rope[0].shape[0])
+                        candidate_count = int(dindice.shape[1]) - num_pretokens
+                        if batch_size <= 0 or candidate_count <= 0:
+                            continue
+
+                        x_template = torch.zeros_like(input_tokens)
+                        dindice = dindice.to(device=self.device, non_blocking=True)
+                        dindice_patches = dindice[:, num_pretokens:]
+                        max_query_bucket = ((dindice.shape[1] + bucket_size - 1) // bucket_size) * bucket_size
+
+                        for query_bucket in range(bucket_size, max_query_bucket + 1, bucket_size):
+                            keep_count = min(max(query_bucket - num_pretokens, 0), candidate_count)
+                            if keep_count <= 0:
+                                continue
+
+                            server_scores = torch.zeros(
+                                (batch_size, key_token_count),
+                                device=self.device,
+                                dtype=self.autocast_dtype,
+                            )
+                            selected_tokens = dindice_patches[:, :keep_count]
+                            server_scores.scatter_(1, selected_tokens, 1.0)
+
+                            mobile_hint = None
+                            if (
+                                appcorr_options["mobile_pscore"] != "none"
+                                and float(appcorr_options["mobile_pscore_weight"]) != 0.0
+                            ):
+                                mobile_hint = torch.zeros(
+                                    (batch_size, key_token_count - num_pretokens),
+                                    device=self.device,
+                                    dtype=torch.float32,
+                                )
+                                selected_patches = (selected_tokens - num_pretokens).clamp_min(0)
+                                mobile_hint.scatter_(1, selected_patches, 1.0)
+
+                            for _ in range(runs):
+                                cache: Dict[str, Any] = {}
+                                x_tokens = x_template.clone()
+                                with torch.cuda.nvtx.range(
+                                    f"m2f_correct_warmup_B{batch_size}_T{query_bucket}_K{key_token_count}"
+                                ):
+                                    for lidx, blk in enumerate(vit_backbone.blocks):
+                                        tag = f"warmup_layer{lidx}"
+                                        cache[f"{tag}_kv"] = torch.zeros(
+                                            (batch_size, key_token_count, 2, num_heads, head_dim),
+                                            device=self.device,
+                                            dtype=self.autocast_dtype,
+                                        )
+                                        cache[f"{tag}_blocks_out_sum"] = torch.zeros_like(x_tokens)
+                                        cache[f"{tag}_server_pscore"] = server_scores
+                                        x_tokens, cache = blk.correct(
+                                            x_tokens,
+                                            dindice,
+                                            rope,
+                                            cache,
+                                            tag=tag,
+                                            appcorr_method="partial_token",
+                                            token_keep_ratio=appcorr_options["token_keep_ratio"],
+                                            token_keep_thres=warmup_threshold,
+                                            mobile_pscore=appcorr_options["mobile_pscore"],
+                                            mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
+                                            mobile_pscore_hint=mobile_hint,
+                                            server_pscore=appcorr_options["server_pscore"],
+                                            server_pscore_weight=appcorr_options["server_pscore_weight"],
+                                            pscore_fusion=appcorr_options["pscore_fusion"],
+                                            sdpa_query_bucket_size=bucket_size,
+                                            attn_col_alive_ratio=1.0,
+                                            debug=False,
+                                        )
+                                        for key in list(cache.keys()):
+                                            if key.startswith(f"{tag}_"):
+                                                del cache[key]
+                                warmed_shapes.add(
+                                    (
+                                        int(batch_size),
+                                        int(query_bucket),
+                                        int(key_token_count),
+                                    )
+                                )
+                    torch.cuda.synchronize(self.device)
+
+        print(
+            f"[Executor] Warmed M2F correct() buckets: "
+            f"{len(warmed_shapes)} shapes, step {bucket_size}, H={num_heads}, D={head_dim}, runs={runs}"
+        )
+        self._correct_warmup_done = True
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         images, target_shapes = self._as_image_list(batch_data)
@@ -891,6 +1048,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             context.pop("m2f_intermediate_raw", None)
             context.pop("m2f_current_layer", None)
         self._ensure_group_maps_and_plans(context, config)
+        self._maybe_warmup_correct_buckets(config, context)
         return {}
 
     @torch.inference_mode()
@@ -1628,6 +1786,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                     num_groups,
                     group_context,
                 )
+            elif grouping_strategy == "block_grid":
+                group_map = self._build_crop_block_grid_group_map(
+                    input_tokens,
+                    tok_h,
+                    tok_w,
+                    num_groups,
+                    group_context,
+                )
             else:
                 group_map = create_group_index(
                     num_tokens,
@@ -1746,6 +1912,44 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         patch_cols = torch.div(col_centers.clamp_min(0), patch_w, rounding_mode="floor")
         pattern = torch.arange(1, num_groups + 1, device=self.device, dtype=torch.long).view(side, side)
         group_2d = pattern[patch_rows.remainder(side).unsqueeze(1), patch_cols.remainder(side).unsqueeze(0)]
+        group_map = group_2d.reshape(-1)
+        return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
+
+    def _build_crop_block_grid_group_map(
+        self,
+        input_tokens: torch.Tensor,
+        tok_h: int,
+        tok_w: int,
+        num_groups: int,
+        group_context: Dict[str, Any] | None,
+    ) -> torch.Tensor:
+        num_tokens = tok_h * tok_w
+        side = int(num_groups ** 0.5)
+        if side * side != num_groups:
+            raise ValueError(f"block_grid grouping requires a square num_groups, got {num_groups}")
+        if not group_context:
+            group_map = create_group_index(num_tokens, num_groups, "block_grid", self.device, token_hw=(tok_h, tok_w))
+            return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
+
+        y1, y2, x1, x2 = (int(v) for v in group_context.get("crop", (0, tok_h * 16, 0, tok_w * 16)))
+        h_img, w_img = (int(v) for v in group_context.get("image_hw", (y2 - y1, x2 - x1)))
+        apply_flip = bool(group_context.get("apply_flip", False))
+
+        patch_h = max((y2 - y1) // max(tok_h, 1), 1)
+        patch_w = max((x2 - x1) // max(tok_w, 1), 1)
+
+        row_centers = y1 + torch.arange(tok_h, device=self.device, dtype=torch.long) * patch_h + patch_h // 2
+        col_centers = x1 + torch.arange(tok_w, device=self.device, dtype=torch.long) * patch_w + patch_w // 2
+        if apply_flip:
+            col_centers = (w_img - 1) - col_centers
+
+        full_grid_h = max(math.ceil(h_img / patch_h), 1)
+        full_grid_w = max(math.ceil(w_img / patch_w), 1)
+        patch_rows = torch.div(row_centers.clamp_min(0), patch_h, rounding_mode="floor").clamp_max(full_grid_h - 1)
+        patch_cols = torch.div(col_centers.clamp_min(0), patch_w, rounding_mode="floor").clamp_max(full_grid_w - 1)
+        group_rows = torch.div(patch_rows * side, full_grid_h, rounding_mode="floor").clamp_max(side - 1)
+        group_cols = torch.div(patch_cols * side, full_grid_w, rounding_mode="floor").clamp_max(side - 1)
+        group_2d = group_rows.unsqueeze(1) * side + group_cols.unsqueeze(0) + 1
         group_map = group_2d.reshape(-1)
         return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
 

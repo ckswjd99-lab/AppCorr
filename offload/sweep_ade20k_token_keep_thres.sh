@@ -5,18 +5,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 DEVICE="${DEVICE:-cuda:1}"
+GROUPING_STRATEGY="${GROUPING_STRATEGY:-}"
 NUM_WARMUP="${NUM_WARMUP:-1}"
 NUM_REQUEST="${NUM_REQUEST-}"
 SERVER_STARTUP="${SERVER_STARTUP:-2}"
 RECV_PORT="${RECV_PORT:-39990}"
 SEND_PORT="${SEND_PORT:-39991}"
 THRESHOLDS_STR="${THRESHOLDS:-0 0.00005 0.0001 0.0002 0.0005 0.001 0.002}"
-SWEEP_CSV="${SWEEP_CSV:-logs/offload/ade20k_token_keep_thres_sweep_$(date +%Y%m%d_%H%M%S).csv}"
+GROUPING_LABEL="${GROUPING_STRATEGY:-config}"
+GROUPING_LABEL="${GROUPING_LABEL//./p}"
+GROUPING_LABEL="${GROUPING_LABEL//-/m}"
+GROUPING_LABEL="${GROUPING_LABEL//\//_}"
+SWEEP_CSV="${SWEEP_CSV:-logs/offload/ade20k_interleaved_static_${GROUPING_LABEL}_token_keep_thres_sweep_$(date +%Y%m%d_%H%M%S).csv}"
 
 read -r -a THRESHOLDS <<< "${THRESHOLDS_STR}"
 
 CONFIGS=(
-  "offload/config/ade20k_m2f_appcorr.json"
   "offload/config/ade20k_m2f_interleaved_static.json"
 )
 
@@ -25,13 +29,21 @@ run_one() {
   local threshold="$2"
   local base_name
   local safe_threshold
+  local safe_grouping
   local exp_id
   local args
 
   base_name="$(basename "${config_path}" .json)"
   safe_threshold="${threshold//./p}"
   safe_threshold="${safe_threshold//-/m}"
-  exp_id="${base_name}_tkt_${safe_threshold}"
+  safe_grouping="${GROUPING_STRATEGY//./p}"
+  safe_grouping="${safe_grouping//-/m}"
+  safe_grouping="${safe_grouping//\//_}"
+  if [[ -n "${GROUPING_STRATEGY}" ]]; then
+    exp_id="${base_name}_${safe_grouping}_tkt_${safe_threshold}"
+  else
+    exp_id="${base_name}_tkt_${safe_threshold}"
+  fi
 
   args=(
     "${REPO_ROOT}/offload/run_local.sh"
@@ -41,6 +53,10 @@ run_one() {
     --set "exp_id=${exp_id}"
     --set "appcorr_kwargs.token_keep_thres=${threshold}"
   )
+
+  if [[ -n "${GROUPING_STRATEGY}" ]]; then
+    args+=(--set "transmission_kwargs.grouping_strategy=${GROUPING_STRATEGY}")
+  fi
 
   if [[ -n "${NUM_REQUEST}" ]]; then
     args+=(--num-request "${NUM_REQUEST}")
@@ -52,6 +68,11 @@ run_one() {
   echo "[sweep] token_keep_thres=${threshold}"
   echo "[sweep] exp_id=${exp_id}"
   echo "[sweep] device=${DEVICE}"
+  if [[ -n "${GROUPING_STRATEGY}" ]]; then
+    echo "[sweep] grouping_strategy=${GROUPING_STRATEGY}"
+  else
+    echo "[sweep] grouping_strategy=config"
+  fi
   if [[ -n "${NUM_REQUEST}" ]]; then
     echo "[sweep] num_request=${NUM_REQUEST}"
   else
@@ -64,13 +85,13 @@ run_one() {
   SERVER_STARTUP="${SERVER_STARTUP}" \
   "${args[@]}"
 
-  python - "${base_name}" "${threshold}" "${exp_id}" "${SWEEP_CSV}" <<'PY'
+  python - "${base_name}" "${threshold}" "${exp_id}" "${SWEEP_CSV}" "${GROUPING_STRATEGY:-config}" <<'PY'
 import csv
 import json
 import sys
 from pathlib import Path
 
-method, threshold, exp_id, csv_path = sys.argv[1:5]
+method, threshold, exp_id, csv_path, grouping_strategy = sys.argv[1:6]
 root = Path("logs") / "offload"
 candidates = sorted(
     [path for path in root.glob(f"{exp_id}_*") if path.is_dir()],
@@ -92,6 +113,7 @@ with summary_path.open() as f:
 dataset = summary.get("dataset_summary", {})
 row = {
     "method": method,
+    "grouping_strategy": grouping_strategy,
     "token_keep_thres": threshold,
     "mIoU": dataset.get("mIoU", ""),
     "aAcc": dataset.get("aAcc", ""),
