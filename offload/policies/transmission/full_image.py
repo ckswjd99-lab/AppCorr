@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import math
 from typing import Any, List, Generator
 from offload.common.protocol import Patch, ExperimentConfig
 from ..interface import ITransmissionPolicy
@@ -13,6 +14,31 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
     """
     _PRESERVE_HEADER_MAGIC = b'FICP'
     _PRESERVE_HEADER_SIZE = len(_PRESERVE_HEADER_MAGIC) + 2 * np.dtype(np.int32).itemsize
+
+    @staticmethod
+    def _short_side(config: ExperimentConfig) -> int:
+        profile_config = config.get_input_profile_config()
+        return int(profile_config.get('mobile_resize_short_side', min(config.image_shape[:2])))
+
+    @staticmethod
+    def _align_up(value: float, multiple: int) -> int:
+        return int(math.ceil(float(value) / multiple)) * multiple
+
+    @classmethod
+    def _resize_short_side(cls, image: np.ndarray, short_side: int, patch_size: tuple[int, int] | list[int]) -> np.ndarray:
+        h, w = image.shape[:2]
+        if h <= 0 or w <= 0:
+            raise RuntimeError(f"Cannot resize image with shape {image.shape}")
+        ph, pw = patch_size
+        if h <= w:
+            target_h = cls._align_up(short_side, ph)
+            target_w = cls._align_up(w / h * target_h, pw)
+        else:
+            target_w = cls._align_up(short_side, pw)
+            target_h = cls._align_up(h / w * target_w, ph)
+        if (h, w) == (target_h, target_w):
+            return np.ascontiguousarray(image)
+        return np.ascontiguousarray(cv2.resize(image, (target_w, target_h), interpolation=cv2.INTER_LINEAR))
 
     @staticmethod
     def _split_preserve_item(item):
@@ -75,6 +101,8 @@ class FullImageCompressionPolicy(ITransmissionPolicy):
         for b, (image, metadata) in enumerate(image_items):
             if image.ndim != 3 or image.shape[2] != C:
                 raise RuntimeError(f"Expected HWC image with {C} channels, got {image.shape}")
+            if preserve_input_shape:
+                image = self._resize_short_side(image, self._short_side(config), config.patch_size)
             # Encode Full Image
             success, encoded_img = cv2.imencode(ext, np.ascontiguousarray(image), encode_params)
             if not success:

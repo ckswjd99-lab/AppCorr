@@ -98,9 +98,8 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             per_image_assignments = []
             for b in range(B):
                 residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
-                N = len(residual_structure)
                 per_image_assignments.append(
-                    self._precompute_group_assignments(grouping_strategy, N, num_groups)
+                    self._precompute_group_assignments(grouping_strategy, residual_structure, num_groups)
                 )
 
             # Compress and yield group-by-group
@@ -141,14 +140,37 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             gh, gw = lh // ph, lw // pw
             num_crops = gh * gw
             for i in range(num_crops):
-                structure.append({'spatial_idx': i, 'res_level': lvl})
+                row, col = divmod(i, gw)
+                structure.append({
+                    'spatial_idx': i,
+                    'res_level': lvl,
+                    'grid_hw': (gh, gw),
+                    'row': row,
+                    'col': col,
+                })
         return structure
 
-    def _precompute_group_assignments(self, strategy, N, num_groups):
+    def _precompute_group_assignments(self, strategy, residual_structure, num_groups):
         """Pre-calculate group ID for N items based on strategy."""
+        if isinstance(residual_structure, int):
+            N = residual_structure
+            structure = None
+        else:
+            structure = list(residual_structure)
+            N = len(structure)
+
         if strategy == 'grid':
-            # Simplified grid: side of total tokens
             s = int(num_groups ** 0.5)
+            if s * s != num_groups:
+                raise ValueError(f"grid grouping requires a square num_groups, got {num_groups}")
+            if structure is not None and all('row' in item and 'col' in item for item in structure):
+                pattern = np.arange(1, num_groups + 1).reshape(s, s)
+                return np.asarray(
+                    [pattern[int(item['row']) % s, int(item['col']) % s] for item in structure],
+                    dtype=int,
+                )
+
+            # Legacy square fallback for callers that only provide N.
             side = int(N ** 0.5)
             pattern = np.arange(1, num_groups + 1).reshape(s, s)
             rep_h = (side + s - 1) // s
@@ -159,6 +181,42 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                  group_ids = np.resize(group_ids, N)
             elif len(group_ids) > N:
                  group_ids = group_ids[:N]
+            return group_ids
+
+        elif strategy == 'block_grid':
+            s = int(num_groups ** 0.5)
+            if s * s != num_groups:
+                raise ValueError(f"block_grid grouping requires a square num_groups, got {num_groups}")
+            if structure is not None and all('row' in item and 'col' in item for item in structure):
+                grid_hw_by_level = {}
+                for item in structure:
+                    level_key = int(item.get('res_level', 0))
+                    if item.get('grid_hw') is not None:
+                        grid_hw_by_level[level_key] = tuple(int(v) for v in item['grid_hw'])
+
+                fallback_grid_h = max(int(item['row']) for item in structure) + 1
+                fallback_grid_w = max(int(item['col']) for item in structure) + 1
+                group_ids = []
+                for item in structure:
+                    grid_h, grid_w = grid_hw_by_level.get(
+                        int(item.get('res_level', 0)),
+                        (fallback_grid_h, fallback_grid_w),
+                    )
+                    group_row = min(int(item['row']) * s // max(int(grid_h), 1), s - 1)
+                    group_col = min(int(item['col']) * s // max(int(grid_w), 1), s - 1)
+                    group_ids.append(group_row * s + group_col + 1)
+                return np.asarray(group_ids, dtype=int)
+
+            # Legacy square fallback for callers that only provide N.
+            side = int(N ** 0.5)
+            rows = np.arange(side)[:, None]
+            cols = np.arange(side)[None, :]
+            grid_2d = (rows * s // max(side, 1)) * s + (cols * s // max(side, 1)) + 1
+            group_ids = grid_2d.astype(int).flatten()
+            if len(group_ids) < N:
+                group_ids = np.resize(group_ids, N)
+            elif len(group_ids) > N:
+                group_ids = group_ids[:N]
             return group_ids
             
         elif strategy == 'random':

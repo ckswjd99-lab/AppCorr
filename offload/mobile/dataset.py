@@ -126,10 +126,37 @@ class COCO2017Loader(DatasetLoader):
         import os
 
         print("[COCOLoader] Loading FiftyOne COCO-2017 Validation Split...")
-        # Note: 'root' argument is ignored as FiftyOne manages its own dataset path.
-        self.fo_dataset = foz.load_zoo_dataset("coco-2017", split="validation")
+        load_kwargs = {
+            "split": kwargs.get("split", "validation"),
+            "download_if_necessary": kwargs.get("download_if_necessary", True),
+        }
+        dataset_dir = kwargs.get("fo_dataset_dir") or kwargs.get("dataset_dir")
+        if dataset_dir is None and root and root != "~/data/imagenet_val":
+            dataset_dir = root
+        if dataset_dir:
+            load_kwargs["dataset_dir"] = os.path.expanduser(dataset_dir)
+        dataset_name = kwargs.get("fo_dataset_name") or kwargs.get("dataset_name")
+        if dataset_name:
+            load_kwargs["dataset_name"] = dataset_name
+        self.fo_dataset = foz.load_zoo_dataset("coco-2017", **load_kwargs)
+        sample_count = len(self.fo_dataset)
+        if sample_count == 0:
+            dataset_source = load_kwargs.get("dataset_dir", "FiftyOne default zoo directory")
+            print(
+                f"!!! [COCOLoader] COCO validation split is empty at {dataset_source}. "
+                "Dropping the empty FiftyOne dataset and reloading from disk."
+            )
+            reload_kwargs = dict(load_kwargs)
+            reload_kwargs["drop_existing_dataset"] = True
+            self.fo_dataset = foz.load_zoo_dataset("coco-2017", **reload_kwargs)
+            sample_count = len(self.fo_dataset)
+        print(f"[COCOLoader] Loaded {sample_count} samples.")
+        if sample_count == 0:
+            dataset_source = load_kwargs.get("dataset_dir", "FiftyOne default zoo directory")
+            raise RuntimeError(f"COCO validation split is empty at {dataset_source}.")
         
-        self.ann_file = os.path.expanduser("~/fiftyone/coco-2017/raw/instances_val2017.json")
+        ann_file = kwargs.get("ann_file") or kwargs.get("annotation_file")
+        self.ann_file = os.path.expanduser(ann_file or "~/fiftyone/coco-2017/raw/instances_val2017.json")
         if not os.path.exists(self.ann_file):
             print(f"!!! [COCOLoader] Annotation file not found at {self.ann_file}. Evaluation might fail.")
         else:
@@ -283,6 +310,7 @@ class ADE20KLoader(DatasetLoader):
         self.num_classes = int(kwargs.get('num_classes', 150))
         self.ignore_index = int(kwargs.get('ignore_index', 255))
         self.reduce_zero_label = bool(kwargs.get('reduce_zero_label', True))
+        self.emit_original_image = bool(kwargs.get('emit_original_image', False))
         self.total_samples = 0
         self.total_area_intersect = torch.zeros(self.num_classes, dtype=torch.float64)
         self.total_area_union = torch.zeros(self.num_classes, dtype=torch.float64)
@@ -316,19 +344,43 @@ class ADE20KLoader(DatasetLoader):
         import os
 
         cache_dir = os.path.expanduser(self.root) if self.root else None
-        load_kwargs = {
-            'split': self.split,
-            'cache_dir': cache_dir,
-        }
-        if self.dataset_config is not None:
-            load_kwargs['name'] = self.dataset_config
-        hf_dataset = load_dataset(self.dataset_name, **load_kwargs)
+
+        def load_hf_dataset(dataset_cache_dir):
+            load_kwargs = {
+                'split': self.split,
+                'cache_dir': dataset_cache_dir,
+            }
+            if self.dataset_config is not None:
+                load_kwargs['name'] = self.dataset_config
+            return load_dataset(self.dataset_name, **load_kwargs)
+
+        try:
+            hf_dataset = load_hf_dataset(cache_dir)
+        except PermissionError as exc:
+            active_cache_dir = cache_dir or os.environ.get('HF_DATASETS_CACHE')
+            fallback_cache_dir = os.path.expanduser(
+                os.environ.get(
+                    'APPCORR_HF_DATASETS_CACHE',
+                    '~/.cache/appcorr/huggingface/datasets',
+                )
+            )
+            if active_cache_dir and os.path.abspath(active_cache_dir) == os.path.abspath(fallback_cache_dir):
+                raise
+
+            os.makedirs(fallback_cache_dir, exist_ok=True)
+            cache_label = active_cache_dir or 'default Hugging Face cache'
+            print(
+                "!!! [ADE20KLoader] Permission denied using Hugging Face dataset "
+                f"cache {cache_label}: {exc}. Retrying with {fallback_cache_dir}."
+            )
+            hf_dataset = load_hf_dataset(fallback_cache_dir)
 
         class HFADE20KDataset(torch.utils.data.Dataset):
-            def __init__(self, dataset, image_size: int, resize_fn):
+            def __init__(self, dataset, image_size: int, resize_fn, emit_original_image: bool):
                 self.dataset = dataset
                 self.image_size = image_size
                 self.resize_fn = resize_fn
+                self.emit_original_image = emit_original_image
                 self.to_image = v2.ToImage()
                 self.to_uint8 = v2.ToDtype(torch.uint8, scale=False)
 
@@ -345,7 +397,8 @@ class ADE20KLoader(DatasetLoader):
                 resized_w, resized_h = resized.size
                 annotation = ADE20KLoader._resize_mask(annotation, resized.size)
                 annotation_np = np.asarray(annotation, dtype=np.uint8)
-                image_t = self.to_uint8(self.to_image(resized))
+                image_for_output = image if self.emit_original_image else resized
+                image_t = self.to_uint8(self.to_image(image_for_output))
                 label = {
                     'idx': int(idx),
                     'orig_width': int(orig_w),
@@ -358,7 +411,12 @@ class ADE20KLoader(DatasetLoader):
                 }
                 return image_t, label
 
-        dataset = HFADE20KDataset(hf_dataset, self.image_size, self._resize_short_side)
+        dataset = HFADE20KDataset(
+            hf_dataset,
+            self.image_size,
+            self._resize_short_side,
+            self.emit_original_image,
+        )
 
         def collate_variable(batch):
             images, labels = zip(*batch)
