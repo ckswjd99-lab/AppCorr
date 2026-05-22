@@ -52,7 +52,7 @@ Environment overrides: `RECV_PORT` (default 39998, mobile → server), `SEND_POR
 |---------------|-----------------------|-----------------------------|----------------|
 | ImageNet-1k   | Classification        | `dinov3_classifier`         | `imnet_*.json` |
 | COCO / LVIS   | Detection             | `dinov3_detector`           | `coco_*.json`  |
-| ADE20K        | Segmentation (M2F)    | `dinov3_segmentor`          | `ade20k_*_m2f_*.json` |
+| ADE20K        | Segmentation (M2F)    | `dinov3_segmentor_m2f`      | `ade20k_m2f_*.json` |
 | ADE20K        | Segmentation (linear) | `dinov3_segmentor_linhead`  | `ade20k_linhead_*.json` |
 | NYU           | Depth estimation      | `dinov3_depther`            | `nyu_*.json`   |
 

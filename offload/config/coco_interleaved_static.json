@@ -5,7 +5,7 @@
         "num_workers": 0
     },
     "exp_id": "coco_interleaved_static",
-    "batch_size": 16,
+    "batch_size": 1,
     "image_shape": [1024, 1024, 3],
     "patch_size": [16, 16],
     "scheduler_policy_name": "COCOWindowInterleaved",

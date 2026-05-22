@@ -13,7 +13,7 @@ from torch import Tensor, nn
 
 from offload.common.protocol import normalize_appcorr_kwargs
 from ..layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
-from ..layers._triton_kernels import token_prune_select_compact_triton
+from ..layers.triton_kernels import token_prune_select_compact_triton
 from ..utils import named_apply
 from ..utils.hier_token import HierarchicalToken
 
@@ -78,6 +78,25 @@ def create_group_index(num_tokens: int, num_groups: int, strategy: str, device: 
         rep_w = (W + s - 1) // s
         grid_2d = pattern.repeat(rep_h, rep_w)[:H, :W]
 
+        group_idx = grid_2d.flatten()
+    elif strategy == "block_grid":
+        s = int(num_groups ** 0.5)  # sqrt(num_groups), assumes perfect square
+        if s * s != num_groups:
+            raise ValueError(f"block_grid grouping requires a square num_groups, got {num_groups}")
+        token_hw = kwargs.get("token_hw")
+        if token_hw is None:
+            H = W = int((num_tokens) ** 0.5)  # legacy square fallback
+        else:
+            H, W = map(int, token_hw)
+        if H * W != num_tokens:
+            raise ValueError(
+                f"block_grid grouping requires token_hw whose product matches num_tokens, "
+                f"got token_hw=({H}, {W}) and num_tokens={num_tokens}"
+            )
+
+        rows = torch.arange(H, device=device).unsqueeze(1)
+        cols = torch.arange(W, device=device).unsqueeze(0)
+        grid_2d = (rows * s // max(H, 1)) * s + (cols * s // max(W, 1)) + 1
         group_idx = grid_2d.flatten()
     elif strategy == "geometric":
         probs = torch.rand(num_tokens, device=device)

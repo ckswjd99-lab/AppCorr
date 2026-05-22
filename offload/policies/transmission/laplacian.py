@@ -33,6 +33,10 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
         return int(profile_config.get('mobile_resize_short_side', config.image_shape[0]))
 
     @staticmethod
+    def _align_up(value: float, multiple: int) -> int:
+        return int(math.ceil(float(value) / multiple)) * multiple
+
+    @staticmethod
     def _target_hw_for_level(config: ExperimentConfig, lvl: int, image_hw: tuple[int, int] | None = None) -> tuple[int, int]:
         if image_hw is not None and LaplacianPyramidPolicy._is_preserve_input_shape(config):
             h, w = image_hw
@@ -41,11 +45,11 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             target_short = short_side // scale
             ph, pw = config.patch_size
             if h <= w:
-                target_h = target_short
-                target_w = int(math.ceil(w / h * target_short / pw)) * pw
+                target_h = LaplacianPyramidPolicy._align_up(target_short, ph)
+                target_w = LaplacianPyramidPolicy._align_up(w / h * target_h, pw)
             else:
-                target_w = target_short
-                target_h = int(math.ceil(h / w * target_short / ph)) * ph
+                target_w = LaplacianPyramidPolicy._align_up(target_short, pw)
+                target_h = LaplacianPyramidPolicy._align_up(h / w * target_w, ph)
             return target_h, target_w
         H, W = config.image_shape[:2]
         scale = 2 ** lvl
