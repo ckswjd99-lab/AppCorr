@@ -68,6 +68,7 @@ class RawTransmissionPolicy(ITransmissionPolicy):
         patch_tensor = transposed.reshape(B, gh * gw, ph, pw, C)
         
         num_patches = gh * gw
+        patches = []
         for b in range(B):
             for i in range(num_patches):
                 data = patch_tensor[b, i].tobytes()

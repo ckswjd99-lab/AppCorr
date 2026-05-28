@@ -13,6 +13,16 @@ class GroupTriggerPolicy(ISchedulingPolicy):
         self.current_request_id = None
 
     @staticmethod
+    def _needs_global_first(config: ExperimentConfig) -> bool:
+        if getattr(config, 'model_name', None) != 'dinov3_detector':
+            return False
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        return (
+            bool(appcorr_options.get('generated_from_client', False))
+            and appcorr_options.get('global_source_mode', 'global_first') == 'global_first'
+        )
+
+    @staticmethod
     def _needs_final_global_approx(config: ExperimentConfig) -> bool:
         if getattr(config, 'model_name', None) != 'dinov3_detector':
             return False
@@ -74,6 +84,15 @@ class GroupTriggerPolicy(ISchedulingPolicy):
             # Correct valid history -> Approx next chunk
             current_chunk_start = group_id * chunk_size
             current_chunk_end = (group_id + 1) * chunk_size
+
+            if group_id == 0 and self._needs_global_first(config):
+                instructions.append(
+                    Instruction(OpType.APPROX_FORWARD, {
+                        'layers': (0, total_layers),
+                        'global_only': True,
+                        'source_kind': 'global',
+                    })
+                )
             
             if current_chunk_start > 0:
                 instructions.append(

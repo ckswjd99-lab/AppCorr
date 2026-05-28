@@ -1181,6 +1181,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
         token_keep_ratio = appcorr_options["token_keep_ratio"]
+        token_keep_topr = appcorr_options["token_keep_topr"]
         token_keep_thres = appcorr_options["token_keep_thres"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
 
@@ -1275,6 +1276,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
+                            token_keep_topr=token_keep_topr,
                             token_keep_thres=token_keep_thres,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
@@ -1298,6 +1300,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
+                            token_keep_topr=token_keep_topr,
                             token_keep_thres=token_keep_thres,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
