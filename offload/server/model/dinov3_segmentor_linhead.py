@@ -606,6 +606,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
         token_keep_ratio = appcorr_options["token_keep_ratio"]
+        token_keep_topr = appcorr_options["token_keep_topr"]
         token_keep_thres = appcorr_options["token_keep_thres"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
 
@@ -699,6 +700,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
                             x_temp, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
+                            token_keep_topr=token_keep_topr,
                             token_keep_thres=token_keep_thres,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
@@ -718,6 +720,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
                             x_temp, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
+                            token_keep_topr=token_keep_topr,
                             token_keep_thres=token_keep_thres,
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],

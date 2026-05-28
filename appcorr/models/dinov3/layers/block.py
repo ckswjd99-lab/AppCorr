@@ -344,10 +344,18 @@ class SelfAttentionBlock(nn.Module):
         return float(token_keep_thres)
 
     @staticmethod
+    def _resolve_token_keep_topr(kwargs: Dict) -> float | None:
+        token_keep_topr = kwargs.get("token_keep_topr")
+        if token_keep_topr in {None, "", "null", "None"}:
+            return None
+        return float(token_keep_topr)
+
+    @staticmethod
     @nvtx.annotate("select_patch_keep_mask")
     def _select_patch_keep_mask(
         combined_patch_scores: torch.Tensor,
         token_keep_ratio: float,
+        token_keep_topr: float | None,
         token_keep_thres: float | None,
     ) -> torch.Tensor:
         B, num_patch_candidates = combined_patch_scores.shape
@@ -357,6 +365,44 @@ class SelfAttentionBlock(nn.Module):
             dtype=torch.bool,
         )
         if num_patch_candidates == 0:
+            return keep_patch_mask
+
+        if token_keep_topr is not None:
+            if token_keep_topr <= 0.0:
+                return keep_patch_mask
+            if token_keep_topr >= 1.0:
+                return torch.ones_like(keep_patch_mask)
+
+            mass_scores = combined_patch_scores.to(dtype=torch.float32)
+            sorted_scores, sorted_indices = torch.sort(mass_scores, dim=1, descending=True)
+            full_mass = sorted_scores.sum(dim=1)
+            valid_rows = full_mass > 0
+            if valid_rows.any():
+                valid_scores = sorted_scores[valid_rows]
+                valid_indices = sorted_indices[valid_rows]
+                cumulative = torch.cumsum(valid_scores, dim=1)
+                target = full_mass[valid_rows].unsqueeze(1) * token_keep_topr
+                keep_counts = (cumulative < target).sum(dim=1) + 1
+                ranks = torch.arange(num_patch_candidates, device=combined_patch_scores.device).unsqueeze(0)
+                sorted_keep_mask = ranks < keep_counts.unsqueeze(1)
+                valid_keep_mask = torch.zeros_like(sorted_keep_mask, dtype=torch.bool)
+                valid_keep_mask.scatter_(1, valid_indices, sorted_keep_mask)
+                keep_patch_mask[valid_rows] = valid_keep_mask
+
+            invalid_rows = ~valid_rows
+            if invalid_rows.any():
+                k_refined = min(int(num_patch_candidates * token_keep_ratio), num_patch_candidates)
+                if k_refined > 0:
+                    fallback_scores = combined_patch_scores[invalid_rows]
+                    topk_local_idx = torch.topk(
+                        fallback_scores,
+                        k=k_refined,
+                        dim=1,
+                        largest=True,
+                    ).indices
+                    fallback_keep_mask = torch.zeros_like(fallback_scores, dtype=torch.bool)
+                    fallback_keep_mask.scatter_(1, topk_local_idx, True)
+                    keep_patch_mask[invalid_rows] = fallback_keep_mask
             return keep_patch_mask
 
         if token_keep_thres is not None:
@@ -534,6 +580,7 @@ class SelfAttentionBlock(nn.Module):
         num_pretokens: int,
         num_tokens: int,
         token_keep_ratio: float,
+        token_keep_topr: float | None,
         token_keep_thres: float | None,
         server_pscore: str,
         server_pscore_weight: float,
@@ -551,6 +598,7 @@ class SelfAttentionBlock(nn.Module):
             num_pretokens,
             num_tokens,
             float(token_keep_ratio),
+            token_keep_topr,
             token_keep_thres,
             server_pscore,
             float(server_pscore_weight),
@@ -728,6 +776,7 @@ class SelfAttentionBlock(nn.Module):
     ) -> List[Tensor]:
         debug = kwargs.get("debug", False)
         token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
+        token_keep_topr = self._resolve_token_keep_topr(kwargs)
         token_keep_thres = self._resolve_token_keep_threshold(kwargs)
         sdpa_query_bucket_size = int(kwargs.get("sdpa_query_bucket_size", 0) or 0)
         server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
@@ -756,6 +805,7 @@ class SelfAttentionBlock(nn.Module):
             num_pretokens=num_pretokens,
             num_tokens=N,
             token_keep_ratio=token_keep_ratio,
+            token_keep_topr=token_keep_topr,
             token_keep_thres=token_keep_thres,
             server_pscore=server_pscore,
             server_pscore_weight=server_pscore_weight,
@@ -802,6 +852,7 @@ class SelfAttentionBlock(nn.Module):
             keep_patch_mask = self._select_patch_keep_mask(
                 combined_patch_scores,
                 token_keep_ratio,
+                token_keep_topr,
                 token_keep_thres,
             )
             (

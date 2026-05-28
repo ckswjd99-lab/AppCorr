@@ -863,6 +863,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
         token_keep_ratio = appcorr_options["token_keep_ratio"]
+        token_keep_topr = appcorr_options["token_keep_topr"]
         token_keep_thres = appcorr_options["token_keep_thres"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
         skip_patch_correction = self._partial_token_threshold_forces_no_patch_keep(appcorr_options)
@@ -964,6 +965,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
+                                token_keep_topr=token_keep_topr,
                                 token_keep_thres=token_keep_thres,
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
@@ -984,6 +986,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
+                                token_keep_topr=token_keep_topr,
                                 token_keep_thres=token_keep_thres,
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
@@ -1015,6 +1018,12 @@ class DINOv3DeptherExecutor(ModelExecutor):
     def _partial_token_threshold_forces_no_patch_keep(appcorr_options: Dict[str, Any]) -> bool:
         if appcorr_options.get("method") != "partial_token":
             return False
+        token_keep_topr = appcorr_options.get("token_keep_topr")
+        if token_keep_topr not in {None, "", "null", "None"}:
+            try:
+                return float(token_keep_topr) <= 0.0
+            except (TypeError, ValueError):
+                return False
         token_keep_thres = appcorr_options.get("token_keep_thres")
         if token_keep_thres in {None, "", "null", "None"}:
             try:

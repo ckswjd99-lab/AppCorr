@@ -15,6 +15,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'num_groups': 1,
         'group_strategy': 'uniform',
         'token_keep_ratio': 0.2,
+        'token_keep_topr': None,
         'token_keep_thres': None,
         'attn_col_alive_ratio': 1.0,
         'mobile_pscore': 'none',
@@ -85,6 +86,10 @@ def normalize_appcorr_kwargs(
     if 'token_keep_ratio' not in raw and 'cls_alive_ratio' in raw:
         token_keep_ratio = raw['cls_alive_ratio']
     options['token_keep_ratio'] = float(token_keep_ratio)
+    token_keep_topr = options.get('token_keep_topr', defaults['token_keep_topr'])
+    if token_keep_topr in {'', 'null', 'None'}:
+        token_keep_topr = None
+    options['token_keep_topr'] = None if token_keep_topr is None else float(token_keep_topr)
     token_keep_thres = options.get('token_keep_thres', defaults['token_keep_thres'])
     if token_keep_thres in {'', 'null', 'None'}:
         token_keep_thres = None
