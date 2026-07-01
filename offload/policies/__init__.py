@@ -27,6 +27,8 @@ from .transmission import (
     FullImageCompressionPolicy,
     FourierProgressiveTransmissionPolicy,
     FourierLaplacianHybridPolicy,
+    FourierLaplacianProgressivePolicy,
+    NYUAppCorrFourierLaplacianHybridPolicy,
 )
 
 # Registry for dynamic instantiation
@@ -56,6 +58,8 @@ TRANSMISSION_REGISTRY = {
     "FullImageCompression": FullImageCompressionPolicy,
     "FourierProgressive": FourierProgressiveTransmissionPolicy,
     "FourierLaplacianHybrid": FourierLaplacianHybridPolicy,
+    "FourierLaplacianProgressive": FourierLaplacianProgressivePolicy,
+    "NYUAppCorrFourierLaplacianHybrid": NYUAppCorrFourierLaplacianHybridPolicy,
 }
 
 def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:
