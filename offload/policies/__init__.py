@@ -15,16 +15,18 @@ from .scheduling import (
     NYUApproxCorrectPolicy,
 )
 from .transmission import (
-    RawTransmissionPolicy, 
-    ZlibTransmissionPolicy, 
+    RawTransmissionPolicy,
+    ZlibTransmissionPolicy,
     COCOWindowProgressiveLaplacianPolicy,
     ADE20KWindowProgressiveLaplacianPolicy,
-    LaplacianPyramidPolicy, 
+    LaplacianPyramidPolicy,
     NYUAppCorrLaplacianPolicy,
     NYUAppCorrProgressiveLaplacianPolicy,
     NYUAppCorrRawTransmissionPolicy,
-    ProgressiveLPyramidPolicy, 
-    FullImageCompressionPolicy
+    ProgressiveLPyramidPolicy,
+    FullImageCompressionPolicy,
+    FourierProgressiveTransmissionPolicy,
+    FourierLaplacianHybridPolicy,
 )
 
 # Registry for dynamic instantiation
@@ -52,6 +54,8 @@ TRANSMISSION_REGISTRY = {
     "COCOWindowProgressiveLaplacian": COCOWindowProgressiveLaplacianPolicy,
     "ADE20KWindowProgressiveLaplacian": ADE20KWindowProgressiveLaplacianPolicy,
     "FullImageCompression": FullImageCompressionPolicy,
+    "FourierProgressive": FourierProgressiveTransmissionPolicy,
+    "FourierLaplacianHybrid": FourierLaplacianHybridPolicy,
 }
 
 def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:
