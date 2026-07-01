@@ -105,6 +105,10 @@ class SourceModule(multiprocessing.Process):
             "NYUAppCorrLaplacian",
             "NYUAppCorrProgressiveLaplacian",
             "NYUAppCorrRaw",
+            "FourierProgressive",
+            "FourierLaplacianHybrid",
+            "FourierLaplacianProgressive",
+            "NYUAppCorrFourierLaplacianHybrid",
         }
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
