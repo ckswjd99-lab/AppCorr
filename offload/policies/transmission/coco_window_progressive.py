@@ -146,6 +146,14 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
             patch.batch_group_total = len(base_patches)
         yield base_patches
 
+        if config.transmission_kwargs.get('base_only', False):
+            # Ablation mode: send only the global base, no windowed correction —
+            # for measuring "how good is the fast global pass alone" against a
+            # single-shot FULL_INFERENCE scheduler (BatchCountBased), the same
+            # methodology as coco_approx_only_l2.json but using this policy's
+            # actual production base generation instead of a plain pyramid level.
+            return
+
         preds = [self._upsample_base(base, config) for base in bases]
         for group_id in range(1, self._N_WINDOWS_H * self._N_WINDOWS_W + 1):
             group_patches: List[Patch] = []

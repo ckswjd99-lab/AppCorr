@@ -432,6 +432,22 @@ class DINOv3DetectorExecutor(ModelExecutor):
             token_hw=(grid_h, grid_w),
         ).view(grid_h, grid_w)
 
+    @staticmethod
+    def _uses_coco_window_correction_groups(config: Any) -> bool:
+        """True for transmission policies whose group_id sequence is the raster
+        3x3 window partition (group_id = 1 + row*n_windows_w + col) that
+        _build_coco_window_group_maps understands: COCOWindowProgressiveLaplacian
+        and FourierLaplacianHybrid always (both inherit/reuse the same window
+        residual encoding), and FourierProgressive when explicitly configured
+        for it via transmission_kwargs.windowed_groups (it reuses the exact
+        same window partition function to assign its own group ids)."""
+        policy_name = getattr(config, 'transmission_policy_name', None)
+        if policy_name in {'COCOWindowProgressiveLaplacian', 'FourierLaplacianHybrid'}:
+            return True
+        if policy_name == 'FourierProgressive':
+            return bool(config.transmission_kwargs.get('windowed_groups', False))
+        return False
+
     def _project_transmission_groups_to_sources(
         self,
         context: Dict[str, Any],
@@ -444,7 +460,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if len(source_layouts) != len(all_input_tokens):
             return None
 
-        if getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian':
+        if self._uses_coco_window_correction_groups(config):
             return self._build_coco_window_group_maps(context, config)
 
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
@@ -857,7 +873,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         group_id = self._get_task_group_id(task)
         can_update_single_window = (
-            getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian'
+            self._uses_coco_window_correction_groups(config)
             and group_id is not None
             and 1 <= group_id <= win_wrapper._n_windows_h * win_wrapper._n_windows_w
             and self._has_detector_source_cache(context, tensors.shape[0])
