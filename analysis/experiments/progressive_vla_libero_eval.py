@@ -87,15 +87,34 @@ def parse_ratio(mode: str, prefix: str, fallback: float) -> float:
     return float(suffix) / 100.0 if suffix else fallback
 
 
-def attnres_patch_idx(model, true_px, blur_px, ratio: float) -> torch.Tensor:
-    """AppCorr's fused pscore: layer-averaged CLS attention (server pscore, computed during the
-    approx pass) x per-patch pixel residual RMS (mobile pscore), pscore_fusion='multiply'.
-    Single correction round, so importance-scattered selection carries no multi-round staleness."""
-    k = max(1, int(round(256 * ratio)))
-    attn_score = model.cache_feature["dino_cls_attn_layermean"].float()  # [1, 256]
+def fused_pscore(model, true_px, blur_px) -> torch.Tensor:
+    """AppCorr's fused pscore: layer-averaged CLS attention (server pscore) x per-patch pixel
+    residual RMS (mobile pscore), pscore_fusion='multiply'. [1, 256]."""
+    attn_score = model.cache_feature["dino_cls_attn_layermean"].float()
     resid_score = per_patch_residual_rms(true_px.float(), blur_px.float()).to(attn_score.device)
-    fused = attn_score * resid_score
+    return attn_score * resid_score
+
+
+def attnres_patch_idx(model, true_px, blur_px, ratio: float) -> torch.Tensor:
+    """Top-k selection on the fused pscore (AppCorr's token_keep_ratio path, block.py's
+    _select_patch_keep_mask). Single correction round, so importance-scattered selection carries
+    no multi-round staleness (see Phase 3 audit)."""
+    k = max(1, int(round(256 * ratio)))
+    fused = fused_pscore(model, true_px, blur_px)
     return fused.topk(k, dim=1).indices.squeeze(0)
+
+
+def attnres_threshold_patch_idx(model, true_px, blur_px, threshold: float) -> torch.Tensor:
+    """Hard-threshold selection on the fused pscore -- AppCorr's `token_keep_thres` path
+    (block.py's _select_patch_keep_mask: `combined_patch_scores >= token_keep_thres`, mutually
+    exclusive with the ratio/top-k path, NO min-keep floor in the original). Patch count is
+    data-dependent here, unlike the fixed-ratio modes."""
+    fused = fused_pscore(model, true_px, blur_px)
+    idx = (fused[0] >= threshold).nonzero(as_tuple=True)[0]
+    if idx.numel() == 0:
+        idx = fused.topk(1, dim=1).indices.squeeze(0)  # AppCorr has no explicit floor; avoid a
+        # fully-empty correction round only as a degenerate-input safety net, not the normal path.
+    return idx
 
 
 def aggregate_confidence(stats: dict, metric: str) -> float:
@@ -144,6 +163,19 @@ def decide_action(model: OpenVLAProgressiveModel, mode: str, image: Image.Image,
             model.correct_forward(true_px, patch_idx)
             return model.decode_action(), info
 
+        if mode.startswith("attnthresh"):
+            # Mode name carries the threshold scaled by 1e6, e.g. "attnthresh_200" -> 0.0002 --
+            # AppCorr's own token_keep_thres configs (0.0001-0.002) live in this same integer range,
+            # though on a differently-scaled/differently-fused pscore (see module docstring context
+            # in progressive_vla_libero_eval's fused_pscore -- ours is attn x residual_rms,
+            # multiply fusion, calibrated separately; only the mechanism transfers 1:1).
+            suffix = mode[len("attnthresh"):].lstrip("_")
+            threshold = float(suffix) * 1e-6
+            patch_idx = attnres_threshold_patch_idx(model, true_px, blur_px, threshold)
+            info["num_patches"] = int(patch_idx.numel())
+            model.correct_forward(true_px, patch_idx)
+            return model.decode_action(), info
+
         if mode.startswith("exitcalib"):
             # Calibration: compute BOTH the approx-decode (with stats) and the corrected decode,
             # log confidence-vs-agreement, and ACT with the corrected action (so the visited state
@@ -179,9 +211,11 @@ def decide_action(model: OpenVLAProgressiveModel, mode: str, image: Image.Image,
 
 
 def run_episode(model, mode, task_suite_name, task_id, max_steps, num_steps_wait, correction_ratio,
-                blur_factor, exit_cfg=None, calib_records=None, exit_counts=None):
+                blur_factor, exit_cfg=None, calib_records=None, exit_counts=None, patch_counts=None):
     if exit_counts is None:
         exit_counts = [0, 0]  # [exits, decisions]
+    if patch_counts is None:
+        patch_counts = []
     from libero.libero import benchmark
 
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -209,6 +243,8 @@ def run_episode(model, mode, task_suite_name, task_id, max_steps, num_steps_wait
         if "exited" in step_info:
             exit_counts[0] += int(step_info["exited"])
             exit_counts[1] += 1
+        if "num_patches" in step_info:
+            patch_counts.append(step_info["num_patches"])
         action = normalize_gripper_action(action, binarize=True)
         action = invert_gripper_action(action)
 
@@ -244,6 +280,7 @@ def main():
     calib_records: list = []
     results = {mode: [] for mode in modes}  # mode -> list of (task_id, success)
     exit_totals = {mode: [0, 0] for mode in modes}  # mode -> [exits, decisions]
+    patch_totals = {mode: [] for mode in modes}  # mode -> list of per-step patch counts (attnthresh)
     for mode in modes:
         print(f"\n[eval] === Mode: {mode} ===")
         if mode.startswith("earlyexit"):
@@ -255,6 +292,7 @@ def main():
                     model, mode, args.task_suite, task_id, args.max_steps, args.num_steps_wait,
                     args.correction_ratio, args.blur_factor,
                     exit_cfg=exit_cfg, calib_records=calib_records, exit_counts=exit_totals[mode],
+                    patch_counts=patch_totals[mode],
                 )
                 dt = time.time() - t0
                 results[mode].append((task_id, success))
@@ -278,7 +316,9 @@ def main():
         rate = sum(successes) / len(successes) if successes else float("nan")
         exits, decisions = exit_totals[mode]
         exit_str = f"  exit_frac={exits / decisions:.2f} ({exits}/{decisions} steps)" if decisions else ""
-        print(f"    {mode:16s}  {sum(successes)}/{len(successes)}  ({rate:.0%}){exit_str}")
+        patches = patch_totals[mode]
+        patch_str = f"  mean_patches={np.mean(patches):.1f}/256 ({np.mean(patches)/256:.1%})" if patches else ""
+        print(f"    {mode:16s}  {sum(successes)}/{len(successes)}  ({rate:.0%}){exit_str}{patch_str}")
 
     print("\n[eval] === Per-task breakdown ===")
     for mode in modes:
