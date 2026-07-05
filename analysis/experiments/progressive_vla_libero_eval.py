@@ -52,6 +52,10 @@ def parse_args():
     parser.add_argument("--task-suite", type=str, default="libero_spatial")
     parser.add_argument("--task-ids", type=str, default="0", help="Comma-separated task ids, or 'all' for every task in the suite.")
     parser.add_argument("--num-trials", type=int, default=2)
+    parser.add_argument("--trial-offset", type=int, default=0,
+                        help="First trial index to run (for splitting a larger trial count across parallel GPU processes).")
+    parser.add_argument("--results-json", type=str, default=None,
+                        help="Write a structured {suite: {mode: {successes, patch_counts}}} JSON here for aggregation across parallel runs.")
     parser.add_argument("--max-steps", type=int, default=150, help="Cap on rollout length (real suite max is higher; capped for turnaround time).")
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--blur-factor", type=int, default=4)
@@ -211,7 +215,8 @@ def decide_action(model: OpenVLAProgressiveModel, mode: str, image: Image.Image,
 
 
 def run_episode(model, mode, task_suite_name, task_id, max_steps, num_steps_wait, correction_ratio,
-                blur_factor, exit_cfg=None, calib_records=None, exit_counts=None, patch_counts=None):
+                blur_factor, exit_cfg=None, calib_records=None, exit_counts=None, patch_counts=None,
+                trial_idx=0):
     if exit_counts is None:
         exit_counts = [0, 0]  # [exits, decisions]
     if patch_counts is None:
@@ -225,7 +230,11 @@ def run_episode(model, mode, task_suite_name, task_id, max_steps, num_steps_wait
 
     env, task_description = get_libero_env(task, "openvla", resolution=256)
     env.reset()
-    obs = env.set_init_state(initial_states[0])
+    # NOTE: must index by trial_idx (matching the original run_libero_eval.py's
+    # `initial_states[episode_idx]`) -- indexing [0] for every trial silently reruns the identical
+    # starting configuration, and since decoding is greedy/deterministic, produces exact-duplicate
+    # rollouts with zero additional statistical signal.
+    obs = env.set_init_state(initial_states[trial_idx])
 
     t = 0
     done = False
@@ -287,15 +296,16 @@ def main():
             print(f"    exit metric={args.exit_metric} threshold={args.exit_threshold}")
         for task_id in task_ids:
             for trial in range(args.num_trials):
+                trial_idx = args.trial_offset + trial
                 t0 = time.time()
                 success, steps = run_episode(
                     model, mode, args.task_suite, task_id, args.max_steps, args.num_steps_wait,
                     args.correction_ratio, args.blur_factor,
                     exit_cfg=exit_cfg, calib_records=calib_records, exit_counts=exit_totals[mode],
-                    patch_counts=patch_totals[mode],
+                    patch_counts=patch_totals[mode], trial_idx=trial_idx,
                 )
                 dt = time.time() - t0
-                results[mode].append((task_id, success))
+                results[mode].append((task_id, trial_idx, bool(success)))
                 extra = ""
                 if exit_totals[mode][1] > 0:
                     extra = f" exit_frac_so_far={exit_totals[mode][0] / exit_totals[mode][1]:.2f}"
@@ -312,7 +322,7 @@ def main():
 
     print("\n[eval] === Summary: success rate by mode (aggregated across all tasks/trials) ===")
     for mode in modes:
-        successes = [s for _, s in results[mode]]
+        successes = [s for _, _, s in results[mode]]
         rate = sum(successes) / len(successes) if successes else float("nan")
         exits, decisions = exit_totals[mode]
         exit_str = f"  exit_frac={exits / decisions:.2f} ({exits}/{decisions} steps)" if decisions else ""
@@ -323,10 +333,29 @@ def main():
     print("\n[eval] === Per-task breakdown ===")
     for mode in modes:
         per_task: dict[int, list[bool]] = {}
-        for task_id, success in results[mode]:
+        for task_id, _, success in results[mode]:
             per_task.setdefault(task_id, []).append(success)
         line = "  ".join(f"t{tid}={sum(v)}/{len(v)}" for tid, v in sorted(per_task.items()))
         print(f"    {mode:16s}  {line}")
+
+    if args.results_json:
+        import json
+
+        payload = {
+            "suite": args.task_suite,
+            "trial_offset": args.trial_offset,
+            "num_trials": args.num_trials,
+            "modes": {
+                mode: {
+                    "results": results[mode],  # [(task_id, trial_idx, success), ...]
+                    "patch_counts": patch_totals[mode],
+                }
+                for mode in modes
+            },
+        }
+        with open(args.results_json, "w") as f:
+            json.dump(payload, f)
+        print(f"\n[eval] Wrote structured results to {args.results_json}")
 
 
 if __name__ == "__main__":
