@@ -180,6 +180,79 @@ class OpenVLAProgressiveModel:
         final = self.vla.language_model.model.norm(x)
         return self.vla.language_model.lm_head(final)
 
+    # === Segment-level API (interleaved scheduling; used by offload/server/model/openvla_vla.py) ===
+    # The full-pass methods above run vision + all 32 LLM layers in one call; the interleaved static
+    # schedule (offload/policies/scheduling/vla_interleaved_static.py) instead advances the LLM
+    # approx frontier in segments and corrects each residual group only up to the current frontier,
+    # letting layers above the frontier absorb corrections in their single normal execution.
+
+    def start_session_from_text(self, task_description: str):
+        """start_session() minus the image transform -- the offload pipeline supplies pixel data
+        via the decoded transmission canvas instead of a PIL image."""
+        prompt = f"In: What action should the robot take to {task_description.lower()}?\nOut:"
+        input_ids = self.processor.tokenizer(prompt, return_tensors="pt").input_ids.to(self.device)
+        if not torch.all(input_ids[:, -1] == 29871):
+            input_ids = torch.cat(
+                [input_ids, torch.tensor([[29871]], dtype=input_ids.dtype, device=input_ids.device)], dim=1
+            )
+        self.input_ids = input_ids
+        full_text_embed = self.vla.get_input_embeddings()(input_ids)
+        self.bos_embed = full_text_embed[:, :1]
+        self.text_embed = full_text_embed[:, 1:]
+        self.reference_pixel_values = None
+        self.cache_feature = {}
+        self.round_idx = 0
+        self.num_vision_tokens = None
+        self.seq_len = None
+        self.permanent_group = None
+        self.llm_frontier = 0  # LLM layers approximated so far in this session
+        self._x0 = None
+
+    def vision_approx(self, pixel_values: torch.Tensor):
+        """Vision approx on the (base-layer) canvas + build the multimodal x0. Does NOT run any
+        LLM layer; the stream starts at x0 with frontier 0."""
+        dino_px, siglip_px = torch.split(pixel_values.to(dtype=torch.bfloat16), [3, 3], dim=1)
+        dino_feat, self.cache_feature = self.dino_backbone.approx_forward(dino_px, self.cache_feature, "dino")
+        siglip_feat, self.cache_feature = self.siglip_backbone.approx_forward(siglip_px, self.cache_feature, "siglip")
+        self._finish_setup_after_first_pass(dino_feat.shape[1])
+        self._x0 = self._build_multimodal_embed(self._project_vision(dino_feat, siglip_feat))
+        self.cache_feature["_x"] = self._x0
+        self.llm_frontier = 0
+
+    def vision_correct(self, pixel_values: torch.Tensor, all_arrived_idx: torch.Tensor,
+                       new_idx: torch.Tensor) -> torch.Tensor:
+        """Cumulative vision correction on the current canvas (re-correcting earlier groups is cheap
+        for the small towers and tightens their cross-round staleness), rebuilding x0. Returns the
+        LLM token positions of the NEW group only (AppCorr-faithful per-group LLM correction).
+        If no LLM layer has been approximated yet, the stream is simply refreshed to the new x0
+        (the whole upcoming approx absorbs the correction; the policy skips CORRECT at frontier 0)."""
+        dino_px, siglip_px = torch.split(pixel_values.to(dtype=torch.bfloat16), [3, 3], dim=1)
+        dino_feat, self.cache_feature = self.dino_backbone.correct_forward(dino_px, all_arrived_idx, self.cache_feature, "dino")
+        siglip_feat, self.cache_feature = self.siglip_backbone.correct_forward(siglip_px, all_arrived_idx, self.cache_feature, "siglip")
+        self._x0 = self._build_multimodal_embed(self._project_vision(dino_feat, siglip_feat))
+        if self.llm_frontier == 0:
+            self.cache_feature["_x"] = self._x0
+        return new_idx.to(dtype=torch.long, device=self.device) + 1  # +1 for BOS offset
+
+    def llm_approx_segment(self, start_layer: int, end_layer: int):
+        assert start_layer == self.llm_frontier, f"approx segment must resume at frontier {self.llm_frontier}, got {start_layer}"
+        x = self.cache_feature["_x"]
+        for i in range(start_layer, min(end_layer, len(self.llm_layers))):
+            x, self.cache_feature = self.llm_layers[i].approx(x, self.cache_feature, f"llm_layer{i}")
+        self.cache_feature["_x"] = x
+        self.llm_frontier = min(end_layer, len(self.llm_layers))
+
+    def llm_correct_segment(self, end_layer: int, vision_token_idx: torch.Tensor):
+        """Correct the new group's positions + permanent group through layers [0, end_layer),
+        restarting from the current x0 (mirrors DINOv3's x_temp = input_tokens per CORRECT).
+        The resulting stream replaces the frontier stream, so subsequent approx segments absorb it."""
+        end_layer = min(end_layer, len(self.llm_layers))
+        token_idx = torch.cat([vision_token_idx, self.permanent_group])
+        x = self._x0
+        for i in range(end_layer):
+            x, self.cache_feature = self.llm_layers[i].correct(x, token_idx, self.cache_feature, f"llm_layer{i}")
+        self.cache_feature["_x"] = x
+
     def decode_action(self, num_action_tokens: Optional[int] = None, return_stats: bool = False):
         """Greedy-decodes the action tokens from the current prefill state and converts them to a
         continuous action using the exact same bin-center + un-normalize logic as

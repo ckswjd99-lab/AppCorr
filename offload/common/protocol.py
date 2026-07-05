@@ -281,6 +281,8 @@ class Patch:
     arrival_time: float = 0.0
     pscore_hint: float = 0.0
     target_shape: tuple = ()
+    # VLA workloads: natural-language task instruction, carried on group-0 (base-layer) patches.
+    text: str = ""
 
 class OpType(Enum):
     # --- Computation Ops ---

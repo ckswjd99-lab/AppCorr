@@ -2,7 +2,10 @@ import torch
 from .base import ModelExecutor
 
 def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
-    if "dinov3_classifier" in name:
+    if "openvla" in name:
+        from .openvla_vla import OpenVLAExecutor
+        return OpenVLAExecutor(device)
+    elif "dinov3_classifier" in name:
         from .dinov3_classifier import DINOv3ClassifierExecutor
         return DINOv3ClassifierExecutor(device)
     elif "dinov3_detector" in name:

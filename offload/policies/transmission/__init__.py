@@ -9,3 +9,4 @@ from .nyu_appcorr_progressive import (
     NYUAppCorrProgressiveLaplacianPolicy,
     NYUAppCorrRawTransmissionPolicy,
 )
+from .vla_patch_canvas import VLAPatchCanvasPolicy
