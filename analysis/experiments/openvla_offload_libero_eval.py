@@ -48,6 +48,11 @@ def parse_args():
     parser.add_argument("--base-factor", type=int, default=4)
     parser.add_argument("--schedules", type=str, default="interleaved,sequential,full")
     parser.add_argument("--result-timeout", type=float, default=180.0)
+    parser.add_argument("--server-pscore-threshold", type=float, default=None,
+                         help="Gate CORRECT_FORWARD by the fused attn x residual score "
+                              "(OpenVLAExecutor._filter_by_server_pscore); unset = no filtering. "
+                              "Units match progressive_vla_libero_eval.py's attnthresh_<N> (real "
+                              "value, e.g. 200e-6 for the validated attnthresh_200 setting).")
     return parser.parse_args()
 
 
@@ -62,6 +67,10 @@ def center_crop_resize(img_np: np.ndarray, crop_scale: float = 0.9) -> np.ndarra
 def make_config(args, schedule: str):
     from offload.common.protocol import ExperimentConfig
 
+    scheduler_kwargs = {"schedule": schedule, "total_layers": 32}
+    if args.server_pscore_threshold is not None:
+        scheduler_kwargs["server_pscore_threshold"] = args.server_pscore_threshold
+
     return ExperimentConfig(
         exp_id=f"vla_{schedule}",
         model_name="openvla",
@@ -73,7 +82,7 @@ def make_config(args, schedule: str):
         patch_size=(14, 14),
         scheduler_policy_name="VLAInterleavedStatic",
         transmission_policy_name="VLAPatchCanvas",
-        scheduler_kwargs={"schedule": schedule, "total_layers": 32},
+        scheduler_kwargs=scheduler_kwargs,
         transmission_kwargs={
             "num_groups": args.num_groups,
             "coverage": args.coverage,
@@ -97,7 +106,7 @@ def request_action(encoder, config, frame_np, text, sched_q, result_q, timeout):
     return action, result.server_events
 
 
-def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result_q, op_times):
+def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result_q, op_times, correction_stats):
     from libero.libero import benchmark
 
     from experiments.robot.libero.libero_utils import get_libero_dummy_action, get_libero_env, get_libero_image
@@ -122,6 +131,10 @@ def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result
         )
         for ev in server_events:
             op_times[ev["type"]].append(ev["end"] - ev["start"])
+            meta = ev.get("meta") or {}
+            if "num_arrived" in meta and "num_corrected" in meta:
+                correction_stats["arrived"] += meta["num_arrived"]
+                correction_stats["corrected"] += meta["num_corrected"]
         action = normalize_gripper_action(action, binarize=True)
         action = invert_gripper_action(action)
         obs, _, done, _ = env.step(action.tolist())
@@ -161,6 +174,7 @@ def main():
     encoder = get_transmission("VLAPatchCanvas")
     results = {}
     timing = {}
+    correction = {}
     try:
         for schedule in schedules:
             config = make_config(args, schedule)
@@ -168,6 +182,7 @@ def main():
             time.sleep(1.0)  # let CONFIG reach the worker ahead of the first patches
 
             op_times = defaultdict(list)
+            correction_stats = defaultdict(int)
             outcomes = []
             print(f"\n[driver] === Schedule: {schedule} ===")
             for task_id in task_ids:
@@ -175,7 +190,8 @@ def main():
                     t0 = time.time()
                     try:
                         success, steps = run_episode(
-                            args.task_suite, task_id, args, encoder, config, sched_q, result_q, op_times
+                            args.task_suite, task_id, args, encoder, config, sched_q, result_q,
+                            op_times, correction_stats,
                         )
                     except queue_mod.Empty:
                         print(f"    task {task_id}: TIMEOUT waiting for InferenceResult -- aborting schedule")
@@ -185,6 +201,7 @@ def main():
                     sys.stdout.flush()
             results[schedule] = outcomes
             timing[schedule] = {k: (float(np.mean(v)), len(v)) for k, v in op_times.items()}
+            correction[schedule] = dict(correction_stats)
     finally:
         control_q.put(("STOP", None))
         result_q.cancel_join_thread()
@@ -207,6 +224,12 @@ def main():
     for schedule, outcomes in results.items():
         line = "  ".join(f"t{tid}={'1' if s else '0'}" for tid, s in outcomes)
         print(f"    {schedule:12s}  {line}")
+
+    print("\n[driver] === LLM recompute-token rate (server_pscore_threshold filter) ===")
+    for schedule, stats in correction.items():
+        arrived, corrected = stats.get("arrived", 0), stats.get("corrected", 0)
+        rate = corrected / arrived if arrived else float("nan")
+        print(f"    {schedule:12s}  corrected={corrected}/{arrived} patch-rounds  ({rate:.0%})")
 
 
 if __name__ == "__main__":
