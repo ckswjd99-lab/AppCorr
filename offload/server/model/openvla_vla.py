@@ -99,9 +99,17 @@ class OpenVLAExecutor(ModelExecutor):
         round's newly-arrived patches get their LLM position marked for CORRECT_FORWARD -- the
         vision towers still correct every arrived patch regardless (vision_correct's
         `all_arrived_idx` argument is untouched), so a filtered-out patch's embedding stays
-        accurate while only its LLM hidden state remains stale for this round. Threshold units
-        match progressive_vla_libero_eval.py's `attnthresh_<N>` modes (real value, e.g. 200e-6
-        for the validated "attnthresh_200" setting), so results are directly comparable.
+        accurate while only its LLM hidden state remains stale for this round.
+
+        Unit note: `Patch.pscore_hint` is a residual RMS over *raw* 0-255 canvas pixels (see
+        vla_patch_canvas.py's encode()), while progressive_vla_libero_eval.py's validated
+        `attnthresh_<N>` threshold was calibrated against a residual RMS over DINO-tower
+        *normalized* pixels ((x/255 - mean)/std) -- ~255*std (~57x for ImageNet std) smaller.
+        Rescale mobile_score by that factor before fusing so the same threshold value is
+        comparable across both drivers; skipping this made an earlier version of this filter
+        pass ~100% of patches at threshold=200e-6 (empirically confirmed via
+        openvla_offload_libero_eval.py) since the un-rescaled raw-pixel residual dwarfed the
+        threshold.
         """
         thresh = config.scheduler_kwargs.get("server_pscore_threshold")
         if thresh is None:
@@ -115,6 +123,8 @@ class OpenVLAExecutor(ModelExecutor):
             [context["pscore_hint"].get(i, 0.0) for i in pending],
             dtype=server_score.dtype, device=attn.device,
         )
+        dino_std_mean = self._norms[0][1].mean().to(dtype=mobile_score.dtype, device=mobile_score.device)
+        mobile_score = mobile_score / (255.0 * dino_std_mean)
         fused = server_score * mobile_score
         keep = (fused >= float(thresh)).tolist()
         return [i for i, k in zip(pending, keep) if k]
