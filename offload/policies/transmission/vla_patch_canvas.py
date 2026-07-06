@@ -4,10 +4,34 @@ vla_patch_canvas.py
 Transmission policy for VLA (OpenVLA) workloads: progressive patch-level canvas.
 
 Encode (mobile side): group 0 = the full frame downsampled by `base_factor` (the low-res "approx"
-base layer) + the task instruction text; groups 1..num_groups = true-resolution 14x14 pixel blocks,
-ranked by per-patch residual RMS between the true frame and the upsampled base (highest-energy
-residuals first, AppCorr's `residual_rms` mobile pscore), split evenly across groups. `coverage`
-< 1.0 sends only the top fraction of patches.
+base layer) + the task instruction text; groups 1..num_groups = true-resolution 14x14 pixel blocks.
+`transmission_kwargs['grouping']` selects how groups 1..num_groups are formed from the per-patch
+residual RMS score (AppCorr's `residual_rms` mobile pscore, the true frame vs. the upsampled base):
+
+  "rank" (default, legacy): patches sorted by residual descending, then chopped into num_groups
+      equal chunks -- group 1 is the globally most-changed patches, wherever they sit in the image.
+      Fastest quality-per-byte for a single round, but group membership is scattered in *position*,
+      so under interleaved multi-round correction a later group can contain a patch that is
+      causally *before* (in the vision-token sequence) an already-corrected patch in an earlier
+      group -- that earlier patch's output goes stale relative to it and is never revisited (see
+      analysis/experiments/audit_progressive_semantics.py). Exact only when all groups arrive AND
+      get corrected together as a single round; not exact across multiple interleaved rounds even
+      at coverage=1.0.
+
+  "sequential": groups are contiguous *position* bands (group 1 = the first num_patches/num_groups
+      positions in raster order, group 2 = the next band, ...) -- causally monotonic, so by the
+      time group g is corrected, every position it could attend to was already corrected in an
+      earlier round. At coverage=1.0 this reproduces the Phase 3 audit's finding of exact
+      multi-round convergence (no position is ever skipped, so nothing skipped needs revisiting).
+      Within each band, patches are still ranked by residual and only the top `coverage` fraction
+      of *that band* is sent/corrected -- so coverage < 1.0 reintroduces the same accepted
+      approximation as "rank" mode (a skipped patch inside an arrived band stays stale forever
+      once a later band is corrected); sequential grouping only guarantees exactness at
+      coverage=1.0, it does not remove the fundamental multi-round staleness tradeoff below that.
+      Trade-off vs "rank": the first (most latency-hidden) round is whatever content happens to
+      sit in the first position band, not necessarily the most important content in the frame --
+      worse quality-per-byte under coverage < 1.0 or a missed deadline, in exchange for exactness
+      once everything arrives.
 
 Decode (server side): rebuilds the *cumulative canvas* -- upsampled base with all so-far-arrived
 true patches pasted in. Faithful canvas semantics are REQUIRED for interleaved correction (the
@@ -34,6 +58,7 @@ class VLAPatchCanvasPolicy(ITransmissionPolicy):
             "num_groups": max(int(tk.get("num_groups", 4)), 1),
             "coverage": float(tk.get("coverage", 1.0)),
             "base_factor": int(tk.get("base_factor", 4)),
+            "grouping": str(tk.get("grouping", "rank")),
             "ph": ph,
             "pw": pw,
         }
@@ -65,11 +90,25 @@ class VLAPatchCanvasPolicy(ITransmissionPolicy):
         per_patch = np.sqrt(
             (resid ** 2).reshape(gh, p["ph"], gw, p["pw"], C).mean(axis=(1, 3, 4))
         ).reshape(-1)
-        order = np.argsort(-per_patch)
+        num_patches = gh * gw
 
-        num_send = max(1, int(round(len(order) * p["coverage"])))
-        chosen = order[:num_send]
-        splits = np.array_split(chosen, p["num_groups"])
+        if p["grouping"] == "sequential":
+            # Causally-monotonic position bands (see module docstring). Within each band, still
+            # rank by residual and keep only the top `coverage` fraction of that band -- a no-op
+            # at coverage=1.0, where every position in every band is sent.
+            band_bounds = np.linspace(0, num_patches, p["num_groups"] + 1).round().astype(int)
+            splits = []
+            for gid in range(p["num_groups"]):
+                lo, hi = band_bounds[gid], band_bounds[gid + 1]
+                band_positions = np.arange(lo, hi)
+                band_send_n = max(1, int(round(len(band_positions) * p["coverage"])))
+                band_ranked = band_positions[np.argsort(-per_patch[band_positions])][:band_send_n]
+                splits.append(np.sort(band_ranked))  # ascending position order within the group too
+        else:
+            order = np.argsort(-per_patch)
+            num_send = max(1, int(round(len(order) * p["coverage"])))
+            chosen = order[:num_send]
+            splits = np.array_split(chosen, p["num_groups"])
 
         for gid, group in enumerate(splits, start=1):
             group_patches = []
