@@ -7,9 +7,15 @@ worker monitoring applies (CUDA-event server_events, InferenceResult telemetry, 
 
 Op mapping (driven by offload/policies/scheduling/vla_interleaved_static.py):
   LOAD_INPUT       -> preprocess: normalized per-tower tensors from the decoded canvas; track newly
-                      arrived patch indices + the instruction text (Patch.text on group 0).
+                      arrived patch indices, their mobile pscore hints (Patch.pscore_hint), and the
+                      instruction text (Patch.text on group 0).
   PREPARE_TOKENS   -> first call: text session + vision approx + x0. Later calls: cumulative vision
-                      correction on the updated canvas + x0 rebuild.
+                      correction on the updated canvas + x0 rebuild. The vision towers always
+                      correct every arrived patch; which of the newly-arrived patches also get
+                      their LLM position marked for CORRECT_FORWARD is optionally gated by
+                      `scheduler_kwargs['server_pscore_threshold']` (see _filter_by_server_pscore,
+                      AppCorr's _combine_patch_scores x _select_patch_keep_mask, faithfully ported).
+                      Unset (default) = no filtering, every arrived patch gets LLM-corrected.
   APPROX_FORWARD   -> LLM approx segment {layers: (start, end)} advancing the frontier.
   CORRECT_FORWARD  -> LLM correction of the last-prepared group through {layers: (0, frontier)}.
   FULL_INFERENCE   -> stock predict_action() on the current canvas (baseline, same monitoring path).
@@ -72,13 +78,46 @@ class OpenVLAExecutor(ModelExecutor):
         new_idx = sorted({p.spatial_idx for p in task.payload if p.group_id > 0 and p.spatial_idx >= 0})
         context.setdefault("arrived_idx", [])
         context.setdefault("pending_idx", [])
+        context.setdefault("pscore_hint", {})
         context["pending_idx"].extend(i for i in new_idx if i not in context["arrived_idx"])
         context["arrived_idx"].extend(new_idx)
 
         for p in task.payload:
+            if p.group_id > 0 and p.spatial_idx >= 0:
+                context["pscore_hint"][int(p.spatial_idx)] = float(p.pscore_hint)
             if p.group_id == 0 and p.text:
                 context["text"] = p.text
         return {"num_new_patches": len(new_idx)}
+
+    def _filter_by_server_pscore(self, pending: list, context: Dict[str, Any], config: Any) -> list:
+        """AppCorr-faithful fused-score gate (dinov3/layers/block.py: _combine_patch_scores with
+        pscore_fusion='multiply', both weights=1.0, then _select_patch_keep_mask's hard
+        token_keep_thres cutoff -- no min-keep floor, matching the original). Server pscore is
+        DINOv2's CLS->patch attention, layer-averaged once at approx (`dino_cls_attn_layermean`,
+        AppCorr's cls_attn_prob_layermean); mobile pscore is each patch's residual-RMS hint
+        (`Patch.pscore_hint`, computed mobile-side by vla_patch_canvas.py). Filters which of this
+        round's newly-arrived patches get their LLM position marked for CORRECT_FORWARD -- the
+        vision towers still correct every arrived patch regardless (vision_correct's
+        `all_arrived_idx` argument is untouched), so a filtered-out patch's embedding stays
+        accurate while only its LLM hidden state remains stale for this round. Threshold units
+        match progressive_vla_libero_eval.py's `attnthresh_<N>` modes (real value, e.g. 200e-6
+        for the validated "attnthresh_200" setting), so results are directly comparable.
+        """
+        thresh = config.scheduler_kwargs.get("server_pscore_threshold")
+        if thresh is None:
+            return pending
+        attn = self.pm.cache_feature.get("dino_cls_attn_layermean")
+        if attn is None:
+            return pending
+        idx_t = torch.tensor(pending, dtype=torch.long, device=attn.device)
+        server_score = attn[0, idx_t]
+        mobile_score = torch.tensor(
+            [context["pscore_hint"].get(i, 0.0) for i in pending],
+            dtype=server_score.dtype, device=attn.device,
+        )
+        fused = server_score * mobile_score
+        keep = (fused >= float(thresh)).tolist()
+        return [i for i, k in zip(pending, keep) if k]
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
         px = context["pixel_values"]
@@ -93,10 +132,15 @@ class OpenVLAExecutor(ModelExecutor):
         if not pending:
             return {"phase": "vision_noop"}
         all_idx = torch.tensor(context["arrived_idx"], dtype=torch.long, device=self.device)
-        new_idx = torch.tensor(pending, dtype=torch.long, device=self.device)
+        filtered = self._filter_by_server_pscore(pending, context, config)
+        new_idx = torch.tensor(filtered, dtype=torch.long, device=self.device)
         context["last_vision_token_idx"] = self.pm.vision_correct(px, all_idx, new_idx)
         context["pending_idx"] = []
-        return {"phase": "vision_correct", "num_corrected": int(new_idx.numel())}
+        return {
+            "phase": "vision_correct",
+            "num_arrived": len(pending),
+            "num_corrected": int(new_idx.numel()),
+        }
 
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         start_l, end_l = params.get("layers", (0, len(self.pm.llm_layers)))
