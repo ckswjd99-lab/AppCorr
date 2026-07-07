@@ -261,3 +261,29 @@ committing frequently so any point can be reverted to safely.
 
   Continuing: testing uniform_diff+bucket32, energy_asc (no bucket), energy_desc (no bucket),
   all at token_keep_ratio=0.4, to build the real comparison table under actual pruning.
+
+- **Real-pruning-regime (token_keep_ratio=0.4) comparison, nr=20, POTENTIALLY IMPORTANT FINDING**:
+  | grouping (tkr=0.4)      | top1 | top5 | CORRECT_FORWARD |
+  |-------------------------|------|------|------------------|
+  | grid                    | 85%  | 100% | 33.3ms |
+  | uniform_diff (bucket32) | 85%  | 100% | 53.8ms (worse than its own tkr=1.0 bucketed 33.8ms --
+  |                         |      |      | pruning likely adds MORE group-size variance per image,
+  |                         |      |      | offsetting the bucket benefit) |
+  | **energy_asc (no bucket)** | **90%** | 100% | 60.6ms |
+
+  energy_asc PRESERVED accuracy under real pruning (90%, same as its own tkr=1.0 result) while
+  grid and uniform_diff both dropped to 85%. Plausible mechanism: `_apply_image_residual_token_pruning`
+  prunes PER-GROUP by top-K residual/threshold. Grid's spatial grouping mixes high/low-residual
+  patches within arbitrary regions, so per-group pruning is only LOCALLY coherent -- it can keep
+  low-importance patches from a uniformly-low-residual region while dropping high-importance
+  patches from a region that happens to exceed its local budget. energy_asc's groups are ALREADY
+  globally sorted by the SAME metric pruning uses, so per-group top-K on energy_asc's groups
+  approximates a globally-coherent "keep the truly most important patches" outcome much more
+  closely than grid's arbitrary spatial split does.
+
+  CAVEAT: nr=20 is still small -- 90% vs 85% is only a ONE-SAMPLE difference (18/20 vs 17/20),
+  not yet strong evidence against noise. This is the most promising signal of the whole
+  investigation so far and needs an nr=50+ confirmation before treating it as validated. Plan:
+  get energy_desc's tkr=0.4 result next (expect it to ALSO hold up well, by the same mechanism --
+  its groups are also globally energy-sorted, just reversed priority), then scale up
+  grid-vs-energy_asc-vs-energy_desc at tkr=0.4 to nr=50 for a real confirmation.
