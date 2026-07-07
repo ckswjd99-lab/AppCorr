@@ -94,7 +94,27 @@ def main():
         "imagenet-1k", args.data_root, batch_size=1,
         image_size=config.image_shape[0], num_workers=args.num_workers,
     )
-    loader = dataset_loader.get_loader()
+    full_loader = dataset_loader.get_loader()
+    # ImageFolder is not shuffled, and this dataset is 1000 classes x 50 images each, sorted by
+    # class -- a plain `for images, labels in loader: break after N` would only ever see the
+    # first N images of class 0000, giving a trivial/meaningless accuracy signal (and no real
+    # test of grouping behavior on varied content). Take a deterministic STRIDED subset spanning
+    # the whole validation set instead, so a small --num-samples still touches many classes, and
+    # -- just as important -- the SAME exact images are used across every grouping-strategy run
+    # for a fair A/B (stride/subset is a pure function of num_samples and dataset size, no RNG).
+    from torch.utils.data import Subset
+
+    full_dataset = full_loader.dataset
+    n_total = len(full_dataset)
+    n_samples = min(args.num_samples, n_total)
+    stride = max(n_total // n_samples, 1)
+    indices = list(range(0, n_total, stride))[:n_samples]
+    subset = Subset(full_dataset, indices)
+    loader = torch.utils.data.DataLoader(
+        subset, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True,
+    )
+    print(f"[driver] sampling {len(indices)} images strided across {n_total} "
+          f"(stride={stride}, spans ~{len(indices)} distinct classes)")
 
     sched_q = multiprocessing.Queue()
     worker_q = multiprocessing.Queue()
