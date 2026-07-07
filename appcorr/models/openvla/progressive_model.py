@@ -35,7 +35,8 @@ from appcorr.models.openvla.llm.llama_prefill_layer import ApproxCorrectLlamaDec
 
 
 class OpenVLAProgressiveModel:
-    def __init__(self, checkpoint: str, device: torch.device, unnorm_key: Optional[str] = None):
+    def __init__(self, checkpoint: str, device: torch.device, unnorm_key: Optional[str] = None,
+                 sdpa_query_bucket_size: int = 0):
         from transformers import AutoModelForVision2Seq, AutoProcessor
 
         self.device = device
@@ -64,6 +65,17 @@ class OpenVLAProgressiveModel:
         self.llm_layers = [
             ApproxCorrectLlamaDecoderLayer.from_stock(l).to(device) for l in self.vla.language_model.model.layers
         ]
+
+        # Ported from AppCorr's DINOv3 `sdpa_query_bucket_size` mechanism (attention.py's
+        # correct_partial_token + dinov3_{depther,segmentor_m2f}.py's `_maybe_warmup_*`): a
+        # data-dependent (e.g. fused-score-filtered) query-set size makes llm_correct_segment's
+        # GEMM/SDPA shapes vary almost every call, which pays cuBLAS/cuBLASLt's one-time
+        # per-shape algorithm-search cost on nearly every call instead of just the first (measured
+        # ~30x slower for i.i.d.-varying Q vs any fixed/recurring shape). 0 = disabled (default,
+        # matches AppCorr's own default-off convention); see _bucketize_token_idx and
+        # _maybe_warmup_llm_correct_buckets.
+        self.sdpa_query_bucket_size = sdpa_query_bucket_size
+        self._warmup_done = False
 
         # Session state, set in start_session()
         self.cache_feature: Dict[str, Any] = {}
@@ -115,6 +127,7 @@ class OpenVLAProgressiveModel:
         self.num_vision_tokens = None  # set on first approx_forward once we know patch count
         self.seq_len = None
         self.permanent_group = None
+        self._warmup_done = False
 
     def _project_vision(self, dino_patch_feat: torch.Tensor, siglip_patch_feat: torch.Tensor) -> torch.Tensor:
         fused = torch.cat([dino_patch_feat, siglip_patch_feat], dim=2)
@@ -127,6 +140,7 @@ class OpenVLAProgressiveModel:
             torch.tensor([0], device=self.device),
             torch.arange(1 + num_vision_tokens, self.seq_len, device=self.device),
         ])
+        self._maybe_warmup_llm_correct_buckets()
 
     def _build_multimodal_embed(self, projected_vision: torch.Tensor) -> torch.Tensor:
         return torch.cat([self.bos_embed, projected_vision, self.text_embed], dim=1)
@@ -207,6 +221,7 @@ class OpenVLAProgressiveModel:
         self.permanent_group = None
         self.llm_frontier = 0  # LLM layers approximated so far in this session
         self._x0 = None
+        self._warmup_done = False
 
     def vision_approx(self, pixel_values: torch.Tensor):
         """Vision approx on the (base-layer) canvas + build the multimodal x0. Does NOT run any
@@ -242,12 +257,79 @@ class OpenVLAProgressiveModel:
         self.cache_feature["_x"] = x
         self.llm_frontier = min(end_layer, len(self.llm_layers))
 
+    def _bucketize_token_idx(self, token_idx: torch.Tensor) -> torch.Tensor:
+        """Pad `token_idx` (by repeating its last element) up to the next multiple of
+        `sdpa_query_bucket_size`, bounding CORRECT_FORWARD's GEMM/SDPA shapes to a small fixed set
+        instead of a new size almost every call (see `sdpa_query_bucket_size`'s docstring in
+        __init__). Disabled (returns `token_idx` unchanged) when `sdpa_query_bucket_size <= 0`.
+
+        Adapted from AppCorr's DINOv3 bucketing (`attention.py::correct_partial_token`), which pads
+        a *separate* scratch Q tensor with garbage rows (safe there only because non-causal ViT
+        attention computes each query row independently, so garbage rows can't leak into real
+        outputs -- real rows are gathered back out afterward). Our causal LLM setting makes the
+        equivalent simpler: since every downstream step here (RoPE, causal mask, KV-cache
+        writeback, and the decoder layer's `x_out[:, token_idx] = ...` scatter) is naturally safe
+        under an index *repeated* (not garbage), padding with a duplicate of a REAL, already-valid
+        index makes every extra row redundant-but-correct: the KV cache gets rewritten with the
+        identical value, and the final scatter-write reassigns the same real position the same
+        value. No separate scratch buffer, output gather, or masking of padded rows is needed.
+        """
+        bucket = self.sdpa_query_bucket_size
+        if bucket <= 0:
+            return token_idx
+        Q = token_idx.numel()
+        if Q == 0:
+            return token_idx
+        padded_Q = ((Q + bucket - 1) // bucket) * bucket
+        if padded_Q == Q:
+            return token_idx
+        pad = token_idx[-1].expand(padded_Q - Q)
+        return torch.cat([token_idx, pad])
+
+    def _maybe_warmup_llm_correct_buckets(self):
+        """Pre-runs `.correct()` once for every bucket size (up to a full-sequence correction),
+        on fully disposable scratch tensors under a private cache tag, so cuBLAS/cuBLASLt's
+        one-time per-shape algorithm-search cost is paid during session startup rather than during
+        real, timed control steps. Ported from AppCorr's DINOv3 depther/M2F-segmentor
+        `_maybe_warmup_*` (offload/server/model/dinov3_{depther,segmentor_m2f}.py): scratch
+        state only, real `self.cache_feature` is never touched. A no-op unless
+        `sdpa_query_bucket_size > 0`; runs once per session (guarded by `_warmup_done`).
+
+        All 32 Llama decoder layers share identical GEMM/attention shapes (uniform hidden size,
+        head count, head_dim), so warming with real per-layer scratch caches (matching AppCorr's
+        M2F pattern of warming every backbone block, not just one) is a modest, one-time,
+        session-startup cost -- not a per-step one.
+        """
+        if self.sdpa_query_bucket_size <= 0 or self._warmup_done:
+            return
+        self._warmup_done = True
+        bucket = self.sdpa_query_bucket_size
+        N = self.seq_len
+        C = self.bos_embed.shape[-1]
+        dtype = self.bos_embed.dtype
+        max_q = ((N + bucket - 1) // bucket) * bucket
+        with torch.no_grad():
+            for q in range(bucket, max_q + 1, bucket):
+                q_eff = min(q, N)
+                token_idx = torch.arange(q_eff, device=self.device, dtype=torch.long)
+                x = torch.zeros(1, N, C, device=self.device, dtype=dtype)
+                scratch: Dict[str, Any] = {}
+                for i, layer in enumerate(self.llm_layers):
+                    tag = f"_warmup_layer{i}"
+                    nh, hd = layer.self_attn.num_key_value_heads, layer.self_attn.head_dim
+                    scratch[f"{tag}_kv"] = torch.zeros(1, nh, N, 2, hd, device=self.device, dtype=dtype)
+                    scratch[f"{tag}_blocks_out_sum"] = torch.zeros(1, N, C, device=self.device, dtype=dtype)
+                    layer.correct(x, token_idx, scratch, tag)
+                del scratch
+        torch.cuda.synchronize()
+
     def llm_correct_segment(self, end_layer: int, vision_token_idx: torch.Tensor):
         """Correct the new group's positions + permanent group through layers [0, end_layer),
         restarting from the current x0 (mirrors DINOv3's x_temp = input_tokens per CORRECT).
         The resulting stream replaces the frontier stream, so subsequent approx segments absorb it."""
         end_layer = min(end_layer, len(self.llm_layers))
         token_idx = torch.cat([vision_token_idx, self.permanent_group])
+        token_idx = self._bucketize_token_idx(token_idx)
         x = self._x0
         for i in range(end_layer):
             x, self.cache_feature = self.llm_layers[i].correct(x, token_idx, self.cache_feature, f"llm_layer{i}")
