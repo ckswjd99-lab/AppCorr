@@ -242,3 +242,22 @@ committing frequently so any point can be reverted to safely.
   less sharply with patch content than raw energy), so bucket=32 is a small, cheap pad there
   rather than a large multiplicative inflation. If true, a SMALLER bucket size should suit
   energy_asc's more skewed distribution better. Testing bucket=8 for energy_asc next to check.
+
+- **Bucket=8 for energy_asc: WORSE, not better** (CORRECT=131.1ms vs bucket32's 116.3ms vs
+  no-bucket's 94.1ms). REFUTES the "smaller bucket suits skewed groups better" theory --
+  smaller bucket made it monotonically worse. Real conclusion: for energy_asc, bucketing is a
+  net negative at every size tested so far; its group-size skew (near-empty later groups under
+  ascending order) is severe enough that padding overhead exceeds shape-dispatch savings
+  regardless of bucket size. Best known config for energy_asc remains NO bucketing (94.1ms).
+  Not spending more time tuning bucket size for energy_asc specifically -- moving on.
+
+- **grid grouping, token_keep_ratio=0.4 (first REAL pruning-budget test), nr=20**: top1=85%
+  top5=100% (down from 90% at keep_ratio=1.0 -- a genuine accuracy cost from real pruning).
+  CORRECT_FORWARD=33.3ms -- barely different from keep_ratio=1.0's 35.0ms, suggesting the
+  pruning mechanism isn't saving much per-layer compute here despite the accuracy cost (may be
+  worth a deeper look separately, but not blocking this sweep). This is the regime where grouping
+  strategy differences should actually show up in ACCURACY (not just latency), since which
+  patches get pruned/never corrected depends on group composition/order.
+
+  Continuing: testing uniform_diff+bucket32, energy_asc (no bucket), energy_desc (no bucket),
+  all at token_keep_ratio=0.4, to build the real comparison table under actual pruning.
