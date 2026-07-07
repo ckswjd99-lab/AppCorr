@@ -224,3 +224,21 @@ committing frequently so any point can be reverted to safely.
 
   Testing --sdpa-query-bucket-size next to check if it closes the gap for the
   variable-group-size strategies (energy_asc worst case, uniform_diff moderate case).
+
+- **Bucket-size test (bucket=32), nr=20**: MIXED result, not a clean confirm/refute.
+  - uniform_diff: CORRECT 56.2ms -> **33.8ms** (APPROX 7.0->7.3ms) -- closes almost the ENTIRE gap
+    to grid's 35.0ms. Bucketing genuinely fixes uniform_diff.
+  - energy_asc: CORRECT 94.1ms -> **116.3ms** (APPROX 15.8->32.2ms) -- got WORSE, not better!
+  Both still 90%/100% top1/top5 (bucketing shouldn't change accuracy, just latency -- confirmed).
+
+  Working theory for the divergence: energy_asc's group-SIZE distribution is much more skewed
+  than uniform_diff's. Ascending energy order puts group 1 = the low-energy majority (likely
+  ~200+ patches out of 256) and groups 2-4 = high-energy minority, likely just a HANDFUL of
+  patches each (recalls the earlier synthetic unit test: asc gave group sizes like
+  239/7/5/5). Padding a 5-10 patch group up to bucket_size=32 means doing 3-6x MORE actual
+  compute for that group, and per GroupTriggerPolicy's schedule those later (tiny) groups are
+  corrected across a GROWING number of layers (20-40) -- so the padding overhead compounds badly.
+  uniform_diff's byte-size-based split is probably much less extreme (compressed size correlates
+  less sharply with patch content than raw energy), so bucket=32 is a small, cheap pad there
+  rather than a large multiplicative inflation. If true, a SMALLER bucket size should suit
+  energy_asc's more skewed distribution better. Testing bucket=8 for energy_asc next to check.
