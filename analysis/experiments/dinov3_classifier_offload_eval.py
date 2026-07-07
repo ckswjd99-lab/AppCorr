@@ -51,6 +51,11 @@ def parse_args():
                          help="Override transmission_kwargs['num_groups'].")
     parser.add_argument("--token-keep-ratio", type=float, default=None,
                          help="Override appcorr_kwargs['token_keep_ratio'].")
+    parser.add_argument("--sdpa-query-bucket-size", type=int, default=None,
+                         help="Override appcorr_kwargs['sdpa_query_bucket_size'] -- pads the "
+                              "correction query set to a bucket multiple, avoiding cuBLAS/SDPA's "
+                              "per-shape dispatch cost under variable group sizes (uniform_diff/"
+                              "energy_asc/energy_desc). 0/unset = disabled (existing behavior).")
     parser.add_argument("--data-root", type=str, default="/NHNHOME/share/cjpark/data/imagenet_val")
     parser.add_argument("--num-samples", type=int, default=10)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -73,6 +78,8 @@ def load_config(args):
         raw.setdefault("transmission_kwargs", {})["num_groups"] = args.num_groups
     if args.token_keep_ratio is not None:
         raw.setdefault("appcorr_kwargs", {})["token_keep_ratio"] = args.token_keep_ratio
+    if args.sdpa_query_bucket_size is not None:
+        raw.setdefault("appcorr_kwargs", {})["sdpa_query_bucket_size"] = args.sdpa_query_bucket_size
     return ExperimentConfig(**raw), raw
 
 
