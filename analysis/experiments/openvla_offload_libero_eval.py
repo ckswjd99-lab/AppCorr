@@ -114,7 +114,8 @@ def request_action(encoder, config, frame_np, text, sched_q, result_q, timeout):
     return action, result.server_events
 
 
-def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result_q, op_times, correction_stats):
+def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result_q, op_times, correction_stats,
+                 correct_by_group=None):
     from libero.libero import benchmark
 
     from experiments.robot.libero.libero_utils import get_libero_dummy_action, get_libero_env, get_libero_image
@@ -143,6 +144,10 @@ def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result
             if "num_arrived" in meta and "num_corrected" in meta:
                 correction_stats["arrived"] += meta["num_arrived"]
                 correction_stats["corrected"] += meta["num_corrected"]
+            if correct_by_group is not None and ev["type"] == "CORRECT_FORWARD":
+                gid = (ev.get("params") or {}).get("group_id")
+                if gid is not None:
+                    correct_by_group[gid].append(ev["end"] - ev["start"])
         action = normalize_gripper_action(action, binarize=True)
         action = invert_gripper_action(action)
         obs, _, done, _ = env.step(action.tolist())
@@ -183,6 +188,7 @@ def main():
     results = {}
     timing = {}
     correction = {}
+    group_timing = {}
     try:
         for schedule in schedules:
             config = make_config(args, schedule)
@@ -208,6 +214,7 @@ def main():
 
             op_times = defaultdict(list)
             correction_stats = defaultdict(int)
+            correct_by_group = defaultdict(list)
             outcomes = []
             print(f"\n[driver] === Schedule: {schedule} ===")
             for task_id in task_ids:
@@ -216,7 +223,7 @@ def main():
                     try:
                         success, steps = run_episode(
                             args.task_suite, task_id, args, encoder, config, sched_q, result_q,
-                            op_times, correction_stats,
+                            op_times, correction_stats, correct_by_group,
                         )
                     except queue_mod.Empty:
                         print(f"    task {task_id}: TIMEOUT waiting for InferenceResult -- aborting schedule")
@@ -227,6 +234,7 @@ def main():
             results[schedule] = outcomes
             timing[schedule] = {k: (float(np.mean(v)), len(v)) for k, v in op_times.items()}
             correction[schedule] = dict(correction_stats)
+            group_timing[schedule] = {g: (float(np.mean(v)), len(v)) for g, v in correct_by_group.items()}
     finally:
         control_q.put(("STOP", None))
         result_q.cancel_join_thread()
@@ -264,6 +272,12 @@ def main():
         arrived, corrected = stats.get("arrived", 0), stats.get("corrected", 0)
         rate = corrected / arrived if arrived else float("nan")
         print(f"    {schedule:12s}  corrected={corrected}/{arrived} patch-rounds  ({rate:.0%})")
+
+    print(f"\n[driver] === CORRECT_FORWARD latency by group_id (num_groups={args.num_groups}) ===")
+    for schedule, groups in group_timing.items():
+        for gid in sorted(groups):
+            mean_s, n = groups[gid]
+            print(f"    {schedule:12s}  group {gid}: {mean_s * 1000:.2f}ms  (n={n})")
 
 
 if __name__ == "__main__":
