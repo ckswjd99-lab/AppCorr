@@ -287,3 +287,20 @@ committing frequently so any point can be reverted to safely.
   get energy_desc's tkr=0.4 result next (expect it to ALSO hold up well, by the same mechanism --
   its groups are also globally energy-sorted, just reversed priority), then scale up
   grid-vs-energy_asc-vs-energy_desc at tkr=0.4 to nr=50 for a real confirmation.
+
+- **energy_desc + tkr=0.4 (n=20): did NOT preserve accuracy (85%, same as grid), and CORRECT_FORWARD
+  is drastically worse (184.5ms)**. This reveals the real mechanism, and explains why only
+  ASCENDING helps: per-group pruning keeps top-K by residual within each group. The group
+  COMPOSITION by energy-quartile is IDENTICAL between asc/desc (same underlying sorted-by-energy
+  cut points, just group-ID labels reversed: asc's group4 == desc's group1, etc.) -- what differs
+  is WHEN each quartile gets corrected. GroupTriggerPolicy corrects earlier groups through FEWER
+  layers, the LAST group through the FULL depth. Ascending order defers the highest-energy (most
+  important) patches to the LAST, most-thoroughly-corrected group. Descending gives the most
+  important patches only a SHALLOW, early correction, and wastes deep (many-layer) correction on
+  the low-value bulk instead -- explains both its worse accuracy AND its much higher latency.
+  **Ascending energy order dominates descending on both axes here** -- not a coin flip, a real
+  mechanistic reason.
+
+- **grid + tkr=0.4 at nr=50 (scale-up)**: top1=**80%** (down further from nr=20's 85%),
+  CORRECT_FORWARD=29.7ms (stable vs nr=20's 33.3ms). Need energy_asc's OWN nr=50 for a fair
+  same-n comparison -- launching that now as the decisive test.
