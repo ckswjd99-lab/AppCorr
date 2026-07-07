@@ -173,3 +173,11 @@ committing frequently so any point can be reverted to safely.
   (much lower than the earlier n=3 smoke test's ~80ms -- that was noise from averaging just 3
   samples including cold-start-adjacent variance; 25.7ms is the stable steady-state number).
   Proceeding with approx-only + interleaved-grid nr=20 next.
+
+- **approx-only nr=20**: top1=90.00% top5=100.00%, FULL_INFERENCE=33.3ms/sample.
+- **interleaved-grid nr=20**: top1=90.00% top5=100.00%, CORRECT_FORWARD=35.0ms APPROX_FORWARD=9.0ms
+  (ratio 3.9x -- consistent with the earlier finding: token_keep_ratio=1.0 means no real pruning,
+  so CORRECT processes all patches over a growing layer range while APPROX stays a fixed small
+  chunk; correction is inherently pricier here, not a regression). Same failure pattern as
+  approx-only (samples 6, 16 wrong in both) -- makes sense, both are working from degraded/
+  corrected versions of similar quality. Launching uniform_diff + energy_asc next.
