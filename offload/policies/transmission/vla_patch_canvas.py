@@ -8,8 +8,22 @@ base layer) + the task instruction text; groups 1..num_groups = true-resolution 
 `transmission_kwargs['grouping']` selects how groups 1..num_groups are formed from the per-patch
 residual RMS score (AppCorr's `residual_rms` mobile pscore, the true frame vs. the upsampled base):
 
-  "rank" (default, legacy): patches sorted by residual descending, then chopped into num_groups
-      equal chunks -- group 1 is the globally most-changed patches, wherever they sit in the image.
+  "sequential" (default): groups are contiguous *position* bands in raster order -- group 1 = the
+      top num_patches/num_groups rows of the image, group 2 = the next band down, ..., group
+      num_groups = the bottom band. Causally monotonic, so by the time group g is corrected, every
+      position it could attend to was already corrected in an earlier round. At coverage=1.0 this
+      reproduces the Phase 3 audit's finding of exact multi-round convergence (no position is ever
+      skipped, so nothing skipped needs revisiting). Within each band, patches are still ranked by
+      residual and only the top `coverage` fraction of *that band* is sent/corrected -- a no-op at
+      coverage=1.0, where every position in every band is sent; coverage < 1.0 reintroduces the
+      same accepted approximation as "rank" mode below (a skipped patch inside an arrived band
+      stays stale forever once a later band is corrected). Trade-off vs "rank": the first
+      (most latency-hidden) round is whatever content happens to sit in the top band, not
+      necessarily the most important content in the frame -- worse quality-per-byte under
+      coverage < 1.0 or a missed deadline, in exchange for exactness once everything arrives.
+
+  "rank" (legacy): patches sorted by residual descending, then chopped into num_groups equal
+      chunks -- group 1 is the globally most-changed patches, wherever they sit in the image.
       Fastest quality-per-byte for a single round, but group membership is scattered in *position*,
       so under interleaved multi-round correction a later group can contain a patch that is
       causally *before* (in the vision-token sequence) an already-corrected patch in an earlier
@@ -17,21 +31,6 @@ residual RMS score (AppCorr's `residual_rms` mobile pscore, the true frame vs. t
       analysis/experiments/audit_progressive_semantics.py). Exact only when all groups arrive AND
       get corrected together as a single round; not exact across multiple interleaved rounds even
       at coverage=1.0.
-
-  "sequential": groups are contiguous *position* bands (group 1 = the first num_patches/num_groups
-      positions in raster order, group 2 = the next band, ...) -- causally monotonic, so by the
-      time group g is corrected, every position it could attend to was already corrected in an
-      earlier round. At coverage=1.0 this reproduces the Phase 3 audit's finding of exact
-      multi-round convergence (no position is ever skipped, so nothing skipped needs revisiting).
-      Within each band, patches are still ranked by residual and only the top `coverage` fraction
-      of *that band* is sent/corrected -- so coverage < 1.0 reintroduces the same accepted
-      approximation as "rank" mode (a skipped patch inside an arrived band stays stale forever
-      once a later band is corrected); sequential grouping only guarantees exactness at
-      coverage=1.0, it does not remove the fundamental multi-round staleness tradeoff below that.
-      Trade-off vs "rank": the first (most latency-hidden) round is whatever content happens to
-      sit in the first position band, not necessarily the most important content in the frame --
-      worse quality-per-byte under coverage < 1.0 or a missed deadline, in exchange for exactness
-      once everything arrives.
 
 Decode (server side): rebuilds the *cumulative canvas* -- upsampled base with all so-far-arrived
 true patches pasted in. Faithful canvas semantics are REQUIRED for interleaved correction (the
@@ -58,7 +57,7 @@ class VLAPatchCanvasPolicy(ITransmissionPolicy):
             "num_groups": max(int(tk.get("num_groups", 4)), 1),
             "coverage": float(tk.get("coverage", 1.0)),
             "base_factor": int(tk.get("base_factor", 4)),
-            "grouping": str(tk.get("grouping", "rank")),
+            "grouping": str(tk.get("grouping", "sequential")),
             "ph": ph,
             "pw": pw,
         }
