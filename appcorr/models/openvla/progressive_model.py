@@ -239,11 +239,28 @@ class OpenVLAProgressiveModel:
 
     def vision_correct(self, pixel_values: torch.Tensor, all_arrived_idx: torch.Tensor,
                        new_idx: torch.Tensor) -> torch.Tensor:
-        """Cumulative vision correction on the current canvas (re-correcting earlier groups is cheap
-        for the small towers and tightens their cross-round staleness), rebuilding x0. Returns the
-        LLM token positions of the NEW group only (AppCorr-faithful per-group LLM correction).
-        If no LLM layer has been approximated yet, the stream is simply refreshed to the new x0
-        (the whole upcoming approx absorbs the correction; the policy skips CORRECT at frontier 0)."""
+        """Cumulative vision correction on the current canvas (re-correcting earlier groups is
+        cheap for the small towers and tightens their cross-round staleness), rebuilding x0.
+        Returns the LLM token positions of the NEW group only (AppCorr-faithful per-group LLM
+        correction). If no LLM layer has been approximated yet, the stream is simply refreshed to
+        the new x0 (the whole upcoming approx absorbs the correction; the policy skips CORRECT at
+        frontier 0).
+
+        Tried a "new-only" variant (correct only this round's newly-arrived patches, mirroring the
+        LLM's per-round correction, leaving earlier-round patches' outputs frozen) to cut
+        PREPARE_TOKENS's cost. Two things ruled it out: (1) it measured ZERO latency benefit
+        (8.377ms at 64 patches vs 8.354ms at 256 patches, essentially identical) -- unlike the LLM,
+        the vision tower's correct_forward() dominant costs (prepare_full_tokens' patch_embed
+        conv over the WHOLE image, and the per-layer full-[B,N,C] `x + blocks_out_sum`
+        reconstruction) don't scale with the corrected-subset size at all, so shrinking the
+        correction set bought nothing. (2) It also gives up bit-exactness *permanently*: unlike
+        the LLM's causal structure (where a well-ordered schedule still reaches exactness once
+        everything arrives), the vision towers are bidirectional, so a patch corrected early can
+        never become exact just because a later patch also arrives -- nothing ever revisits it.
+        Measured mean_abs_err=0.023, max_abs_err=1.25 vs a single-shot-full correction, even after
+        all 256 patches had arrived (verified the OLD/current cumulative behavior is bit-exact
+        there, max_abs_err=0.0). A real cost with no matching benefit -- reverted.
+        """
         dino_px, siglip_px = torch.split(pixel_values.to(dtype=torch.bfloat16), [3, 3], dim=1)
         dino_feat, self.cache_feature = self.dino_backbone.correct_forward(dino_px, all_arrived_idx, self.cache_feature, "dino")
         siglip_feat, self.cache_feature = self.siglip_backbone.correct_forward(siglip_px, all_arrived_idx, self.cache_feature, "siglip")
