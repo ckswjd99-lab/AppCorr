@@ -33,6 +33,16 @@ residual RMS score (AppCorr's `residual_rms` mobile pscore, the true frame vs. t
       worse quality-per-byte under coverage < 1.0 or a missed deadline, in exchange for exactness
       once everything arrives.
 
+  "energy": same residual-descending priority order as "rank", but group *boundaries* are chosen
+      so each group carries roughly equal total residual ENERGY (sum of squared per-patch RMS --
+      a low-order proxy for post-compression bit cost, since a patch's encoded size roughly grows
+      with its signal variance) instead of an equal patch COUNT. Since the order is
+      residual-descending, group 1 ends up SMALL (a handful of high-residual patches already sums
+      to a quarter of the total energy) while later groups are progressively LARGER (many
+      low-residual patches needed to reach the same energy share) -- the intent being that every
+      group costs roughly the same to transmit/compress, not the same to count. Shares "rank"'s
+      scattered-position caveat (not causally monotonic; exact only as a single combined round).
+
 Decode (server side): rebuilds the *cumulative canvas* -- upsampled base with all so-far-arrived
 true patches pasted in. Faithful canvas semantics are REQUIRED for interleaved correction (the
 approx continuation above the frontier consumes reconstructed stream rows -- see the semantics
@@ -104,6 +114,29 @@ class VLAPatchCanvasPolicy(ITransmissionPolicy):
                 band_send_n = max(1, int(round(len(band_positions) * p["coverage"])))
                 band_ranked = band_positions[np.argsort(-per_patch[band_positions])][:band_send_n]
                 splits.append(np.sort(band_ranked))  # ascending position order within the group too
+        elif p["grouping"] == "energy":
+            # Residual-descending order (like "rank"), but group boundaries fall at equal shares
+            # of cumulative *energy* (sum of squared RMS) rather than equal patch count -- see
+            # module docstring.
+            order = np.argsort(-per_patch)
+            num_send = max(1, int(round(len(order) * p["coverage"])))
+            chosen = order[:num_send]
+            G = p["num_groups"]
+            energy = per_patch[chosen].astype(np.float64) ** 2
+            cum_energy = np.cumsum(energy)
+            total_energy = float(cum_energy[-1]) if cum_energy.size else 0.0
+            if total_energy <= 0.0 or len(chosen) <= G:
+                splits = np.array_split(chosen, G)
+            else:
+                bounds = [0]
+                for gid in range(1, G):
+                    target = total_energy * gid / G
+                    end = int(np.searchsorted(cum_energy, target, side="left")) + 1
+                    end = max(end, bounds[-1] + 1)              # every group gets >=1 patch
+                    end = min(end, len(chosen) - (G - gid))     # leave >=1 patch for each group after this one
+                    bounds.append(end)
+                bounds.append(len(chosen))
+                splits = [chosen[bounds[i]:bounds[i + 1]] for i in range(G)]
         else:
             order = np.argsort(-per_patch)
             num_send = max(1, int(round(len(order) * p["coverage"])))

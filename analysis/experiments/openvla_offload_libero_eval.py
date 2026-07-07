@@ -45,6 +45,8 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=220)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--num-groups", type=int, default=4)
+    parser.add_argument("--grouping", type=str, default="rank", choices=["rank", "sequential", "energy"],
+                         help="VLAPatchCanvasPolicy transmission_kwargs['grouping'].")
     parser.add_argument("--coverage", type=float, default=1.0)
     parser.add_argument("--base-factor", type=int, default=4)
     parser.add_argument("--schedules", type=str, default="interleaved,sequential,full")
@@ -93,6 +95,7 @@ def make_config(args, schedule: str):
         scheduler_kwargs=scheduler_kwargs,
         transmission_kwargs={
             "num_groups": args.num_groups,
+            "grouping": args.grouping,
             "coverage": args.coverage,
             "base_factor": args.base_factor,
             "text": "",
