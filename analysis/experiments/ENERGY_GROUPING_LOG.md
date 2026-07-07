@@ -357,3 +357,35 @@ try one more angle (larger num_groups, e.g. 8, for finer-grained/less-skewed gro
 check before considering this investigation's sweep phase complete; if that also shows no robust
 effect, will finalize documentation and stop actively sweeping (task #19 -> completed either way,
 with an honest negative/inconclusive result being a legitimate outcome).
+
+- **num_groups=9 test: both grid and energy_asc crashed identically** ("Missing cached
+  layer36_server_pscore. It must be produced during approx.") -- a PRE-EXISTING bug in
+  GroupTriggerPolicy unrelated to grouping strategy: chunk_size = total_layers // num_groups =
+  40 // 9 = 4 (floor), so only 9*4=36 of 40 layers ever get approximated before the final group's
+  CORRECT_FORWARD(0, 40) tries to read cached data for layers 36-40 that was never produced.
+  Confirms num_groups must evenly divide total_layers for this scheduler. Out of scope to fix
+  here (affects grid too, not something introduced by energy grouping); noting it as a discovered
+  issue for a future session, not chasing further given context budget.
+
+## FINAL VERDICT (this session)
+
+Energy-based grouping (energy_asc/energy_desc) is implemented, correct, and thoroughly tested,
+but **does not show a validated accuracy or latency win** over the existing grid/uniform_diff
+strategies for the DINOv3 classifier at num_groups=4 (the only cleanly-testable group count given
+the num_groups-must-divide-total_layers constraint discovered above). The one promising signal
+(energy_asc preserving accuracy under real pruning, 90% vs grid's 85% at nr=20) did not survive
+scaling to nr=50 (82% vs 80%, noise-level). energy_desc is clearly worse on both axes, with a
+clean mechanistic explanation (see above). Per the original instructions, NOT proceeding to
+COCO/ADE20K/NYUv2 extension (task #20) since the prerequisite win was not validated.
+
+Real, reusable value delivered regardless: the energy_asc/energy_desc grouping implementation
+itself (a legitimate new option, just not a proven win here), the general-purpose
+`dinov3_classifier_offload_eval.py` driver (reusable for any future classifier grouping/pruning
+sweep), two real bugs found and fixed (`laplacian.py`'s decode() upsample gate, this session's
+num_groups/total_layers divisibility issue documented above), and a validated cross-check that
+the OpenVLA fork's frontier-scheduling fix (develop/openvla-progressive-prefill, commit 38aa8d1)
+was faithful to AppCorr's original GroupTriggerPolicy design.
+
+Task #19 (sweep) -> complete, with an honest negative/inconclusive result on the core question.
+Task #20 (extend to COCO/ADE20K/NYUv2) -> not started, correctly gated on an unvalidated
+prerequisite.
