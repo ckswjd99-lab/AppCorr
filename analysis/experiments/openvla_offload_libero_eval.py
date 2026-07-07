@@ -53,6 +53,11 @@ def parse_args():
                               "(OpenVLAExecutor._filter_by_server_pscore); unset = no filtering. "
                               "Units match progressive_vla_libero_eval.py's attnthresh_<N> (real "
                               "value, e.g. 200e-6 for the validated attnthresh_200 setting).")
+    parser.add_argument("--sdpa-query-bucket-size", type=int, default=0,
+                         help="Pad CORRECT_FORWARD's query-set size up to a multiple of this "
+                              "(OpenVLAProgressiveModel._bucketize_token_idx); 0 = disabled. "
+                              "Fixes the cuBLAS/SDPA per-shape one-time cost triggered by a "
+                              "data-dependent query size (e.g. under server_pscore_threshold).")
     return parser.parse_args()
 
 
@@ -70,6 +75,8 @@ def make_config(args, schedule: str):
     scheduler_kwargs = {"schedule": schedule, "total_layers": 32}
     if args.server_pscore_threshold is not None:
         scheduler_kwargs["server_pscore_threshold"] = args.server_pscore_threshold
+    if args.sdpa_query_bucket_size:
+        scheduler_kwargs["sdpa_query_bucket_size"] = args.sdpa_query_bucket_size
 
     return ExperimentConfig(
         exp_id=f"vla_{schedule}",
