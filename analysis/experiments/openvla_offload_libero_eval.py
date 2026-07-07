@@ -17,6 +17,7 @@ Run (from repo root, `openvla` conda env, LIBERO software-EGL env vars set):
 """
 
 import argparse
+import copy
 import math
 import multiprocessing
 import queue as queue_mod
@@ -188,6 +189,23 @@ def main():
             control_q.put(("CONFIG", config))
             time.sleep(1.0)  # let CONFIG reach the worker ahead of the first patches
 
+            # Offline warmup: a schedule change reloads the model fresh (worker.py's CONFIG
+            # handler always rebuilds the executor), so the bucket-shape warmup
+            # (OpenVLAProgressiveModel._maybe_warmup_llm_correct_buckets) and any other
+            # first-call cold-start cost (cuDNN/cuBLAS heuristics, CUDA kernel loading) would
+            # otherwise land inside the first *timed* episode. Run one short, throwaway episode
+            # first and discard its stats entirely -- this is the "offline phase" the real
+            # per-op latency breakdown should not include.
+            print(f"\n[driver] === Schedule: {schedule}: offline warmup episode (discarded) ===")
+            warmup_args = copy.copy(args)
+            warmup_args.max_steps = min(args.max_steps, 15)
+            t0 = time.time()
+            run_episode(
+                args.task_suite, task_ids[0], warmup_args, encoder, config, sched_q, result_q,
+                defaultdict(list), defaultdict(int),
+            )
+            print(f"    warmup episode done, wall={time.time() - t0:.1f}s (excluded from all stats below)")
+
             op_times = defaultdict(list)
             correction_stats = defaultdict(int)
             outcomes = []
@@ -226,6 +244,15 @@ def main():
     for schedule, ops in timing.items():
         parts = "  ".join(f"{k}={v[0] * 1000:.1f}({v[1]})" for k, v in sorted(ops.items()))
         print(f"    {schedule:12s}  {parts}")
+
+    print("\n[driver] === APPROX_FORWARD vs CORRECT_FORWARD ===")
+    for schedule, ops in timing.items():
+        a = ops.get("APPROX_FORWARD")
+        c = ops.get("CORRECT_FORWARD")
+        if a and c:
+            ratio = c[0] / a[0] if a[0] else float("nan")
+            print(f"    {schedule:12s}  APPROX={a[0]*1000:.2f}ms({a[1]})  "
+                  f"CORRECT={c[0]*1000:.2f}ms({c[1]})  CORRECT/APPROX={ratio:.2f}x")
 
     print("\n[driver] === Per-task breakdown ===")
     for schedule, outcomes in results.items():
