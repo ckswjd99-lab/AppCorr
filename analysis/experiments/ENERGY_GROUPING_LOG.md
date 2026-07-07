@@ -181,3 +181,22 @@ committing frequently so any point can be reverted to safely.
   chunk; correction is inherently pricier here, not a regression). Same failure pattern as
   approx-only (samples 6, 16 wrong in both) -- makes sense, both are working from degraded/
   corrected versions of similar quality. Launching uniform_diff + energy_asc next.
+
+- **uniform_diff + energy_asc nr=20**: both top1=90% top5=100%, IDENTICAL failure pattern to grid
+  (samples 6, 16) -- expected at token_keep_ratio=1.0 (everything eventually gets corrected
+  regardless of group order, so final accuracy converges the same way).
+  Latency differs a lot though: grid CORRECT=35.0ms, uniform_diff CORRECT=56.2ms, energy_asc
+  CORRECT=94.1ms (APPROX also creeps up: 9.0 -> 7.0 -> 15.8ms). HYPOTHESIS: this is the same
+  cuBLAS/SDPA shape-dispatch tax found and fixed on the OpenVLA side this session (see
+  develop/openvla-progressive-prefill commit cf4c217) -- grid always makes exactly
+  256/num_groups patches per group (constant shape every call, cheap), while uniform_diff/
+  energy_asc balance by a DATA-DEPENDENT quantity (byte size / energy), producing variable group
+  sizes -- a novel shape pays a one-time dispatch cost almost every call. energy_asc is worse
+  than uniform_diff because energy splits are more skewed (few high-energy + many low-energy
+  patches), so group sizes vary more per image. AppCorr's DINOv3 correct_partial_token already
+  HAS an `sdpa_query_bucket_size` mechanism (block.py/attention.py) for exactly this, just not
+  enabled in these configs (appcorr_kwargs has no such key, defaults to 0/disabled). Plan: add a
+  --sdpa-query-bucket-size CLI override to the driver and test whether enabling it closes the gap
+  for energy_asc/uniform_diff, before drawing conclusions about which grouping strategy is
+  "really" better latency-wise. Launching energy_desc now to complete the primary 4-way
+  comparison first.
