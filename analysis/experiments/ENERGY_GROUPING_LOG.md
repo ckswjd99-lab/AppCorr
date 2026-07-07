@@ -125,3 +125,29 @@ committing frequently so any point can be reverted to safely.
   `openvla`): loading DINOv3-7B weights via mmap, waiting on first real result before trusting
   the driver end-to-end. If this works, will run approx-only and interleaved (grid baseline)
   smoke tests next, then start the actual sweep.
+
+- **Full-baseline smoke test PASSED**: 3/3 correct (top1=top5=100%, trivially small n),
+  `FULL_INFERENCE` mean 80.1ms via clean CUDA-event timing. Sample 1's wall-clock (166s) was just
+  DINOv3-7B mmap load overlapping with the first request (my naive `time.sleep(1.0)` after CONFIG
+  is nowhere near enough for a 7B mmap load) -- cosmetic only, doesn't affect the CUDA-event-based
+  per-op latency numbers that actually matter. Noted as a known driver quirk, not yet fixed (low
+  priority -- could add a discarded-warmup-request like the OpenVLA driver's pattern later).
+
+- **Found and fixed two real bugs** running the other two smoke tests in parallel:
+  1. **My own shell scripting mistake**: launched both background jobs in one Bash call with a
+     single leading `cd AppCorr && ... &`; the `cd` was scoped to the FIRST backgrounded subshell
+     only, so the SECOND job inherited the stale pre-existing cwd
+     (`/NHNHOME/share/cjpark/openvla`) and failed with "can't open file ... openvla/analysis/...".
+     Fixed by wrapping each backgrounded job in its own `(cd ... && ... &)` subshell.
+  2. **Real bug in `offload/policies/transmission/laplacian.py`** (commit 3b375c1):
+     `_process_image_decode`/`_process_image_decode_preserve` only did the final
+     upsample-to-native-resolution step when `0 in levels` (i.e. level 0 was an EXPLICIT
+     configured residual level). `imnet_approx_only_l2.json` uses `pyramid_levels=[2]` alone (a
+     single heavily-downsampled base, no residual levels), so this was never true and `decode()`
+     returned a 64x64 image where a 256x256 one was expected -- crashed with `could not broadcast
+     input array from shape (64,64,3) into shape (256,256,3)`. Fixed by making the final upsample
+     unconditional on `prev_lvl > 0` alone (safe: for normal multi-level configs the residual loop
+     already reaches level 0 naturally, so this fallback branch never fires there anyway).
+     Verified with a pure-numpy encode/decode round trip before touching the GPU again.
+  Relaunched both smoke tests (approx_only_smoketest2, interleaved_grid_smoketest2) with both
+  fixes applied.
