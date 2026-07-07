@@ -200,3 +200,27 @@ committing frequently so any point can be reverted to safely.
   for energy_asc/uniform_diff, before drawing conclusions about which grouping strategy is
   "really" better latency-wise. Launching energy_desc now to complete the primary 4-way
   comparison first.
+
+- **energy_desc nr=20**: top1=90% top5=100% (same failure pattern), CORRECT_FORWARD=46.5ms
+  APPROX_FORWARD=6.5ms -- notably CHEAPER than energy_asc's 94.1ms/15.8ms despite both balancing
+  the exact same total energy per group (just reversed priority order). Plausible reason: desc
+  puts the FEW high-energy patches in group 1 (small, arrives/corrects early when frontier is
+  still shallow -- cheap regardless of shape tax) and the MANY low-energy patches in later groups
+  (large, but by then frontier is deep -- more layers to correct, but a SINGLE big consistent
+  group each time may hit fewer distinct shapes than asc's early small+few, later huge+few
+  alternating pattern). Not fully explained yet; the bucket-size test below should help clarify
+  whether this is really about shape variability or something else (e.g. real workload
+  differences from WHICH specific patches enter which group).
+
+  Current full comparison (nr=20, token_keep_ratio=1.0, no bucketing):
+  | mode              | top1 | top5 | CORRECT_FORWARD | APPROX_FORWARD |
+  |-------------------|------|------|------------------|-----------------|
+  | full-baseline     | 85%  | 100% | n/a (FULL_INFERENCE=25.7ms) | |
+  | approx-only       | 90%  | 100% | n/a (FULL_INFERENCE=33.3ms) | |
+  | interleaved-grid  | 90%  | 100% | 35.0ms | 9.0ms |
+  | uniform_diff      | 90%  | 100% | 56.2ms | 7.0ms |
+  | energy_asc        | 90%  | 100% | 94.1ms | 15.8ms |
+  | energy_desc       | 90%  | 100% | 46.5ms | 6.5ms |
+
+  Testing --sdpa-query-bucket-size next to check if it closes the gap for the
+  variable-group-size strategies (energy_asc worst case, uniform_diff moderate case).
