@@ -127,7 +127,10 @@ class OpenVLAProgressiveModel:
         self.num_vision_tokens = None  # set on first approx_forward once we know patch count
         self.seq_len = None
         self.permanent_group = None
-        self._warmup_done = False
+        # NOTE: _warmup_done is intentionally NOT reset here -- the bucket-shape warmup
+        # (_maybe_warmup_llm_correct_buckets) is a one-time, model-instance-lifetime cost (cuBLAS's
+        # per-shape algorithm cache persists across sessions), not a per-episode one. Resetting it
+        # per session would re-pay the ~10s warmup on every episode instead of just the first.
 
     def _project_vision(self, dino_patch_feat: torch.Tensor, siglip_patch_feat: torch.Tensor) -> torch.Tensor:
         fused = torch.cat([dino_patch_feat, siglip_patch_feat], dim=2)
@@ -221,7 +224,7 @@ class OpenVLAProgressiveModel:
         self.permanent_group = None
         self.llm_frontier = 0  # LLM layers approximated so far in this session
         self._x0 = None
-        self._warmup_done = False
+        # _warmup_done is NOT reset here -- see start_session()'s note; one-time per model instance.
 
     def vision_approx(self, pixel_values: torch.Tensor):
         """Vision approx on the (base-layer) canvas + build the multimodal x0. Does NOT run any
@@ -293,7 +296,9 @@ class OpenVLAProgressiveModel:
         real, timed control steps. Ported from AppCorr's DINOv3 depther/M2F-segmentor
         `_maybe_warmup_*` (offload/server/model/dinov3_{depther,segmentor_m2f}.py): scratch
         state only, real `self.cache_feature` is never touched. A no-op unless
-        `sdpa_query_bucket_size > 0`; runs once per session (guarded by `_warmup_done`).
+        `sdpa_query_bucket_size > 0`; runs once per model instance, not per session (guarded by
+        `_warmup_done`, which session-start methods deliberately do NOT reset) -- an offline,
+        amortized cost, not a per-episode one.
 
         All 32 Llama decoder layers share identical GEMM/attention shapes (uniform hidden size,
         head count, head_dim), so warming with real per-layer scratch caches (matching AppCorr's
