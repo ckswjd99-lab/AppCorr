@@ -151,3 +151,18 @@ committing frequently so any point can be reverted to safely.
      Verified with a pure-numpy encode/decode round trip before touching the GPU again.
   Relaunched both smoke tests (approx_only_smoketest2, interleaved_grid_smoketest2) with both
   fixes applied.
+
+- **Round 1 of nr=20 sweep (full-baseline + approx-only) FAILED**: both timed out after 300s
+  waiting for InferenceResult, with NO worker startup log lines at all (previous successful runs
+  always showed "[Worker] Started." within ~1-3min of model mmap loading; here neither log
+  advanced past "[Scheduler] Configured with BatchCountBased"). GPU memory confirmed idle (4MiB/
+  183GB on both GPUs) at time of check -- not a GPU OOM/contention issue. No conflicting
+  dinov3_classifier_offload_eval processes found running or zombied. Other long-running,
+  pre-existing (Jul01) user processes (offload/server/main.py + offload/mobile/main.py bound to
+  TCP ports 39990/39991 for separate COCO/ADE20K experiments) are unrelated -- my driver uses
+  pure in-process multiprocessing.Queue, no network ports, so no plausible port conflict there.
+  Suspect a transient worker-process startup failure (possibly swallowed exception before the
+  worker's own stdout/stderr was established) rather than a real code regression, since nothing
+  changed between this attempt and the last successful smoke test 2 rounds ago. Retrying once
+  before deeper investigation; if it fails identically, will add more verbose/immediate-flush
+  logging around SchedulerModule/WorkerModule startup to pin down the actual cause.
