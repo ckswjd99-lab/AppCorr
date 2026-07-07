@@ -284,8 +284,12 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
                 curr_img = np.clip(curr_img.astype(np.int16) + res_img, 0, 255).astype(np.uint8)
             
             prev_lvl = lvl
-        
-        if prev_lvl > 0 and 0 in levels:
+
+        # Always finish at native resolution, even if 0 wasn't an explicit configured level
+        # (e.g. pyramid_levels=[2] alone -- a heavily-downsampled "approx-only" base with no
+        # residual levels at all still needs to be upsampled back up to image_shape before
+        # the model sees it, matching what every other pyramid_levels config produces).
+        if prev_lvl > 0:
             curr_img = self._iterative_upsample(curr_img, prev_lvl, 0, H, W)
 
         return b_idx, curr_img
@@ -336,7 +340,8 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
             prev_lvl = lvl
 
-        if prev_lvl > 0 and 0 in levels:
+        # Same rationale as _process_image_decode: always finish at native resolution.
+        if prev_lvl > 0:
             tgt_hw = self._target_hw_for_level(config, 0, target_shape)
             curr_img = self._iterative_upsample_to_hw(curr_img, prev_lvl, 0, tgt_hw)
 
