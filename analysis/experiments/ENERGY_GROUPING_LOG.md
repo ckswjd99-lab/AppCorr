@@ -166,3 +166,10 @@ committing frequently so any point can be reverted to safely.
   changed between this attempt and the last successful smoke test 2 rounds ago. Retrying once
   before deeper investigation; if it fails identically, will add more verbose/immediate-flush
   logging around SchedulerModule/WorkerModule startup to pin down the actual cause.
+
+- **Retry succeeded — prior failure was transient, not reproducible.** full_baseline_n20_retry:
+  20/20 processed, **top1=85.00% top5=100.00%** (first meaningful, non-trivial accuracy signal,
+  spanning 20 real classes via the strided-sampling fix). `FULL_INFERENCE` mean=25.7ms/sample
+  (much lower than the earlier n=3 smoke test's ~80ms -- that was noise from averaging just 3
+  samples including cold-start-adjacent variance; 25.7ms is the stable steady-state number).
+  Proceeding with approx-only + interleaved-grid nr=20 next.
