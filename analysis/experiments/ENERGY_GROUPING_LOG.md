@@ -72,3 +72,56 @@ committing frequently so any point can be reverted to safely.
   `dinov3_classifier.py` executor, `progressive.py` transmission policy, `offload/mobile/dataset.py`
   loaders. Confirmed ImageNet val path and DINOv3-7B weight availability. About to implement the
   energy grouping code.
+
+- **Implemented `_apply_energy_grouping`** in `progressive.py` (commit 09e655e): true residual
+  energy (not compressed byte size), equal total energy per group, `descending` param for
+  asc/desc. Added `residual_energy` to every candidate dict in
+  `_collect_residual_candidates_vectorized` (computed unconditionally, independent of the
+  configured `mobile_pscore`). Wired as `energy_asc`/`energy_desc` grouping_strategy values,
+  joining the same data-dependent "collect all then group" branch as `uniform_diff` in
+  `encode()` (spatial strategies like grid/block_grid/geometric use a separate precomputed path
+  that can't see patch content). Verified with a synthetic 20-high/236-low energy split: both
+  directions balance total energy per group within ~10% of target, with the expected group-1
+  content reversal between asc and desc.
+
+- **Traced GroupTriggerPolicy** (offload/policies/scheduling/group_trigger.py) precisely --
+  confirms group_id=0 (base layer) advances the LLM^H^H backbone-layer frontier IMMEDIATELY
+  (`current_chunk_start=0*chunk_size=0`, so no correct(), just approx(0,chunk_size)), and every
+  subsequent group_id in [1, num_groups) corrects at the CURRENT frontier then advances, with the
+  LAST group_id (== num_groups) doing a final correct-through-full-depth with no further advance.
+  This is 0-indexed groups (0..num_groups), vs. the 1-indexed scheme I used for the OpenVLA fork
+  (1..num_groups, with group 0 as a separate "base" concept) -- same semantics, different
+  numbering convention. Notably this INDEPENDENTLY CONFIRMS the frontier-scheduling fix I made
+  earlier this session to the OpenVLA fork's vla_interleaved_static.py (38aa8d1: group 0 must
+  advance the frontier immediately, not stay at 0) was faithful to AppCorr's actual original
+  design -- good cross-check, unrelated repo/branch but same underlying mechanism.
+
+- **Found the 3-condition mapping onto EXISTING configs**, no new scheduling code needed:
+  - "approx-only" = `imnet_approx_only_l2.json` (Laplacian transmission, single heavily
+    downsampled pyramid level, `BatchCountBasedPolicy` -> unconditionally issues FULL_INFERENCE
+    -- i.e. the stock model call, but on a degraded/blurred input only).
+  - "full baseline" = `imnet_sequential.json` (FullImageCompression transmission, lossless PNG of
+    the complete image, same `BatchCountBasedPolicy` -> FULL_INFERENCE on the TRUE image = ground
+    truth).
+  - "interleaved correction" = `imnet_interleaved_g4.json` (ProgressiveLaplacian +
+    `GroupTriggerPolicy`, the real approx/correct pipeline); `--grouping-strategy` CLI override
+    swaps grid/uniform_diff/energy_asc/energy_desc without needing per-strategy config files.
+  All three conditions run through the IDENTICAL driver code, just swapping which config JSON is
+  loaded (see `dinov3_classifier_offload_eval.py`).
+
+- **Wrote `analysis/experiments/dinov3_classifier_offload_eval.py`**: drives the real
+  SchedulerModule+WorkerModule pipeline one ImageNet image at a time (batch_size forced to 1 for
+  clean per-image latency + simple result indexing), reusing
+  `offload.mobile.dataset.ImageNetLoader` for top1/top5 bookkeeping (already implements exactly
+  this), and CUDA-event server_events for per-op latency (same mechanism validated all session on
+  the OpenVLA side -- `end_ev.synchronize()` before reading `elapsed_time()`, not Python wall
+  clock). `--num-samples`/`--grouping-strategy`/`--num-groups`/`--token-keep-ratio` CLI overrides
+  for the sweep. `--data-root` defaults to the real path
+  `/NHNHOME/share/cjpark/data/imagenet_val` (NOT `~/data/imagenet_val`, which the upstream scripts
+  default to but doesn't exist on this machine).
+
+- **Launched first smoke test** (nr=3, `imnet_sequential.json` = full baseline, using the
+  `appcorr` conda env which is the dedicated env for this side of the repo, distinct from
+  `openvla`): loading DINOv3-7B weights via mmap, waiting on first real result before trusting
+  the driver end-to-end. If this works, will run approx-only and interleaved (grid baseline)
+  smoke tests next, then start the actual sweep.
