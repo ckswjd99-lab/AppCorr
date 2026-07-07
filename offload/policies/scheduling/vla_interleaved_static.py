@@ -5,12 +5,18 @@ Static scheduling for the OpenVLA progressive-prefill executor. One policy class
 (selected by scheduler_kwargs['schedule']) so all baselines share the same instruction/monitoring
 path:
 
-  interleaved (default): the static counterpart of ADE20KInterleavedDynamicPolicy. LLM approximation
-      advances to a fixed frontier per group; each arriving residual group g is corrected only
-      through LLM layers (0, frontier_g); layers above the frontier absorb the correction as part
-      of their single normal approx execution. Frontiers default to uniform spacing:
-      f_g = (g-1) * total_layers / num_groups (group 1 arrives before any LLM layer ran -> its
-      correction enters purely via PREPARE_TOKENS' x0 rebuild).
+  interleaved (default): the static counterpart of ADE20KInterleavedDynamicPolicy. Group 0 (the
+      base layer) immediately advances the LLM approx frontier to f_1 = total_layers / num_groups
+      -- mirroring ADE20KInterleavedDynamicPolicy's group 0 handler, which starts queuing
+      layer-by-layer approx progress right away rather than waiting for the first residual group.
+      Each subsequently-arriving residual group g (1..num_groups) is corrected through the CURRENT
+      frontier (0, f_g) -- reached by the PRECEDING step -- then the frontier advances to
+      f_{g+1} = g * total_layers / num_groups (or stays at total_layers for the last group, which
+      needs no further approx). Frontiers default to uniform spacing: f_g = g * total_layers /
+      num_groups for g=1..num_groups. Every residual group gets a real CORRECT_FORWARD this way --
+      an earlier version of this policy left group 0 at frontier 0, which meant group 1 always
+      found nothing yet approximated to correct (a bug, not intended AppCorr semantics; fixed by
+      removing group 0's special-cased "stay at zero" frontier).
 
   sequential: classic approx-then-correct (ADE20KApproxCorrectPolicy shape): full approx on the
       base layer, residual groups only accumulate into the canvas, one full-depth CORRECT at the
@@ -49,7 +55,7 @@ class VLAInterleavedStaticPolicy(ISchedulingPolicy):
         if explicit:
             return [int(f) for f in explicit]
         G, L = self._num_groups(config), self._total_layers(config)
-        return [round((g - 1) * L / G) for g in range(1, G + 1)]
+        return [round(g * L / G) for g in range(1, G + 1)]
 
     @staticmethod
     def _finish(instructions: List[Instruction]) -> None:
