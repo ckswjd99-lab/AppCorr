@@ -73,9 +73,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         yield base_patches # Yield Group 0 (Base Layer) Immediately!
 
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
+        DATA_DEPENDENT_STRATEGIES = {'uniform_diff', 'energy_asc', 'energy_desc'}
 
-        if grouping_strategy == 'uniform_diff':
-            # Collect all then group (Non-pipelined fallback)
+        if grouping_strategy in DATA_DEPENDENT_STRATEGIES:
+            # Collect all then group (Non-pipelined fallback) -- these strategies need to see
+            # actual patch content (size or energy) before assigning groups.
             batch_candidates = [[] for _ in range(B)]
             with ThreadPoolExecutor() as executor:
                 futures = [
@@ -84,10 +86,14 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 ]
                 for b, f in enumerate(futures):
                     batch_candidates[b] = f.result()
-                    
+
             residual_patches = []
             if any(batch_candidates):
-                self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
+                if grouping_strategy == 'uniform_diff':
+                    self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
+                else:
+                    descending = (grouping_strategy == 'energy_desc')
+                    self._apply_energy_grouping(residual_patches, batch_candidates, num_groups, descending=descending)
 
             group_counts = {}
             for p in residual_patches:
@@ -389,9 +395,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             data = crop.tobytes()
             compressed = zlib.compress(data, level=compression)
             pscore_hint = self._compute_patch_pscore_hint(crop, mobile_pscore)
+            residual_energy = self._compute_patch_residual_energy(crop)
             candidate_list.append({
                 'image_idx': b_idx, 'spatial_idx': i, 'res_level': lvl,
                 'data': compressed, 'size': len(compressed), 'pscore_hint': pscore_hint,
+                'residual_energy': residual_energy,
             })
 
     def _apply_random_grouping(self, final_patch_list, batch_candidates, num_groups):
@@ -493,6 +501,56 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         rank_to_group_id = np.searchsorted(boundaries, cumsum_sizes) + 1
         
         # Assign groups to patches
+        for b in range(B):
+            for rank in range(N):
+                spatial_idx_at_rank = sorted_indices[b, rank]
+                assigned_group = int(rank_to_group_id[rank])
+                c = batch_candidates[b][spatial_idx_at_rank]
+                self._add_patch(final_patch_list, c, assigned_group)
+
+    def _apply_energy_grouping(self, final_patch_list, batch_candidates, num_groups, descending=False):
+        """Assign group IDs so each group carries roughly equal total residual ENERGY (sum of
+        squared residual pixel values, `_compute_patch_residual_energy` -- true signal energy, not
+        `_apply_uniform_diff_grouping`'s compressed-byte-size proxy and independent of whatever
+        `mobile_pscore` is configured for pscore_hint).
+
+        `descending=True` ("energy_desc"): group 1 gets the highest-energy (fewest, most
+        informative) patches first -- latency-hiding priority order, mirroring the OpenVLA fork's
+        "energy" transmission mode (offload/policies/transmission/vla_patch_canvas.py).
+        `descending=False` ("energy_asc", default): group 1 gets the lowest-energy (most numerous,
+        least informative) patches first, deferring high-value content to later groups -- the
+        reverse priority. Testing both directions against the classifier/detector/segmentor/depther
+        pipelines to see whether front-loading high-value content actually matters for accuracy
+        under a fixed group/latency budget (see analysis/experiments/ENERGY_GROUPING_LOG.md).
+        """
+        B = len(batch_candidates)
+        if B == 0: return
+        N = len(batch_candidates[0])
+        if N == 0: return
+
+        energy_matrix = np.zeros((B, N), dtype=np.float64)
+        for b in range(B):
+            for i in range(N):
+                energy_matrix[b, i] = float(batch_candidates[b][i].get('residual_energy', 0.0))
+
+        sort_key = -energy_matrix if descending else energy_matrix
+        sorted_indices = np.argsort(sort_key, axis=1)
+        sorted_energy = np.take_along_axis(energy_matrix, sorted_indices, axis=1)
+
+        avg_sorted_energy = np.mean(sorted_energy, axis=0)
+        cumsum_energy = np.cumsum(avg_sorted_energy)
+        total_energy = cumsum_energy[-1]
+
+        if total_energy <= 0 or num_groups <= 0:
+            for b in range(B):
+                for c in batch_candidates[b]:
+                    self._add_patch(final_patch_list, c, 1)
+            return
+
+        target_sum = total_energy / num_groups
+        boundaries = np.arange(1, num_groups) * target_sum
+        rank_to_group_id = np.searchsorted(boundaries, cumsum_energy) + 1
+
         for b in range(B):
             for rank in range(N):
                 spatial_idx_at_rank = sorted_indices[b, rank]
