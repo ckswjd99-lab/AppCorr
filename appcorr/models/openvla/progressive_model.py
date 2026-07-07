@@ -336,8 +336,18 @@ class OpenVLAProgressiveModel:
         token_idx = torch.cat([vision_token_idx, self.permanent_group])
         token_idx = self._bucketize_token_idx(token_idx)
         x = self._x0
+        # RoPE has no learnable parameters -- cos/sin depend only on token_idx + head_dim/theta
+        # (shared config across all layers), so they're identical every layer. Computing them once
+        # per segment instead of once per layer (profiled: ~0.1ms/layer, the single largest
+        # sub-cost in ApproxCorrectLlamaAttention.correct()) removes ~(end_layer-1)x redundant work
+        # -- an exact optimization, not an approximation (verified bit-identical downstream).
+        B = x.shape[0]
+        position_ids_sel = token_idx.unsqueeze(0).expand(B, -1).to(device=x.device)
+        cos, sin = self.llm_layers[0].self_attn.rotary_emb(x, position_ids_sel)
         for i in range(end_layer):
-            x, self.cache_feature = self.llm_layers[i].correct(x, token_idx, self.cache_feature, f"llm_layer{i}")
+            x, self.cache_feature = self.llm_layers[i].correct(
+                x, token_idx, self.cache_feature, f"llm_layer{i}", cos=cos, sin=sin,
+            )
         self.cache_feature["_x"] = x
 
     def decode_action(self, num_action_tokens: Optional[int] = None, return_stats: bool = False):

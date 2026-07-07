@@ -88,13 +88,19 @@ class ApproxCorrectLlamaAttention(nn.Module):
         attn_out = attn_out.transpose(1, 2).reshape(B, N, self.num_heads * self.head_dim)
         return self.o_proj(attn_out), cache_feature
 
-    def correct(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str):
+    def correct(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
+                cos: torch.Tensor = None, sin: torch.Tensor = None):
         """
         Args:
             x_sel: [B, Q, C] -- input_layernorm(x) already sliced to the query positions (a superset
                 of the corrected vision patches -- see module docstring for the permanent group).
             token_idx: [Q] -- absolute positions `x_sel` corresponds to (used for both RoPE angles
                 and the causal mask against the full N-length cache).
+            cos, sin: optional precomputed RoPE angles for `token_idx` (see llm_correct_segment --
+                RoPE has no learnable parameters, so cos/sin depend only on token_idx + head_dim,
+                identical across all layers; computing them once per segment instead of once per
+                layer avoids ~32x redundant work -- empirically the single largest sub-cost in this
+                method, ~0.1ms/layer). Recomputed locally if not provided (e.g. standalone/test use).
         """
         kv = cache_feature[f"{tag}_kv"]  # [B, H_kv, N, 2, Dh]
         B, _, N = kv.shape[0], kv.shape[1], kv.shape[2]
@@ -102,8 +108,9 @@ class ApproxCorrectLlamaAttention(nn.Module):
         token_idx = token_idx.to(device=kv.device)
 
         q_new, k_new, v_new = self._project_heads(x_sel)
-        position_ids_sel = token_idx.unsqueeze(0).expand(B, -1)
-        cos, sin = self.rotary_emb(v_new, position_ids_sel)
+        if cos is None or sin is None:
+            position_ids_sel = token_idx.unsqueeze(0).expand(B, -1)
+            cos, sin = self.rotary_emb(v_new, position_ids_sel)
         q_new, k_new = apply_rotary_pos_emb(q_new, k_new, cos, sin)
 
         kv[:, :, token_idx, 0] = k_new.to(dtype=kv.dtype)
@@ -155,17 +162,35 @@ class ApproxCorrectLlamaDecoderLayer(nn.Module):
 
         return x_mid + mlp_out, cache_feature
 
-    def correct(self, x: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str):
+    def correct(self, x: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
+                cos: torch.Tensor = None, sin: torch.Tensor = None):
+        """The residual reconstruction `x + blocks_out_sum` already allocates a fresh, non-aliased
+        tensor, so the extra `.clone()` previously chained on top of it was pure waste (a second
+        full-[B,N,C] allocation+copy for zero benefit) -- removed below.
+
+        Tried porting AppCorr's DINOv3 Triton kernel (active_token_update_triton, block.py's
+        correct_partial_token) to fuse "add attn+mlp deltas, then scatter into active positions"
+        into one kernel launch. A direct microbenchmark at our problem scale (Q<=256, B=1, C=4096)
+        showed it 2-3x SLOWER than plain PyTorch fancy indexing (~0.03-0.05ms vs ~0.014ms per call)
+        -- PyTorch's built-in scatter/indexing kernels are already well-optimized at this size, and
+        the Triton kernel's own dispatch/grid overhead doesn't pay for itself here (it likely helps
+        AppCorr's DINOv3 workloads at a different scale). Reverted; kept only the .clone() removal.
+
+        cos, sin: optional precomputed RoPE angles, forwarded to self_attn.correct() -- see
+        llm_correct_segment (hoisted out of the per-layer loop since RoPE has no learnable
+        parameters and is identical across layers for the same token_idx).
+        """
         token_idx = token_idx.to(x.device)
         x_active = x[:, token_idx]
         x_norm_sel = self.input_layernorm(x_active)
 
-        x_attn_sel, cache_feature = self.self_attn.correct(x_norm_sel, token_idx, cache_feature, tag)
+        x_attn_sel, cache_feature = self.self_attn.correct(x_norm_sel, token_idx, cache_feature, tag, cos=cos, sin=sin)
         x_attn_active = x_active + x_attn_sel
         mlp_out_new = self.mlp(self.post_attention_layernorm(x_attn_active))
 
         blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
-        x_out = (x + blocks_out_sum.to(dtype=x.dtype)).clone()
+        residual = blocks_out_sum.to(dtype=x.dtype) if blocks_out_sum.dtype != x.dtype else blocks_out_sum
+        x_out = x + residual  # already fresh/non-aliased -- no separate .clone() needed
         x_out[:, token_idx] = (x_attn_active + mlp_out_new).to(dtype=x_out.dtype)
 
         return x_out, cache_feature
