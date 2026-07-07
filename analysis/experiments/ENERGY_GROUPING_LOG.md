@@ -304,3 +304,56 @@ committing frequently so any point can be reverted to safely.
 - **grid + tkr=0.4 at nr=50 (scale-up)**: top1=**80%** (down further from nr=20's 85%),
   CORRECT_FORWARD=29.7ms (stable vs nr=20's 33.3ms). Need energy_asc's OWN nr=50 for a fair
   same-n comparison -- launching that now as the decisive test.
+
+- **DECISIVE RESULT: energy_asc + tkr=0.4 at nr=50 = 82% top1, 100% top5, CORRECT_FORWARD=34.8ms.**
+  vs grid's nr=50 result: 80% top1, 100% top5, CORRECT_FORWARD=29.7ms. The gap that looked
+  promising at nr=20 (90% vs 85%, CORRECT 60.6ms vs 33.3ms) shrank to essentially noise at nr=50
+  (82% vs 80% is a single sample flip out of 50; latency also converged much closer). **NOT
+  CONFIRMED** -- the accuracy-preservation signal for energy_asc under real pruning was mostly an
+  artifact of small sample size, not a robust effect.
+
+## Summary (as of this decisive result)
+
+**What was built**: `_apply_energy_grouping` in `progressive.py` (energy_asc/energy_desc grouping
+strategies, equal total residual energy per group, verified correct via synthetic unit test) +
+`analysis/experiments/dinov3_classifier_offload_eval.py` (real offload-pipeline eval driver,
+top1/top5 + per-op CUDA-event latency, strided deterministic sampling, --grouping-strategy/
+--token-keep-ratio/--sdpa-query-bucket-size overrides for sweeping).
+
+**Real bugs found and fixed along the way** (both independent of the energy-grouping question
+itself, genuine value regardless of the final verdict):
+- `laplacian.py`'s `decode()` methods only upsampled to native resolution when `0` was an
+  EXPLICIT configured pyramid level, breaking `imnet_approx_only_l2.json` (pyramid_levels=[2]
+  alone). Fixed (commit 3b375c1).
+- My own shell scripting mistake (cd-scoping across backgrounded jobs) -- not a code bug, but
+  cost real debugging time; documented for future reference.
+
+**Final verdict on energy-based grouping (num_groups=4, this classifier workload)**:
+- At token_keep_ratio=1.0 (no real pruning): all grouping strategies converge to the SAME
+  accuracy (since everything eventually gets corrected regardless of group order) -- only
+  LATENCY differs. grid is cheapest (constant group size, no shape-dispatch tax). uniform_diff
+  and energy_asc/desc have variable group sizes and pay a real latency cost; bucketing
+  (sdpa_query_bucket_size) fixes this for uniform_diff (closes ~entire gap) but NOT for
+  energy_asc/desc (bucketing made it WORSE at every size tested -- its group-size skew is severe
+  enough that padding overhead exceeds shape-dispatch savings).
+- At token_keep_ratio=0.4 (real pruning, the practically relevant regime): energy_desc is
+  clearly WORSE than grid on both accuracy and latency (mechanistically explained: descending
+  order gives the most important/high-energy patches only a SHALLOW early correction, since
+  GroupTriggerPolicy corrects earlier groups through fewer layers -- the opposite of what you
+  want). energy_asc looked promising at nr=20 (90% vs grid's 85%) but the gap shrank to noise at
+  nr=50 (82% vs 80%) -- NOT a validated win.
+- **Conclusion: energy-based grouping, as implemented here, does not show a robust accuracy or
+  latency advantage over the existing grid/uniform_diff strategies for this classifier workload
+  at num_groups=4.** The one clear, real, mechanistically-grounded finding is architectural, not
+  about energy grouping specifically: which group a patch lands in determines how many LAYERS it
+  gets corrected through (via GroupTriggerPolicy's schedule), so ANY strategy that systematically
+  defers important content to later groups should help, and ascending energy order does this
+  correctly in principle -- it just didn't produce a big enough or consistent enough effect at
+  this scale/config to call it validated.
+
+**Per the original instruction** ("if a good setting is found, immediately test COCO/ADE20K/
+NYUv2"): the prerequisite win was NOT validated, so NOT proceeding to task #20 extension. Will
+try one more angle (larger num_groups, e.g. 8, for finer-grained/less-skewed groups) as a final
+check before considering this investigation's sweep phase complete; if that also shows no robust
+effect, will finalize documentation and stop actively sweeping (task #19 -> completed either way,
+with an honest negative/inconclusive result being a legitimate outcome).
