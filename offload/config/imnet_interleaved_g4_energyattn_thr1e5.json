@@ -1,5 +1,5 @@
 {
-    "exp_id": "interleaved_g4",
+    "exp_id": "interleaved_g4_energyattn_thr1e5",
     "model_name": "dinov3_classifier",
     "batch_size": 32,
     "image_shape": [256, 256, 3],
@@ -14,6 +14,11 @@
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
-        "token_keep_ratio": 0.4
+        "token_keep_thres": 1e-5,
+        "mobile_pscore": "residual_energy",
+        "mobile_pscore_weight": 1.0,
+        "server_pscore": "cls_attn_prob_layermean",
+        "server_pscore_weight": 1.0,
+        "pscore_fusion": "multiply"
     }
 }
