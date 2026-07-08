@@ -1,0 +1,17 @@
+{
+    "exp_id": "imagenet_clip_bigg_sequential",
+    "model_name": "openclip_zeroshot",
+    "dataset_name": "imagenet-1k",
+    "dataset_kwargs": {
+        "clip_task": "zeroshot"
+    },
+    "batch_size": 32,
+    "image_shape": [224, 224, 3],
+    "patch_size": [14, 14],
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "FullImageCompression",
+    "transmission_kwargs": {
+        "format": "png",
+        "quality": 6
+    }
+}

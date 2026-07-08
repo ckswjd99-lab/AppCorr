@@ -1,0 +1,187 @@
+"""
+openclip_executor.py
+
+ModelExecutor for CLIP-ViT-bigG/14 (transformers.CLIPModel), driving the forked vision tower
+(appcorr/models/openclip/vision/) through the existing GroupTriggerPolicy scheduling contract
+(same layers=(start_l,end_l)/group_id params used by DINOv3ClassifierExecutor -- see
+offload/policies/scheduling/group_trigger.py). Text tower always runs a plain one-shot full
+forward (never progressively streamed) since only images are transmitted patch-by-patch.
+
+Two task modes, selected by `config.dataset_kwargs.get('clip_task', 'zeroshot')`:
+    - "zeroshot": ImageNet-1k zero-shot classification. `load_model` precomputes the 1000-class
+      text embedding matrix once (80-template ensemble, via open_clip's IMAGENET_CLASSNAMES/
+      OPENAI_IMAGENET_TEMPLATES). `head_inference` computes cosine-sim logits (scaled by
+      logit_scale) against all 1000 classes, returns top5.
+    - "retrieval": MS-COCO image-text retrieval. `head_inference` just returns the normalized
+      image embedding itself (no classification head) -- the eval driver accumulates these and
+      computes recall@k against separately-precomputed caption embeddings.
+
+batch_size is forced to 1 by the eval drivers (same convention as
+`analysis/experiments/dinov3_classifier_offload_eval.py`), so there is no per-batch-item variable
+masking to handle -- `group_map`/`patch_idx` are single-image tensors.
+"""
+
+from typing import Any, Dict
+
+import numpy as np
+import torch
+
+from offload.common import Task
+from .base import ModelExecutor
+
+MODEL_ID = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
+
+# Standard OpenAI CLIP normalization (confirmed via CLIPProcessor.image_processor for this checkpoint).
+CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+
+class OpenCLIPExecutor(ModelExecutor):
+    def __init__(self, device: torch.device):
+        super().__init__(device)
+        self.tower = None
+        self.clip_model = None
+        self.processor = None
+        self.zeroshot_weights = None  # [1000, proj_dim], only built for clip_task == "zeroshot"
+        self.logit_scale = 100.0
+        self.clip_task = "zeroshot"
+        self.norm_mean = torch.tensor(CLIP_MEAN).view(1, 3, 1, 1).to(self.device).float()
+        self.norm_std = torch.tensor(CLIP_STD).view(1, 3, 1, 1).to(self.device).float()
+
+    def load_model(self, model_name: str, config: Any):
+        from transformers import CLIPModel, CLIPProcessor
+        from appcorr.models.openclip.vision.backbone import ApproxCorrectCLIPVisionTower
+
+        self.clip_task = config.dataset_kwargs.get("clip_task", "zeroshot")
+        print(f"[Executor] Loading Model: {MODEL_ID} (task={self.clip_task})...")
+        self.clip_model = CLIPModel.from_pretrained(MODEL_ID, dtype=torch.bfloat16).to(self.device).eval()
+        self.processor = CLIPProcessor.from_pretrained(MODEL_ID)
+        self.tower = ApproxCorrectCLIPVisionTower(
+            self.clip_model.vision_model, self.clip_model.visual_projection
+        ).to(self.device).eval()
+        self.logit_scale = self.clip_model.logit_scale.exp().item()
+
+        if self.clip_task == "zeroshot":
+            self.zeroshot_weights = self._build_zeroshot_classifier()
+        self.model = self.clip_model  # satisfies ModelExecutor's self.model bookkeeping convention
+
+    def _build_zeroshot_classifier(self) -> torch.Tensor:
+        from open_clip import IMAGENET_CLASSNAMES, OPENAI_IMAGENET_TEMPLATES
+
+        print("[Executor] Building 1000-class zero-shot classifier (80-template ensemble)...")
+        all_embeds = []
+        with torch.no_grad():
+            for classname in IMAGENET_CLASSNAMES:
+                texts = [tmpl(classname) for tmpl in OPENAI_IMAGENET_TEMPLATES]
+                inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(self.device)
+                text_feats = self.clip_model.get_text_features(**inputs).pooler_output
+                text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)
+                class_embed = text_feats.mean(dim=0)
+                class_embed = class_embed / class_embed.norm()
+                all_embeds.append(class_embed)
+        return torch.stack(all_embeds, dim=0).float()  # [1000, proj_dim]
+
+    def _num_patches(self, config: Any) -> int:
+        H, W = config.image_shape[:2]
+        ph, pw = (config.patch_size, config.patch_size) if isinstance(config.patch_size, int) else config.patch_size
+        return (H // ph) * (W // pw)
+
+    def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
+        if isinstance(batch_data, torch.Tensor):
+            tensor = batch_data.to(device=self.device, non_blocking=True)
+            if tensor.shape[1] != 3 and tensor.shape[-1] == 3:
+                tensor = tensor.permute(0, 3, 1, 2)
+            tensor = tensor.float()
+            if batch_data.dtype == torch.uint8:
+                tensor = tensor / 255.0
+        else:
+            tensor = torch.from_numpy(batch_data).to(device=self.device, non_blocking=True)
+            tensor = tensor.permute(0, 3, 1, 2).float() / 255.0
+
+        tensor = (tensor - self.norm_mean) / self.norm_std
+        context["input_tensor"] = tensor.to(dtype=torch.bfloat16)
+
+        num_patches = self._num_patches(config)
+        if "group_map" not in context:
+            context["group_map"] = torch.full((1, num_patches), -1, device=self.device, dtype=torch.long)
+        group_map = context["group_map"]
+        for p in task.payload:
+            if 0 <= p.spatial_idx < num_patches:
+                group_map[0, p.spatial_idx] = p.group_id
+
+    def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
+        if "input_tensor" not in context:
+            return
+        input_tokens = self.tower.prepare_full_tokens(context["input_tensor"])
+        context["input_tokens"] = input_tokens
+        if "current_feature" not in context:
+            context["current_feature"] = input_tokens
+
+    def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        start_l, end_l = params.get("layers", (0, len(self.tower.blocks)))
+        x_feature = context["input_tokens"] if start_l == 0 else context.get("current_feature", context["input_tokens"])
+        cache = context.get("cache_feature", {})
+        x_feature, cache = self.tower.approx_forward(x_feature, start_l, end_l, cache, tag_prefix="vision")
+        if end_l == len(self.tower.blocks):
+            cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        context["current_feature"] = x_feature
+        context["cache_feature"] = cache
+
+    def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        start_l, end_l = params.get("layers", (0, len(self.tower.blocks)))
+        group_id = params.get("group_id", 1)
+        group_map = context["group_map"]
+        patch_idx = torch.where(group_map[0] == group_id)[0]
+        if patch_idx.numel() == 0:
+            return
+
+        x_feature = context["input_tokens"]
+        cache = context.get("cache_feature", {})
+        x_feature, cache = self.tower.correct_forward(x_feature, patch_idx, start_l, end_l, cache, tag_prefix="vision")
+        if end_l == len(self.tower.blocks):
+            cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        context["current_feature"] = x_feature
+        context["cache_feature"] = cache
+
+    def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
+        x_full = context.get("current_feature")
+        image_embeds = self.tower.get_image_embeds(x_full).float()
+
+        if self.clip_task == "zeroshot":
+            logits = self.logit_scale * image_embeds @ self.zeroshot_weights.T
+            top5_probs, top5_indices = torch.topk(torch.softmax(logits, dim=-1), k=5, dim=1)
+            context["output"] = top5_indices
+            return {
+                "top5_probs": top5_probs.cpu().numpy().tolist(),
+                "top5_indices": top5_indices.cpu().numpy().tolist(),
+            }
+        else:  # retrieval
+            context["output"] = image_embeds
+            return {"image_embeds": image_embeds.cpu().numpy().tolist()}
+
+    def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
+        inp = context.get("input_tensor")
+        if inp is None:
+            return
+        with torch.no_grad():
+            image_embeds = self.clip_model.get_image_features(pixel_values=inp).pooler_output.float()
+            image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+
+        if self.clip_task == "zeroshot":
+            logits = self.logit_scale * image_embeds @ self.zeroshot_weights.T
+            _, top5_indices = torch.topk(torch.softmax(logits, dim=-1), k=5, dim=1)
+            context["output"] = top5_indices
+        else:
+            context["output"] = image_embeds
+
+    def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
+        if "output" not in context:
+            return {}
+        output = context["output"]
+        if self.clip_task == "zeroshot":
+            return {0: output[0].cpu().numpy().tolist()}
+        else:
+            return {0: output[0].cpu().numpy().tolist()}
+
+    def decide_exit(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
+        return {}

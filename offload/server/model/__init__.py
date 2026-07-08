@@ -21,6 +21,9 @@ def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
     elif "dinov3_depther" in name:
         from .dinov3_depther import DINOv3DeptherExecutor
         return DINOv3DeptherExecutor(device)
+    elif "openclip" in name:
+        from .openclip_executor import OpenCLIPExecutor
+        return OpenCLIPExecutor(device)
     else:
         if "dinov3" in name:
              from .dinov3_classifier import DINOv3ClassifierExecutor
