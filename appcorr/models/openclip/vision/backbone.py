@@ -56,46 +56,59 @@ class ApproxCorrectCLIPVisionTower(nn.Module):
         return embeds / embeds.norm(dim=-1, keepdim=True)
 
     def approx_forward(
-        self, pixel_values: torch.Tensor, cache_feature: Dict[str, Any], tag_prefix: str
+        self,
+        x_feature: torch.Tensor,
+        start_l: int,
+        end_l: int,
+        cache_feature: Dict[str, Any],
+        tag_prefix: str,
+        collect_cls_attn: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """First pass on a new image (typically the low-res base layer). Runs every block in approx
-        mode, caching per-layer K/V + block-delta-sum for later `.correct()` rounds. Returns the
-        final normalized image embedding.
-
-        Also computes the layer-averaged CLS->patch attention map (`{tag_prefix}_cls_attn_layermean`,
-        [B, num_patches]) -- the `cls_attn_prob_layermean` server pscore used for importance-ranked
-        correction-patch selection (same recipe validated for the DINOv3 classifier)."""
-        x = self.prepare_full_tokens(pixel_values)
-        for i, blk in enumerate(self.blocks):
-            x, cache_feature = blk.approx(x, cache_feature, tag=f"{tag_prefix}_layer{i}",
-                                          collect_cls_attn=True)
-        per_layer = [cache_feature[f"{tag_prefix}_layer{i}_cls_attn"] for i in range(len(self.blocks))]
-        layermean = torch.stack(per_layer, dim=0).mean(dim=0)  # [B, N]
-        cache_feature[f"{tag_prefix}_cls_attn_layermean"] = layermean[:, self.num_prefix_tokens:]
-        image_embeds = self.get_image_embeds(x)
-        return image_embeds, cache_feature
+        """Runs blocks[start_l:end_l] in approx mode, caching per-layer K/V + block-delta-sum for
+        later `.correct()` rounds. Layer-range chunked (mirrors the DINOv3 classifier executor's
+        `approx_forward(layers=(start_l, end_l))` contract) so the existing `GroupTriggerPolicy`
+        scheduling policy can drive this tower directly, interleaving layer chunks with patch
+        arrival, with no new scheduling code needed. `x_feature` is `prepare_full_tokens()`'s output
+        on the first call (`start_l == 0`); the caller threads the returned tensor through
+        subsequent calls."""
+        for i in range(start_l, end_l):
+            blk = self.blocks[i]
+            x_feature, cache_feature = blk.approx(x_feature, cache_feature, tag=f"{tag_prefix}_layer{i}",
+                                                  collect_cls_attn=collect_cls_attn)
+        return x_feature, cache_feature
 
     def correct_forward(
         self,
-        pixel_values: torch.Tensor,
+        x_feature: torch.Tensor,
         patch_idx: torch.Tensor,
+        start_l: int,
+        end_l: int,
         cache_feature: Dict[str, Any],
         tag_prefix: str,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Subsequent pass once higher-res data has arrived for a subset of patches.
+        """Runs blocks[start_l:end_l] in correct mode for the given patch subset (layer-range
+        chunked, same contract as `approx_forward` above).
 
         Args:
-            pixel_values: the *current* canvas (see OpenVLA backbone docstring for why passing a
-                fully-true image instead of a faithful partial canvas is harmless here too -- same
-                non-overlapping patch_embed argument applies, patch14/stride14).
+            x_feature: current residual stream, restarted from `prepare_full_tokens()`'s output at
+                the start of EACH correction round (same invariant as
+                `ApproxCorrectCLIPEncoderLayer.correct`/the OpenVLA vision fork).
             patch_idx: [Q] long tensor, indices into the *patch grid* (0-indexed, NOT offset by
                 `num_prefix_tokens`) that received new data this round.
         """
-        x = self.prepare_full_tokens(pixel_values)
-        patch_token_idx = patch_idx.to(dtype=torch.long, device=x.device) + self.num_prefix_tokens
-        prefix_idx = torch.arange(self.num_prefix_tokens, dtype=torch.long, device=x.device)
+        patch_token_idx = patch_idx.to(dtype=torch.long, device=x_feature.device) + self.num_prefix_tokens
+        prefix_idx = torch.arange(self.num_prefix_tokens, dtype=torch.long, device=x_feature.device)
         token_idx = torch.cat([prefix_idx, patch_token_idx])
-        for i, blk in enumerate(self.blocks):
-            x, cache_feature = blk.correct(x, token_idx, cache_feature, tag=f"{tag_prefix}_layer{i}")
-        image_embeds = self.get_image_embeds(x)
-        return image_embeds, cache_feature
+        for i in range(start_l, end_l):
+            blk = self.blocks[i]
+            x_feature, cache_feature = blk.correct(x_feature, token_idx, cache_feature, tag=f"{tag_prefix}_layer{i}")
+        return x_feature, cache_feature
+
+    def finalize_cls_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str) -> Dict[str, Any]:
+        """Averages the per-layer CLS->patch attention (cached by `approx_forward`'s
+        `collect_cls_attn`) across all layers -- the `cls_attn_prob_layermean` server pscore. Call
+        once after the LAST layer's approx() has run."""
+        per_layer = [cache_feature[f"{tag_prefix}_layer{i}_cls_attn"] for i in range(len(self.blocks))]
+        layermean = torch.stack(per_layer, dim=0).mean(dim=0)  # [B, N]
+        cache_feature[f"{tag_prefix}_cls_attn_layermean"] = layermean[:, self.num_prefix_tokens:]
+        return cache_feature
