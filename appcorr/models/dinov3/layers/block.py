@@ -359,6 +359,18 @@ class SelfAttentionBlock(nn.Module):
         if num_patch_candidates == 0:
             return keep_patch_mask
 
+        import os
+        if os.environ.get("CALIBRATE_PSCORE"):
+            flat = combined_patch_scores.detach().float().flatten()
+            qs = torch.tensor([0.0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0], device=flat.device)
+            pct = torch.quantile(flat, qs).tolist()
+            print(
+                f"[calibrate] combined_patch_scores percentiles "
+                f"[0,10,25,40,50,60,75,90,100]% = {[f'{v:.6g}' for v in pct]} "
+                f"mean={flat.mean().item():.6g}",
+                flush=True,
+            )
+
         if token_keep_thres is not None:
             keep_patch_mask = combined_patch_scores >= token_keep_thres
             return keep_patch_mask

@@ -367,6 +367,58 @@ with an honest negative/inconclusive result being a legitimate outcome).
   here (affects grid too, not something introduced by energy grouping); noting it as a discovered
   issue for a future session, not chasing further given context budget.
 
+## Follow-up: combined importance score for per-layer pruning (residual_energy x avg cls-attn)
+
+User pointed out (correctly) that the per-layer *keep mask* used throughout every test above
+(`_select_patch_keep_mask` in `appcorr/models/dinov3/layers/block.py`) was driven ONLY by the
+current-layer's live `cls_attn_prob` (server_pscore), with `mobile_pscore` defaulted to `'none'`
+(weight 0) in every config used so far (`imnet_interleaved_g4.json` never set it). So all of the
+energy-grouping investigation above only used residual energy for the coarse GROUP assignment
+(which group a patch lands in), never for the fine per-layer token selection within a group.
+Ask: build a combined importance score = residual_energy x avg("cls token" attention), and use
+real thresholding (not ratio) to select kept patches.
+
+**Verified this is fully supported by existing (unused-in-combination) machinery, no new pruning
+code needed**:
+- `mobile_pscore='residual_energy'` -- already implemented end-to-end:
+  `ProgressiveLPyramidPolicy._compute_patch_residual_energy` (raw 0-255 pixel residual sum-of-
+  squares per patch, `progressive.py:19-21`) -> `Patch.pscore_hint` -> reassembled server-side by
+  `_build_mobile_pscore_hint_map` (`dinov3_classifier.py:53`) -> gathered per-candidate in
+  `_resolve_mobile_patch_scores` (`block.py:456`).
+- `server_pscore='cls_attn_prob_layermean'` = "avg. cls token attention": CLS-to-patch attention
+  probability (`block.py`'s else-branch: `q[:,:,0:1,:] @ k.T`, softmax, mean over heads) cached
+  per layer during approx, then averaged across ALL layers once via the `_LAYERMEAN_SERVER_PSCORES`
+  shared-cache path (`_get_shared_server_pscore`) -- this is why the calibration below shows one
+  score print per group-request, not per layer: the layermean value is computed once (after all
+  layers have run approx) and reused for every layer's correction in that group.
+- `pscore_fusion='multiply'`: `_combine_patch_scores` (`block.py:487`) already implements
+  `combined = (server_weight*server_score) * (mobile_weight*mobile_score)` when fusion=='multiply'.
+- `token_keep_thres` (vs `token_keep_ratio`): `_select_patch_keep_mask` already takes an absolute
+  threshold path (`combined_patch_scores >= token_keep_thres`) when set, in preference to top-K
+  ratio. Never previously used (`None` in every prior config) -- this session's ask.
+
+**Calibration** (temporary env-gated debug print added to `_select_patch_keep_mask`, active only
+under `CALIBRATE_PSCORE=1`; harmless when unset): ran nr=3 with the multiply-fused score, ratio
+mode still on (functional smoke test), ImageNet val, grid grouping, num_groups=4. Combined score
+percentiles were consistent across groups/samples: [0,10,25,40,50,60,75,90,100]% roughly
+[1e-7, 2e-6, 6e-6, 1e-5, 1.7e-5, 2.5e-5, 4e-5, 9e-5, 2-3e-4], mean ~3.3e-5. Chose 3 threshold
+configs spanning this range:
+- `imnet_interleaved_g4_energyattn_thr1e5.json` (thr=1e-5, ~50th pctile -> keeps more, looser)
+- `imnet_interleaved_g4_energyattn_thr3e5.json` (thr=3e-5, ~60-65th pctile -> roughly comparable
+  keep-fraction to the old ratio=0.4 baseline)
+- `imnet_interleaved_g4_energyattn_thr8e5.json` (thr=8e-5, ~85-90th pctile -> aggressive, keeps
+  much less)
+(all grid grouping, num_groups=4, same base config as `imnet_interleaved_g4.json` otherwise)
+
+**nr=10 functional sanity** (all 4 configs: baseline cls_attn_prob-only tkr=0.4, and the 3 new
+thresholds): all 100% top1/top5 -- nr=10 hits a ceiling (too easy/small a sample to discriminate,
+consistent with earlier nr=10 runs in this investigation) but confirms the new fused-score path
+runs correctly end to end with no errors. Latency showed the expected monotonic trend as
+threshold increases (fewer patches kept -> less CORRECT_FORWARD work): baseline(cls_attn only,
+ratio)=41.9ms, thr1e5=36.7ms, thr3e5=35.8ms, thr8e5=31.5ms. Proceeding to nr=20 for a
+discriminating accuracy comparison (matches this investigation's established methodology, since
+nr=10 hit ceiling for the grouping-order tests too).
+
 ## FINAL VERDICT (this session)
 
 Energy-based grouping (energy_asc/energy_desc) is implemented, correct, and thoroughly tested,
