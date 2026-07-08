@@ -419,6 +419,50 @@ ratio)=41.9ms, thr1e5=36.7ms, thr3e5=35.8ms, thr8e5=31.5ms. Proceeding to nr=20 
 discriminating accuracy comparison (matches this investigation's established methodology, since
 nr=10 hit ceiling for the grouping-order tests too).
 
+**nr=20 / nr=50 results (grid, num_groups=4)**:
+
+| config | nr=20 top1 | nr=50 top1 | nr=50 CORRECT_FORWARD |
+|---|---|---|---|
+| baseline (cls_attn_prob only, ratio=0.4) | 85% | 80% | 29.7ms |
+| **thr1e5 (residual_energy x cls_attn_prob_layermean, multiply, thres=1e-5)** | **90%** | **86%** | **23.6ms** |
+| thr3e5 (same fusion, thres=3e-5) | 85% | 82% | 22.8ms |
+
+Unlike the energy_asc grouping signal earlier in this log (which shrank from +5pp at nr=20 to
+noise at nr=50), this signal **held** from nr=20 to nr=50 (actually grew slightly, 85->90->86%
+band vs baseline's 85->80%), and wins on BOTH accuracy (+6pp) AND latency (-20%) simultaneously --
+a much more convincing result than anything else in this investigation. Mechanistic story: a
+threshold on residual_energy x avg-attention lets the keep-fraction adapt per group/image (spend
+more budget where there's real content+attention mass, less where there isn't), instead of
+blindly keeping a fixed top-40% every time regardless of whether that 40% is mostly important or
+mostly noise.
+
+**Bigger discovery while scoping the "extend to COCO/ADE20K/NYUv2" question**: the production
+configs for all three of those tasks (`coco_interleaved_static.json`, `coco_interleaved_dynamic.json`,
+`ade20k_m2f_interleaved_static.json`, `nyu_interleaved_static.json`) **already** default to this
+same family of settings -- `mobile_pscore=residual_energy` + a layer-averaged attention score
+(`patch_attn_prob_layermean` for COCO/ADE20K since they're dense-prediction tasks without a single
+CLS-pooled output; `patch_pseudo_attn_prob_layermean` for NYUv2) + `pscore_fusion=geo_mean` (not
+multiply) + a task-specific `token_keep_thres`. So this wasn't a novel idea to port over -- the
+classifier config (`imnet_interleaved_g4.json`) was simply the one task that had been left on the
+old plain-ratio/cls_attn_prob-only scheme. This explains why the user's ask was scoped to
+"for classification" specifically (CLS-token attention is only the right analog for the
+classifier's CLS-pooled head; dense tasks correctly use patch-level attention instead, which is
+what those configs already do).
+
+**Action taken**: updated `imnet_interleaved_g4.json`'s default `appcorr_kwargs` to
+`mobile_pscore=residual_energy, mobile_pscore_weight=1.0, server_pscore=cls_attn_prob_layermean,
+server_pscore_weight=1.0, pscore_fusion=multiply, token_keep_thres=1e-5` (dropped the old
+`token_keep_ratio=0.4`, matching the no-ratio convention used by the other three tasks' configs),
+bringing the classifier in line with the rest of the repo. Per explicit user direction, NOT
+running further evaluation on COCO/ADE20K/NYUv2 in this session, since they already use this
+approach as their default and a full quantitative ablation there was judged out of scope for now.
+The temporary `CALIBRATE_PSCORE` env-gated debug print added to `block.py`'s
+`_select_patch_keep_mask` was left in place (inert unless the env var is set) since it's a useful,
+zero-cost calibration tool for any future threshold tuning.
+
+**Task #20 status**: resolved by discovery rather than by running new evaluations -- COCO/ADE20K/
+NYUv2 already have their own validated version of this pattern; nothing further to extend.
+
 ## FINAL VERDICT (this session)
 
 Energy-based grouping (energy_asc/energy_desc) is implemented, correct, and thoroughly tested,
