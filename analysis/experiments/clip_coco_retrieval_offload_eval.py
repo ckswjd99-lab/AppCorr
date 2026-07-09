@@ -50,7 +50,11 @@ def parse_args():
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--grouping-strategy", type=str, default=None)
     parser.add_argument("--num-groups", type=int, default=None)
+    parser.add_argument("--token-keep-thres", type=float, default=None,
+                         help="Override appcorr_kwargs['token_keep_thres']. Also forces "
+                              "appcorr_kwargs['mobile_pscore']='residual_energy' if not already set.")
     parser.add_argument("--num-images", type=int, default=10)
+    parser.add_argument("--full", action="store_true", help="Run ALL val2017 images with captions (ignores --num-images).")
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--result-timeout", type=float, default=300.0)
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -69,6 +73,10 @@ def load_config(args):
         raw.setdefault("transmission_kwargs", {})["grouping_strategy"] = args.grouping_strategy
     if args.num_groups is not None:
         raw.setdefault("transmission_kwargs", {})["num_groups"] = args.num_groups
+    if args.token_keep_thres is not None:
+        appcorr = raw.setdefault("appcorr_kwargs", {})
+        appcorr["token_keep_thres"] = args.token_keep_thres
+        appcorr.setdefault("mobile_pscore", "residual_energy")
     return ExperimentConfig(**raw), raw
 
 
@@ -138,9 +146,13 @@ def main():
     print(f"[driver] config={args.config}  transmission_kwargs={raw_config.get('transmission_kwargs', {})}")
 
     id_to_file, id_to_captions = load_coco_annotations()
-    sampled_ids = sample_image_ids(id_to_file, id_to_captions, args.num_images)
-    print(f"[driver] sampling {len(sampled_ids)} COCO val2017 images "
-          f"(of {len(id_to_file)} total with captions)")
+    if args.full:
+        sampled_ids = sorted([iid for iid in id_to_file if id_to_captions.get(iid)])
+        print(f"[driver] running FULL val2017: {len(sampled_ids)} images with captions")
+    else:
+        sampled_ids = sample_image_ids(id_to_file, id_to_captions, args.num_images)
+        print(f"[driver] sampling {len(sampled_ids)} COCO val2017 images "
+              f"(of {len(id_to_file)} total with captions)")
 
     captions_flat = []
     caption_owner = []
@@ -189,6 +201,9 @@ def main():
     op_times = defaultdict(list)
     image_embeds_list = []
     t_start = time.time()
+    print_every = 1 if len(sampled_ids) <= 50 else max(len(sampled_ids) // 200, 50)
+    kept_total = 0.0
+    full_total = 0.0
 
     try:
         control_q.put(("CONFIG", config))
@@ -222,9 +237,15 @@ def main():
             image_embeds_list.append(embed)
             for ev in result.server_events:
                 op_times[ev["type"]].append(ev["end"] - ev["start"])
+            kept_total += float(getattr(result, "token_prune_kept_patch", 0.0) or 0.0)
+            full_total += float(getattr(result, "token_prune_full_patch", 0.0) or 0.0)
 
-            print(f"    image {processed + 1}/{len(sampled_ids)}: id={iid} wall={wall:.2f}s")
-            sys.stdout.flush()
+            n_done = processed + 1
+            if n_done % print_every == 0 or n_done == len(sampled_ids):
+                keep_pct = 100.0 * kept_total / full_total if full_total > 0 else 100.0
+                print(f"    [{n_done}/{len(sampled_ids)}] id={iid} keep_rate={keep_pct:.1f}% "
+                      f"elapsed={time.time() - t_start:.0f}s")
+                sys.stdout.flush()
     finally:
         control_q.put(("STOP", None))
         result_q.cancel_join_thread()
@@ -239,10 +260,12 @@ def main():
 
     i2t_recall, t2i_recall = compute_recall_at_k(sim, sampled_ids, caption_owner)
 
+    keep_pct = 100.0 * kept_total / full_total if full_total > 0 else 100.0
     print(f"\n[driver] === Summary: {label} ===")
     print(f"    images: {len(sampled_ids)}  captions: {len(captions_flat)}")
     print(f"    i2t (image->text): R@1={i2t_recall[1]:.2f}%  R@5={i2t_recall[5]:.2f}%  R@10={i2t_recall[10]:.2f}%")
     print(f"    t2i (text->image): R@1={t2i_recall[1]:.2f}%  R@5={t2i_recall[5]:.2f}%  R@10={t2i_recall[10]:.2f}%")
+    print(f"    patch keep_rate: {keep_pct:.2f}%  (kept={kept_total:.0f} / full={full_total:.0f})")
     print(f"    total wall time: {total_wall:.1f}s ({total_wall / max(len(sampled_ids), 1):.2f}s/image avg)")
 
     print(f"\n[driver] === Mean per-op GPU time (ms), {label} ===")
