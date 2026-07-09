@@ -1,8 +1,10 @@
-# Qwen2.5-VL (32B / 72B) AppCorr on RealWorldQA
+# Qwen2.5-VL (32B / 72B) AppCorr on RealWorldQA / GQA / RefCOCO
 
 Branch: `experiment/qwen25vl-appcorr` (forked from `main`). This extends AppCorr's
-`.approx()`/`.correct()` hard-fork pattern to Qwen2.5-VL-32B-Instruct and Qwen2.5-VL-72B-Instruct,
-evaluated on the RealWorldQA VQA benchmark, with each image kept at its own native/dynamic
+`.approx()`/`.correct()` hard-fork pattern to Qwen2.5-VL-32B-Instruct and Qwen2.5-VL-72B-Instruct.
+Sections 1-6 below cover the original RealWorldQA VQA benchmark work; section 7 extends the
+keep-rate sweep to GQA (VQA) and RefCOCO (referring-expression grounding) to test whether the
+RealWorldQA sweet-spot finding generalizes. Every image is kept at its own native/dynamic
 resolution (via `smart_resize`) rather than a fixed shape.
 
 ## 1. Architecture
@@ -207,3 +209,61 @@ AppCorr deployment, not just this fork.
   architectural (chunking) rather than numerical.
 - **The keep-rate accuracy win is not (yet) a compute win** -- an important, measured caveat that
   should not be glossed over when reporting the "15% sweet spot" as a practical result.
+
+## 7. Cross-dataset keep-rate comparison: does "~15%" generalize?
+
+Full data and per-dataset discussion: `qwen25vl_keeprate_sweep_results.md` (RealWorldQA),
+`qwen25vl_gqa_sweep_results.md` (GQA), `qwen25vl_refcoco_sweep_results.md` (RefCOCO). All three use
+identical methodology (`top_energy` grouping, `num_groups=1`, nr=50).
+
+| Dataset | Task type | 32B elbow | 72B elbow |
+|---|---|---|---|
+| RealWorldQA | semantic VQA | ~15% (clean, monotonic saturation) | ~15% (clean) |
+| GQA | semantic VQA | **no clean elbow** -- noisy, consistently a few points under baseline across the whole 2-100% range | ~2% (flat, baseline-matching throughout) |
+| RefCOCO | referring-expression grounding (bbox) | **~50%** -- real, monotonic ~16pp Acc@0.5 / ~0.13 IoU climb from 2% to 50% | ~2% (flat, baseline-matching throughout) |
+
+**Answer: no, the "~15% keep rate is enough" finding does not generalize as a universal constant.**
+Two genuinely different axes matter more than a single "sweet spot" number:
+
+1. **Task type matters, at least for the smaller model.** RefCOCO's spatial grounding task shows a
+   real, substantial keep-rate dependency for 32B (elbow ~50%, more than 3x RealWorldQA's ~15%) --
+   consistent with the intuitive hypothesis that precise localization needs more of the image
+   actually corrected than semantic scene-level VQA does, where coarse/blurred detail is often
+   sufficient to answer "what color is X" or "is it raining." GQA (also VQA) does *not* cleanly
+   confirm RealWorldQA's ~15% number either, but for a different reason: its 32B curve is simply
+   too noisy at nr=50 to identify any elbow at all (see section-specific discussion), not evidence
+   of a *different, higher* elbow the way RefCOCO's data is.
+2. **Model size matters more than task type.** 72B is flat and baseline-matching from the *lowest*
+   tested keep_rate (2%) across all three datasets, with no task-dependent variation at all in this
+   data -- the larger model appears simply robust to this kind of input-detail reduction regardless
+   of task. If this pattern holds beyond these three benchmarks, it suggests keep-rate-based
+   compression is a much easier win for larger models, and any "how much can I compress" answer for
+   a smaller model needs to be re-measured per task rather than assumed transferable.
+
+Given only three datasets and nr=50 samples each, none of this should be treated as a precise,
+final characterization -- but the *qualitative* conclusion (task-dependent for small models,
+robust-regardless for large models; grounding needs more correction than VQA) is consistent and
+not an artifact of any single noisy run, since it shows up the same way across independently-run
+32B vs 72B chains on independently-built dataset drivers.
+
+## 8. Known open issues (not fully resolved)
+
+- **A second, unfixed scheduler race.** While running the GQA/RefCOCO sweeps (two parallel chains
+  hammering CONFIG/patch dispatch at a much higher frequency than RealWorldQA's larger, slower
+  images), a distinct crash appeared: `KeyError: 'vision_cache'` in `qwen25vl_executor.py`'s
+  `correct_forward`, meaning a session's `CORRECT_FORWARD` fired without its `APPROX_FORWARD` ever
+  having run first. This is different from the config-application race fixed in commit `ceaef61`
+  (that race manifested as `self.config` being `None`; this one happens well after model loading,
+  with `self.config` valid). Working hypothesis, **not confirmed**: `SchedulerModule.run()`
+  unconditionally resets `self.buffer = []` on every `CONFIG` message
+  (`offload/server/scheduler.py:34`), and since native-resolution drivers resend `CONFIG` on every
+  single image, some timing window could let this discard an in-flight group's not-yet-dispatched
+  patches. The worker process's main loop catches the resulting exception without crashing (so
+  retrying a fresh request against the same process works), but never sends a response, hanging the
+  driver until timeout. Mitigated pragmatically (commit `268f1e1`) with a 3-attempt retry wrapper in
+  all three offload eval drivers, rather than root-caused and fixed at the source -- this should be
+  treated as an open item, not a resolved bug, if this infrastructure sees further use.
+- **`realworldqa_offload_eval.py`'s retry wrapper is untested against a live recurrence** of the
+  original issue (it was added defensively, mirroring the GQA/RefCOCO fix, but RealWorldQA's own
+  sweeps had already completed before this bug was discovered) -- should work by the same logic,
+  but hasn't been directly observed to recover a real crash the way the GQA/RefCOCO drivers were.
