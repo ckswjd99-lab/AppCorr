@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import time
 import torch
@@ -50,6 +51,7 @@ class WorkerModule(multiprocessing.Process):
         self.policy = None
         self.executor = None
         self.sr_engine = None
+        self._loaded_model_identity = None
 
     def run(self):
         print("[Worker] Started.")
@@ -221,7 +223,21 @@ class WorkerModule(multiprocessing.Process):
                     self.policy = get_transmission(self.config.transmission_policy_name)
                     self._validate_lowres_sr_config()
                     self._load_sr_engine()
-                    self._load_model(self.config.model_name)
+                    # Skip re-loading the model executor if nothing that would change WHICH
+                    # weights/executor are loaded has changed since the last CONFIG (e.g. only
+                    # image_shape differs, as when a driver resends CONFIG per-image for native-
+                    # resolution runs) -- reloading a large model (tens to 100+ GB) on every such
+                    # CONFIG message is always wasteful and was never intentional; every other
+                    # config field (image_shape, transmission_kwargs, etc.) is still applied fresh
+                    # above/below regardless of this skip.
+                    model_identity = (
+                        self.config.model_name,
+                        json.dumps(self.config.dataset_kwargs, sort_keys=True, default=str),
+                        self.device,
+                    )
+                    if self.executor is None or model_identity != self._loaded_model_identity:
+                        self._load_model(self.config.model_name)
+                        self._loaded_model_identity = model_identity
                     print(f"[Worker] Configured. Policy: {self.config.transmission_policy_name}, "
                           f"Model: {self.config.model_name}, Device: {self.device}")
                     continue
