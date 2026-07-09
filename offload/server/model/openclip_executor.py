@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from offload.common import Task
+from offload.common.protocol import normalize_appcorr_kwargs
 from .base import ModelExecutor
 
 MODEL_ID = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
@@ -104,10 +105,14 @@ class OpenCLIPExecutor(ModelExecutor):
         num_patches = self._num_patches(config)
         if "group_map" not in context:
             context["group_map"] = torch.full((1, num_patches), -1, device=self.device, dtype=torch.long)
+        if "mobile_pscore_hint_map" not in context:
+            context["mobile_pscore_hint_map"] = torch.zeros((1, num_patches), device=self.device, dtype=torch.float32)
         group_map = context["group_map"]
+        hint_map = context["mobile_pscore_hint_map"]
         for p in task.payload:
             if 0 <= p.spatial_idx < num_patches:
                 group_map[0, p.spatial_idx] = p.group_id
+                hint_map[0, p.spatial_idx] = float(getattr(p, "pscore_hint", 0.0))
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
         if "input_tensor" not in context:
@@ -122,10 +127,74 @@ class OpenCLIPExecutor(ModelExecutor):
         x_feature = context["input_tokens"] if start_l == 0 else context.get("current_feature", context["input_tokens"])
         cache = context.get("cache_feature", {})
         x_feature, cache = self.tower.approx_forward(x_feature, start_l, end_l, cache, tag_prefix="vision")
-        if end_l == len(self.tower.blocks):
-            cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        # Refresh the importance signal after every approx chunk (not just the final one) -- a
+        # partial-depth average is a usable, if less refined, proxy, and later groups' pruning
+        # decisions benefit from using whatever depth has been seen so far rather than waiting.
+        cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
         context["current_feature"] = x_feature
         context["cache_feature"] = cache
+
+    def _prune_patch_idx(self, patch_idx: torch.Tensor, context: Dict[str, Any], config: Any) -> torch.Tensor:
+        """Applies the validated `residual_energy x avg_cls_attn` thresholded importance score
+        (see analysis/experiments/ENERGY_GROUPING_LOG.md's classifier finding, ported here for
+        CLIP) to sub-select which of a group's arrived patches actually get corrected this round.
+        No-op (keeps all of patch_idx) if `token_keep_thres` isn't configured, or if the signals
+        aren't ready yet (e.g. mobile_pscore_hint_map has no real residual-energy hints for this
+        group, or no approx chunk has run yet to seed cls_attn_layermean)."""
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        token_keep_thres = appcorr_options.get("token_keep_thres")
+        if token_keep_thres is None:
+            return patch_idx
+
+        cache = context.get("cache_feature", {})
+        layermean = cache.get("vision_cls_attn_layermean")
+        hint_map = context.get("mobile_pscore_hint_map")
+        if layermean is None or hint_map is None:
+            return patch_idx
+
+        server_score = layermean[0, patch_idx]  # [Q]
+        mobile_score = hint_map[0, patch_idx]  # [Q], raw residual energy
+        if bool((mobile_score == 0).all()):
+            # No real residual-energy hint for this group yet (e.g. approx-only/no mobile hint
+            # configured) -- pruning would be meaningless (everything scores 0), so skip it.
+            return patch_idx
+
+        combined = server_score.float() * mobile_score.float()
+
+        import os
+        if os.environ.get("CALIBRATE_PSCORE"):
+            qs = torch.tensor([0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0], device=combined.device)
+            pct = torch.quantile(combined, qs).tolist()
+            print(
+                f"[calibrate][openclip] combined_patch_scores percentiles "
+                f"[0,10,25,50,75,90,100]% = {[f'{v:.6g}' for v in pct]} mean={combined.mean().item():.6g} "
+                f"n={combined.numel()}",
+                flush=True,
+            )
+
+        keep_mask = combined >= token_keep_thres
+        if not bool(keep_mask.any()):
+            return patch_idx  # never prune a group down to nothing
+        return patch_idx[keep_mask]
+
+    def _bucket_pad_patch_idx(self, patch_idx: torch.Tensor, config: Any) -> torch.Tensor:
+        """Pads the query set to a fixed bucket-size multiple by duplicating existing indices, so
+        variable-length pruned query sets don't each trigger a novel cuBLAS/SDPA kernel-shape
+        dispatch (the same mitigation validated for the DINOv3 classifier). Safe: a duplicated
+        index reads/writes the exact same underlying value every time (x_active for that row is
+        identical since it's read from the same source position), so padding never corrupts
+        anything, just spends compute on redundant rows in exchange for a stable kernel shape."""
+        appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        bucket = appcorr_options.get("sdpa_query_bucket_size", 0) or 0
+        if bucket <= 0 or patch_idx.numel() == 0:
+            return patch_idx
+        total_len = patch_idx.numel() + self.tower.num_prefix_tokens
+        target = ((total_len + bucket - 1) // bucket) * bucket
+        pad_n = target - total_len
+        if pad_n <= 0:
+            return patch_idx
+        pad = patch_idx[-1:].expand(pad_n)
+        return torch.cat([patch_idx, pad])
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         start_l, end_l = params.get("layers", (0, len(self.tower.blocks)))
@@ -134,12 +203,13 @@ class OpenCLIPExecutor(ModelExecutor):
         patch_idx = torch.where(group_map[0] == group_id)[0]
         if patch_idx.numel() == 0:
             return
+        patch_idx = self._prune_patch_idx(patch_idx, context, config)
+        patch_idx = self._bucket_pad_patch_idx(patch_idx, config)
 
         x_feature = context["input_tokens"]
         cache = context.get("cache_feature", {})
         x_feature, cache = self.tower.correct_forward(x_feature, patch_idx, start_l, end_l, cache, tag_prefix="vision")
-        if end_l == len(self.tower.blocks):
-            cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
         context["current_feature"] = x_feature
         context["cache_feature"] = cache
 
