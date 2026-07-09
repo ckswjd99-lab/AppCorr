@@ -64,3 +64,45 @@ merge-groups by residual energy (leaving the remaining ~85% at coarse/blurred py
 resolution) already recovers full-resolution baseline accuracy. This is a substantially stronger
 result than the flat round-1 range (25-85%) suggested on its own -- without round 2, the "sweet
 spot" would have been mis-stated as "at or below 25%" rather than the much sharper ~15% figure.
+
+**Compute caveat (measured, not theoretical)**: this accuracy sweet spot does NOT currently
+translate into a proportional GPU wall-clock speedup. Per-op timing at keep_rate=15% (32B):
+`APPROX_FORWARD` mean=269ms vs `CORRECT_FORWARD` mean=353ms -- `.correct()` is *slower* than the
+full-image `.approx()` pass even at just 15% of positions, and this holds even at keep_rate=2%
+(296ms vs 301ms, roughly even). Theoretically, FLOPs should scale down close to linearly with
+keep_rate for both the linear (QKV/MLP/out-proj) and attention terms, since `.correct()`'s
+query count Q = keep_rate*N while it still attends over the same "N-length" cached keys -- at
+d_model=5120 (32B), the linear terms dominate over attention terms at this sequence length, so
+FLOPs at 15% should be roughly ~5x lower than a full pass. The fact that measured wall-clock is
+*higher*, not ~5x lower, points to real implementation overhead outweighing the FLOP savings at
+these problem sizes: `.correct()` reconstructs `prepare_full_tokens` (full-image patch embedding)
+every call regardless of keep_rate, builds an explicit `[Q,N]` mask every layer, scatter-writes
+into the KV cache, and loops sequentially over 96 layers (32 vision + 64 LLM) with small,
+GPU-underutilized matmuls at low Q -- none of which shrinks proportionally with keep_rate. Realizing
+the accuracy win as an actual speedup would require optimizing these fixed/sublinear costs (e.g.
+caching vision patch embeddings across rounds instead of recomputing, avoiding the explicit mask
+where avoidable, batching layers), which was out of scope for this investigation.
+
+## Grouping strategy comparison: grid vs sequential (num_groups=4, progressive multi-round)
+
+Unlike the keep-rate sweep above (single-shot, num_groups=1), this tests the *progressive* 4-round
+`interleaved_g4` scheduling itself (the layer-chunking scheme where only the last-arriving group
+gets a full-depth correction -- see main log). Question: does delivering merge-groups in raster/
+sequence order (`sequential`, a growing causal-prefix) recover more accuracy than `grid`'s
+spatially-scattered checkerboard tiling, under the identical chunking schedule? All nr=50, post
+SDPA fix.
+
+| grouping_strategy | 32B accuracy | 72B accuracy |
+|---|---|---|
+| grid (default, checkerboard) | 62.00% (31/50) | 72.00% (36/50) |
+| sequential (raster prefix)   | 74.00% (37/50) | 74.00% (37/50) |
+| baseline (full-res, no AppCorr) | 74.00% (37/50) | 76.00% (38/50) |
+
+**Result: sequential grouping is substantially better.** For 32B it closes the *entire* gap (62%
+-> 74%, exactly matching baseline). For 72B it recovers most of the gap (72% -> 74%, vs baseline
+76%). This confirms the causal-ordering hypothesis: for an autoregressive decoder, a merge-group's
+correction only benefits positions that causally attend to it, so a spatially-scattered group (grid)
+leaves gaps throughout the sequence even after "its own" round -- while sequential's growing prefix
+means every corrected round immediately and fully benefits every later position. This is a real,
+easy, essentially-free improvement (same compute, same schedule, just a different group assignment)
+and should be the default for any causal-LLM AppCorr deployment, not just this Qwen2.5-VL fork.
