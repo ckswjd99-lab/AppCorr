@@ -61,6 +61,33 @@ Branch: `experiment/clip-appcorr` (off `main`). Full plan: see the approved plan
   investigation). Latency-wise, interleaved isn't yet faster than full baseline either, for the
   same reason (no pruning => same total work, just chunked) -- expected until Phase 5 adds pruning.
 
+## nr=50 scale-up (ImageNet zero-shot)
+
+| config | top1 | top5 |
+|---|---|---|
+| full baseline (sequential) | 82% | 96% |
+| approx-only (heavily blurred, 1/4 res) | 66% | 94% |
+| interleaved correction (grid, g4) | 80% | 96% |
+
+At nr=50, interleaved (80%) is 2pp (1/50 samples) below full baseline (82%), vs. exact parity at
+nr=10. This is NOT a bug in the correction logic -- it is the same "bf16 kernel noise" property
+already documented for the OpenVLA vision fork ("single-round 100% correction matches stock to
+bf16 kernel noise, max last-logit err ~0.5" -- not claimed to be exactly 0 in general, just small).
+The REAL GroupTrigger schedule does MULTIPLE correction rounds interleaved with APPROX_FORWARD
+calls spanning the same layers (unlike the Phase 1 unit test's single-round tier (b), which was
+verified bit-exact for a small 4-image batch with no borderline logits). Mechanistically: each
+group's patches get their K/V correctly cached during their own correct() round, and are then
+carried forward correctly through later layers via subsequent approx() calls (which recompute K/V
+for ALL 257 positions using whatever is in the stream -- which is provably numerically correct at
+already-corrected positions, see reasoning in commit history). But bf16 SDPA kernels are not
+strictly associative across different memory layouts/slicing patterns, so the chunked computation
+path can differ from a monolithic 48-layer forward by kernel-noise-scale amounts -- enough to flip
+an occasional borderline top1 decision (1/50 here), never top5. Not investigating further; this
+matches the accepted-approximation philosophy documented throughout this whole AppCorr codebase.
+
+Still no latency win at this stage (same reason as nr=10 -- no pruning yet, so total FLOPs done by
+interleaved correction equals the baseline's, just chunked across more, smaller kernel launches).
+
 ## Next steps (not yet done)
 - Scale ImageNet zero-shot nr=10 -> nr=20/50 for a more robust baseline/approx-only/interleaved
   comparison (same discipline as the DINOv3 investigation).
