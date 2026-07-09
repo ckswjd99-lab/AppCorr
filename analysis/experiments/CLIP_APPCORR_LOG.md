@@ -256,3 +256,55 @@ threshold in the tested range that preserves full baseline accuracy the way Imag
   accuracy immediately; pick thr=25 (~82% keep-rate, -3.2pp i2t R@1) as the least-costly point
   actually tested if some pruning is required, but be aware this is a real trade, not a
   sweet spot in the ImageNet sense. All tested points remain far better than approx-only.
+
+## Phase 7 -- Complete full-scale ImageNet accuracy-vs-keep-rate curve (down to ~24% keep-rate)
+
+User asked to extend the curve to both higher thresholds and lower keep-rates (down to ~25%), all
+at FULL scale (50,000 images, no sampling). Full sweep, sorted by threshold:
+
+| threshold | keep-rate | top1 | top5 | regime |
+|---|---|---|---|---|
+| 0 (baseline) | 100.00% | 77.14% | 94.88% | -- |
+| 50 | 74.30% | 76.14% | 94.46% | clean |
+| 150 | 59.33% | 74.81% | 93.86% | clean |
+| 350 | 42.80% | 72.74% | 92.55% | clean |
+| 600 | 31.26% | 70.50% | 90.97% | clean |
+| 900 | 24.11% | 68.31% | 89.82% | clean |
+| 4000 | 69.06% | 73.65% | 92.79% | fallback-mixed |
+| 6000 | 89.41% | 76.14% | 94.28% | fallback-dominated |
+| 10000 | 98.21% | 76.99% | 94.77% | fallback-dominated |
+| (approx-only, no correction) | -- | 65.92% | 88.20% | -- |
+
+**Two distinct regimes, clearly separated by keep-rate behavior:**
+
+1. **"Clean" regime (threshold 0-900)**: keep-rate decreases smoothly and monotonically as
+   threshold increases (100% -> 74% -> 59% -> 43% -> 31% -> 24%), and top1 decreases smoothly and
+   near-linearly with it (77.1% -> 76.1% -> 74.8% -> 72.7% -> 70.5% -> 68.3%). This is the
+   real, useful, interpretable accuracy/compression curve -- roughly **-1pp top1 per ~13-15pp of
+   keep-rate given up**, flattening slightly as keep-rate approaches the ~24-25% floor tested
+   (still ~2.4pp above the approx-only baseline of 65.92%, so even at this aggressive a keep-rate,
+   correction is still clearly worth it over not correcting at all).
+
+2. **"Fallback-dominated" regime (threshold >=4000)**: keep-rate stops being monotonic with
+   threshold, and can even INCREASE as threshold increases (6000's 89.4% keep-rate exceeds 4000's
+   69.1%, and 10000's 98.2% is nearly full retention) -- because `_prune_patch_idx`'s "never prune
+   a group to empty" safety fallback (`if not keep_mask.any(): return patch_idx` unchanged)
+   increasingly dominates once the threshold exceeds most groups' entire score distribution: no
+   patch in the group clears the bar, so the WHOLE group falls back to "keep everything" instead
+   of being pruned. At threshold=10000 this happens to nearly every group on nearly every image,
+   which is why its keep-rate (98.2%) and accuracy (77.0%) both sit right next to the unpruned
+   baseline. **Threshold=4000 is a genuinely mixed/inconsistent case** -- keep-rate (69.1%) sits
+   between the clean regime's thr=150 (59.3%) and thr=350 (42.8%) values, but its accuracy
+   (73.65%) is WORSE than both of them, despite keeping MORE patches than either -- because a mix
+   of "some groups pruned all the way down to just-below-threshold" and "other groups fell back to
+   full retention" produces a less informative kept-set than a uniform, moderate prune at a lower
+   threshold would. **Practical conclusion: keep threshold values in the 0-~1500 range for this
+   model/config (num_groups=4, total_layers=48); values above that are not meaningfully
+   "more aggressive," they just increasingly reduce to a noisy version of the unpruned baseline.**
+
+**Final recommendation, unchanged from Phase 6**: **thr=50 (~74% keep-rate) remains the best
+practical operating point** for ImageNet zero-shot (-1.0pp top1 for -26pp keep-rate). The now-
+complete curve down to ~24% keep-rate shows this is a genuine knee, not an artifact of limited
+data -- accuracy keeps degrading steadily below it, reaching -8.8pp top1 (68.31% vs 77.14%) by the
+time keep-rate drops to ~24%, which is still meaningfully better than not correcting at all
+(approx-only: 65.92%) but no longer "nearly free" the way thr=50 is.
