@@ -189,3 +189,70 @@ yield a net latency win at CLIP-bigG's scale (launch-overhead-bound, not FLOPs-b
 DINOv3-7B); energy-based grouping does not help here either, cross-validating the earlier DINOv3
 classifier conclusion. Both are real, useful, mechanistically-explained results -- absence of a
 win is itself the finding, not a gap to fill.
+
+## Phase 6 -- Accuracy-vs-keep-rate sweet-spot search, latency ignored, FULL scale (no sampling)
+
+User's ask: ignore latency entirely, find the accuracy/keep-rate trade-off sweet spot for the
+`residual_energy x cls_attn_prob_layermean` threshold, and confirm on the FULL datasets (all
+50,000 ImageNet val images; all 5,000 COCO val2017 images with captions / 25,014 captions), not
+samples. Added `--full` and `--token-keep-thres` CLI flags plus patch-keep-rate telemetry (reused
+the existing generic `_token_prune_kept_patch_total`/`_token_prune_full_patch_total` ->
+`InferenceResult.token_prune_kept_patch/full_patch` fields, already wired in `worker.py`, model-
+agnostic -- just needed the executor to populate them) to both eval drivers.
+
+### ImageNet zero-shot: real sweet spot, confirmed at full scale
+
+nr=100 sweep (11 threshold points) found accuracy flat down to ~79% keep-rate then degrading
+roughly linearly to a ~65-67% floor below ~40% keep-rate (see thresholds 0-2500 table earlier in
+this log). Full-scale (50,000 image) confirmation of the two key points:
+
+| config | keep-rate | top1 | top5 |
+|---|---|---|---|
+| baseline (thr=0) | 100% | 77.14% | 94.88% |
+| **thr=50 (sweet spot)** | **74.3%** | **76.14% (-1.00pp)** | **94.46% (-0.42pp)** |
+| approx-only | -- | 65.92% (-11.22pp) | 88.20% (-6.68pp) |
+
+**Confirmed: discarding ~26% of patches costs only ~1pp top1.** The small-sample estimate (nr=100:
+baseline 76%, thr=50 -> keep_rate=78.6%, top1=76%, i.e. apparently free) was directionally right
+but slightly optimistic on the exact free-lunch point -- full scale shows a small (~1pp), real,
+non-zero cost at thr=50, not literally zero. Still a clearly good trade-off point.
+
+### COCO retrieval: no comparable free lunch -- small-sample sweep was misleading (ceiling effect)
+
+nr=150 sweep suggested an almost-free sweet spot (i2t R@1 flat at 94% down to keep_rate~69%, t2i
+R@1 flat 82-85% across the WHOLE tested range down to 23% keep-rate). This did NOT hold at full
+5000-image scale (25,014 real distractor captions instead of nr=150's ~750) -- with the much
+larger, harder candidate pool, retrieval difficulty is far higher and ANY pruning tested costs
+something immediately:
+
+| config | keep-rate | i2t R@1 | t2i R@1 |
+|---|---|---|---|
+| baseline (thr=0) | 100% | 67.96% | 50.70% |
+| thr=25 | 81.6% | 64.76% (-3.20pp) | 49.00% (-1.70pp) |
+| thr=50 | 75.3% | 64.32% (-3.64pp) | 48.72% (-1.98pp) |
+| thr=100 | 66.7% | 63.88% (-4.08pp) | 48.29% (-2.41pp) |
+| thr=200 | 55.5% | 62.66% (-5.30pp) | 47.43% (-3.27pp) |
+| approx-only | -- | 50.06% (-17.90pp) | 40.33% (-10.37pp) |
+
+**Why the small sample was misleading**: with only ~150 candidate images (and their ~750
+captions), CLIP-bigG's retrieval is nearly saturated (94%/84% R@1) -- there just aren't enough
+confusable distractors for small errors introduced by pruning to change any ranking's top-1
+result. At the real 5000-image/25,014-caption scale, rankings are far more contested, so the SAME
+absolute embedding perturbation from pruning much more often changes who's ranked #1. This is the
+same "small sample looks too easy, real difficulty only shows up at scale" pattern already noted
+for retrieval recall metrics earlier in this log (the nr=50 -> nr=500 jump), just more pronounced
+here at nr=150 -> nr=5000.
+
+**Shape of the real curve**: the initial cost (100%->82% keep-rate) is the steepest part (-3.2pp
+i2t R@1 for -18pp keep-rate); after that the curve flattens noticeably (82%->55% keep-rate costs
+only another -2.1pp i2t R@1, over more than double the keep-rate range) -- so once you accept the
+initial ~3pp hit, further pruning down to ~55% keep-rate is comparatively cheap. But there is NO
+threshold in the tested range that preserves full baseline accuracy the way ImageNet's thr=50 does.
+
+**Practical recommendation**: 
+- ImageNet zero-shot classification: **thr=50 (~74% keep-rate) is a validated, nearly-free
+  accuracy/efficiency trade-off** (-1pp top1 for -26% patches corrected).
+- COCO retrieval: **no free lunch exists in the tested range** -- every threshold costs real
+  accuracy immediately; pick thr=25 (~82% keep-rate, -3.2pp i2t R@1) as the least-costly point
+  actually tested if some pruning is required, but be aware this is a real trade, not a
+  sweet spot in the ImageNet sense. All tested points remain far better than approx-only.

@@ -173,6 +173,11 @@ class OpenCLIPExecutor(ModelExecutor):
             )
 
         keep_mask = combined >= token_keep_thres
+        full_count = float(patch_idx.numel())
+        kept_count = float(int(keep_mask.sum().item())) if bool(keep_mask.any()) else full_count
+        cache["_token_prune_kept_patch_total"] = cache.get("_token_prune_kept_patch_total", 0.0) + kept_count
+        cache["_token_prune_full_patch_total"] = cache.get("_token_prune_full_patch_total", 0.0) + full_count
+        context["cache_feature"] = cache
         if not bool(keep_mask.any()):
             return patch_idx  # never prune a group down to nothing
         return patch_idx[keep_mask]
