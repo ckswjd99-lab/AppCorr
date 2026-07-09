@@ -9,7 +9,45 @@ at nr=50 (strided sample of RealWorldQA's 765-example test split), post SDPA-ker
 
 Baseline (full resolution, stock sequential inference) at nr=50: **32B = 74% (37/50)**, **72B = 76% (38/50)**.
 
-## Round 1 (25%-85%)
+## ⚠ REVISED at full scale (N=765): the "~15% elbow" conclusion below does NOT hold
+
+**The nr=50 sweep's "~15% keep rate reaches baseline" conclusion (see "Conclusion" section below) was
+wrong.** A full-dataset (N=765, all of RealWorldQA's test split) re-measurement at the narrowed
+candidates {baseline, 10%, 15%, 20%} shows two things nr=50 got wrong simultaneously:
+
+1. **nr=50 overestimated baseline accuracy itself** by ~4-5pp: 32B's full baseline is **68.76%**
+   (526/765), not the 74% nr=50 suggested; 72B's is **72.29%** (553/765), not 76%.
+2. **nr=50 overestimated how quickly keep_rate closes the gap to that baseline.** At full scale,
+   accuracy climbs only modestly and monotonically with keep_rate, and does NOT reach baseline
+   anywhere in the tested range:
+
+| keep_rate | 32B accuracy (N=765) | gap to baseline | 72B accuracy (N=765) | gap to baseline |
+|-----------|----------------------|------------------|------------------------|------------------|
+| baseline | 68.76% (526/765) | -- | 72.29% (553/765) | -- |
+| 10% | 64.58% (494/765) | -4.18pp | 66.80% (511/765) | -5.49pp |
+| 15% | 64.84% (496/765) | -3.92pp | 66.54% (509/765) | -5.75pp |
+| 20% | 65.88% (504/765) | -2.88pp | 67.84% (519/765) | -4.45pp |
+
+The trend is real (both models improve modestly and roughly monotonically from 10%->20%), but the
+gap to baseline is still 2.9-4.5pp wide at keep_rate=20% -- the true elbow is somewhere **beyond
+20%**, not at ~15% as the nr=50 data indicated. This narrowed run only tested up to 20% (chosen
+based on the nr=50 data, which in hindsight bracketed the wrong region), so the exact full-scale
+elbow location is not yet pinned down -- honestly, all that can be said from this data is "higher
+than 20%," not a precise number. Determining it precisely would need additional full-scale points
+beyond 20% (e.g. 30/40/50%), not attempted here due to time budget (each full-N point costs
+~40-50 minutes).
+
+**Root cause of the discrepancy**: nr=50 is simply a small, noisy sample (strided across 765
+examples, only 50 chosen) -- the earlier nr=50 sweep's apparent "clean saturating elbow at 15%"
+was, in retrospect, largely a product of which 50 examples happened to be sampled, not a robust
+signal. This is an important methodological lesson for the whole session: conclusions drawn from
+nr=50 sweeps (used throughout, for compute-budget reasons) should be treated as directional/
+qualitative ("some keep_rate in this rough range recovers most of the gap") rather than precise
+("the elbow is at X%"), unless independently confirmed at larger N the way this section did for
+RealWorldQA. See `QWEN25VL_APPCORR_LOG.md` section 7 for the full cross-dataset discussion,
+including whether GQA and RefCOCO's nr=50-based conclusions hold up similarly.
+
+## Round 1 (25%-85%, nr=50 -- see revision above)
 
 | keep_rate | 32B accuracy | 72B accuracy |
 |-----------|-------------|-------------|
@@ -49,7 +87,10 @@ Observation: flat across the whole 25-85% range, within noise of baseline (all p
 | 100% | 76% | 72% |
 | baseline (full-res, no AppCorr) | 74% | 76% |
 
-## Conclusion: sweet spot is ~15% keep rate
+## Conclusion (nr=50, SUPERSEDED -- see "REVISED at full scale" section above)
+
+**This conclusion did not survive full-scale (N=765) re-measurement -- kept here for the record,
+not as the session's actual finding.** See the top of this file for the corrected picture.
 
 Round 2 finds the real elbow: both models show a clear, monotonic accuracy climb from 2% to 15%
 keep_rate (32B: 58->62->66->76%; 72B: 70->70->74->76%), then **saturate to baseline-equivalent
