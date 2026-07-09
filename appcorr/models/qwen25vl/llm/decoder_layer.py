@@ -155,13 +155,24 @@ class ApproxCorrectQwen25VLAttention(nn.Module):
         k_full = repeat_kv(k_full, self.num_key_value_groups)
         v_full = repeat_kv(v_full, self.num_key_value_groups)
 
-        key_positions = torch.arange(N, device=kv.device).view(1, N)
-        allowed = key_positions <= token_idx.view(Q, 1)  # [Q, N]
-        attn_mask = torch.zeros((Q, N), device=kv.device, dtype=q_new.dtype)
-        attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
-        attn_mask = attn_mask.view(1, 1, Q, N)
-
-        attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, attn_mask=attn_mask)
+        # When every position is being corrected in this one call (Q == N, token_idx == arange(N)),
+        # the explicit allowed-mask below is mathematically identical to a plain causal mask -- but
+        # stock/approx() dispatch SDPA via `is_causal=True`, a different fused kernel than the
+        # explicit-float-mask path. That kernel mismatch is a real source of bf16 divergence that
+        # compounds over many layers and can flip an occasional close-call argmax (confirmed: a
+        # single-round, 100%-corrected real run diverged from baseline on 2/20 samples even though
+        # this is architecturally a full recomputation). Route the full-coverage case through the
+        # same is_causal=True kernel stock uses, for exact kernel-path parity.
+        is_full_causal = Q == N and bool(torch.equal(token_idx, torch.arange(N, device=kv.device)))
+        if is_full_causal:
+            attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, is_causal=True)
+        else:
+            key_positions = torch.arange(N, device=kv.device).view(1, N)
+            allowed = key_positions <= token_idx.view(Q, 1)  # [Q, N]
+            attn_mask = torch.zeros((Q, N), device=kv.device, dtype=q_new.dtype)
+            attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
+            attn_mask = attn_mask.view(1, 1, Q, N)
+            attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, attn_mask=attn_mask)
         attn_out = attn_out.transpose(1, 2).reshape(x_sel.shape[0], Q, self.num_heads * self.head_dim)
         return self.o_proj(attn_out), cache_feature
 

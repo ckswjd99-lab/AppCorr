@@ -219,6 +219,20 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 group_ids = group_ids[:N]
             return group_ids
             
+        elif strategy == 'sequential':
+            # Contiguous prefix chunks in flattened (raster) sequence order -- for autoregressive
+            # (causally-masked) decoders, correcting group k only benefits positions that causally
+            # attend to it; a spatially-scattered group (e.g. 'grid's checkerboard tiling) leaves
+            # gaps throughout the sequence, so many later positions still depend on uncorrected
+            # earlier ones even after their own group arrives. Taking prefix chunks in sequence
+            # order instead means every corrected group extends a strictly-growing corrected
+            # *prefix*, so intermediate (pre-100%) rounds get maximal benefit from what has arrived.
+            if structure is not None and all('spatial_idx' in item for item in structure):
+                order = np.asarray([int(item['spatial_idx']) for item in structure], dtype=int)
+            else:
+                order = np.arange(N, dtype=int)
+            return 1 + (order * num_groups) // max(N, 1)
+
         elif strategy == 'random':
             return np.random.randint(1, num_groups + 1, size=N)
             
