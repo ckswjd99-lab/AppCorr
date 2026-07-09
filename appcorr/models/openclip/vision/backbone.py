@@ -106,9 +106,20 @@ class ApproxCorrectCLIPVisionTower(nn.Module):
 
     def finalize_cls_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str) -> Dict[str, Any]:
         """Averages the per-layer CLS->patch attention (cached by `approx_forward`'s
-        `collect_cls_attn`) across all layers -- the `cls_attn_prob_layermean` server pscore. Call
-        once after the LAST layer's approx() has run."""
-        per_layer = [cache_feature[f"{tag_prefix}_layer{i}_cls_attn"] for i in range(len(self.blocks))]
+        `collect_cls_attn`) across all layers seen SO FAR -- the `cls_attn_prob_layermean` server
+        pscore. Only layers that have actually run through `.approx()` have a cached `_cls_attn`
+        entry (`.correct()` never writes one), so this is safe to call after ANY approx chunk, not
+        just the final one -- e.g. group 0's initial `approx_forward(0, chunk_size)` already gives
+        a usable (if less refined than a full-depth average) importance signal for pruning
+        subsequent groups' patches, without needing to wait for the whole 48-layer forward."""
+        per_layer = [
+            cache_feature[k] for k in sorted(
+                (k for k in cache_feature if k.startswith(f"{tag_prefix}_layer") and k.endswith("_cls_attn")),
+                key=lambda k: int(k[len(f"{tag_prefix}_layer"):-len("_cls_attn")]),
+            )
+        ]
+        if not per_layer:
+            return cache_feature
         layermean = torch.stack(per_layer, dim=0).mean(dim=0)  # [B, N]
         cache_feature[f"{tag_prefix}_cls_attn_layermean"] = layermean[:, self.num_prefix_tokens:]
         return cache_feature
