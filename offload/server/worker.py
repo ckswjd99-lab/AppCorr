@@ -65,6 +65,15 @@ class WorkerModule(multiprocessing.Process):
         # Monitor Queue (GPU Worker → Reaper Thread)
         self.monitor_queue = queue.Queue()
 
+        # Set once the FIRST CONFIG has been applied (self.config/self.policy assigned) by the GPU
+        # worker thread below. self.config is written only in _gpu_worker's message loop (a
+        # different thread than _decoder_worker, which merely forwards CONFIG onward via
+        # gpu_queue) -- without this, a TASK message that races ahead of gpu_queue's CONFIG
+        # processing can reach _decoder_worker while self.config is still None (AttributeError) or
+        # still holds a stale previous-request config. Created here (not __init__) since
+        # threading.Event isn't picklable and __init__ runs in the parent process before spawn.
+        self._config_ready = threading.Event()
+
         # Global timing anchor: ties CPU wall-clock to the CUDA timeline.
         # anchor_cpu + anchor_ev.elapsed_time(ev) / 1000.0 -> absolute timestamp.
         self.anchor_ev = None
@@ -121,6 +130,13 @@ class WorkerModule(multiprocessing.Process):
                 if msg_type == 'TASK':
                     task = payload
                     req_id = task.request_id
+
+                    # See _config_ready's docstring in __init__: guards against a TASK racing ahead
+                    # of the GPU-worker thread's processing of the CONFIG this decoder thread just
+                    # forwarded onward. Only blocks on the FIRST CONFIG of a fresh process (already
+                    # ready for every later message in practice); does not block the GPU worker
+                    # thread itself, which never waits on this event.
+                    self._config_ready.wait()
 
                     if req_id not in self.sessions:
                         self.sessions[req_id] = self._create_session_context()
@@ -221,6 +237,7 @@ class WorkerModule(multiprocessing.Process):
                         self.device = torch.device(self.config.device)
                         print(f"[Worker] Device overridden by Config: {self.device}")
                     self.policy = get_transmission(self.config.transmission_policy_name)
+                    self._config_ready.set()
                     self._validate_lowres_sr_config()
                     self._load_sr_engine()
                     # Skip re-loading the model executor if nothing that would change WHICH
