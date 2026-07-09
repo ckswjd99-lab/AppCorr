@@ -68,6 +68,7 @@ def parse_args():
     p.add_argument("--config", type=str, required=True)
     p.add_argument("--grouping-strategy", type=str, default=None)
     p.add_argument("--num-groups", type=int, default=None)
+    p.add_argument("--keep-rate", type=float, default=None)
     p.add_argument("--num-samples", type=int, default=10)
     p.add_argument("--full", action="store_true", help="Run all 765 RealWorldQA examples (ignores --num-samples).")
     p.add_argument("--result-timeout", type=float, default=600.0)
@@ -85,6 +86,8 @@ def load_base_config_dict(args):
         raw.setdefault("transmission_kwargs", {})["grouping_strategy"] = args.grouping_strategy
     if args.num_groups is not None:
         raw.setdefault("transmission_kwargs", {})["num_groups"] = args.num_groups
+    if args.keep_rate is not None:
+        raw.setdefault("transmission_kwargs", {})["keep_rate"] = args.keep_rate
     return raw
 
 

@@ -97,9 +97,12 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             # Pre-calculate group assignments per image (may differ with preserve_input_shape)
             per_image_assignments = []
             for b in range(B):
-                residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
+                if grouping_strategy == 'top_energy':
+                    residual_structure = self._collect_residual_metadata_scored(gaussians_batch[b], config, image_hws[b])
+                else:
+                    residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
                 per_image_assignments.append(
-                    self._precompute_group_assignments(grouping_strategy, residual_structure, num_groups)
+                    self._precompute_group_assignments(grouping_strategy, residual_structure, num_groups, config)
                 )
 
             # Compress and yield group-by-group
@@ -150,7 +153,46 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 })
         return structure
 
-    def _precompute_group_assignments(self, strategy, residual_structure, num_groups):
+    def _collect_residual_metadata_scored(self, gaussians, config, image_hw=None):
+        """Same as `_collect_residual_metadata`, but also computes each crop's actual residual
+        pixel data and attaches an importance score (`_compute_patch_pscore_hint`, same signal
+        `_process_image_group_residuals` uses per-patch) -- needed by the 'top_energy' keep-rate
+        grouping strategy to rank merge-groups by how much high-frequency detail their residual
+        actually carries, before deciding which ones are worth ever transmitting/correcting."""
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
+        ph, pw = config.patch_size
+        mobile_pscore = "residual_energy"  # keep-rate importance ranking always uses energy, regardless of mobile_pscore config
+
+        structure = []
+        prev_lvl = levels[0]
+        prev_img = gaussians[prev_lvl]
+        for lvl in levels[1:]:
+            curr_g = gaussians[lvl]
+            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
+            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
+
+            rh, rw = residual.shape[:2]
+            gh, gw = rh // ph, rw // pw
+            num_crops = gh * gw
+            for i in range(num_crops):
+                row, col = divmod(i, gw)
+                y, x = row * ph, col * pw
+                crop = residual[y : y + ph, x : x + pw]
+                pscore = self._compute_patch_pscore_hint(crop, mobile_pscore)
+                structure.append({
+                    'spatial_idx': i,
+                    'res_level': lvl,
+                    'grid_hw': (gh, gw),
+                    'row': row,
+                    'col': col,
+                    'pscore': pscore,
+                })
+            prev_img = curr_g
+            prev_lvl = lvl
+        return structure
+
+    def _precompute_group_assignments(self, strategy, residual_structure, num_groups, config=None):
         """Pre-calculate group ID for N items based on strategy."""
         if isinstance(residual_structure, int):
             N = residual_structure
@@ -233,9 +275,38 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 order = np.arange(N, dtype=int)
             return 1 + (order * num_groups) // max(N, 1)
 
+        elif strategy == 'top_energy':
+            # Importance-ranked keep-rate thresholding: rank every merge-group's residual by
+            # `_compute_patch_pscore_hint` (residual energy) and only ever transmit/correct the top
+            # `keep_rate` fraction (transmission_kwargs['keep_rate'], default 1.0 = keep everything).
+            # The rest are assigned group_id=0 -- the same id the base/coarse pyramid layer uses, so
+            # `correct_forward`'s `group_map[0] == group_id` lookup for group_id=1 (the only residual
+            # group callers should configure with num_groups=1) never matches them: they simply never
+            # get corrected, remaining approx-only (from the base layer) for the whole request. This
+            # is a *static* one-shot selection (not a progressive multi-round schedule), so it should
+            # always be paired with num_groups=1 in the caller's config.
+            if structure is None or not all('pscore' in item for item in structure):
+                raise ValueError(
+                    "'top_energy' grouping requires per-item 'pscore' -- pass residual_structure "
+                    "built via _collect_residual_metadata_scored(), not _collect_residual_metadata()."
+                )
+            keep_rate = 1.0
+            if config is not None:
+                keep_rate = float(config.transmission_kwargs.get('keep_rate', 1.0))
+            keep_rate = min(max(keep_rate, 0.0), 1.0)
+            scores = np.asarray([float(item['pscore']) for item in structure], dtype=np.float64)
+            keep_n = int(round(keep_rate * N))
+            group_ids = np.zeros(N, dtype=int)
+            if keep_n > 0:
+                # argsort descending, ties broken by original (raster) order for determinism
+                order = np.argsort(-scores, kind='stable')
+                keep_idx = order[:keep_n]
+                group_ids[keep_idx] = 1
+            return group_ids
+
         elif strategy == 'random':
             return np.random.randint(1, num_groups + 1, size=N)
-            
+
         elif strategy == 'geometric':
             probs = np.random.rand(N)
             group_ids = np.floor(-np.log2(1 - probs)) + 1
