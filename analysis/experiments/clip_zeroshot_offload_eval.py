@@ -49,8 +49,12 @@ def parse_args():
                               "for ProgressiveLaplacian configs.")
     parser.add_argument("--num-groups", type=int, default=None,
                          help="Override transmission_kwargs['num_groups'].")
+    parser.add_argument("--token-keep-thres", type=float, default=None,
+                         help="Override appcorr_kwargs['token_keep_thres']. Also forces "
+                              "appcorr_kwargs['mobile_pscore']='residual_energy' if not already set.")
     parser.add_argument("--data-root", type=str, default="/NHNHOME/share/cjpark/data/imagenet_val")
     parser.add_argument("--num-samples", type=int, default=10)
+    parser.add_argument("--full", action="store_true", help="Run the FULL dataset (ignores --num-samples).")
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--result-timeout", type=float, default=300.0)
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -69,6 +73,10 @@ def load_config(args):
         raw.setdefault("transmission_kwargs", {})["grouping_strategy"] = args.grouping_strategy
     if args.num_groups is not None:
         raw.setdefault("transmission_kwargs", {})["num_groups"] = args.num_groups
+    if args.token_keep_thres is not None:
+        appcorr = raw.setdefault("appcorr_kwargs", {})
+        appcorr["token_keep_thres"] = args.token_keep_thres
+        appcorr.setdefault("mobile_pscore", "residual_energy")
     return ExperimentConfig(**raw), raw
 
 
@@ -94,15 +102,22 @@ def main():
 
     full_dataset = full_loader.dataset
     n_total = len(full_dataset)
-    n_samples = min(args.num_samples, n_total)
-    stride = max(n_total // n_samples, 1)
-    indices = list(range(0, n_total, stride))[:n_samples]
-    subset = Subset(full_dataset, indices)
-    loader = torch.utils.data.DataLoader(
-        subset, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True,
-    )
-    print(f"[driver] sampling {len(indices)} images strided across {n_total} "
-          f"(stride={stride}, spans ~{len(indices)} distinct classes)")
+    if args.full:
+        indices = list(range(n_total))
+        loader = torch.utils.data.DataLoader(
+            full_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True,
+        )
+        print(f"[driver] running FULL dataset: {n_total} images")
+    else:
+        n_samples = min(args.num_samples, n_total)
+        stride = max(n_total // n_samples, 1)
+        indices = list(range(0, n_total, stride))[:n_samples]
+        subset = Subset(full_dataset, indices)
+        loader = torch.utils.data.DataLoader(
+            subset, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True,
+        )
+        print(f"[driver] sampling {len(indices)} images strided across {n_total} "
+              f"(stride={stride}, spans ~{len(indices)} distinct classes)")
 
     sched_q = multiprocessing.Queue()
     worker_q = multiprocessing.Queue()
@@ -119,13 +134,18 @@ def main():
     per_sample = []
     t_start = time.time()
 
+    total_target = len(indices)
+    print_every = 1 if total_target <= 50 else max(total_target // 200, 50)
+    kept_total = 0.0
+    full_total = 0.0
+
     try:
         control_q.put(("CONFIG", config))
         time.sleep(1.0)  # let CONFIG reach the worker before the first patches
 
         processed = 0
         for images, labels in loader:
-            if processed >= args.num_samples:
+            if processed >= total_target:
                 break
             image_np = images[0].permute(1, 2, 0).contiguous().numpy()  # [H,W,3] uint8
             label_val = int(labels[0].item())
@@ -148,14 +168,20 @@ def main():
             batch_metrics = dataset_loader.evaluate_batch([pred_top5], [label_val])
             for ev in result.server_events:
                 op_times[ev["type"]].append(ev["end"] - ev["start"])
+            kept_total += float(getattr(result, "token_prune_kept_patch", 0.0) or 0.0)
+            full_total += float(getattr(result, "token_prune_full_patch", 0.0) or 0.0)
 
             top1 = bool(pred_top5 and pred_top5[0] == label_val)
             top5 = label_val in pred_top5
             per_sample.append({"label": label_val, "pred_top5": pred_top5, "top1": top1, "top5": top5, "wall": wall})
-            print(f"    sample {processed + 1}/{args.num_samples}: label={label_val} pred={pred_top5} "
-                  f"top1={top1} top5={top5} wall={wall:.2f}s")
-            sys.stdout.flush()
             processed += 1
+            if processed % print_every == 0 or processed == total_target:
+                summ = dataset_loader.get_summary()
+                keep_pct = 100.0 * kept_total / full_total if full_total > 0 else 100.0
+                print(f"    [{processed}/{total_target}] running top1={summ.get('top1_acc', 0.0):.2f}% "
+                      f"top5={summ.get('top5_acc', 0.0):.2f}% keep_rate={keep_pct:.1f}% "
+                      f"elapsed={time.time() - t_start:.0f}s")
+                sys.stdout.flush()
     finally:
         control_q.put(("STOP", None))
         result_q.cancel_join_thread()
@@ -166,10 +192,12 @@ def main():
 
     summary = dataset_loader.get_summary()
     total_wall = time.time() - t_start
+    keep_pct = 100.0 * kept_total / full_total if full_total > 0 else 100.0
 
     print(f"\n[driver] === Summary: {label} ===")
     print(f"    samples: {summary.get('total_samples', 0)}")
     print(f"    top1_acc: {summary.get('top1_acc', 0.0):.2f}%   top5_acc: {summary.get('top5_acc', 0.0):.2f}%")
+    print(f"    patch keep_rate: {keep_pct:.2f}%  (kept={kept_total:.0f} / full={full_total:.0f})")
     print(f"    total wall time: {total_wall:.1f}s ({total_wall / max(processed, 1):.2f}s/sample avg)")
 
     print(f"\n[driver] === Mean per-op GPU time (ms), {label} ===")
@@ -182,6 +210,7 @@ def main():
         "config": args.config,
         "grouping_strategy": raw_config.get("transmission_kwargs", {}).get("grouping_strategy"),
         "summary": summary,
+        "keep_rate_pct": keep_pct,
         "op_times_ms": {k: float(np.mean(v) * 1000) for k, v in op_times.items()},
         "total_wall_sec": total_wall,
         "per_sample": per_sample,
