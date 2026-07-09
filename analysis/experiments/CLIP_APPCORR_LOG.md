@@ -88,12 +88,30 @@ matches the accepted-approximation philosophy documented throughout this whole A
 Still no latency win at this stage (same reason as nr=10 -- no pruning yet, so total FLOPs done by
 interleaved correction equals the baseline's, just chunked across more, smaller kernel launches).
 
+## Phase 4 -- COCO retrieval (commit + nr=500 scale-up)
+- `analysis/experiments/clip_coco_retrieval_offload_eval.py`: samples N val2017 images with
+  captions, precomputes their captions' text embeddings once, runs images through the offload
+  pipeline, computes global i2t/t2i recall@{1,5,10} via similarity-matrix ranking.
+- 3 configs: `coco_retrieval_clip_bigg_{sequential,approx_only_l2,interleaved_g4}.json`.
+- Hit the same transient worker-startup config-propagation race documented earlier this session
+  for the DINOv3 driver (not a logic bug -- retry succeeded immediately with no pipeline code
+  changes); bumped this driver's post-CONFIG sleep 1.0s -> 3.0s since it loads a second CLIPModel
+  copy in the main process just before starting the worker subprocess.
+- nr=50 was too easy to be discriminating (only 50 candidate images -- R@5/R@10 saturated at
+  100% for all 3 conditions; retrieval difficulty scales with candidate-pool size, unlike
+  classification top1/top5). Scaled to **nr=500**:
+
+  | config | i2t R@1 | i2t R@5 | i2t R@10 | t2i R@1 | t2i R@5 | t2i R@10 |
+  |---|---|---|---|---|---|---|
+  | full baseline (sequential) | 85.60% | 98.20% | 99.60% | 73.20% | 93.24% | 97.36% |
+  | approx-only (blurred) | 77.80% | 93.80% | 98.80% | 67.20% | 90.40% | 96.24% |
+  | interleaved correction (grid, g4) | **85.00%** | 99.00% | 99.60% | **73.16%** | 92.44% | 97.04% |
+
+  Interleaved correction essentially matches full baseline (within noise on R@1, both directions),
+  while approx-only shows a clear, real degradation on every metric -- confirms the mechanism
+  works correctly for retrieval too, mirroring the ImageNet zero-shot result.
+
 ## Next steps (not yet done)
-- Scale ImageNet zero-shot nr=10 -> nr=20/50 for a more robust baseline/approx-only/interleaved
-  comparison (same discipline as the DINOv3 investigation).
-- Phase 4: COCO retrieval (captions_val2017.json, 5000 images) -- new captions loader,
-  retrieval-mode executor path (already stubbed via `clip_task="retrieval"` in the executor, not
-  yet wired to a config/driver), recall@1/5/10 i2t+t2i.
 - Phase 5: port the validated `residual_energy x avg_attn` thresholded pruning (this session's
   DINOv3 classifier finding) into `appcorr/models/openclip/vision/block.py`'s `correct()`, giving
   interleaved correction an actual latency advantage over full baseline (currently it has none,
