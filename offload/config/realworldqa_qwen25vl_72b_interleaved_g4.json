@@ -14,7 +14,7 @@
         "pyramid_levels": [2, 0],
         "grouping_strategy": "grid",
         "num_groups": 4,
-        "total_layers": 64,
+        "total_layers": 80,
         "compression_level": 1
     },
     "appcorr_kwargs": {
