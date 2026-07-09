@@ -171,22 +171,34 @@ def main():
             image_config["image_shape"] = [target_h, target_w, 3]
             config = ExperimentConfig(**image_config)
 
-            control_q.put(("CONFIG", config))
-            time.sleep(2.0)  # let CONFIG propagate before this image's patches arrive
-
+            # Retry wrapper: a rare pre-existing scheduler race (buffer reset racing with an
+            # in-flight group's patch accumulation -- see QWEN25VL_APPCORR_LOG.md's "known issues"
+            # section) can occasionally cause a request's CORRECT_FORWARD to fire without its
+            # session ever having run APPROX_FORWARD first, which the worker process catches and
+            # logs internally without crashing (so a retry against the same still-alive
+            # scheduler/worker succeeds normally) but never sends a response for -- resending
+            # CONFIG+patches for the same image is a safe, sufficient recovery.
             t0 = time.time()
-            for group_patches in encoder.encode(image_np[None], config):
-                now = time.time()
-                for p in group_patches:
-                    p.arrival_time = now
-                    p.text_payload = question
-                for p in group_patches:
-                    sched_q.put(p)
-            try:
-                result = result_q.get(timeout=args.result_timeout)
-            except queue_mod.Empty:
-                print(f"    sample {processed}: TIMEOUT waiting for InferenceResult -- aborting")
-                raise
+            result = None
+            for attempt in range(3):
+                control_q.put(("CONFIG", config))
+                time.sleep(2.0)  # let CONFIG propagate before this image's patches arrive
+                for group_patches in encoder.encode(image_np[None], config):
+                    now = time.time()
+                    for p in group_patches:
+                        p.arrival_time = now
+                        p.text_payload = question
+                    for p in group_patches:
+                        sched_q.put(p)
+                try:
+                    result = result_q.get(timeout=150.0)
+                    break
+                except queue_mod.Empty:
+                    print(f"    sample {processed}: TIMEOUT waiting for InferenceResult "
+                          f"(attempt {attempt+1}/3) -- retrying" if attempt < 2 else
+                          f"    sample {processed}: TIMEOUT after 3 attempts -- aborting")
+            if result is None:
+                raise RuntimeError(f"sample {processed} (idx={idx}) failed after 3 attempts")
             wall = time.time() - t0
 
             pred_text = result.output[0] if result.output else ""
