@@ -210,41 +210,80 @@ AppCorr deployment, not just this fork.
 - **The keep-rate accuracy win is not (yet) a compute win** -- an important, measured caveat that
   should not be glossed over when reporting the "15% sweet spot" as a practical result.
 
-## 7. Cross-dataset keep-rate comparison: does "~15%" generalize?
+## 7. Cross-dataset keep-rate comparison (FINAL, post-revision)
 
-Full data and per-dataset discussion: `qwen25vl_keeprate_sweep_results.md` (RealWorldQA),
-`qwen25vl_gqa_sweep_results.md` (GQA), `qwen25vl_refcoco_sweep_results.md` (RefCOCO). All three use
-identical methodology (`top_energy` grouping, `num_groups=1`, nr=50).
+**Headline lesson, stated up front: every nr=50 conclusion in this investigation was wrong in some
+way when checked against a larger sample, and the direction of the error was not consistent.**
+RealWorldQA's nr=50 *overestimated* baseline accuracy (~+4-5pp) and *understated* how much
+keep_rate was needed (true elbow is beyond 20%, not ~15%). GQA's nr=50 did the opposite --
+*underestimated* baseline accuracy (~-9-10.5pp) -- while also failing to resolve a real, clean
+elbow that was there all along (just obscured by n=50's noise). RefCOCO's nr=50 baseline was
+roughly accurate, but its elbow estimates were off in *both* directions across the two models: too
+late for 32B (true elbow ~25-40%, not ~50%) and, for 72B, wrongly suggested no elbow at all where a
+real modest one exists. **nr=50 sweeps in this session should be read as "some correction helps,
+roughly this order of magnitude," never as a precise number** -- every specific percentage
+originally reported was subsequently revised. See `qwen25vl_keeprate_sweep_results.md`,
+`qwen25vl_gqa_sweep_results.md`, `qwen25vl_refcoco_sweep_results.md` for the full revision writeups
+and raw data (RealWorldQA re-measured at full N=765; GQA and RefCOCO at nr=400, 8x the original).
 
-| Dataset | Task type | 32B elbow | 72B elbow |
-|---|---|---|---|
-| RealWorldQA | semantic VQA | ~15% (clean, monotonic saturation) | ~15% (clean) |
-| GQA | semantic VQA | **no clean elbow** -- noisy, consistently a few points under baseline across the whole 2-100% range | ~2% (flat, baseline-matching throughout) |
-| RefCOCO | referring-expression grounding (bbox) | **~50%** -- real, monotonic ~16pp Acc@0.5 / ~0.13 IoU climb from 2% to 50% | ~2% (flat, baseline-matching throughout) |
+### Final corrected numbers (baseline, and gap-to-baseline at each tested keep_rate)
 
-**Answer: no, the "~15% keep rate is enough" finding does not generalize as a universal constant.**
-Two genuinely different axes matter more than a single "sweet spot" number:
+**RealWorldQA** (N=765 full; baseline 32B=68.76%, 72B=72.29%):
 
-1. **Task type matters, at least for the smaller model.** RefCOCO's spatial grounding task shows a
-   real, substantial keep-rate dependency for 32B (elbow ~50%, more than 3x RealWorldQA's ~15%) --
-   consistent with the intuitive hypothesis that precise localization needs more of the image
-   actually corrected than semantic scene-level VQA does, where coarse/blurred detail is often
-   sufficient to answer "what color is X" or "is it raining." GQA (also VQA) does *not* cleanly
-   confirm RealWorldQA's ~15% number either, but for a different reason: its 32B curve is simply
-   too noisy at nr=50 to identify any elbow at all (see section-specific discussion), not evidence
-   of a *different, higher* elbow the way RefCOCO's data is.
-2. **Model size matters more than task type.** 72B is flat and baseline-matching from the *lowest*
-   tested keep_rate (2%) across all three datasets, with no task-dependent variation at all in this
-   data -- the larger model appears simply robust to this kind of input-detail reduction regardless
-   of task. If this pattern holds beyond these three benchmarks, it suggests keep-rate-based
-   compression is a much easier win for larger models, and any "how much can I compress" answer for
-   a smaller model needs to be re-measured per task rather than assumed transferable.
+| keep_rate | 32B gap | 72B gap |
+|---|---|---|
+| 10% | -4.18pp | -5.49pp |
+| 15% | -3.92pp | -5.75pp |
+| 20% | -2.88pp | -4.45pp |
 
-Given only three datasets and nr=50 samples each, none of this should be treated as a precise,
-final characterization -- but the *qualitative* conclusion (task-dependent for small models,
-robust-regardless for large models; grounding needs more correction than VQA) is consistent and
-not an artifact of any single noisy run, since it shows up the same way across independently-run
-32B vs 72B chains on independently-built dataset drivers.
+Elbow not reached by keep_rate=20% for either model -- true elbow is **beyond 20%**, exact location
+undetermined (nr=50 had claimed ~15%).
+
+**RefCOCO** (nr=400; baseline 32B=83.75%, 72B=92.25%, Acc@0.5):
+
+| keep_rate | 32B gap | 72B gap |
+|---|---|---|
+| 25% | -4.00pp | -2.00pp |
+| 40% | +1.50pp | -3.50pp |
+| 50% | +3.25pp | -3.50pp |
+
+32B's elbow: **25-40%** (nr=50 had claimed ~50%, too late). 72B: gap does **not** close through 50%
+(nr=50 had claimed flat/robust from 2%).
+
+**GQA** (nr=400; baseline 32B=60.50%, 72B=59.25%):
+
+| keep_rate | 32B gap | 72B gap |
+|---|---|---|
+| 15% | -3.25pp | -3.25pp |
+| 50% | -0.75pp | -1.75pp |
+| 100% | +0.75pp | +1.50pp |
+
+Both models: clean, monotonic climb closing the gap by keep_rate~50-100% (nr=50 had shown 32B as
+noisy/no-elbow and 72B as flat-from-2%; both were wrong -- the real signal needed more samples to
+resolve).
+
+### What holds up, and what doesn't, after re-measurement
+
+1. **"Grounding (RefCOCO) needs more correction than semantic VQA (RealWorldQA/GQA), at least for
+   32B" -- holds up.** 32B's RefCOCO elbow (25-40%) is still earlier-arriving than its RealWorldQA
+   elbow (beyond 20%, likely well beyond given the flat trend through 20%) is late-arriving --
+   though note this comparison is now less clean than originally stated, since RealWorldQA's own
+   elbow moved substantially higher upon revision. This qualitative ordering is the most robust
+   finding across the whole investigation, surviving every revision.
+2. **"72B is robust/flat regardless of task, from the lowest keep_rate tested" -- does NOT hold
+   up.** This was the single most confidently-stated nr=50 conclusion, and it broke on both RefCOCO
+   (persistent 2-3.5pp gap through 50%) and GQA (3.25pp gap at 15%) re-measurement. The corrected
+   version: **72B's gaps are consistently smaller than 32B's gaps at the same keep_rate, across all
+   three datasets tested, but they are not reliably zero.** "Smaller cost, not no cost" is the
+   defensible claim; "robust regardless" was an nr=50 artifact.
+3. **"~15% is a sweet spot" -- does NOT hold up as a specific number for any dataset.** The
+   corrected elbows are: RealWorldQA beyond 20% (both models), RefCOCO 25-40% (32B) / unresolved-but-
+   real-and-nonzero (72B), GQA ~50-100% (both models, per the -0.75/-1.75pp gaps still present at
+   50%). No dataset's true elbow landed near the original ~15% headline.
+
+The task-type-matters-more-than-precise-numbers and model-size-matters findings both survive in
+qualitative form; the specific percentages attached to them in the nr=50-only phase of this
+investigation should be disregarded in favor of the numbers in this section.
 
 ## 8. Known open issues (not fully resolved)
 
