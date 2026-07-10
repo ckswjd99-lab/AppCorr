@@ -7,7 +7,37 @@ approx/blurred). All runs nr=50 (strided sample of GQA's 12,578-question testdev
 short free-form single-word/phrase answers, exact-match-after-normalization scoring). Driver:
 `analysis/experiments/gqa_offload_eval.py`.
 
-## Full curve
+## ⚠ REVISED at nr=400: baseline was UNDERestimated (opposite direction from RealWorldQA), and both models show a real, clean elbow
+
+A larger re-measurement (nr=400, 8x the original nr=50, at narrowed candidates baseline/15/50/100%)
+was run after RealWorldQA's nr=50 sweep turned out unreliable. Two findings here:
+
+| keep_rate | 32B accuracy (nr=400) | gap to baseline | 72B accuracy (nr=400) | gap to baseline |
+|---|---|---|---|---|
+| baseline | 60.50% (242/400) | -- | 59.25% (237/400) | -- |
+| 15% | 57.25% (229/400) | -3.25pp | 56.00% (224/400) | -3.25pp |
+| 50% | 59.75% (239/400) | -0.75pp | 57.50% (230/400) | -1.75pp |
+| 100% | 61.25% (245/400) | +0.75pp | 60.75% (243/400) | +1.50pp |
+
+**1. nr=50 UNDERestimated GQA baseline accuracy, the opposite direction from RealWorldQA (which
+OVERestimated it by ~4-5pp).** nr=50 put both models' baseline at exactly 50%; nr=400 puts them at
+60.50% (32B) and 59.25% (72B) -- a **~9-10.5pp underestimate**. This is an important cross-dataset
+lesson: nr=50's unreliability is not a single consistent bias (e.g. "always optimistic") -- it can
+swing in either direction depending on which 50 examples happen to get sampled from a given
+dataset's stride pattern.
+
+**2. Both models now show a real, clean, monotonic elbow that nr=50's noise had obscured.** nr=50's
+32B curve was erratic (44/46/42/38/44/46/48% across keep_rate, no visible trend, all points below
+its 50% baseline) and was honestly reported as "no clean elbow identifiable." At nr=400, the same
+model shows a sensible climb: -3.25pp (15%) -> -0.75pp (50%) -> +0.75pp (100%) -- the underlying
+signal was real, nr=50 was just too small a sample to see it clearly. 72B shows the same shape
+(-3.25pp -> -1.75pp -> +1.50pp), and -- like RefCOCO's 72B revision -- reveals a real gap at low
+keep_rate (15%: -3.25pp) that nr=50 did not show (nr=50 had 72B essentially flat/at-baseline from
+2% onward). So GQA's revision cuts against the earlier "72B is simply robust regardless of task"
+framing in the same direction as RefCOCO's revision did: 72B's gaps are real but smaller than 32B's
+gaps at the same keep_rate, not zero.
+
+## Full curve (nr=50, ORIGINAL -- see revision above for the more reliable nr=400 numbers)
 
 | keep_rate | 32B accuracy | 72B accuracy |
 |-----------|-------------|-------------|
