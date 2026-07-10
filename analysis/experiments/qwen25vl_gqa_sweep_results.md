@@ -17,7 +17,23 @@ was run after RealWorldQA's nr=50 sweep turned out unreliable. Two findings here
 | baseline | 60.50% (242/400) | -- | 59.25% (237/400) | -- |
 | 15% | 57.25% (229/400) | -3.25pp | 56.00% (224/400) | -3.25pp |
 | 50% | 59.75% (239/400) | -0.75pp | 57.50% (230/400) | -1.75pp |
+| 65% | 60.00% (240/400) | -0.50pp | 58.00% (232/400) | -1.25pp |
+| **80%** | 60.00% (240/400) | -0.50pp | **59.75% (239/400)** | **+0.50pp** |
 | 100% | 61.25% (245/400) | +0.75pp | 60.75% (243/400) | +1.50pp |
+
+**Precise crossing points (dense follow-up sweep, added after the initial narrowed-candidate run):**
+- **72B crosses at keep_rate=80%** (+0.50pp) -- first point at or above baseline.
+- **32B does NOT cross by 80%** (still -0.50pp there, identical to its 65% value) -- its true crossing
+  point lies somewhere in **(80%, 100%]**; this sweep did not test a point between 80% and 100% so
+  the exact location isn't pinned down further. Reported honestly as a bracket, not a false-precision
+  single number.
+
+**This is a genuine, honest EXCEPTION to the pattern found on RealWorldQA and RefCOCO.** On both of
+those datasets, 72B needed a *higher* keep_rate than 32B to reach its own baseline (RealWorldQA:
+100% vs 50%; RefCOCO: 70% vs 30%). On GQA, the relationship flips: at keep_rate=80%, 72B has already
+crossed (+0.50pp) while 32B has not (-0.50pp) -- so on GQA specifically, 72B needs *less or equal*
+correction relative to 32B, not more. See `QWEN25VL_APPCORR_LOG.md` section 7 for the full
+cross-dataset reconciliation of this exception against the other two datasets' pattern.
 
 **1. nr=50 UNDERestimated GQA baseline accuracy, the opposite direction from RealWorldQA (which
 OVERestimated it by ~4-5pp).** nr=50 put both models' baseline at exactly 50%; nr=400 puts them at
