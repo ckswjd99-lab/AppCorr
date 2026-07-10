@@ -32,16 +32,19 @@ candidates {baseline, 10%, 15%, 20%} shows two things nr=50 got wrong simultaneo
 | 40% | 68.24% (522/765) | -0.52pp | 69.15% (529/765) | -3.14pp |
 | **50%** | **69.67% (533/765)** | **+0.91pp** | 69.80% (534/765) | -2.49pp |
 | 70% | 69.28% (530/765) | +0.52pp | 70.98% (543/765) | -1.31pp |
+| **100%** | 69.41% (531/765) | +0.65pp | **72.29% (553/765)** | **+0.00pp** |
 
-**32B's precise crossing point: keep_rate=50%** -- the first tested point where accuracy exceeds
-baseline (69.67% vs 68.76%, +0.91pp). It was already effectively at baseline by 40% (-0.52pp, well
-within nr=765's own noise floor of ~1 sample = 0.13pp... though -0.52pp is ~4 samples, not fully
-noise, so 40% is "very close but not yet crossed" and 50% is the first clean crossing). 72B's
-crossing point is still pending further points (70%, 100% queued) -- its gap was closing more
-slowly than 32B's at every point measured so far (-3.14pp at 40% vs 32B's -0.52pp at the same
-keep_rate), so it needs more correction to reach baseline. Updated once further points land -- see
-below or `QWEN25VL_APPCORR_LOG.md` section 7 for the final cross-dataset table once the full dense
-sweep (up to keep_rate=100% for both models) completes.
+**FINAL (both models fully swept, all 9 keep_rate points x baseline, N=765):**
+
+- **32B's precise crossing point: keep_rate=50%** -- first point exceeding baseline (+0.91pp), and
+  stays above baseline at both 70% (+0.52pp) and 100% (+0.65pp), confirming this is a real, stable
+  crossing rather than a one-off noise fluctuation.
+- **72B's precise crossing point: keep_rate=100%** -- accuracy at 100% is *exactly* equal to
+  baseline, 72.29% (553/765) both, an exact tie down to the sample count. Every keep_rate below
+  100% (10% through 70%) stayed below baseline for 72B. This means for RealWorldQA, 72B needs
+  essentially the *entire* image corrected to match its own full-resolution baseline -- a much
+  higher requirement than 32B's 50%, and the opposite of this session's earlier (now-retracted)
+  assumption that the larger model would need *less* correction, not more.
 
 **Root cause of the discrepancy**: nr=50 is simply a small, noisy sample (strided across 765
 examples, only 50 chosen) -- the earlier nr=50 sweep's apparent "clean saturating elbow at 15%"

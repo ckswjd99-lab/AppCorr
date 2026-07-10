@@ -18,16 +18,19 @@ the picture in **two different ways for the two models**:
 |---|---|---|---|---|---|---|
 | baseline | 83.75% (335/400) | -- | 0.746 | 92.25% (369/400) | -- | 0.814 |
 | 25% | 79.75% (319/400) | -4.00pp | 0.705 | 90.25% (361/400) | -2.00pp | 0.778 |
+| **30%** | **84.50% (338/400)** | **+0.75pp** | 0.734 | 89.75% (359/400) | -2.50pp | 0.774 |
+| 35% | 84.75% (339/400) | +1.00pp | 0.731 | *(pending)* | | |
 | 40% | 85.25% (341/400) | +1.50pp | 0.736 | 88.75% (355/400) | -3.50pp | 0.785 |
 | 50% | 87.00% (348/400) | +3.25pp | 0.758 | 88.75% (355/400) | -3.50pp | 0.773 |
 
-**32B: the elbow is earlier than the nr=50 data suggested, not later.** nr=50 showed 32B still
-climbing at 50% (88%, only just above baseline) and implied the crossing point was around 50%. At
-nr=400, 32B has already crossed baseline by **keep_rate=40%** (85.25% vs 83.75% baseline) and is
-clearly above it by 50% (87.00%, +3.25pp, IoU also climbing cleanly 0.705->0.736->0.758) -- the true
-elbow is somewhere in the **25-40% range**, meaningfully earlier than "~50%." The qualitative
-conclusion (RefCOCO needs more correction than RealWorldQA's VQA task) still holds, just with a
-different number attached.
+**32B's precise crossing point: keep_rate=30%.** The dense sweep pins this down exactly: 25% is
+still -4.00pp below baseline, but 30% is already +0.75pp above (84.50% vs 83.75%), and stays above
+through 35/40/50%. This narrows the earlier "25-40%" bracket to a clean single crossing point --
+meaningfully earlier than nr=50's original ~50% estimate. The qualitative conclusion (RefCOCO needs
+more correction than RealWorldQA's VQA task) still holds, but note RealWorldQA's OWN elbow was
+revised upward to 50% (32B) / 100% (72B) in the dense sweep -- so the "RefCOCO needs more" framing
+now needs re-examining once RealWorldQA's revised numbers are factored in; see
+`QWEN25VL_APPCORR_LOG.md` section 7 for the full cross-dataset reconciliation.
 
 **72B: does NOT cleanly recover to baseline, contradicting the original "flat/robust from 2%"
 claim.** At nr=50, 72B looked essentially saturated at every tested keep_rate (88-94%, close to its
