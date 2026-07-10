@@ -9,6 +9,13 @@ at nr=50 (strided sample of RealWorldQA's 765-example test split), post SDPA-ker
 
 Baseline (full resolution, stock sequential inference) at nr=50: **32B = 74% (37/50)**, **72B = 76% (38/50)**.
 
+**Note (added after this file's numbers were finalized):** `head_inference`'s two-stage decode
+mechanism (used by every corrected condition here, not by baseline) carries a measured ~1-2pp
+noise floor independent of correction quality -- see `qwen25vl_refcoco_sweep_results.md`'s
+confound section and `QWEN25VL_APPCORR_LOG.md` section 8 for the full measurement. Gaps of a few pp
+or more (including all the crossing points reported below) are unaffected in direction; gaps near
+~1-2pp should be read with this in mind.
+
 ## ⚠ REVISED at full scale (N=765): the "~15% elbow" conclusion below does NOT hold
 
 **The nr=50 sweep's "~15% keep rate reaches baseline" conclusion (see "Conclusion" section below) was

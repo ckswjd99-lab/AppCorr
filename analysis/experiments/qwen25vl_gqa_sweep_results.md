@@ -7,6 +7,13 @@ approx/blurred). All runs nr=50 (strided sample of GQA's 12,578-question testdev
 short free-form single-word/phrase answers, exact-match-after-normalization scoring). Driver:
 `analysis/experiments/gqa_offload_eval.py`.
 
+**Note (added after this file's numbers were finalized):** `head_inference`'s two-stage decode
+mechanism (used by every corrected condition here, not by baseline) carries a measured ~1-2pp
+noise floor independent of correction quality -- see `qwen25vl_refcoco_sweep_results.md`'s
+confound section and `QWEN25VL_APPCORR_LOG.md` section 8 for the full measurement. GQA's single-
+token-ish answers are less likely to be as affected as RefCOCO's multi-token bbox answers were
+(the confound was measured on RefCOCO specifically), but was not independently re-measured here.
+
 ## ⚠ REVISED at nr=400: baseline was UNDERestimated (opposite direction from RealWorldQA), and both models show a real, clean elbow
 
 A larger re-measurement (nr=400, 8x the original nr=50, at narrowed candidates baseline/15/50/100%)

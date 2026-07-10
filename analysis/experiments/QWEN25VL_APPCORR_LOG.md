@@ -276,6 +276,23 @@ predictable from first principles based on this data alone.
 
 ## 8. Known open issues (not fully resolved)
 
+- **`head_inference`'s two-stage decode mechanism is a measured, ~1-2pp confound, not fully
+  separable from genuine correction-quality signal.** User-requested diagnostic
+  (`analysis/experiments/refcoco_matched_decode_diagnostic.py`) found that decoding the first token
+  separately then falling back to a fresh `model.generate()` call (what every keep_rate/correction
+  condition in this investigation does) produces *different generated text* on 30-35% of RefCOCO
+  samples compared to one continuous `generate()` call -- even under 100% identical, unforked stock
+  computation with zero correction involved (32B: +2.25pp accuracy delta, 65% exact-text agreement;
+  72B: -1.00pp, 70% agreement). This explains most-to-all of 72B's "keep_rate=100% differs from
+  baseline" gap and roughly half of 32B's. **Every gap number in this investigation (all three
+  sweep files) inherits this ~1-2pp mechanism-level noise floor** since baseline uses one
+  continuous `generate()` call while every corrected condition uses the two-stage mechanism --
+  small gaps (~1-2pp) should be read as within this floor, not as precise correction-quality
+  signal; the large gaps and crossing points (several pp or more, e.g. the elbow locations in
+  section 7) are unaffected in direction, since they exceed this floor by a wide margin. Not fixed
+  at the source (would require building a real incremental-KV-cache-append decode loop on the
+  hand-rolled correction cache, out of scope -- see `head_inference`'s own docstring for why this
+  was a deliberate simplification from the start), only measured and documented.
 - **A second, unfixed scheduler race.** While running the GQA/RefCOCO sweeps (two parallel chains
   hammering CONFIG/patch dispatch at a much higher frequency than RealWorldQA's larger, slower
   images), a distinct crash appeared: `KeyError: 'vision_cache'` in `qwen25vl_executor.py`'s

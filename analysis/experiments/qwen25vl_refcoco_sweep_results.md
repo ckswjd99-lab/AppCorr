@@ -1,5 +1,49 @@
 # Qwen2.5-VL RefCOCO (val) keep-rate sweep
 
+## ⚠ Methodological confound found and measured: the two-stage decode mechanism is NOT neutral
+
+The user asked directly: is "keep_rate=100% sometimes exceeds baseline" (see below, 32B: +4.75pp)
+a genuine correction-pipeline effect, or an artifact of `head_inference` using a *different
+generation mechanism* than the true baseline? `head_inference` decodes only the first token from
+the (corrected) prefill hidden state, then falls back to a **separate** stock `model.generate()`
+call on `[input_ids, first_token]`; the true baseline makes **one continuous** `model.generate()`
+call for the whole answer. These are architecturally different call patterns even when the
+underlying weights/computation are otherwise identical.
+
+`analysis/experiments/refcoco_matched_decode_diagnostic.py` isolates this: it runs **both**
+generation mechanisms using 100% identical, unforked stock computation (no correction fork
+involved at all) on the same 400 RefCOCO samples/images/prompts, and compares them directly:
+
+| model | true_baseline (1 continuous call) | matched_decode (2-stage, mirrors `head_inference`) | gap | exact-text agreement |
+|---|---|---|---|---|
+| 32B | 83.75% (335/400) | 86.00% (344/400) | **+2.25pp** | **64.8%** (259/400) |
+| 72B | 92.25% (369/400) | 91.25% (365/400) | **-1.00pp** | **70.2%** (281/400) |
+
+**Confirmed: the two-stage decode mechanism is a real, substantial confound, not a negligible
+artifact.** Even under 100% identical stock computation (zero correction involved), the two
+mechanisms produce *different generated text* on 30-35% of samples -- floating-point
+non-associativity between "recompute the full prefix from scratch in a fresh `generate()` call"
+(two-stage) and "one continuous incrementally-cached decode" (single call) is large enough to
+flip a meaningful fraction of RefCOCO's multi-token bbox-coordinate answers.
+
+**What this means for the "100% keep_rate exceeds baseline" numbers reported below:**
+- **72B**: the mechanism confound (-1.00pp) is close to the *entire* originally-observed
+  keep_rate=100% gap (-0.75pp, see table below) -- for 72B, this artifact plausibly explains
+  essentially all of it. Little to no genuine correction-pipeline effect need be invoked.
+- **32B**: the mechanism confound (+2.25pp) explains **roughly half** of the originally-observed
+  keep_rate=100% gap (+4.75pp) -- the remaining ~+2.5pp is not accounted for by this mechanism and
+  is more likely genuine numerical divergence in the correction pipeline itself (the bf16/SDPA-
+  kernel-dispatch noise documented earlier in `QWEN25VL_APPCORR_LOG.md`), though this residual was
+  not independently re-verified after isolating the mechanism effect.
+
+**Practical implication**: all "keep_rate=X vs baseline" gaps in this file (and the RealWorldQA/GQA
+sweep files, which use the same `head_inference` mechanism) carry an un-removed ±1-2pp mechanism-
+level noise floor from this confound, on top of whatever genuine correction-quality signal exists.
+Crossing points and large gaps (several pp or more) are still meaningful; gaps of ~1-2pp or less
+should be read as within this noise floor rather than as precise measurements.
+
+## Original sweep (methodology, kept for the record)
+
 Methodology identical to the RealWorldQA sweep: `grouping_strategy=top_energy`, `num_groups=1`
 (static single-shot correction). All runs nr=50 (strided sample of RefCOCO val's 8811 examples).
 Task: referring-expression comprehension (text -> bounding box), scored Acc@0.5 (IoU >= 0.5) plus
