@@ -31,6 +31,7 @@ candidates {baseline, 10%, 15%, 20%} shows two things nr=50 got wrong simultaneo
 | 30% | 67.06% (513/765) | -1.70pp | 68.37% (523/765) | -3.92pp |
 | 40% | 68.24% (522/765) | -0.52pp | 69.15% (529/765) | -3.14pp |
 | **50%** | **69.67% (533/765)** | **+0.91pp** | 69.80% (534/765) | -2.49pp |
+| 70% | 69.28% (530/765) | +0.52pp | 70.98% (543/765) | -1.31pp |
 
 **32B's precise crossing point: keep_rate=50%** -- the first tested point where accuracy exceeds
 baseline (69.67% vs 68.76%, +0.91pp). It was already effectively at baseline by 40% (-0.52pp, well
