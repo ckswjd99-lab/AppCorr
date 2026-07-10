@@ -7,7 +7,39 @@ mean IoU as a more continuous signal. Driver: `analysis/experiments/refcoco_offl
 that file's docstring for the input-direction note (dataset's own template is captioning-direction;
 this driver uses it in the standard grounding direction, `answer[0]` as the referring expression).
 
-## Full curve
+## ⚠ REVISED at nr=400: 32B's elbow is earlier than thought, 72B is NOT as robust as thought
+
+A larger re-measurement (nr=400, 8x the original nr=50, at narrowed candidates baseline/25/40/50%)
+was run after RealWorldQA's own nr=50 sweep turned out to be unreliable (see
+`qwen25vl_keeprate_sweep_results.md`'s revision section). Applying the same scrutiny here changes
+the picture in **two different ways for the two models**:
+
+| keep_rate | 32B Acc@0.5 (nr=400) | gap to baseline | 32B mean IoU | 72B Acc@0.5 (nr=400) | gap to baseline | 72B mean IoU |
+|---|---|---|---|---|---|---|
+| baseline | 83.75% (335/400) | -- | 0.746 | 92.25% (369/400) | -- | 0.814 |
+| 25% | 79.75% (319/400) | -4.00pp | 0.705 | 90.25% (361/400) | -2.00pp | 0.778 |
+| 40% | 85.25% (341/400) | +1.50pp | 0.736 | 88.75% (355/400) | -3.50pp | 0.785 |
+| 50% | 87.00% (348/400) | +3.25pp | 0.758 | 88.75% (355/400) | -3.50pp | 0.773 |
+
+**32B: the elbow is earlier than the nr=50 data suggested, not later.** nr=50 showed 32B still
+climbing at 50% (88%, only just above baseline) and implied the crossing point was around 50%. At
+nr=400, 32B has already crossed baseline by **keep_rate=40%** (85.25% vs 83.75% baseline) and is
+clearly above it by 50% (87.00%, +3.25pp, IoU also climbing cleanly 0.705->0.736->0.758) -- the true
+elbow is somewhere in the **25-40% range**, meaningfully earlier than "~50%." The qualitative
+conclusion (RefCOCO needs more correction than RealWorldQA's VQA task) still holds, just with a
+different number attached.
+
+**72B: does NOT cleanly recover to baseline, contradicting the original "flat/robust from 2%"
+claim.** At nr=50, 72B looked essentially saturated at every tested keep_rate (88-94%, close to its
+90% baseline, no visible trend). At nr=400, there is a real, if modest, persistent gap: 25%=-2.00pp,
+40%=-3.50pp, 50%=-3.50pp -- the gap does not close by 50%, and if anything widens slightly from 25%
+to 40% before flattening. This is a genuine revision: 72B's RefCOCO robustness at low keep_rate was
+an nr=50 artifact, not a real property. The gap (2-3.5pp) is still much smaller than 32B's low-end
+gap (4pp at 25%, and 32B needed to go all the way to ~35-40% to close it), so the *relative* finding
+("72B needs less correction than 32B for this task") still holds -- but "72B is fully robust
+regardless of keep_rate" does not.
+
+## Full curve (nr=50, ORIGINAL -- see revision above for the more reliable nr=400 numbers)
 
 | keep_rate | 32B Acc@0.5 | 32B mean IoU | 72B Acc@0.5 | 72B mean IoU |
 |-----------|------------|-------------|------------|-------------|
