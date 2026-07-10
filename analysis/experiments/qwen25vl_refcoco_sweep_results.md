@@ -26,7 +26,12 @@ the picture in **two different ways for the two models**:
 | **70%** | 88.75% (355/400) | +5.00pp | 0.789 | **92.25% (369/400)** | **+0.00pp** | 0.801 |
 | 80% | 89.25% (357/400) | +5.50pp | 0.793 | 92.25% (369/400) | +0.00pp | 0.809 |
 | 90% | 89.50% (358/400) | +5.75pp | 0.794 | 92.00% (368/400) | -0.25pp | 0.813 |
-| 100% | 88.50% (354/400) | +4.75pp | 0.789 | *(pending)* | | |
+| 100% | 88.50% (354/400) | +4.75pp | 0.789 | 91.50% (366/400) | -0.75pp | 0.805 |
+
+**RefCOCO FULLY COMPLETE (both models, all 8 points x baseline).** 32B crosses at 30% and stays
+above through 100%. 72B crosses at 70% and hovers essentially at baseline from 70% through 100%
+(exact ties at 70%/80%, tiny -0.25/-0.75pp dips at 90%/100% that are within sample noise, not a
+real re-widening).
 
 **72B's precise RefCOCO crossing point: keep_rate=70%** -- another exact tie with baseline (92.25%,
 369/400 both, identical down to the sample count -- same pattern as 72B's RealWorldQA crossing at
