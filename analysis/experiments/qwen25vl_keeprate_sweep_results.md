@@ -27,15 +27,20 @@ candidates {baseline, 10%, 15%, 20%} shows two things nr=50 got wrong simultaneo
 | 10% | 64.58% (494/765) | -4.18pp | 66.80% (511/765) | -5.49pp |
 | 15% | 64.84% (496/765) | -3.92pp | 66.54% (509/765) | -5.75pp |
 | 20% | 65.88% (504/765) | -2.88pp | 67.84% (519/765) | -4.45pp |
+| 25% | 66.93% (512/765) | -1.83pp | 68.24% (522/765) | -4.05pp |
+| 30% | 67.06% (513/765) | -1.70pp | 68.37% (523/765) | -3.92pp |
+| 40% | 68.24% (522/765) | -0.52pp | 69.15% (529/765) | -3.14pp |
+| **50%** | **69.67% (533/765)** | **+0.91pp** | *(pending)* | *(pending)* |
 
-The trend is real (both models improve modestly and roughly monotonically from 10%->20%), but the
-gap to baseline is still 2.9-4.5pp wide at keep_rate=20% -- the true elbow is somewhere **beyond
-20%**, not at ~15% as the nr=50 data indicated. This narrowed run only tested up to 20% (chosen
-based on the nr=50 data, which in hindsight bracketed the wrong region), so the exact full-scale
-elbow location is not yet pinned down -- honestly, all that can be said from this data is "higher
-than 20%," not a precise number. Determining it precisely would need additional full-scale points
-beyond 20% (e.g. 30/40/50%), not attempted here due to time budget (each full-N point costs
-~40-50 minutes).
+**32B's precise crossing point: keep_rate=50%** -- the first tested point where accuracy exceeds
+baseline (69.67% vs 68.76%, +0.91pp). It was already effectively at baseline by 40% (-0.52pp, well
+within nr=765's own noise floor of ~1 sample = 0.13pp... though -0.52pp is ~4 samples, not fully
+noise, so 40% is "very close but not yet crossed" and 50% is the first clean crossing). 72B's
+crossing point is still pending further points (70%, 100% queued) -- its gap was closing more
+slowly than 32B's at every point measured so far (-3.14pp at 40% vs 32B's -0.52pp at the same
+keep_rate), so it needs more correction to reach baseline. Updated once further points land -- see
+below or `QWEN25VL_APPCORR_LOG.md` section 7 for the final cross-dataset table once the full dense
+sweep (up to keep_rate=100% for both models) completes.
 
 **Root cause of the discrepancy**: nr=50 is simply a small, noisy sample (strided across 765
 examples, only 50 chosen) -- the earlier nr=50 sweep's apparent "clean saturating elbow at 15%"
