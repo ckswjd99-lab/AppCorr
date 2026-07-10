@@ -22,7 +22,8 @@ the picture in **two different ways for the two models**:
 | 35% | 84.75% (339/400) | +1.00pp | 0.731 | 89.25% (357/400) | -3.00pp | 0.780 |
 | 40% | 85.25% (341/400) | +1.50pp | 0.736 | 88.75% (355/400) | -3.50pp | 0.785 |
 | 50% | 87.00% (348/400) | +3.25pp | 0.758 | 88.75% (355/400) | -3.50pp | 0.773 |
-| 60% | 87.50% (350/400) | +3.75pp | 0.768 | *(pending)* | | |
+| 60% | 87.50% (350/400) | +3.75pp | 0.768 | 90.50% (362/400) | -1.75pp | 0.791 |
+| 70% | 88.75% (355/400) | +5.00pp | 0.789 | *(pending)* | | |
 
 **32B's precise crossing point: keep_rate=30%.** The dense sweep pins this down exactly: 25% is
 still -4.00pp below baseline, but 30% is already +0.75pp above (84.50% vs 83.75%), and stays above
