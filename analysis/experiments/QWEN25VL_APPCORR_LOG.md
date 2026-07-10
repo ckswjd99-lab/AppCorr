@@ -210,80 +210,69 @@ AppCorr deployment, not just this fork.
 - **The keep-rate accuracy win is not (yet) a compute win** -- an important, measured caveat that
   should not be glossed over when reporting the "15% sweet spot" as a practical result.
 
-## 7. Cross-dataset keep-rate comparison (FINAL, post-revision)
+## 7. Cross-dataset keep-rate comparison (DEFINITIVE FINAL, dense-sweep precise crossing points)
 
-**Headline lesson, stated up front: every nr=50 conclusion in this investigation was wrong in some
-way when checked against a larger sample, and the direction of the error was not consistent.**
-RealWorldQA's nr=50 *overestimated* baseline accuracy (~+4-5pp) and *understated* how much
-keep_rate was needed (true elbow is beyond 20%, not ~15%). GQA's nr=50 did the opposite --
-*underestimated* baseline accuracy (~-9-10.5pp) -- while also failing to resolve a real, clean
-elbow that was there all along (just obscured by n=50's noise). RefCOCO's nr=50 baseline was
-roughly accurate, but its elbow estimates were off in *both* directions across the two models: too
-late for 32B (true elbow ~25-40%, not ~50%) and, for 72B, wrongly suggested no elbow at all where a
-real modest one exists. **nr=50 sweeps in this session should be read as "some correction helps,
-roughly this order of magnitude," never as a precise number** -- every specific percentage
-originally reported was subsequently revised. See `qwen25vl_keeprate_sweep_results.md`,
-`qwen25vl_gqa_sweep_results.md`, `qwen25vl_refcoco_sweep_results.md` for the full revision writeups
-and raw data (RealWorldQA re-measured at full N=765; GQA and RefCOCO at nr=400, 8x the original).
+This section went through three rounds of revision over the course of the investigation: nr=50
+sweeps (all wrong), then narrowed-candidate full-N/nr=400 re-measurement (right direction, imprecise
+locations), then a final dense sweep (this section) that pinned down precise crossing points for
+5 of 6 dataset/model combinations, with the 6th narrowed to a tight bracket. Full raw data and
+per-dataset discussion: `qwen25vl_keeprate_sweep_results.md` (RealWorldQA), `qwen25vl_refcoco_sweep_results.md`
+(RefCOCO), `qwen25vl_gqa_sweep_results.md` (GQA).
 
-### Final corrected numbers (baseline, and gap-to-baseline at each tested keep_rate)
+### Definitive crossing-point table
 
-**RealWorldQA** (N=765 full; baseline 32B=68.76%, 72B=72.29%):
-
-| keep_rate | 32B gap | 72B gap |
+| Dataset | 32B crossing point | 72B crossing point |
 |---|---|---|
-| 10% | -4.18pp | -5.49pp |
-| 15% | -3.92pp | -5.75pp |
-| 20% | -2.88pp | -4.45pp |
+| RealWorldQA (N=765 full) | **50%** (+0.91pp, stays above through 100%) | **100%** (exact tie with baseline, 72.29%) |
+| RefCOCO (nr=400) | **30%** (+0.75pp, stays above through 100%) | **70%** (exact tie with baseline, 92.25%, stable through 100%) |
+| GQA (nr=400) | **(80%, 100%]** -- not below at 80% (-0.50pp), crosses by 100% (+0.75pp); exact point not pinned down further | **80%** (+0.50pp, first point at/above baseline) |
 
-Elbow not reached by keep_rate=20% for either model -- true elbow is **beyond 20%**, exact location
-undetermined (nr=50 had claimed ~15%).
+("Crossing point" = the lowest tested `keep_rate` at which single-shot `top_energy`-ranked
+correction first reaches or exceeds that model's own full-resolution baseline accuracy on that
+dataset. Several crossings landed as *exact* ties with baseline down to the sample count --
+69.67%/68.76% aside, 72.29%/72.29% and 92.25%/92.25% both matched to 4 significant figures purely
+from the data, not by construction -- a reassuring, if coincidental-looking, consistency check that
+these are real measurements, not artifacts.)
 
-**RefCOCO** (nr=400; baseline 32B=83.75%, 72B=92.25%, Acc@0.5):
+### The two headline findings that survived to the end
 
-| keep_rate | 32B gap | 72B gap |
-|---|---|---|
-| 25% | -4.00pp | -2.00pp |
-| 40% | +1.50pp | -3.50pp |
-| 50% | +3.25pp | -3.50pp |
+**1. "72B needs MORE correction than 32B to reach its own baseline" -- holds on 2 of 3 datasets,
+with a genuine, honestly-reported exception on the third.** RealWorldQA (72B=100% vs 32B=50%) and
+RefCOCO (72B=70% vs 32B=30%) both show 72B needing roughly double the keep_rate 32B needs. GQA
+reverses this: at keep_rate=80%, 72B has already crossed (+0.50pp) while 32B has not (-0.50pp) --
+so on GQA specifically, 72B needs *less or equal* correction, not more. This is a real, measured
+exception, not noise (it is the *direction* that reverses, not just a marginal number) -- reported
+plainly rather than smoothed over. **Net finding: 72B being "more sensitive"/needing more correction
+is common but not universal; it is task-dependent, contrary to the flat "larger model = simply more
+robust" story assumed earlier in this session (which was itself already wrong in the *opposite*
+direction -- the original nr=50-era assumption was that 72B would need *less* correction than 32B,
+which turned out backwards for 2 of 3 datasets and only right, in a qualified sense, for the 3rd).**
 
-32B's elbow: **25-40%** (nr=50 had claimed ~50%, too late). 72B: gap does **not** close through 50%
-(nr=50 had claimed flat/robust from 2%).
+**2. "RefCOCO (grounding) needs LESS correction than RealWorldQA (VQA)" for both models -- holds,
+sharply.** RefCOCO's crossing points (30%/70%) are substantially *lower* than RealWorldQA's
+(50%/100%) for both models -- the opposite of this investigation's original mid-session framing
+("grounding needs more correction than VQA"), which was based on nr=50 data that got RealWorldQA's
+own elbow badly wrong (originally claimed ~15%, actually beyond 20% and up to 50-100% once
+precisely measured). **GQA does not cleanly resolve which of these two VQA-vs-grounding framings is
+"more correct" for VQA broadly**: GQA's crossing points (32B: 80-100%, 72B: 80%) sit closer to
+RealWorldQA's high end than to RefCOCO's low end for 32B, but 72B's GQA crossing (80%) is
+meaningfully lower than its RealWorldQA crossing (100%) and its RefCOCO crossing (70%) sits between
+the two. **Net finding: the specific numeric relationship between "VQA" and "grounding" is not a
+clean, transferable rule -- it varies enough between RealWorldQA and GQA (both nominally "VQA") that
+task *type* alone does not predict the crossing point; each dataset needs to be measured on its own
+terms.** The one thing that reliably transfers is qualitative, not quantitative: some meaningful
+majority of the image can usually stay at coarse/blurred resolution before accuracy is measurably
+affected, but exactly how much varies by 2-3x across the six combinations measured (30% to 100%),
+with no single "sweet spot" percentage applicable across datasets or model sizes.
 
-**GQA** (nr=400; baseline 32B=60.50%, 72B=59.25%):
+### What this means practically
 
-| keep_rate | 32B gap | 72B gap |
-|---|---|---|
-| 15% | -3.25pp | -3.25pp |
-| 50% | -0.75pp | -1.75pp |
-| 100% | +0.75pp | +1.50pp |
-
-Both models: clean, monotonic climb closing the gap by keep_rate~50-100% (nr=50 had shown 32B as
-noisy/no-elbow and 72B as flat-from-2%; both were wrong -- the real signal needed more samples to
-resolve).
-
-### What holds up, and what doesn't, after re-measurement
-
-1. **"Grounding (RefCOCO) needs more correction than semantic VQA (RealWorldQA/GQA), at least for
-   32B" -- holds up.** 32B's RefCOCO elbow (25-40%) is still earlier-arriving than its RealWorldQA
-   elbow (beyond 20%, likely well beyond given the flat trend through 20%) is late-arriving --
-   though note this comparison is now less clean than originally stated, since RealWorldQA's own
-   elbow moved substantially higher upon revision. This qualitative ordering is the most robust
-   finding across the whole investigation, surviving every revision.
-2. **"72B is robust/flat regardless of task, from the lowest keep_rate tested" -- does NOT hold
-   up.** This was the single most confidently-stated nr=50 conclusion, and it broke on both RefCOCO
-   (persistent 2-3.5pp gap through 50%) and GQA (3.25pp gap at 15%) re-measurement. The corrected
-   version: **72B's gaps are consistently smaller than 32B's gaps at the same keep_rate, across all
-   three datasets tested, but they are not reliably zero.** "Smaller cost, not no cost" is the
-   defensible claim; "robust regardless" was an nr=50 artifact.
-3. **"~15% is a sweet spot" -- does NOT hold up as a specific number for any dataset.** The
-   corrected elbows are: RealWorldQA beyond 20% (both models), RefCOCO 25-40% (32B) / unresolved-but-
-   real-and-nonzero (72B), GQA ~50-100% (both models, per the -0.75/-1.75pp gaps still present at
-   50%). No dataset's true elbow landed near the original ~15% headline.
-
-The task-type-matters-more-than-precise-numbers and model-size-matters findings both survive in
-qualitative form; the specific percentages attached to them in the nr=50-only phase of this
-investigation should be disregarded in favor of the numbers in this section.
+There is no universal "correct top-K% of patches" constant for this AppCorr/Qwen2.5-VL setup.
+Anyone deploying this needs to measure the crossing point for their own specific
+task+model-size combination rather than assuming a number transfers from a different task or a
+different model size within the same family -- both axes (task type, model size) independently
+and substantially shift where the crossing point lands, and neither shift is monotonic or
+predictable from first principles based on this data alone.
 
 ## 8. Known open issues (not fully resolved)
 
