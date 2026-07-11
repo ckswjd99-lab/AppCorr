@@ -238,21 +238,48 @@ class Qwen25VLExecutor(ModelExecutor):
         return {"answer_text": answer_text}
 
     def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
+        """Mechanism-matched baseline: mirrors `head_inference`'s two-stage decode (argmax the
+        first token from a forward pass's final-position logits, then fall back to a SEPARATE
+        stock `model.generate()` call for the rest) instead of one continuous `generate()` call.
+        This used to differ from every corrected condition's generation mechanism -- confirmed via
+        `analysis/experiments/refcoco_matched_decode_diagnostic.py` (nr=400, 100% stock computation
+        both ways) that the two mechanisms produce different generated text on 30-35% of RefCOCO
+        samples even with zero correction involved (32B: +2.25pp, 65% text agreement; 72B: -1.00pp,
+        70% agreement) -- a real, un-negligible confound, not just noise. Baseline now uses the
+        IDENTICAL mechanism as every keep_rate/corrected condition, so gaps reported against this
+        baseline isolate correction quality rather than mixing it with this mechanism artifact."""
         if "pixel_values" not in context:
             return
         if "input_ids" not in context:
             self._build_prompt(context)
         with torch.no_grad():
-            gen_ids = self.model.generate(
+            outputs = self.model(
                 input_ids=context["input_ids"],
                 attention_mask=context["attention_mask"],
                 pixel_values=context["pixel_values"],
                 image_grid_thw=context["image_grid_thw"],
-                max_new_tokens=64,
-                do_sample=False,
+                use_cache=False,
             )
-        gen_trimmed = gen_ids[:, context["input_ids"].shape[1]:]
-        answer_text = self.processor.tokenizer.decode(gen_trimmed[0], skip_special_tokens=True)
+            logits_last = outputs.logits[:, -1, :]
+            first_token = logits_last.argmax(dim=-1)
+
+            if first_token.item() == self.processor.tokenizer.eos_token_id:
+                answer_text = ""
+            else:
+                extended_ids = torch.cat([context["input_ids"], first_token.unsqueeze(0)], dim=1)
+                extended_mask = torch.cat(
+                    [context["attention_mask"], torch.ones_like(first_token.unsqueeze(0))], dim=1
+                )
+                gen_ids = self.model.generate(
+                    input_ids=extended_ids,
+                    attention_mask=extended_mask,
+                    pixel_values=context["pixel_values"],
+                    image_grid_thw=context["image_grid_thw"],
+                    max_new_tokens=63,
+                    do_sample=False,
+                )
+                gen_trimmed = gen_ids[:, context["input_ids"].shape[1]:]
+                answer_text = self.processor.tokenizer.decode(gen_trimmed[0], skip_special_tokens=True)
         context["output"] = answer_text
 
     def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
