@@ -210,89 +210,95 @@ AppCorr deployment, not just this fork.
 - **The keep-rate accuracy win is not (yet) a compute win** -- an important, measured caveat that
   should not be glossed over when reporting the "15% sweet spot" as a practical result.
 
-## 7. Cross-dataset keep-rate comparison (DEFINITIVE FINAL, dense-sweep precise crossing points)
+## 7. Cross-dataset keep-rate comparison (DEFINITIVE FINAL, mechanism-matched baseline)
 
-This section went through three rounds of revision over the course of the investigation: nr=50
-sweeps (all wrong), then narrowed-candidate full-N/nr=400 re-measurement (right direction, imprecise
-locations), then a final dense sweep (this section) that pinned down precise crossing points for
-5 of 6 dataset/model combinations, with the 6th narrowed to a tight bracket. Full raw data and
-per-dataset discussion: `qwen25vl_keeprate_sweep_results.md` (RealWorldQA), `qwen25vl_refcoco_sweep_results.md`
-(RefCOCO), `qwen25vl_gqa_sweep_results.md` (GQA).
+This section went through FOUR rounds of revision over the course of the investigation: nr=50
+sweeps (all wrong), narrowed-candidate full-N/nr=400 re-measurement (right direction, imprecise
+locations), a dense sweep (precise crossing points, but baseline still used a confounded
+generation mechanism), and finally a mechanism-matched baseline re-measurement (this section) after
+the user identified that baseline's generation mechanism (one continuous `model.generate()` call)
+differed from every keep_rate condition's mechanism (`head_inference`'s two-stage decode: argmax
+first token, then a separate `generate()` fallback call) -- confirmed via
+`analysis/experiments/refcoco_matched_decode_diagnostic.py` to be a real ~1-2pp confound (up to
+30-35% different generated text on RefCOCO even under 100% identical stock computation), then fixed
+at the source (commit `310c65a`, baseline now uses the identical mechanism). Full raw data and
+per-dataset discussion: `qwen25vl_keeprate_sweep_results.md` (RealWorldQA),
+`qwen25vl_refcoco_sweep_results.md` (RefCOCO), `qwen25vl_gqa_sweep_results.md` (GQA).
 
-### Definitive crossing-point table
+### Definitive crossing-point table (mechanism-matched)
 
-| Dataset | 32B crossing point | 72B crossing point |
-|---|---|---|
-| RealWorldQA (N=765 full) | **50%** (+0.91pp, stays above through 100%) | **100%** (exact tie with baseline, 72.29%) |
-| RefCOCO (nr=400) | **30%** (+0.75pp, stays above through 100%) | **70%** (exact tie with baseline, 92.25%, stable through 100%) |
-| GQA (nr=400) | **(80%, 100%]** -- not below at 80% (-0.50pp), crosses by 100% (+0.75pp); exact point not pinned down further | **80%** (+0.50pp, first point at/above baseline) |
+| Dataset | 32B crossing point | 72B crossing point | 32B shifted from pre-fix? |
+|---|---|---|---|
+| RealWorldQA (N=765 full) | **50%** (+0.78pp) | **100%** (exact tie, 72.29%) | No (was 50%, unchanged) |
+| RefCOCO (nr=400) | **50%** (+1.00pp) | **70%** (+1.00pp) | **YES: 30% -> 50%** |
+| GQA (nr=400) | **(80%, 100%]** (unresolved bracket) | **80%** (+0.75pp) | No (unchanged) |
 
-("Crossing point" = the lowest tested `keep_rate` at which single-shot `top_energy`-ranked
-correction first reaches or exceeds that model's own full-resolution baseline accuracy on that
-dataset. Several crossings landed as *exact* ties with baseline down to the sample count --
-69.67%/68.76% aside, 72.29%/72.29% and 92.25%/92.25% both matched to 4 significant figures purely
-from the data, not by construction -- a reassuring, if coincidental-looking, consistency check that
-these are real measurements, not artifacts.)
+Baseline shifts under the mechanism fix: RealWorldQA 32B +0.13pp / 72B +0.00pp (negligible); GQA
+32B +0.00pp / 72B -0.25pp (negligible); **RefCOCO 32B +2.25pp / 72B -1.00pp (substantial)**. Only
+RefCOCO's crossing point actually moved as a result -- and only for 32B (72B's crossing point
+happened to land on the same tested value, 70%, before and after, since it was an exact tie
+pre-fix and became a comfortably-positive point post-fix, without skipping past another tested
+value). This asymmetry makes sense: RefCOCO's multi-token bbox-coordinate answers are far more
+sensitive to the two-stage-decode mechanism than RealWorldQA's/GQA's mostly single-token/short-
+phrase answers, exactly as hypothesized when the confound was first found.
 
-### The two headline findings that survived to the end
+### The two headline findings, re-evaluated under the corrected numbers
 
-**1. "72B needs MORE correction than 32B to reach its own baseline" -- holds on 2 of 3 datasets,
-with a genuine, honestly-reported exception on the third.** RealWorldQA (72B=100% vs 32B=50%) and
-RefCOCO (72B=70% vs 32B=30%) both show 72B needing roughly double the keep_rate 32B needs. GQA
-reverses this: at keep_rate=80%, 72B has already crossed (+0.50pp) while 32B has not (-0.50pp) --
-so on GQA specifically, 72B needs *less or equal* correction, not more. This is a real, measured
-exception, not noise (it is the *direction* that reverses, not just a marginal number) -- reported
-plainly rather than smoothed over. **Net finding: 72B being "more sensitive"/needing more correction
-is common but not universal; it is task-dependent, contrary to the flat "larger model = simply more
-robust" story assumed earlier in this session (which was itself already wrong in the *opposite*
-direction -- the original nr=50-era assumption was that 72B would need *less* correction than 32B,
-which turned out backwards for 2 of 3 datasets and only right, in a qualified sense, for the 3rd).**
+**1. "72B needs MORE correction than 32B to reach its own baseline" -- still holds on 2 of 3
+datasets, with the same genuine exception on the third; unaffected by the mechanism fix.**
+RealWorldQA (72B=100% vs 32B=50%) and RefCOCO (72B=70% vs 32B=50%, previously 70% vs 30%) both show
+72B needing more keep_rate than 32B -- though RefCOCO's margin *narrowed* under the fix (72B no
+longer needs ~2.3x what 32B needs, just ~1.4x, since 32B's true crossing point was later than
+originally measured). GQA still reverses this (72B crosses at 80%, 32B has not by 80%) -- confirmed
+still a real exception post-fix, not an artifact of the old baseline mechanism (GQA's baseline
+barely moved). **Net finding, essentially unchanged from before the fix: 72B needing more
+correction is common but not universal, and task-dependent.**
 
-**2. "RefCOCO (grounding) needs LESS correction than RealWorldQA (VQA)" for both models -- holds,
-sharply.** RefCOCO's crossing points (30%/70%) are substantially *lower* than RealWorldQA's
-(50%/100%) for both models -- the opposite of this investigation's original mid-session framing
-("grounding needs more correction than VQA"), which was based on nr=50 data that got RealWorldQA's
-own elbow badly wrong (originally claimed ~15%, actually beyond 20% and up to 50-100% once
-precisely measured). **GQA does not cleanly resolve which of these two VQA-vs-grounding framings is
-"more correct" for VQA broadly**: GQA's crossing points (32B: 80-100%, 72B: 80%) sit closer to
-RealWorldQA's high end than to RefCOCO's low end for 32B, but 72B's GQA crossing (80%) is
-meaningfully lower than its RealWorldQA crossing (100%) and its RefCOCO crossing (70%) sits between
-the two. **Net finding: the specific numeric relationship between "VQA" and "grounding" is not a
-clean, transferable rule -- it varies enough between RealWorldQA and GQA (both nominally "VQA") that
-task *type* alone does not predict the crossing point; each dataset needs to be measured on its own
-terms.** The one thing that reliably transfers is qualitative, not quantitative: some meaningful
-majority of the image can usually stay at coarse/blurred resolution before accuracy is measurably
-affected, but exactly how much varies by 2-3x across the six combinations measured (30% to 100%),
-with no single "sweet spot" percentage applicable across datasets or model sizes.
+**2. "RefCOCO (grounding) needs LESS correction than RealWorldQA (VQA)" -- this is the finding that
+actually changed.** Pre-fix, this held sharply for both models (30%/70% vs 50%/100%). Post-fix,
+**it now only holds for 72B** (70% vs 100%) -- **for 32B, RefCOCO and RealWorldQA crossing points
+are now identical (50% = 50%)**, so the "grounding needs less" claim no longer applies to the
+smaller model at all. This is a genuine, meaningful walk-back caused directly by fixing the
+mechanism confound, not a minor rounding correction. GQA still doesn't cleanly resolve the
+VQA-vs-grounding question either way (its crossing points sit between RealWorldQA's and RefCOCO's
+for both models). **Net finding: task type has, at most, a real but SMALLER and MODEL-SIZE-
+DEPENDENT effect on crossing point than originally reported -- for 32B specifically, there is now
+no measured task-type effect at all across the two directly-comparable datasets (RealWorldQA,
+RefCOCO both at 50%); for 72B, a real gap remains (70% vs 100%).**
 
 ### What this means practically
 
-There is no universal "correct top-K% of patches" constant for this AppCorr/Qwen2.5-VL setup.
-Anyone deploying this needs to measure the crossing point for their own specific
-task+model-size combination rather than assuming a number transfers from a different task or a
-different model size within the same family -- both axes (task type, model size) independently
-and substantially shift where the crossing point lands, and neither shift is monotonic or
-predictable from first principles based on this data alone.
+There is still no universal "correct top-K% of patches" constant for this AppCorr/Qwen2.5-VL setup
+-- crossing points range from 50% to 100% (GQA's bracket aside) across the six combinations, a real
+2x spread. But the mechanism fix meaningfully **narrowed** how much of that spread should be
+attributed to task type specifically: 32B's two directly-comparable datasets (RealWorldQA, RefCOCO)
+now agree exactly (50%), while 72B still shows a real task-dependent difference. Anyone deploying
+this should still measure their own task+model-size combination rather than assuming transfer, but
+the "grounding is categorically different from VQA" story is weaker post-fix than it looked
+pre-fix -- it may be more accurate to say **model size dependence is the dominant, more reliable
+axis observed in this data, with task-type effects present but smaller and inconsistent (real for
+72B on RefCOCO vs RealWorldQA, absent for 32B on the same pair, present in an unresolved way for
+GQA on both models).**
 
 ## 8. Known open issues (not fully resolved)
 
-- **`head_inference`'s two-stage decode mechanism is a measured, ~1-2pp confound, not fully
-  separable from genuine correction-quality signal.** User-requested diagnostic
-  (`analysis/experiments/refcoco_matched_decode_diagnostic.py`) found that decoding the first token
-  separately then falling back to a fresh `model.generate()` call (what every keep_rate/correction
-  condition in this investigation does) produces *different generated text* on 30-35% of RefCOCO
-  samples compared to one continuous `generate()` call -- even under 100% identical, unforked stock
-  computation with zero correction involved (32B: +2.25pp accuracy delta, 65% exact-text agreement;
-  72B: -1.00pp, 70% agreement). This explains most-to-all of 72B's "keep_rate=100% differs from
-  baseline" gap and roughly half of 32B's. **Every gap number in this investigation (all three
-  sweep files) inherits this ~1-2pp mechanism-level noise floor** since baseline uses one
-  continuous `generate()` call while every corrected condition uses the two-stage mechanism --
-  small gaps (~1-2pp) should be read as within this floor, not as precise correction-quality
-  signal; the large gaps and crossing points (several pp or more, e.g. the elbow locations in
-  section 7) are unaffected in direction, since they exceed this floor by a wide margin. Not fixed
-  at the source (would require building a real incremental-KV-cache-append decode loop on the
-  hand-rolled correction cache, out of scope -- see `head_inference`'s own docstring for why this
-  was a deliberate simplification from the start), only measured and documented.
+- ~~`head_inference`'s two-stage decode mechanism was a measured confound~~ **-- FOUND, MEASURED,
+  AND FIXED (no longer open).** User identified that `head_inference` (every keep_rate/correction
+  condition) decodes the first token separately then falls back to a fresh `model.generate()` call,
+  while the old baseline (`full_inference`) made one continuous `generate()` call -- an uncontrolled
+  mechanism difference. Measured directly
+  (`analysis/experiments/refcoco_matched_decode_diagnostic.py`, nr=400, 100% stock computation both
+  ways): the two mechanisms produce *different generated text* on 30-35% of RefCOCO samples even
+  with zero correction involved (32B: +2.25pp, 65% exact-text agreement; 72B: -1.00pp, 70%
+  agreement) -- confirmed real and substantial, not negligible noise. **Fixed at the source**
+  (commit `310c65a`): `full_inference` now uses the identical two-stage mechanism as
+  `head_inference`, so baseline and every keep_rate condition are mechanism-matched. Baseline was
+  re-measured under the fix for all 6 dataset/model combinations and every sweep table + the
+  section 7 cross-dataset comparison was rebuilt against the corrected baseline -- see section 7 for
+  the final numbers, which for RefCOCO 32B specifically changed the crossing point (30% -> 50%),
+  a real, meaningful correction, not just a rounding change. RealWorldQA and GQA's crossing points
+  were unaffected (their answers are mostly single-token/short-phrase, far less sensitive to this
+  mechanism than RefCOCO's multi-token bbox coordinates).
 - **A second, unfixed scheduler race.** While running the GQA/RefCOCO sweeps (two parallel chains
   hammering CONFIG/patch dispatch at a much higher frequency than RealWorldQA's larger, slower
   images), a distinct crash appeared: `KeyError: 'vision_cache'` in `qwen25vl_executor.py`'s
