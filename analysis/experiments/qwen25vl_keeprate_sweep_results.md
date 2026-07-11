@@ -9,12 +9,45 @@ at nr=50 (strided sample of RealWorldQA's 765-example test split), post SDPA-ker
 
 Baseline (full resolution, stock sequential inference) at nr=50: **32B = 74% (37/50)**, **72B = 76% (38/50)**.
 
-**Note (added after this file's numbers were finalized):** `head_inference`'s two-stage decode
-mechanism (used by every corrected condition here, not by baseline) carries a measured ~1-2pp
-noise floor independent of correction quality -- see `qwen25vl_refcoco_sweep_results.md`'s
-confound section and `QWEN25VL_APPCORR_LOG.md` section 8 for the full measurement. Gaps of a few pp
-or more (including all the crossing points reported below) are unaffected in direction; gaps near
-~1-2pp should be read with this in mind.
+## ✅ DEFINITIVE (mechanism-matched baseline, commit 310c65a)
+
+Baseline (`full_inference`) was re-measured after fixing it to use the same two-stage decode
+mechanism as every keep_rate condition (see `qwen25vl_refcoco_sweep_results.md`'s confound section
+for the full diagnosis -- this was a real, user-identified, ~1-2pp confound, not negligible on
+RefCOCO). RealWorldQA's answers are overwhelmingly single-token, so this fix barely moves anything:
+
+| model | old baseline (confounded) | new baseline (matched) | shift |
+|---|---|---|---|
+| 32B | 68.76% (526/765) | **68.89% (527/765)** | +0.13pp (1 sample) |
+| 72B | 72.29% (553/765) | **72.29% (553/765)** | +0.00pp (identical) |
+
+**Crossing points are UNCHANGED**: 32B still crosses at **50%** (gap now +0.78pp instead of
++0.91pp, still clearly positive and still crosses there first). 72B still crosses at exactly
+**100%** (72B's baseline didn't move at all, so nothing about its table changes). Full recomputed
+gap table:
+
+| keep_rate | 32B Acc@0.5 | gap (matched) | gap (old, confounded) | 72B Acc@0.5 | gap (matched) | gap (old, confounded) |
+|---|---|---|---|---|---|---|
+| 10% | 64.58% | -4.31pp | -4.18pp | 66.80% | -5.49pp | -5.49pp |
+| 15% | 64.84% | -4.05pp | -3.92pp | 66.54% | -5.75pp | -5.75pp |
+| 20% | 65.88% | -3.01pp | -2.88pp | 67.84% | -4.45pp | -4.45pp |
+| 25% | 66.93% | -1.96pp | -1.83pp | 68.24% | -4.05pp | -4.05pp |
+| 30% | 67.06% | -1.83pp | -1.70pp | 68.37% | -3.92pp | -3.92pp |
+| 40% | 68.24% | -0.65pp | -0.52pp | 69.15% | -3.14pp | -3.14pp |
+| **50%** | **69.67%** | **+0.78pp** | +0.91pp | 69.80% | -2.49pp | -2.49pp |
+| 70% | 69.28% | +0.39pp | +0.52pp | 70.98% | -1.31pp | -1.31pp |
+| **100%** | 69.41% | +0.52pp | +0.65pp | **72.29%** | **+0.00pp** | +0.00pp |
+
+(72B's gap column is identical old vs new since its baseline didn't move at all -- included for
+completeness/symmetry with the RefCOCO table, not because anything actually changed here.)
+
+**Unlike RefCOCO, RealWorldQA's crossing points survive the fix unchanged** -- this dataset's
+mostly-single-token answers made it much less sensitive to the two-stage-decode mechanism than
+RefCOCO's multi-token bbox coordinates were. See `QWEN25VL_APPCORR_LOG.md` section 7 for the final
+cross-dataset table.
+
+## Prior sections (superseded numbers where they differ from the DEFINITIVE section above; kept
+## for the record, not as current findings)
 
 ## ⚠ REVISED at full scale (N=765): the "~15% elbow" conclusion below does NOT hold
 

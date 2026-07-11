@@ -7,12 +7,35 @@ approx/blurred). All runs nr=50 (strided sample of GQA's 12,578-question testdev
 short free-form single-word/phrase answers, exact-match-after-normalization scoring). Driver:
 `analysis/experiments/gqa_offload_eval.py`.
 
-**Note (added after this file's numbers were finalized):** `head_inference`'s two-stage decode
-mechanism (used by every corrected condition here, not by baseline) carries a measured ~1-2pp
-noise floor independent of correction quality -- see `qwen25vl_refcoco_sweep_results.md`'s
-confound section and `QWEN25VL_APPCORR_LOG.md` section 8 for the full measurement. GQA's single-
-token-ish answers are less likely to be as affected as RefCOCO's multi-token bbox answers were
-(the confound was measured on RefCOCO specifically), but was not independently re-measured here.
+## ✅ DEFINITIVE (mechanism-matched baseline, commit 310c65a)
+
+Baseline (`full_inference`) was re-measured after fixing it to use the same two-stage decode
+mechanism as every keep_rate condition (full diagnosis in `qwen25vl_refcoco_sweep_results.md`).
+GQA's answers are mostly single words/short phrases, so -- like RealWorldQA, unlike RefCOCO -- the
+fix barely moves anything:
+
+| model | old baseline (confounded) | new baseline (matched) | shift |
+|---|---|---|---|
+| 32B | 60.50% (242/400) | **60.50% (242/400)** | +0.00pp (identical) |
+| 72B | 59.25% (237/400) | **59.00% (236/400)** | -0.25pp (1 sample) |
+
+**Crossing points are UNCHANGED**: 32B still does not cross by 80% (still -0.50pp there, baseline
+identical) -- true crossing point remains bracketed to **(80%, 100%]**. 72B still crosses at
+**80%**, now with +0.75pp margin instead of +0.50pp (baseline moved down slightly, making the
+crossing marginally more comfortable, not less). Recomputed table:
+
+| keep_rate | 32B accuracy | gap (matched) | gap (old, confounded) | 72B accuracy | gap (matched) | gap (old, confounded) |
+|---|---|---|---|---|---|---|
+| 15% | 57.25% | -3.25pp | -3.25pp | 56.00% | -3.00pp | -3.25pp |
+| 50% | 59.75% | -0.75pp | -0.75pp | 57.50% | -1.50pp | -1.75pp |
+| 65% | 60.00% | -0.50pp | -0.50pp | 58.00% | -1.00pp | -1.25pp |
+| **80%** | 60.00% | -0.50pp | -0.50pp | **59.75%** | **+0.75pp** | +0.50pp |
+| 100% | 61.25% | +0.75pp | +0.75pp | 60.75% | +1.75pp | +1.50pp |
+
+**GQA's crossing points survive the fix unchanged, same as RealWorldQA and unlike RefCOCO** --
+confirms the earlier hypothesis that this confound matters far more for RefCOCO's multi-token bbox
+answers than for short-answer VQA tasks. The "72B needs LESS correction than 32B on GQA" exception
+(discussed below) is confirmed to be real, not a mechanism artifact.
 
 ## ⚠ REVISED at nr=400: baseline was UNDERestimated (opposite direction from RealWorldQA), and both models show a real, clean elbow
 
