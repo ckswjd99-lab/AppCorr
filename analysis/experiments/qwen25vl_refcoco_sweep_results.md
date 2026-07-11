@@ -1,6 +1,59 @@
 # Qwen2.5-VL RefCOCO (val) keep-rate sweep
 
+## ✅ DEFINITIVE (mechanism-matched baseline, commit 310c65a) -- supersedes every section below
+
+The two-stage-decode confound described in the next section was **fixed at the source**, not just
+documented: baseline (`full_inference`) now uses the identical two-stage decode mechanism as every
+keep_rate condition (`head_inference`). Baseline was re-measured under the fix (nr=400):
+
+| model | old baseline (confounded) | new baseline (matched) | shift |
+|---|---|---|---|
+| 32B | 83.75% (335/400) | **86.00% (344/400)** | +2.25pp |
+| 72B | 92.25% (369/400) | **91.25% (365/400)** | -1.00pp |
+
+(These shifts exactly match the standalone `matched_decode` diagnostic's prediction -- a good
+consistency check that the fix behaves as expected.)
+
+**Recomputed gaps and crossing points** (keep_rate condition accuracies are unchanged from the
+original sweep -- only baseline changed, so every gap below is recalculated against the new,
+matched baseline):
+
+| keep_rate | 32B Acc@0.5 | gap (new) | gap (old, confounded) | 72B Acc@0.5 | gap (new) | gap (old, confounded) |
+|---|---|---|---|---|---|---|
+| 25% | 79.75% | -6.25pp | -4.00pp | 90.25% | -1.00pp | -2.00pp |
+| 30% | 84.50% | -1.50pp | +0.75pp | 89.75% | -1.50pp | -2.50pp |
+| 35% | 84.75% | -1.25pp | +1.00pp | 89.25% | -2.00pp | -3.00pp |
+| 40% | 85.25% | -0.75pp | +1.50pp | 88.75% | -2.50pp | -3.50pp |
+| **50%** | **87.00%** | **+1.00pp** | +3.25pp | 88.75% | -2.50pp | -3.50pp |
+| 60% | 87.50% | +1.50pp | +3.75pp | 90.50% | -0.75pp | -1.75pp |
+| **70%** | 88.75% | +2.75pp | +5.00pp | **92.25%** | **+1.00pp** | +0.00pp |
+| 80% | 89.25% | +3.25pp | +5.50pp | 92.25% | +1.00pp | +0.00pp |
+| 90% | 89.50% | +3.50pp | +5.75pp | 92.00% | +0.75pp | -0.25pp |
+| 100% | 88.50% | +2.50pp | +4.75pp | 91.50% | +0.25pp | -0.75pp |
+
+**32B's crossing point MOVED: 30% → 50%.** This is a real, meaningful correction, not a rounding
+change. Under the old (confounded) baseline, 30% already looked like it exceeded baseline
+(+0.75pp) -- but that baseline was artificially *low* (83.75% instead of the true 86.00%), making
+correction look like it had "already worked" one full sweep-step too early. Under the properly
+matched baseline, 30/35/40% are all still *below* baseline (-1.50/-1.25/-0.75pp), and the crossing
+doesn't happen until **50%** (+1.00pp).
+
+**72B's crossing point did NOT move: still 70%.** The old baseline's confound (-1.00pp, i.e. the
+old baseline was artificially *high*) happened to not change which tested point crosses first --
+70% was an exact tie under the old baseline (+0.00pp) and is now comfortably positive (+1.00pp)
+under the corrected, lower baseline. The *direction* of 72B's confound partially cancelled against
+the correction pipeline's own tendency to score higher at high keep_rate, leaving the crossing
+point coincidentally stable.
+
+**Revised headline finding**: 32B's RefCOCO crossing point (50%) is now **identical** to its
+RealWorldQA crossing point (also 50%, see `qwen25vl_keeprate_sweep_results.md`) -- the earlier
+"RefCOCO needs less correction than RealWorldQA" claim for 32B **no longer holds**; they tie. For
+72B, RefCOCO (70%) is still lower than RealWorldQA (100%), so the "less correction" finding
+survives, but only for the larger model now, not both. See `QWEN25VL_APPCORR_LOG.md` section 7 for
+the full, final cross-dataset table.
+
 ## ⚠ Methodological confound found and measured: the two-stage decode mechanism is NOT neutral
+(historical record -- the fix and final numbers are in the section above)
 
 The user asked directly: is "keep_rate=100% sometimes exceeds baseline" (see below, 32B: +4.75pp)
 a genuine correction-pipeline effect, or an artifact of `head_inference` using a *different
@@ -51,7 +104,9 @@ mean IoU as a more continuous signal. Driver: `analysis/experiments/refcoco_offl
 that file's docstring for the input-direction note (dataset's own template is captioning-direction;
 this driver uses it in the standard grounding direction, `answer[0]` as the referring expression).
 
-## ⚠ REVISED at nr=400: 32B's elbow is earlier than thought, 72B is NOT as robust as thought
+## ⚠ REVISED at nr=400 (SUPERSEDED -- see "DEFINITIVE" section at top; this section's crossing
+## points, 32B=30%/72B=70%, used the mechanism-confounded baseline. 32B's is now known wrong;
+## the correct value is 50%. Kept for the record, not as current findings.)
 
 A larger re-measurement (nr=400, 8x the original nr=50, at narrowed candidates baseline/25/40/50%)
 was run after RealWorldQA's own nr=50 sweep turned out to be unreliable (see
