@@ -1,39 +1,20 @@
 # Qwen2.5-VL GQA (testdev_balanced) keep-rate sweep
 
-## ✅✅ FULL-DATASET (N=12578), 32B, -1pp crossing threshold -- FINAL for 32B, supersedes the nr=400 crossing estimate below
+## ❌ RETRACTED: first full-dataset (N=12578) batched sweep -- ALL keep_rate rows INVALID (full-resolution leak)
 
-Run on the ENTIRE GQA testdev_balanced split (all 12,578 questions, no subsampling) with the
-batched eval driver (`refcoco_gqa_batched_eval.py`, batch_size=16) -- baseline and every keep_rate
-condition go through the identical two-stage decode + identical batched `generate()` fallback path
-(mechanism-matched). Crossing threshold is the user's -1pp definition: first (lowest) keep_rate
-whose accuracy >= baseline - 1pp.
+Same critical bug as RefCOCO's retracted section (full diagnosis in
+`qwen25vl_refcoco_sweep_results.md`): the first version of `refcoco_gqa_batched_eval.py` fed the
+raw full-resolution image to `preprocess` instead of the patch-reconstructed canvas, so every
+keep_rate/approx-only condition ran on full-res pixels. GQA's smoking gun was the starkest: buggy
+approx-only scored IDENTICAL to baseline on the same 48 samples (64.58% == 64.58%, same 31/48
+count); after the fix it correctly drops to 60.42% (-4.2pp). The fixed script was validated
+per-sample against the offload pipeline driver (8/8 predictions character-identical).
 
-| keep_rate | accuracy (N=12578) | gap vs baseline |
-|---|---|---|
-| baseline | 60.84% (7653) | -- |
-| **5%** | **61.09% (7684)** | **+0.25pp** |
-| 10% | 60.92% (7663) | +0.08pp |
-| 20% | 60.95% (7666) | +0.11pp |
-| 30% | 61.01% (7674) | +0.17pp |
-
-**32B full-dataset -1pp crossing point: <=5%** (a bracket -- even the lowest tested keep_rate
-clears baseline outright; nothing lower was tested). Notes:
-
-- **The 40%/50% slots originally queued were intentionally redirected mid-run to 5%/10%** (user
-  instruction) once 20%/30% had already landed above baseline.
-- **This is an even more dramatic downward revision than RefCOCO's.** At nr=400 the crossing was
-  bracketed at (80%, 100%] under the strict >=0pp definition and ~50% under -1pp. At full scale,
-  every tested point down to 5% sits ABOVE baseline. nr=400 subsampling severely overestimated the
-  correction 32B needs on GQA -- consistent with the nr=50 -> nr=400 lesson already documented
-  below (small-sample GQA estimates for 32B have been unstable in *both* directions across this
-  investigation).
-- **The positive gaps must NOT be read as "correction beats baseline".** All (+0.08 to +0.25pp)
-  are far inside the pipeline's measured numerical noise floor (~2.5pp residual divergence at
-  nr=400 keep_rate=100% on RefCOCO; GQA's own kr=100% full-dataset control is pending) and inside
-  ~1 binomial SE (~0.43pp at N=12578). The supportable claim: **5% keep_rate recovers baseline
-  accuracy within measurement noise.**
-- The curve is essentially flat (60.92-61.09% across 5-30%, spread 0.17pp) -- same
-  early-saturation shape as RefCOCO's full-dataset curve.
+Retracted numbers, kept only as a record (they measure fork-vs-stock numerical noise at full
+resolution, not keep_rate behavior): baseline 60.84% (VALID, unaffected); "kr=5%" 61.09%;
+"kr=10%" 60.92%; "kr=20%" 60.95%; "kr=30%" 61.01%. The "crossing <=5%" conclusion is WITHDRAWN.
+A corrected full-dataset sweep (approx-only + keep_rates + kr=100% control) is being re-run with
+the fixed script; results will be added here when complete.
 
 Methodology identical to the RealWorldQA sweep (`qwen25vl_keeprate_sweep_results.md`):
 `grouping_strategy=top_energy`, `num_groups=1` (static single-shot correction, merge-groups ranked

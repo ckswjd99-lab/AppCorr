@@ -100,15 +100,28 @@ def load_base_config_dict(args):
     return raw
 
 
-def build_first_token_context(executor, encoder, config, image_np, prompt, is_baseline):
+def build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline):
     """Runs preprocess+prepare_tokens+[approx/correct]_forward for ONE image directly (no
     scheduler/worker), then decodes the first token. Mirrors head_inference's/full_inference's
     first-token logic exactly, just stopping before the generate() fallback so it can be batched
-    by the caller. Returns (first_token[1] tensor, context dict)."""
+    by the caller. Returns (first_token[1] tensor, context dict).
+
+    CRITICAL (bug found by the user's suspicion, then a controlled approx-only smoke test): the
+    keep_rate path must feed `preprocess` the CANVAS RECONSTRUCTED FROM THE TRANSMITTED PATCHES
+    (blurred base + whatever correction groups have arrived), exactly as the offload pipeline's
+    WorkerModule does via `policy.decode(patch_buffer, config, canvas=prev)` (worker.py:177-188).
+    An earlier version of this script passed the raw full-resolution `image_np` to `preprocess`
+    for every group instead -- which made `pixel_values` (and therefore the vision tower's inputs
+    AND the batched generate() fallback) full-resolution regardless of keep_rate, silently turning
+    every keep_rate/approx-only condition into ~baseline + fork numerical noise. All keep_rate
+    results produced by that version are INVALID (baseline results are unaffected: baseline is
+    genuinely full-resolution stock computation). Likewise, the per-image `config` must carry the
+    image's own `image_shape` (as `refcoco_offload_eval.py:187` does) so encode/decode grids match
+    the actual image rather than the config-default 896x896."""
     context = {}
-    total_layers = config.transmission_kwargs.get("total_layers", executor.num_llm_layers)
 
     if is_baseline:
+        total_layers = config.transmission_kwargs.get("total_layers", executor.num_llm_layers)
         task = Task(task_id=0, request_id=0, payload=[
             Patch(image_idx=0, spatial_idx=0, data=b"", text_payload=prompt)
         ], instructions=[])
@@ -122,14 +135,24 @@ def build_first_token_context(executor, encoder, config, image_np, prompt, is_ba
             )
             first_token = outputs.logits[:, -1, :].argmax(dim=-1)
     else:
+        image_config = dict(raw_config)
+        image_config["image_shape"] = [int(image_np.shape[0]), int(image_np.shape[1]), 3]
+        config = ExperimentConfig(**image_config)
+        total_layers = config.transmission_kwargs.get("total_layers", executor.num_llm_layers)
+        patch_buffer = []
+        canvas = None
         for group_patches in encoder.encode(image_np[None], config):
             now = time.time()
             for p in group_patches:
                 p.arrival_time = now
                 p.text_payload = prompt
             group_id = group_patches[0].group_id
+            # Reconstruct the current-fidelity canvas from ALL patches received so far --
+            # identical accumulate-then-decode semantics to WorkerModule (worker.py:177-188).
+            patch_buffer.extend(group_patches)
+            canvas = encoder.decode(patch_buffer, config, canvas=canvas)
             task = Task(task_id=0, request_id=0, payload=group_patches, instructions=[])
-            executor.preprocess(image_np[None], task, context, config)
+            executor.preprocess(canvas, task, context, config)
             executor.prepare_tokens(task, context, config)
             if group_id == 0:
                 executor.approx_forward({"layers": (0, total_layers)}, context, config)
@@ -295,7 +318,7 @@ def main():
 
     for idx in indices:
         image_np, prompt, gt, grid_hw = load_example(idx)
-        first_token, context = build_first_token_context(executor, encoder, config, image_np, prompt, is_baseline)
+        first_token, context = build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline)
         batch_items.append({
             "input_ids": context["input_ids"], "first_token": first_token,
             "pixel_values": context["pixel_values"], "image_grid_thw": context["image_grid_thw"],

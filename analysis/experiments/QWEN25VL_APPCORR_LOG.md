@@ -225,40 +225,37 @@ at the source (commit `310c65a`, baseline now uses the identical mechanism). Ful
 per-dataset discussion: `qwen25vl_keeprate_sweep_results.md` (RealWorldQA),
 `qwen25vl_refcoco_sweep_results.md` (RefCOCO), `qwen25vl_gqa_sweep_results.md` (GQA).
 
-### ✅✅ FULL-DATASET 32B UPDATE (-1pp threshold) -- supersedes the nr=400 32B crossing values in the table below
+### ❌ RETRACTED: first full-dataset 32B batched sweep (the "-1pp crossing <=10%/<=5%" claims are WITHDRAWN)
 
 After the mechanism fix, the user (a) redefined the crossing point as **accuracy >= baseline - 1pp**
-(the -1pp threshold, replacing the strict >=0pp definition, on the grounds that the pipeline has a
-measured ~1-2pp mechanism-level noise floor), and (b) requested TRUE full-dataset sweeps for 32B on
-RefCOCO (N=8811) and GQA (N=12578), run with the batched driver
-(`analysis/experiments/refcoco_gqa_batched_eval.py`, batch_size=16, mechanism-matched throughout).
-Results (full tables in the per-dataset files):
+(the -1pp threshold, replacing strict >=0pp, given the ~1-2pp mechanism-level noise floor), and
+(b) requested TRUE full-dataset sweeps for 32B, run with a new batched driver
+(`analysis/experiments/refcoco_gqa_batched_eval.py`). The first run of that driver reported
+crossing <=10% (RefCOCO N=8811) / <=5% (GQA N=12578), with every tested keep_rate ABOVE baseline.
+**The user flagged this as suspicious and asked for an approx-only control -- which exposed a
+critical full-resolution leak in the driver's keep_rate path**: it passed the raw full-res image
+to `preprocess` instead of the patch-reconstructed canvas (blurred base + arrived corrections)
+that the offload pipeline's WorkerModule builds via `policy.decode()` (worker.py:177-188), so
+`pixel_values` (vision tower input AND the generate() fallback) was full resolution regardless of
+keep_rate. Every keep_rate/approx-only condition in that sweep was effectively baseline + fork
+numerical noise -- smoking gun: buggy approx-only == baseline (GQA: identical 31/48 on the same
+samples; RefCOCO: within 1 sample), fixed approx-only drops properly (-6.25pp / -4.2pp).
 
-| Dataset | 32B full-dataset -1pp crossing | previous nr=400 estimate | revision |
-|---|---|---|---|
-| RefCOCO (N=8811) | **<=10%** (kr=10% is +0.48pp ABOVE baseline) | ~40% (-1pp) / 50% (>=0pp) | **DOWN dramatically** |
-| GQA (N=12578) | **<=5%** (kr=5% is +0.25pp ABOVE baseline) | ~50% (-1pp) / (80%,100%] (>=0pp) | **DOWN dramatically** |
-
-Every tested keep_rate (RefCOCO: 10/20/30/35%; GQA: 5/10/20/30%) landed ABOVE baseline at full
-scale -- both curves are nearly flat (spreads of 0.13pp / 0.17pp). The 40%/50% slots were
-intentionally redirected mid-run to the lower values once the low end had already crossed. Two
-implications: (1) **nr=400 subsampling systematically overestimated how much correction 32B
-needs** -- at true full-dataset scale, 32B recovers baseline within noise at 5-10% keep_rate on
-both tasks, which substantially strengthens the "32B needs very little correction" conclusion;
-(2) the positive gaps (+0.08 to +0.48pp) are all inside the measured noise floor (~2.5pp residual
-numerical divergence at kr=100%, nr=400) and ~1 binomial SE, so they must be reported as "recovers
-baseline within measurement noise," NOT as correction beating baseline -- a full-dataset kr=100%
-control (pending user decision) is required before claiming anything stronger. Note the 72B rows
-and the RealWorldQA row in the table below remain nr=400/full-N under the OLD strict >=0pp
-definition and are NOT superseded by this update.
+Fix validated per-sample against the offload pipeline driver (kr=0.30, 8 samples: all predictions
+character-identical). Only useful salvage from the invalid run: baseline numbers are VALID
+(85.75% RefCOCO N=8811 / 60.84% GQA N=12578 -- genuinely full-res stock), and the invalid
+keep_rate rows empirically pin the fork-vs-stock full-dataset numerical noise floor at ~+0.1 to
++0.5pp (much tighter than the ~2.5pp nr=400 estimate). Corrected full-dataset sweep (approx-only +
+keep_rates + kr=100% control) re-running with the fixed script; the table below therefore remains
+the CURRENT best crossing-point estimate until it lands.
 
 ### Definitive crossing-point table (mechanism-matched)
 
 | Dataset | 32B crossing point | 72B crossing point | 32B shifted from pre-fix? |
 |---|---|---|---|
 | RealWorldQA (N=765 full) | **50%** (+0.78pp) | **100%** (exact tie, 72.29%) | No (was 50%, unchanged) |
-| RefCOCO (nr=400) | ~~50%~~ **superseded: <=10% at full N=8811, -1pp threshold (see above)** | **70%** (+1.00pp) | **YES: 30% -> 50% -> <=10% (full)** |
-| GQA (nr=400) | ~~(80%, 100%]~~ **superseded: <=5% at full N=12578, -1pp threshold (see above)** | **80%** (+0.75pp) | No pre-fix; full-dataset revised to <=5% |
+| RefCOCO (nr=400) | **50%** (+1.00pp; ~40% under -1pp threshold) | **70%** (+1.00pp) | **YES: 30% -> 50%** |
+| GQA (nr=400) | **(80%, 100%]** (>=0pp; ~50% under -1pp threshold) | **80%** (+0.75pp) | No (unchanged) |
 
 Baseline shifts under the mechanism fix: RealWorldQA 32B +0.13pp / 72B +0.00pp (negligible); GQA
 32B +0.00pp / 72B -0.25pp (negligible); **RefCOCO 32B +2.25pp / 72B -1.00pp (substantial)**. Only
