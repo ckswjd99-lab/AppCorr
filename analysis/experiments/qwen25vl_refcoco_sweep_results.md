@@ -1,5 +1,42 @@
 # Qwen2.5-VL RefCOCO (val) keep-rate sweep
 
+## ✅✅ FULL-DATASET (N=8811), 32B, -1pp crossing threshold -- FINAL for 32B, supersedes the nr=400 crossing estimate below
+
+Run on the ENTIRE RefCOCO val split (all 8811 samples, no subsampling) with the batched eval
+driver (`refcoco_gqa_batched_eval.py`, batch_size=16) -- baseline and every keep_rate condition go
+through the identical two-stage decode + identical batched `generate()` fallback path, so the
+mechanism-matched property of the fixed pipeline is preserved. Crossing threshold used here is the
+user's -1pp definition: first (lowest) keep_rate whose accuracy >= baseline - 1pp.
+
+| keep_rate | Acc@0.5 (N=8811) | gap vs baseline | mean IoU |
+|---|---|---|---|
+| baseline | 85.75% (7555) | -- | 0.7620 |
+| **10%** | **86.23% (7598)** | **+0.48pp** | 0.7668 |
+| 20% | 86.14% (7590) | +0.39pp | 0.7658 |
+| 30% | 86.10% (7586) | +0.35pp | 0.7655 |
+| 35% | 86.15% (7591) | +0.40pp | 0.7660 |
+
+**32B full-dataset -1pp crossing point: <=10%** (a bracket, not an exact value -- even the lowest
+tested keep_rate clears baseline outright, so the true crossing lies at or below 10%; nothing lower
+was tested). Notes:
+
+- **The 40%/50% slots originally queued were intentionally redirected mid-run to 10%/20%** (user
+  instruction) once 30%/35% had already landed above baseline -- points above an already-crossed
+  keep_rate carry no crossing information.
+- **This is a dramatic downward revision vs the nr=400 estimate.** At nr=400 the -1pp crossing was
+  estimated at ~40% (and the strict >=0pp crossing at 50%, see next section). At full scale, every
+  tested point down to 10% sits ABOVE baseline. nr=400 subsampling substantially overestimated how
+  much correction 32B needs on this task.
+- **The positive gaps must NOT be read as "correction beats baseline".** All of them (+0.35 to
+  +0.48pp) are well inside the pipeline's measured numerical noise floor (~2.5pp residual
+  divergence documented at nr=400 keep_rate=100%, from bf16/SDPA kernel-dispatch
+  non-determinism -- see the confound sections below) and inside ~1 binomial SE (~0.37pp at
+  N=8811). A full-dataset keep_rate=100% control (pending) is required before interpreting any
+  positive gap as a real effect. The claim this data supports is: **10% keep_rate recovers baseline
+  accuracy within measurement noise.**
+- The curve is remarkably flat (86.10-86.23% across 10-35%, spread 0.13pp) -- correction benefit
+  saturates extremely early at full-dataset scale for 32B.
+
 ## ✅ DEFINITIVE (mechanism-matched baseline, commit 310c65a) -- supersedes every section below
 
 The two-stage-decode confound described in the next section was **fixed at the source**, not just
