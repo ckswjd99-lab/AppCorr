@@ -77,6 +77,10 @@ def parse_args():
     p.add_argument("--grouping-strategy", type=str, default=None)
     p.add_argument("--num-groups", type=int, default=None)
     p.add_argument("--keep-rate", type=float, default=None)
+    p.add_argument("--pscore-threshold", type=float, default=None,
+                    help="For --grouping-strategy top_energy_threshold: absolute residual-energy "
+                         "cutoff (merge-groups with pscore >= this are corrected) -- the number of "
+                         "corrected groups varies per image, unlike --keep-rate's fixed fraction.")
     p.add_argument("--num-samples", type=int, default=40)
     p.add_argument("--full", action="store_true")
     p.add_argument("--batch-size", type=int, default=8)
@@ -101,6 +105,8 @@ def load_base_config_dict(args):
         raw.setdefault("transmission_kwargs", {})["num_groups"] = args.num_groups
     if args.keep_rate is not None:
         raw.setdefault("transmission_kwargs", {})["keep_rate"] = args.keep_rate
+    if args.pscore_threshold is not None:
+        raw.setdefault("transmission_kwargs", {})["pscore_threshold"] = args.pscore_threshold
     return raw
 
 
