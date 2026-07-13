@@ -225,6 +225,33 @@ at the source (commit `310c65a`, baseline now uses the identical mechanism). Ful
 per-dataset discussion: `qwen25vl_keeprate_sweep_results.md` (RealWorldQA),
 `qwen25vl_refcoco_sweep_results.md` (RefCOCO), `qwen25vl_gqa_sweep_results.md` (GQA).
 
+### ✅✅ FINAL: v2 corrected full-dataset 32B sweep (-1pp threshold), commit 5c398d1
+
+The full-resolution-leak bug described just below was fixed and the full-dataset 32B sweep re-run
+end-to-end (baseline + a `top_energy` keep_rate sweep, extended dynamically via binary-search once
+the originally-planned points didn't land a precise crossing) on both RefCOCO (N=8811) and GQA
+(N=12578). Full tables in `qwen25vl_refcoco_sweep_results.md` / `qwen25vl_gqa_sweep_results.md`.
+
+| Dataset | 32B full-dataset -1pp crossing | nr=400 estimate | revision | kr=100% noise floor |
+|---|---|---|---|---|
+| RefCOCO (N=8811) | **~58%** (kr=50%: -2.26pp; kr=58%: -1.00pp exactly at threshold; kr=65%: 0.00pp) | ~40% | **+18pp (moderate upward)** | +0.32pp |
+| GQA (N=12578) | **65-75%** (kr=65%: -1.32pp below; kr=75%: -0.70pp clears) | ~50% | **+15-25pp (moderate upward)** | +0.10pp |
+
+**Both datasets revise upward from nr=400 by a similar, moderate amount (~15-25pp) -- nr=400 was
+never wildly unreliable here.** This is the important contrast with the RETRACTED v1 full-dataset
+sweep (below): v1's canvas-reconstruction bug made every keep_rate condition look like it barely
+differed from baseline (implying an implausible <=5-10% crossing); the v2 fix restores a normal,
+expected relationship where full-dataset measurement refines (here: raises) the nr=400 estimate by
+a believable amount, not overturns it. **Practical read: 32B needs meaningfully more correction on
+both tasks than nr=400 suggested (~58-75% keep_rate, not ~40-50%), but the earlier qualitative
+conclusions built on nr=400 (RefCOCO needs somewhat less correction than GQA for 32B, both need
+substantially less than the strict >=0pp crossings from the mechanism-matched nr=400 table below)
+still hold directionally.**
+
+Per-sample McNemar significance testing for these crossing points is in progress (task #55,
+`analysis/experiments/mcnemar_from_jsonl.py`) -- see the statistical-significance subsections in
+the two per-dataset result files once available.
+
 ### ❌ RETRACTED: first full-dataset 32B batched sweep (the "-1pp crossing <=10%/<=5%" claims are WITHDRAWN)
 
 After the mechanism fix, the user (a) redefined the crossing point as **accuracy >= baseline - 1pp**

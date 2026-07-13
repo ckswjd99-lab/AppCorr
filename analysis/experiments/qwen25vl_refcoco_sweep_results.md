@@ -1,5 +1,43 @@
 # Qwen2.5-VL RefCOCO (val) keep-rate sweep
 
+## ✅ v2 CORRECTED full-dataset (N=8811), 32B, -1pp crossing threshold -- FINAL for 32B
+
+Full RefCOCO val split (all 8811 samples), fixed batched driver (commit `5c398d1`, canvas-reconstruction
+bug fixed and validated per-sample against the offload pipeline: 8/8 predictions character-identical
+at kr=0.30). Baseline + a `top_energy` keep_rate sweep, extended dynamically (binary-search style)
+once the planned points didn't land a precise crossing on the first pass:
+
+| keep_rate | Acc@0.5 (N=8811) | gap vs baseline | mean IoU |
+|---|---|---|---|
+| baseline | 85.75% (7555) | -- | 0.7620 |
+| 0% (approx-only) | 74.76% (6587) | -10.99pp | 0.6502 |
+| 30% | 80.75% (7115) | -5.00pp | 0.7080 |
+| 35% | 81.07% (7143) | -4.68pp | 0.7153 |
+| 40% | 82.24% (7246) | -3.51pp | 0.7235 |
+| 50% | 83.49% (7356) | -2.26pp | 0.7381 |
+| **58%** | **84.75% (7467)** | **-1.00pp (exactly at threshold)** | 0.7495 |
+| 65% | 85.75% (7555) | 0.00pp (exact tie w/ baseline) | 0.7577 |
+| 100% (noise floor) | 86.07% (7584) | +0.32pp | 0.7654 |
+
+**32B full-dataset -1pp crossing point: ~58%** (precisely bracketed: 50% is -2.26pp below threshold,
+58% lands essentially exactly on the -1pp boundary (84.75% == 84.75%), 65% already exceeds baseline
+outright). This is the most precise crossing measurement in this investigation -- pinned via 2 rounds
+of dynamic binary-search extension (58% then would-have-been-further-narrowed, but 58% landed close
+enough to the exact boundary that no third point was needed).
+
+**vs nr=400 estimate (~40%, under the -1pp definition):** the full-dataset crossing (~58%) is
+**~18pp higher** than the nr=400 estimate -- a real, moderate upward revision (nr=400 somewhat
+underestimated how much correction 32B needs), but nowhere near the wildly-wrong "<=10%" the
+RETRACTED buggy v1 full-dataset sweep produced (see below). This is reassuring: nr=400 itself was
+never that unreliable on this dataset -- the v1 full-dataset bug was the actual problem, not
+small-sample noise.
+
+**kr=100% noise floor: +0.32pp.** This is the pipeline's own fork-vs-stock numerical noise floor at
+full-dataset scale (kr=100% is architecturally equivalent to baseline, any nonzero gap is bf16/kernel
+noise, not signal) -- gaps smaller than this at other keep_rates should not be read as "correction
+beats baseline," only as "within measurement noise." See `mcnemar_from_jsonl.py` / the statistical
+significance subsection below for the formal paired test.
+
 ## ❌ RETRACTED: first full-dataset (N=8811) batched sweep -- ALL keep_rate rows INVALID (full-resolution leak)
 
 The user flagged the results below as counter-intuitive ("even 5-10% keep_rate beats baseline?

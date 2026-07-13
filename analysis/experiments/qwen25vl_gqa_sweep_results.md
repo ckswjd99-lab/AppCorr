@@ -1,5 +1,40 @@
 # Qwen2.5-VL GQA (testdev_balanced) keep-rate sweep
 
+## ✅ v2 CORRECTED full-dataset (N=12578), 32B, -1pp crossing threshold -- FINAL for 32B
+
+Full GQA testdev_balanced split (all 12,578 questions), fixed batched driver (commit `5c398d1`).
+Baseline + a `top_energy` keep_rate sweep, extended dynamically once the planned points didn't pin
+a precise crossing on the first pass:
+
+| keep_rate | accuracy (N=12578) | gap vs baseline |
+|---|---|---|
+| baseline | 60.84% (7653) | -- |
+| 0% (approx-only) | 55.16% (6938) | -5.68pp |
+| 20% | 56.77% (7141) | -4.07pp |
+| 30% | 57.69% (7256) | -3.15pp |
+| 40% | 58.40% (7345) | -2.44pp |
+| 50% | 58.83% (7400) | -2.01pp |
+| **65%** | **59.52% (7487)** | **-1.32pp (still below threshold)** |
+| **75%** | **60.14% (7564)** | **-0.70pp (clears -1pp threshold)** |
+| 100% (noise floor) | 60.94% (7665) | +0.10pp |
+
+**32B full-dataset -1pp crossing point: between 65% and 75%** (threshold = 59.84%; kr=65% is
+-1.32pp, still below; kr=75% is -0.70pp, clears). Narrowed via 2 rounds of dynamic binary-search
+extension (0.50->0.75 probe, then 0.75->0.65 to bisect) to a final 10-point-wide bracket.
+
+**vs nr=400 estimate (~50%, under the -1pp definition):** the full-dataset crossing (65-75%) is
+**~15-25pp higher** than the nr=400 estimate -- a real, moderate upward revision (nr=400
+underestimated how much correction 32B needs on GQA), consistent in direction and magnitude with
+RefCOCO's revision (~18pp). Nowhere near the wildly-wrong "<=5%" the RETRACTED buggy v1 full-dataset
+sweep produced -- nr=400 itself was never that unreliable, the v1 canvas-reconstruction bug was the
+actual problem.
+
+**kr=100% noise floor: +0.10pp** -- tighter than RefCOCO's (+0.32pp), consistent with GQA's mostly
+single-word/short-phrase answers being less sensitive to the residual bf16/kernel-path noise that
+affects RefCOCO's multi-token bbox-coordinate answers more. Gaps smaller than this floor at other
+keep_rates should not be read as "correction beats baseline." See `mcnemar_from_jsonl.py` / the
+statistical significance subsection below for the formal paired test.
+
 ## ❌ RETRACTED: first full-dataset (N=12578) batched sweep -- ALL keep_rate rows INVALID (full-resolution leak)
 
 Same critical bug as RefCOCO's retracted section (full diagnosis in
