@@ -32,8 +32,29 @@ actual problem.
 **kr=100% noise floor: +0.10pp** -- tighter than RefCOCO's (+0.32pp), consistent with GQA's mostly
 single-word/short-phrase answers being less sensitive to the residual bf16/kernel-path noise that
 affects RefCOCO's multi-token bbox-coordinate answers more. Gaps smaller than this floor at other
-keep_rates should not be read as "correction beats baseline." See `mcnemar_from_jsonl.py` / the
-statistical significance subsection below for the formal paired test.
+keep_rates should not be read as "correction beats baseline." See the statistical significance
+subsection below for the formal paired test.
+
+## Statistical significance (McNemar), full dataset
+
+Baseline and the two edge conditions (kr=75%, kr=100%) were re-run with `--log-jsonl` over the same
+12,578 samples so `analysis/experiments/mcnemar_from_jsonl.py` could run a paired McNemar test
+(re-measured values match the table above exactly: baseline 60.84%, kr=75% 60.14%, kr=100% 60.94%).
+
+| comparison | gap | discordant pairs (A-only / B-only) | McNemar p-value | significant? |
+|---|---|---|---|---|
+| baseline vs kr=75% (clears the -1pp aggregate threshold) | -0.71pp | 443 / 354 | **0.0018** | **YES** |
+| baseline vs kr=100% (noise floor control) | +0.10pp | 209 / 221 | 0.5958 | No |
+
+**Same pattern as RefCOCO, confirming it's not a one-off.** kr=100% (architecturally equivalent to
+baseline) is correctly NOT significant (p=0.60) -- validates it as the noise floor. But kr=75%, the
+point whose aggregate gap already clears the -1pp engineering threshold, is nonetheless
+**statistically significant vs baseline (p=0.0018)** -- at N=12578 the test easily detects a real,
+if small, accuracy cost. **The -1pp aggregate threshold is an engineering tolerance, not a
+statistical-equivalence claim, on GQA just as on RefCOCO.** A "recovers baseline" claim in a paper
+should either test a keep_rate well above 75% (kr=100% ties statistically; the exact keep_rate where
+significance first disappears wasn't pinned down here) or explicitly caveat that ~75% is an
+aggregate-tolerance threshold.
 
 ## ❌ RETRACTED: first full-dataset (N=12578) batched sweep -- ALL keep_rate rows INVALID (full-resolution leak)
 

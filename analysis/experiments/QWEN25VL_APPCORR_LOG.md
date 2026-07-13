@@ -248,18 +248,26 @@ conclusions built on nr=400 (RefCOCO needs somewhat less correction than GQA for
 substantially less than the strict >=0pp crossings from the mechanism-matched nr=400 table below)
 still hold directionally.**
 
-**McNemar significance testing (RefCOCO complete, GQA in progress, task #55):** re-ran RefCOCO's
-baseline/kr=58%/kr=100% with `--log-jsonl` per-sample logging and ran a paired McNemar test
-(`analysis/experiments/mcnemar_from_jsonl.py`). Result, and it's an important honest correction:
-**kr=100% vs baseline is NOT significant (p=0.12, validating it as the noise floor), but kr=58% vs
-baseline IS statistically significant (p=0.0086, gap=-1.00pp)** -- at N=8811 the test has enough
-power to detect even a small real degradation. **The -1pp aggregate threshold is a reasonable
-engineering tolerance but should not be read as statistical equivalence to baseline** -- a paper
-claiming "recovers baseline accuracy" should either cite kr~65% (which ties baseline exactly in
-this sweep) or explicitly caveat that ~58% is aggregate-tolerance-based, not statistically
-indistinguishable. Full contingency tables in `qwen25vl_refcoco_sweep_results.md`'s "Statistical
-significance (McNemar)" subsection. GQA's equivalent re-run/test was still in progress at last
-update -- check `qwen25vl_gqa_sweep_results.md` for whether it's landed.
+**McNemar significance testing (task #55, COMPLETE for both datasets):** re-ran baseline/crossing-kr/
+kr=100% for both datasets with `--log-jsonl` per-sample logging and a paired McNemar test
+(`analysis/experiments/mcnemar_from_jsonl.py`). **Same pattern held on both, confirming it's not a
+one-off:**
+
+| dataset | baseline vs kr=100% (noise floor) | baseline vs crossing-kr (-1pp aggregate threshold) |
+|---|---|---|
+| RefCOCO (N=8811) | +0.33pp, p=0.12, NOT significant | kr=58%: -1.00pp, **p=0.0086, SIGNIFICANT** |
+| GQA (N=12578) | +0.10pp, p=0.60, NOT significant | kr=75%: -0.71pp, **p=0.0018, SIGNIFICANT** |
+
+kr=100% is correctly never significant (validating it as each dataset's own noise floor), but the
+keep_rate whose AGGREGATE gap merely clears -1pp is, on both datasets, a real statistically
+significant difference from baseline -- at full-dataset N, the test has power to detect even small
+real degradations that look noise-sized in aggregate. **Important honest correction for this whole
+investigation: the -1pp threshold used throughout is a reasonable ENGINEERING tolerance, not a
+statistical-equivalence claim.** A paper claiming "32B recovers baseline accuracy at keep_rate X%"
+should either cite a keep_rate closer to each dataset's kr=100%-tying point (RefCOCO ~65%, exact tie;
+GQA's non-significant point wasn't pinned down beyond kr=100% itself) or explicitly caveat that the
+~58%/~75% figures are aggregate-tolerance-based. Full contingency tables in both per-dataset result
+files' "Statistical significance (McNemar)" subsections.
 
 ### ❌ RETRACTED: first full-dataset 32B batched sweep (the "-1pp crossing <=10%/<=5%" claims are WITHDRAWN)
 
