@@ -97,7 +97,7 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             # Pre-calculate group assignments per image (may differ with preserve_input_shape)
             per_image_assignments = []
             for b in range(B):
-                if grouping_strategy == 'top_energy':
+                if grouping_strategy in ('top_energy', 'top_energy_threshold'):
                     residual_structure = self._collect_residual_metadata_scored(gaussians_batch[b], config, image_hws[b])
                 else:
                     residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
@@ -302,6 +302,31 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 order = np.argsort(-scores, kind='stable')
                 keep_idx = order[:keep_n]
                 group_ids[keep_idx] = 1
+            return group_ids
+
+        elif strategy == 'top_energy_threshold':
+            # Absolute-threshold keep-rate selection: correct every merge-group whose residual
+            # importance score (`pscore`) meets or exceeds an ABSOLUTE cutoff
+            # (transmission_kwargs['pscore_threshold']), instead of a fixed top-K% fraction like
+            # 'top_energy'. The number of corrected groups therefore varies per image with how
+            # much residual energy it actually contains -- a texture-heavy image gets a larger
+            # correction budget than a flat/smooth one at the same threshold, whereas
+            # 'top_energy' always corrects exactly keep_rate*N groups regardless of the pscore
+            # distribution's shape. Same group_id=0/1 semantics as 'top_energy' (uncorrected
+            # groups get group_id=0, matching the base/coarse layer's id so they're never
+            # selected by correct_forward's group_id=1 lookup) -- still a *static* one-shot
+            # selection, pair with num_groups=1.
+            if structure is None or not all('pscore' in item for item in structure):
+                raise ValueError(
+                    "'top_energy_threshold' grouping requires per-item 'pscore' -- pass "
+                    "residual_structure built via _collect_residual_metadata_scored(), not "
+                    "_collect_residual_metadata()."
+                )
+            threshold = 0.0
+            if config is not None:
+                threshold = float(config.transmission_kwargs.get('pscore_threshold', 0.0))
+            scores = np.asarray([float(item['pscore']) for item in structure], dtype=np.float64)
+            group_ids = np.where(scores >= threshold, 1, 0).astype(int)
             return group_ids
 
         elif strategy == 'random':
