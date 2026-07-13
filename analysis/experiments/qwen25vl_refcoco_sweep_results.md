@@ -35,8 +35,34 @@ small-sample noise.
 **kr=100% noise floor: +0.32pp.** This is the pipeline's own fork-vs-stock numerical noise floor at
 full-dataset scale (kr=100% is architecturally equivalent to baseline, any nonzero gap is bf16/kernel
 noise, not signal) -- gaps smaller than this at other keep_rates should not be read as "correction
-beats baseline," only as "within measurement noise." See `mcnemar_from_jsonl.py` / the statistical
-significance subsection below for the formal paired test.
+beats baseline," only as "within measurement noise." See the statistical significance subsection
+below for the formal paired test.
+
+## Statistical significance (McNemar), full dataset
+
+Aggregate-accuracy gaps alone can't distinguish "real small effect" from "noise" -- both baseline and
+each keep_rate condition were re-run with `--log-jsonl` so `analysis/experiments/mcnemar_from_jsonl.py`
+could run a paired McNemar test over the SAME 8811 samples (re-measured values match the table above
+exactly: baseline 85.75%, kr=58% 84.75%, kr=100% 86.07%).
+
+| comparison | gap | discordant pairs (A-only / B-only) | McNemar p-value | significant? |
+|---|---|---|---|---|
+| baseline vs kr=58% (the -1pp crossing point) | -1.00pp | 592 / 504 | **0.0086** | **YES** |
+| baseline vs kr=100% (noise floor control) | +0.33pp | 146 / 175 | 0.1181 | No |
+
+**This is an important, honest correction to the earlier framing.** The kr=100% control confirms
+what was expected: architecturally-equivalent-to-baseline computation produces a gap that is NOT
+statistically significant (p=0.12) -- this validates using it as "the noise floor." But **kr=58%,
+the point whose AGGREGATE gap exactly equals the -1pp threshold, is actually a statistically
+SIGNIFICANT difference from baseline (p=0.0086)**, not noise. At N=8811 the test has enough power to
+detect a real (if small) accuracy cost even when the aggregate delta looks noise-sized. **Practical
+implication: the -1pp aggregate threshold is a reasonable ENGINEERING tolerance, but it should not be
+read as "statistically indistinguishable from baseline" -- that stronger claim would require a
+keep_rate closer to 65% (which ties baseline exactly in this sweep, 7555/7555, and would very likely
+be non-significant if re-measured with logging, though that specific pair wasn't re-run with
+`--log-jsonl` here).** Anyone citing "32B recovers RefCOCO baseline accuracy at ~58% keep_rate" in a
+paper should either use kr~65% instead, or explicitly caveat that ~58% is an engineering
+(aggregate-tolerance) threshold, not a statistical-equivalence one.
 
 ## ❌ RETRACTED: first full-dataset (N=8811) batched sweep -- ALL keep_rate rows INVALID (full-resolution leak)
 

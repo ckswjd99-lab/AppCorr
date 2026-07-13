@@ -248,9 +248,18 @@ conclusions built on nr=400 (RefCOCO needs somewhat less correction than GQA for
 substantially less than the strict >=0pp crossings from the mechanism-matched nr=400 table below)
 still hold directionally.**
 
-Per-sample McNemar significance testing for these crossing points is in progress (task #55,
-`analysis/experiments/mcnemar_from_jsonl.py`) -- see the statistical-significance subsections in
-the two per-dataset result files once available.
+**McNemar significance testing (RefCOCO complete, GQA in progress, task #55):** re-ran RefCOCO's
+baseline/kr=58%/kr=100% with `--log-jsonl` per-sample logging and ran a paired McNemar test
+(`analysis/experiments/mcnemar_from_jsonl.py`). Result, and it's an important honest correction:
+**kr=100% vs baseline is NOT significant (p=0.12, validating it as the noise floor), but kr=58% vs
+baseline IS statistically significant (p=0.0086, gap=-1.00pp)** -- at N=8811 the test has enough
+power to detect even a small real degradation. **The -1pp aggregate threshold is a reasonable
+engineering tolerance but should not be read as statistical equivalence to baseline** -- a paper
+claiming "recovers baseline accuracy" should either cite kr~65% (which ties baseline exactly in
+this sweep) or explicitly caveat that ~58% is aggregate-tolerance-based, not statistically
+indistinguishable. Full contingency tables in `qwen25vl_refcoco_sweep_results.md`'s "Statistical
+significance (McNemar)" subsection. GQA's equivalent re-run/test was still in progress at last
+update -- check `qwen25vl_gqa_sweep_results.md` for whether it's landed.
 
 ### ❌ RETRACTED: first full-dataset 32B batched sweep (the "-1pp crossing <=10%/<=5%" claims are WITHDRAWN)
 
