@@ -83,6 +83,10 @@ def parse_args():
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--label", type=str, default=None)
     p.add_argument("--max-new-tokens", type=int, default=63)
+    p.add_argument("--log-jsonl", type=str, default=None,
+                    help="If set, append one JSON line per sample ({idx, pred, correct, iou}) to "
+                         "this path -- enables paired per-sample comparison (e.g. McNemar's test) "
+                         "between two conditions run over the SAME indices.")
     return p.parse_args()
 
 
@@ -284,6 +288,7 @@ def main():
     iou_sum = 0.0
     t_start = time.time()
     print_every = 1 if len(indices) <= 40 else max(len(indices) // 200, 10)
+    log_f = open(args.log_jsonl, "a", encoding="utf-8") if args.log_jsonl else None
 
     batch_items = []
     batch_meta = []  # (idx, gt, grid_hw)
@@ -303,6 +308,9 @@ def main():
                 iou = 0.0
             correct += int(ok)
             processed += 1
+            if log_f is not None:
+                log_f.write(json.dumps({"idx": idx, "label": label, "pred": pred_text,
+                                         "correct": bool(ok), "iou": iou}) + "\n")
             if processed % print_every == 0 or processed == len(indices):
                 acc = 100.0 * correct / processed
                 extra = f" mean_iou={iou_sum/processed:.3f}" if args.dataset == "refcoco" else ""
@@ -324,6 +332,8 @@ def main():
         if len(batch_items) >= args.batch_size:
             flush_batch()
     flush_batch()
+    if log_f is not None:
+        log_f.close()
 
     total_wall = time.time() - t_start
     acc = 100.0 * correct / max(processed, 1)
