@@ -465,3 +465,35 @@ the selection RULE (threshold vs top-K) is not the bottleneck; the SCORE's task-
 is a complete, well-evidenced (not prematurely-stopped) negative result for the original hypothesis
 as tested, ready to hand off to the user; the `top_energy_threshold` mechanism itself remains
 correctly implemented and available if a different pscore signal (task #56) is plugged into it later.
+
+**(c) Direct, quantified confirmation: how well does the current score even localize the referring
+expression's target region?** RefCOCO ships a ground-truth bbox per sample, so this is directly
+checkable with no model inference at all -- for every merge-group in the nr=400 sample (145,776
+groups total), labeled "inside" if >50% of its cell area overlaps the GT bbox (31,717 groups) vs
+"outside" (114,059 groups), then measured how well `pscore` (residual energy) separates the two
+populations (Mann-Whitney-style rank AUC, 0.5=random, 1.0=perfect):
+
+**AUC = 0.5376.** The current pscore is barely better than a coin flip at identifying which
+merge-groups actually fall inside the target region a referring expression is pointing at (mean
+pscore inside-GT=882K vs outside-GT=787K -- a real but tiny separation). This is the same conclusion
+as (a) and (b) above, now with a clean, model-free, directly-interpretable number: **there is roughly
+54% out of a possible 100% worth of localization signal being captured by pixel residual energy
+alone; the remaining headroom is exactly what a query-conditioned score (task #56) would need to
+capture to meaningfully help.**
+
+**Design options for task #56, not yet implemented (design decision -- left for user input):**
+1. **CLIP-based query-image relevance.** `laion/CLIP-ViT-bigG-14-laion2B-39B-b160k` is already
+   cached locally (`/NHNHOME/huggingface/hub/models--laion--CLIP-ViT-bigG-14-laion2B-39B-b160k`,
+   used by this repo's earlier `experiment/clip-appcorr` work) -- could compute per-merge-group
+   CLIP patch-embedding-to-text-embedding cosine similarity as (or blended with) the pscore. Bigg-14
+   is a large model itself though; running it per-request adds real latency/memory overhead worth
+   weighing against a smaller CLIP variant (e.g. ViT-B/32) for a "cheap mobile-side score" role.
+2. **Reuse Qwen2.5-VL's own cross-attention**, if/where accessible cheaply (e.g. from the base/approx
+   pass's already-computed features) instead of a separate model -- avoids a second model's memory
+   footprint but is architecturally more invasive and less obviously "cheap."
+3. **Lightweight heuristic hybrids** (e.g. combine residual energy with a coarse text-derived spatial
+   prior, like color-word or size-word matching) -- fast and simple but likely too narrow/brittle to
+   generalize past RefCOCO's specific phrasing patterns.
+Threading the question/expression text through `encode()`/`ExperimentConfig` to reach
+`_compute_patch_pscore_hint` is required for any of these (currently not plumbed at all) --
+non-trivial but mechanical.
