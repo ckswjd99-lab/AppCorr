@@ -378,3 +378,41 @@ GQA on both models).**
   original issue (it was added defensively, mirroring the GQA/RefCOCO fix, but RealWorldQA's own
   sweeps had already completed before this bug was discovered) -- should work by the same logic,
   but hasn't been directly observed to recover a real crash the way the GQA/RefCOCO drivers were.
+
+## 9. Threshold-based (absolute pscore cutoff) vs top-K% patch selection -- task #57
+
+**Hypothesis (user, from prior experience):** an absolute pscore threshold (correct every merge-group
+whose residual energy exceeds a fixed cutoff -- so the corrected FRACTION varies per image with how
+much high-frequency content it actually has) should be more sample-efficient than `top_energy`'s
+fixed top-K% (which always corrects exactly `keep_rate * N` groups regardless of the pscore
+distribution's shape).
+
+**Implementation:** new `top_energy_threshold` grouping strategy in
+`offload/policies/transmission/progressive.py` (`_precompute_group_assignments`), `--pscore-threshold`
+CLI plumbing in `refcoco_gqa_batched_eval.py`. Verified mechanically correct: on 8 real RefCOCO
+images, corrected-fraction varies 38.5-75.0% at a fixed threshold (vs `top_energy`'s always-identical
+fraction), confirming the mechanism behaves as designed.
+
+**nr=64 preliminary result (misleading -- see nr=400 below):** on a fixed set of 64 RefCOCO
+indices, at matched realized average keep-fraction (~33%), `top_energy_threshold` (threshold=800K)
+scored 87.50% (56/64, tying baseline exactly) vs fixed `top_energy` (kr=0.33) scoring only 79.69%
+(51/64) -- a striking +7.81pp gap that looked like strong confirmation of the hypothesis.
+
+**nr=400 confirmation run (same 400 indices, all 3 conditions) -- REVERSED the nr=64 result:**
+
+| condition | realized avg keep-fraction | Acc@0.5 (N=400) | gap vs baseline |
+|---|---|---|---|
+| baseline | -- | 86.00% (344) | -- |
+| `top_energy`, kr=0.33 (fixed) | 33% | 83.75% (335) | -2.25pp |
+| `top_energy_threshold`, 800K (variable) | 34.5% (realized, budgets fairly matched) | **82.00% (328)** | **-4.00pp** |
+
+At 6x the sample size and a fairly matched realized budget (34.5% vs 33%, if anything threshold used
+slightly MORE), threshold-based selection scored **1.75pp WORSE** than fixed top-K, not better --
+completely reversing the nr=64 signal. **Conclusion: the nr=64 preliminary result was a statistical
+fluke, not a real effect.** No evidence at nr=400 that absolute-threshold selection is more
+sample-efficient than top-K% for RefCOCO/32B at this budget level with this specific threshold value.
+This does not rule out the hypothesis holding at other threshold values, other budget levels, or other
+tasks/models -- but it means the specific comparison tested here does not support it, and further
+large-sample runs on this exact setup are not a good use of compute without a stronger prior. Task
+#57 is paused in this state pending user input on whether/how to continue (e.g. testing GQA instead
+of RefCOCO, a different threshold range, or a genuinely different pscore signal per task #56).
