@@ -159,10 +159,7 @@ def build_first_token_context(executor, encoder, raw_config, config, image_np, p
             else:
                 executor.correct_forward({"layers": (0, total_layers), "group_id": group_id}, context, config)
         with torch.no_grad():
-            x_full = context["llm_current_feature"]
-            hidden = executor.model.model.language_model.norm(x_full)
-            logits_last = executor.model.lm_head(hidden[:, -1, :].to(executor.model.lm_head.weight.dtype))
-            first_token = logits_last.argmax(dim=-1)
+            first_token = executor.decode_first_token(context["llm_current_feature"])
 
     return first_token, context
 

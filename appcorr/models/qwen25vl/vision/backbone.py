@@ -35,6 +35,7 @@ import torch.nn as nn
 
 from transformers.vision_utils import get_vision_cu_seqlens, get_vision_position_ids, get_vision_window_index
 
+from .attention import ApproxCorrectQwen25VLVisionAttention
 from .block import ApproxCorrectQwen25VLVisionBlock
 
 
@@ -77,18 +78,29 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
         emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
         position_embeddings = (emb.cos(), emb.sin())
 
+        cu_seqlens = cu_seqlens.to(device)
+        cu_window_seqlens = cu_window_seqlens.to(device)
+        # Precompute the `[(start, length), ...]` segment-range lists ONCE here (the only place
+        # that needs the `.tolist()` GPU->CPU sync) instead of once per layer per call -- a
+        # request's correction rounds drive `approx()`/`correct()` up to 32 times each (one per
+        # vision block), so this was previously a per-layer sync (up to 64x redundant per round).
+        cu_seqlens_ranges = ApproxCorrectQwen25VLVisionAttention._segment_ranges(cu_seqlens)
+        cu_window_seqlens_ranges = ApproxCorrectQwen25VLVisionAttention._segment_ranges(cu_window_seqlens)
+
         return {
             "hidden_states": hidden_states,
             "position_embeddings": position_embeddings,
-            "cu_seqlens": cu_seqlens.to(device),
-            "cu_window_seqlens": cu_window_seqlens.to(device),
+            "cu_seqlens": cu_seqlens,
+            "cu_window_seqlens": cu_window_seqlens,
+            "cu_seqlens_ranges": cu_seqlens_ranges,
+            "cu_window_seqlens_ranges": cu_window_seqlens_ranges,
             "window_index": window_index.to(device),
             "inv_window_index": inv_window_index.to(device),
             "seq_len": seq_len,
         }
 
-    def _cu_for_layer(self, layer_idx: int, ctx: Dict[str, Any]) -> torch.Tensor:
-        return ctx["cu_seqlens"] if layer_idx in self.fullatt_block_indexes else ctx["cu_window_seqlens"]
+    def _segments_for_layer(self, layer_idx: int, ctx: Dict[str, Any]):
+        return ctx["cu_seqlens_ranges"] if layer_idx in self.fullatt_block_indexes else ctx["cu_window_seqlens_ranges"]
 
     def approx_forward(
         self,
@@ -104,9 +116,9 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
         with no new scheduling code."""
         for i in range(start_l, end_l):
             blk = self.blocks[i]
-            cu_now = self._cu_for_layer(i, ctx)
+            segs_now = self._segments_for_layer(i, ctx)
             x_feature, cache_feature = blk.approx(
-                x_feature, cu_now, ctx["position_embeddings"], cache_feature, tag=f"{tag_prefix}_layer{i}"
+                x_feature, segs_now, ctx["position_embeddings"], cache_feature, tag=f"{tag_prefix}_layer{i}"
             )
         return x_feature, cache_feature
 
@@ -138,9 +150,9 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
 
         for i in range(start_l, end_l):
             blk = self.blocks[i]
-            cu_now = self._cu_for_layer(i, ctx)
+            segs_now = self._segments_for_layer(i, ctx)
             x_feature, cache_feature = blk.correct(
-                x_feature, token_idx, cu_now, position_embeddings_sel, cache_feature, tag=f"{tag_prefix}_layer{i}"
+                x_feature, token_idx, segs_now, position_embeddings_sel, cache_feature, tag=f"{tag_prefix}_layer{i}"
             )
         return x_feature, cache_feature
 

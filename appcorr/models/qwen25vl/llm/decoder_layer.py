@@ -121,6 +121,8 @@ class ApproxCorrectQwen25VLAttention(nn.Module):
         cos_sel: torch.Tensor = None,
         sin_sel: torch.Tensor = None,
         position_ids: torch.Tensor = None,
+        is_full_causal: bool = None,
+        attn_mask: torch.Tensor = None,
     ):
         """
         Args:
@@ -131,6 +133,11 @@ class ApproxCorrectQwen25VLAttention(nn.Module):
             cos_sel, sin_sel: pre-gathered, pre-interleaved (post mrope_section split) RoPE angles
                 for `token_idx`, `[1, Q, Dh]` each -- see module docstring. If not provided, computed
                 locally from `position_ids[:, :, token_idx]` (standalone/test use).
+            is_full_causal, attn_mask: pre-decided/pre-built once per correction round by the
+                caller (both are pure functions of `token_idx`/`N`, invariant across every layer in
+                the round) -- if not provided, computed locally (standalone/test use). Hoisting these
+                avoids a `bool(torch.equal(...))` GPU->CPU sync and an `[Q,N]` mask allocation on
+                every one of a round's up-to-64 layer calls.
         """
         kv = cache_feature[f"{tag}_kv"]  # [B, H_kv, N, 2, Dh]
         N = kv.shape[2]
@@ -163,15 +170,17 @@ class ApproxCorrectQwen25VLAttention(nn.Module):
         # single-round, 100%-corrected real run diverged from baseline on 2/20 samples even though
         # this is architecturally a full recomputation). Route the full-coverage case through the
         # same is_causal=True kernel stock uses, for exact kernel-path parity.
-        is_full_causal = Q == N and bool(torch.equal(token_idx, torch.arange(N, device=kv.device)))
+        if is_full_causal is None:
+            is_full_causal = Q == N and bool(torch.equal(token_idx, torch.arange(N, device=kv.device)))
         if is_full_causal:
             attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, is_causal=True)
         else:
-            key_positions = torch.arange(N, device=kv.device).view(1, N)
-            allowed = key_positions <= token_idx.view(Q, 1)  # [Q, N]
-            attn_mask = torch.zeros((Q, N), device=kv.device, dtype=q_new.dtype)
-            attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
-            attn_mask = attn_mask.view(1, 1, Q, N)
+            if attn_mask is None:
+                key_positions = torch.arange(N, device=kv.device).view(1, N)
+                allowed = key_positions <= token_idx.view(Q, 1)  # [Q, N]
+                attn_mask = torch.zeros((Q, N), device=kv.device, dtype=q_new.dtype)
+                attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
+                attn_mask = attn_mask.view(1, 1, Q, N)
             attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, attn_mask=attn_mask)
         attn_out = attn_out.transpose(1, 2).reshape(x_sel.shape[0], Q, self.num_heads * self.head_dim)
         return self.o_proj(attn_out), cache_feature
@@ -214,13 +223,16 @@ class ApproxCorrectQwen25VLDecoderLayer(nn.Module):
         cos_sel: torch.Tensor = None,
         sin_sel: torch.Tensor = None,
         position_ids: torch.Tensor = None,
+        is_full_causal: bool = None,
+        attn_mask: torch.Tensor = None,
     ):
         token_idx = token_idx.to(x.device)
         x_active = x[:, token_idx]
         x_norm_sel = self.input_layernorm(x_active)
 
         x_attn_sel, cache_feature = self.self_attn.correct(
-            x_norm_sel, token_idx, cache_feature, tag, cos_sel=cos_sel, sin_sel=sin_sel, position_ids=position_ids
+            x_norm_sel, token_idx, cache_feature, tag, cos_sel=cos_sel, sin_sel=sin_sel, position_ids=position_ids,
+            is_full_causal=is_full_causal, attn_mask=attn_mask,
         )
         x_attn_active = x_active + x_attn_sel
         mlp_out_new = self.mlp(self.post_attention_layernorm(x_attn_active))

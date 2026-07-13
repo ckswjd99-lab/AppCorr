@@ -72,6 +72,9 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
 
     @staticmethod
     def _segment_ranges(cu_seqlens: torch.Tensor):
+        """Kept as a standalone helper (used once by `backbone.py.prepare_full_tokens` to build the
+        segment-range lists cached in `ctx`) -- no longer called per-layer/per-call here, since that
+        required a GPU->CPU sync (`.tolist()`) on every one of a request's ~32-64 layer calls."""
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
         starts = cu_seqlens[:-1].tolist()
         return list(zip(starts, lengths))
@@ -84,20 +87,23 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
         out = F.scaled_dot_product_attention(q, k, v)
         return out.squeeze(0).transpose(0, 1)  # [T, H, Dh]
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, position_embeddings) -> torch.Tensor:
-        """Identical to stock forward -- used for plain (non approx/correct) validation."""
+    def forward(self, x: torch.Tensor, segment_ranges, position_embeddings) -> torch.Tensor:
+        """Identical to stock forward -- used for plain (non approx/correct) validation.
+        `segment_ranges`: precomputed `[(start, length), ...]` list (see backbone.py's
+        `prepare_full_tokens`), replacing what used to be a `cu_seqlens` tensor re-decoded via
+        `.tolist()` (a GPU->CPU sync) on every call."""
         seq_length = x.shape[0]
         q, k, v = self._qkv_heads(x)
         cos, sin = position_embeddings
         q, k = apply_rotary_pos_emb_vision(q, k, cos, sin)
         outs = []
-        for start, length in self._segment_ranges(cu_seqlens):
+        for start, length in segment_ranges:
             sl = slice(start, start + length)
             outs.append(self._sdpa_segment(q[sl], k[sl], v[sl]))
         out = torch.cat(outs, dim=0).reshape(seq_length, -1)
         return self.proj(out)
 
-    def approx(self, x: torch.Tensor, cu_seqlens: torch.Tensor, position_embeddings, cache_feature: Dict[str, Any], tag: str):
+    def approx(self, x: torch.Tensor, segment_ranges, position_embeddings, cache_feature: Dict[str, Any], tag: str):
         """Full attention over all T tokens (per-segment, per stock's own dispatch), caching raw K/V
         (post-RoPE) as `cache_feature[f"{tag}_kv"]`, shape [T, num_heads, 2, head_dim]."""
         seq_length = x.shape[0]
@@ -108,7 +114,7 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
         cache_feature[f"{tag}_kv"] = torch.stack([k, v], dim=2)  # [T, H, 2, Dh]
 
         outs = []
-        for start, length in self._segment_ranges(cu_seqlens):
+        for start, length in segment_ranges:
             sl = slice(start, start + length)
             outs.append(self._sdpa_segment(q[sl], k[sl], v[sl]))
         out = torch.cat(outs, dim=0).reshape(seq_length, -1)
@@ -119,7 +125,7 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
         self,
         x_sel: torch.Tensor,
         token_idx: torch.Tensor,
-        cu_seqlens: torch.Tensor,
+        segment_ranges,
         position_embeddings_sel,
         cache_feature: Dict[str, Any],
         tag: str,
@@ -129,9 +135,9 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
             x_sel: [Q, dim] -- norm1(x) already sliced to the query/corrected rows (Q rows, absolute
                 positions given by `token_idx`, in the WINDOW-PERMUTED sequence's row order).
             token_idx: [Q] long -- absolute row indices into the permuted sequence.
-            cu_seqlens: the segment boundaries (full-image or window, whichever this layer uses) for
-                the CURRENT permuted sequence -- used to figure out which cached-K/V segment each
-                query row's attention should be computed against.
+            segment_ranges: precomputed `[(start, length), ...]` list (full-image or window,
+                whichever this layer uses) for the CURRENT permuted sequence -- used to figure out
+                which cached-K/V segment each query row's attention should be computed against.
             position_embeddings_sel: (cos_sel, sin_sel) already gathered at `token_idx`.
         Returns:
             attn_out: [Q, dim] -- attention output for the query positions only (post proj).
@@ -149,7 +155,7 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
 
         Q = token_idx.shape[0]
         out = torch.zeros((Q, self.num_heads, self.head_dim), device=x_sel.device, dtype=q_new.dtype)
-        for start, length in self._segment_ranges(cu_seqlens):
+        for start, length in segment_ranges:
             seg_mask = (token_idx >= start) & (token_idx < start + length)
             if not bool(seg_mask.any()):
                 continue

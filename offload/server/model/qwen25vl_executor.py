@@ -60,11 +60,19 @@ class Qwen25VLExecutor(ModelExecutor):
         self.num_llm_layers = len(self.llm_layers)
         print(f"[Executor] Loaded. vision_layers={len(self.vision_tower.blocks)} llm_layers={self.num_llm_layers}")
 
-    def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
-        if isinstance(batch_data, torch.Tensor):
-            canvas = batch_data[0].cpu().numpy() if batch_data.ndim == 4 else batch_data.cpu().numpy()
+    def preprocess(self, reconstructed_canvas: Any, task: Task, context: Dict[str, Any], config: Any):
+        """`reconstructed_canvas` MUST be the image reconstructed from whatever patches the
+        transmission layer has decoded so far (blurred base + any arrived corrections) -- i.e.
+        exactly what `WorkerModule` builds via `policy.decode(patch_buffer, config, canvas=prev)`
+        (worker.py:177-188), NOT a raw/original-resolution image. This method has no way to detect
+        the difference (it will happily process a full-resolution image and produce plausible
+        `pixel_values`), which is exactly what let an earlier bug (a caller passing the raw image
+        for every keep_rate/approx group) go undetected until an approx-only accuracy sanity check
+        caught it -- see `refcoco_gqa_batched_eval.py`'s `build_first_token_context` docstring."""
+        if isinstance(reconstructed_canvas, torch.Tensor):
+            canvas = reconstructed_canvas[0].cpu().numpy() if reconstructed_canvas.ndim == 4 else reconstructed_canvas.cpu().numpy()
         else:
-            canvas = batch_data[0] if batch_data.ndim == 4 else batch_data
+            canvas = reconstructed_canvas[0] if reconstructed_canvas.ndim == 4 else reconstructed_canvas
         canvas = canvas.astype("uint8")
 
         proc_out = self.processor.image_processor(images=[canvas], return_tensors="pt")
@@ -189,14 +197,57 @@ class Qwen25VLExecutor(ModelExecutor):
         token_idx = torch.cat([context["permanent_group_idx"], image_token_positions]).unique()
 
         x_feature = context["llm_input_embeds"]
+
+        # RoPE hoist: compute the mrope-interleaved cos_sel/sin_sel ONCE per correction round
+        # instead of once per decoder layer (up to 64x redundant otherwise) -- valid because
+        # rotary_emb and mrope_section are shared across every layer (see
+        # `llm/decoder_layer.py`'s module docstring). `Qwen2_5_VLRotaryEmbedding.forward` only
+        # reads `x.dtype`/`x.device` from its first argument, so `x_feature` (not yet
+        # per-head-projected) is a valid stand-in for the per-layer `v_new` tensor it was
+        # previously called with.
+        first_attn = self.llm_layers[0].self_attn
+        position_ids_sel = context["position_ids"][:, :, token_idx]
+        cos_full, sin_full = first_attn.rotary_emb(x_feature, position_ids_sel)
+        mrope_section2 = first_attn.mrope_section * 2
+        cos_sel = torch.cat([m[i % 3] for i, m in enumerate(cos_full.split(mrope_section2, dim=-1))], dim=-1).unsqueeze(1)
+        sin_sel = torch.cat([m[i % 3] for i, m in enumerate(sin_full.split(mrope_section2, dim=-1))], dim=-1).unsqueeze(1)
+
+        # Causal-mask hoist: `is_full_causal`/`attn_mask` are pure functions of `token_idx` and the
+        # total sequence length N (invariant across every layer in this round), so decide/build them
+        # once here instead of once per decoder layer -- avoids a `bool(torch.equal(...))` GPU->CPU
+        # sync and an `[Q,N]` mask allocation up to 64x per round (see decoder_layer.py's docstring
+        # for why the is_causal=True fast path matters for kernel-path parity with stock).
+        N = context["position_ids"].shape[-1]
+        Q = token_idx.shape[0]
+        is_full_causal = Q == N and bool(torch.equal(token_idx, torch.arange(N, device=token_idx.device)))
+        attn_mask = None
+        if not is_full_causal:
+            key_positions = torch.arange(N, device=token_idx.device).view(1, N)
+            allowed = key_positions <= token_idx.view(Q, 1)
+            attn_mask = torch.zeros((Q, N), device=token_idx.device, dtype=x_feature.dtype)
+            attn_mask.masked_fill_(~allowed, torch.finfo(x_feature.dtype).min)
+            attn_mask = attn_mask.view(1, 1, Q, N)
+
         cache = context.get("llm_cache", {})
         for i in range(start_l, end_l):
             layer = self.llm_layers[i]
             x_feature, cache = layer.correct(
-                x_feature, token_idx, cache, tag=f"llm_layer{i}", position_ids=context["position_ids"]
+                x_feature, token_idx, cache, tag=f"llm_layer{i}", position_ids=context["position_ids"],
+                cos_sel=cos_sel, sin_sel=sin_sel, is_full_causal=is_full_causal, attn_mask=attn_mask,
             )
         context["llm_current_feature"] = x_feature
         context["llm_cache"] = cache
+
+    def decode_first_token(self, x_full: torch.Tensor) -> torch.Tensor:
+        """norm -> lm_head -> argmax on the final sequence position of a (possibly partially
+        corrected) LLM hidden state -- the single first-generated-token decode used by both
+        `head_inference` below and `analysis/experiments/refcoco_gqa_batched_eval.py`'s
+        `build_first_token_context`. Pulled into one place after an earlier bug where the two
+        copies silently diverged (one fed a raw canvas, the other a reconstructed one) went
+        undetected because the duplicated logic itself looked identical."""
+        hidden = self.model.model.language_model.norm(x_full)
+        logits_last = self.model.lm_head(hidden[:, -1, :].to(self.model.lm_head.weight.dtype))
+        return logits_last.argmax(dim=-1)
 
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
         """The FIRST generated token is decoded from the actual corrected/approx prefill state
@@ -210,10 +261,7 @@ class Qwen25VLExecutor(ModelExecutor):
         of scope for validating the core approx/correct mechanism, and RealWorldQA answers are
         short enough (1 letter to a few words) that this fallback's cost is bounded and does not
         change what the FIRST token (already fixed before the fallback runs) was."""
-        x_full = context.get("llm_current_feature")
-        hidden = self.model.model.language_model.norm(x_full)
-        logits_last = self.model.lm_head(hidden[:, -1, :].to(self.model.lm_head.weight.dtype))
-        first_token = logits_last.argmax(dim=-1)
+        first_token = self.decode_first_token(context.get("llm_current_feature"))
 
         if first_token.item() == self.processor.tokenizer.eos_token_id:
             answer_text = ""
