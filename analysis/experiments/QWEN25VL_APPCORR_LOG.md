@@ -481,7 +481,71 @@ as (a) and (b) above, now with a clean, model-free, directly-interpretable numbe
 alone; the remaining headroom is exactly what a query-conditioned score (task #56) would need to
 capture to meaningfully help.**
 
-**Design options for task #56, not yet implemented (design decision -- left for user input):**
+**(d) Full-dataset (N=8811) confirmation of (b)'s bracket sweep -- reverses AGAIN, in the OPPOSITE
+direction this time.** Per user request ("400 is still a small sample, just run it full"), re-ran
+threshold=500K and threshold=800K at full N=8811 (fixed budgets confirmed by CPU sampling: 46.35%
+and 34.52% respectively, matching nr=400's estimates closely):
+
+| condition | budget | Acc@0.5 (N=8811) | gap vs baseline | vs top_energy CURVE-INTERPOLATED expectation |
+|---|---|---|---|---|
+| baseline | -- | 85.75% (7555) | -- | -- |
+| `top_energy_threshold`, 800K | 34.52% | 82.01% (7226) | -3.74pp | interpolated top_energy@34.5% ~ -4.71pp -- threshold **~1.0pp BETTER** |
+| `top_energy_threshold`, 500K | 46.35% | 83.08% (7320) | -2.67pp | interpolated top_energy@46.35% ~ -2.72pp -- **essentially TIED** |
+
+At full-dataset scale, threshold=800K -- the point that looked CLEARLY WORSE at nr=400 (-1.75pp vs
+matched top_energy) -- now looks BETTER than the top_energy curve's interpolated expectation at the
+same budget. This is the SECOND time in this investigation that nr=400 gave a misleading signal that
+flipped at full scale (the first was the nr=64->nr=400 reversal in finding (a)/(b) above), this time
+in the opposite direction. **Lesson reinforced: nr=400 is not reliably precise enough for
+sub-2pp-scale comparisons on this task; only full-dataset numbers (or a matched-budget full-dataset
+control, not curve interpolation) should be trusted for close calls.** A matched-budget `top_energy`
+control at kr=0.4635 (exactly matching 500K's realized budget) was launched at full scale for the
+cleanest possible apples-to-apples read on the more interesting (tied-looking) comparison; a
+kr=0.3452 control was also queued but redirected to the attention-pscore diagnostic below once a
+sharper, higher-leverage finding emerged (see (e)) -- can be resumed if still useful.
+
+**(e) The real breakthrough: WHICH attention signal, not IF attention helps.** Per the user's
+correction that this investigation had been missing an already-validated pattern from this repo's
+DINOv3/OpenVLA/ImageNet work (commits `26384fa`/`46d1016`/`7a4eb55`/`1f33a1f`: fuse
+`mobile_pscore=residual_energy` with a `server_pscore` derived from the model's OWN attention,
+multiply-fused, thresholded -- validated there at +5-6pp accuracy and ~20% lower correction latency),
+re-ran the same AUC-vs-GT-bbox diagnostic from (c) but adding an attention-derived score. Qwen2.5-VL's
+vision tower has no CLS token (unlike DINOv3), so the CLS-less analogue is `patch_attn_prob`: mean
+attention MASS RECEIVED by each patch from all other patches (heads-mean, queries-mean) -- computed
+by manually replicating one block's attention math (norm1->qkv->RoPE->softmax(QK^T*scale), since
+`F.scaled_dot_product_attention` never exposes weights) off the side of the validated, unmodified
+`approx_forward` path (no fork files touched for this diagnostic). Tested all 4 full-attention layers
+individually plus DINOv3's default "layermean" (average across all 4):
+
+| signal | AUC (0.5=random, 1.0=perfect) |
+|---|---|
+| residual_energy alone (from (c)) | 0.5376 |
+| attention layer 7 alone | **0.5763** |
+| attention layer 15 alone | 0.5759 |
+| attention layer 23 alone | 0.5658 |
+| attention layer 31 alone | 0.5189 (WORSE than residual alone) |
+| attention LAYERMEAN (all 4, DINOv3's default recipe) | 0.5567 |
+| residual x attention LAYERMEAN (fused) | 0.5487 |
+
+**Early full-attention layers (7, 15) carry meaningfully more localization signal than late ones
+(31) for this task** -- layer 7 alone beats residual by +3.87pp AUC, clearly the best single signal
+found in this whole investigation. DINOv3's "layermean" default (averaging all 4 layers including
+the weak layer 31) actually DILUTES this -- layer 7 alone (0.5763) beats the 4-layer mean (0.5567).
+**Actionable recipe going forward: use early-layer (7 and/or 15) attention, not late-layer or a naive
+4-layer average, and prioritize this over further threshold-value tuning on pure residual.** This is
+a genuinely new, non-obvious finding (the opposite of "later layers are more semantic/better" prior
+one might have from other contexts) -- plausible explanation: by layer 31, Qwen2.5-VL's vision tower
+attention may have shifted from spatial/local saliency toward more abstract, less spatially-localized
+feature aggregation, whereas earlier layers are still closer to low-level visual saliency.
+**Full pipeline integration (real accuracy, not just AUC-vs-GT-bbox) is the natural next step**, but
+requires restructuring: the current group-assignment decision happens entirely CPU-side, BEFORE any
+GPU/model computation; using an attention-derived score requires computing it during the base/approx
+forward pass and feeding it back into the correction-group decision for the SAME request (a
+DINOv3/OpenVLA-style architectural pattern already validated elsewhere in this repo, not yet ported
+to the Qwen2.5-VL fork). In progress as of this log entry.
+
+**Design options for task #56 (query-CONDITIONED, i.e. text-aware, pscore) -- separate from (e)'s
+content-only attention signal, which doesn't look at the question/expression text at all:**
 1. **CLIP-based query-image relevance.** `laion/CLIP-ViT-bigG-14-laion2B-39B-b160k` is already
    cached locally (`/NHNHOME/huggingface/hub/models--laion--CLIP-ViT-bigG-14-laion2B-39B-b160k`,
    used by this repo's earlier `experiment/clip-appcorr` work) -- could compute per-merge-group
@@ -490,7 +554,9 @@ capture to meaningfully help.**
    weighing against a smaller CLIP variant (e.g. ViT-B/32) for a "cheap mobile-side score" role.
 2. **Reuse Qwen2.5-VL's own cross-attention**, if/where accessible cheaply (e.g. from the base/approx
    pass's already-computed features) instead of a separate model -- avoids a second model's memory
-   footprint but is architecturally more invasive and less obviously "cheap."
+   footprint but is architecturally more invasive and less obviously "cheap." Note: (e)'s early-layer
+   self-attention finding is a strong, VALIDATED, non-query-conditioned building block that could be
+   combined with a lightweight query-relevance term rather than replaced by one.
 3. **Lightweight heuristic hybrids** (e.g. combine residual energy with a coarse text-derived spatial
    prior, like color-word or size-word matching) -- fast and simple but likely too narrow/brittle to
    generalize past RefCOCO's specific phrasing patterns.
