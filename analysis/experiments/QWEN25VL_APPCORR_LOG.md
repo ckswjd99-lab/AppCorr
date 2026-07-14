@@ -755,3 +755,113 @@ near-random windowed-attention features appears to dilute/overfit rather than he
 CLI generalization itself is kept (useful infra), but the 9-layer weighted model is not adopted.
 **Conclusion for task #57: the 4-layer full-attention-only per-head model (val AUC 0.6195,
 held-out full-dataset accuracy 82.09%) remains the best pscore found in this investigation.**
+
+## 10. Task #56: query-CONDITIONED pscore via the LLM decoder's own text->image attention
+
+Per the design options recorded at the end of section 9, this implements design option 2 (reuse
+Qwen2.5-VL's own cross-attention) rather than a separate CLIP model: every signal tested in section
+9 (residual energy, vision-tower self-attention) is query-AGNOSTIC -- it produces the same score for
+a given image regardless of what question is actually being asked. The LLM decoder's own causal
+self-attention, once the real question is spliced into the sequence alongside the image tokens, is
+genuinely query-conditioned: which image tokens the question's text attends to changes with the text.
+
+**Implementation** (`qwen25vl_llm_attn_pscore_diagnostic.py`, new file; no changes to
+`appcorr/models/qwen25vl/llm/decoder_layer.py` or the executor): builds the REAL grounding prompt
+(not a placeholder) via the normal `preprocess`/`prepare_tokens` path so `input_ids`/`position_ids`
+reflect the genuine referring expression, runs vision to full depth + splice, then walks LLM layers
+0..max_candidate_layer via the validated `.approx()`, manually replicating each candidate layer's
+q/k/v projection + M-RoPE (`apply_multimodal_rotary_pos_emb`, GQA `repeat_kv`, both imported
+verbatim from the fork) to read off attention probabilities (`F.scaled_dot_product_attention` never
+exposes these, same reason as the vision-tower diagnostic). Query rows are restricted to text
+positions STRICTLY AFTER the image (the real question + assistant-prompt prefix -- positions before
+the image, e.g. a system prompt, are causally forbidden from seeing the image at all and would just
+dilute the average with structural zeros); the KEY set is kept FULL (all N causal positions, not
+just the image subset) so the softmax normalizes against the same denominator the model actually
+used, then the image-token columns are read off. Because `get_merged_output` already un-permutes to
+native merge-group order before splicing (see the `inv_window_index` un-permute in
+`backbone.py::get_merged_output`), `image_token_positions[g]` already corresponds directly to
+merge-group `g` -- no window/unit-index gymnastics needed here, unlike the vision-tower diagnostic.
+
+**Layer-mean AUC sweep** (nr=400, layers 0/16/32/48/63, spanning the 64-layer LLM decoder):
+
+| layer | AUC |
+|---|---|
+| 0 | 0.4607 |
+| 16 | 0.4878 |
+| **32** | 0.5586 |
+| **48** | **0.6242** (best single layer-mean signal in the entire investigation) |
+| 63 | 0.4671 |
+
+Layer 48's text->image attention clearly beats every vision-tower signal found in section 9 (best
+there: layer7's 0.5763). Sensible shape: early/late layers near-random (question understanding not
+yet formed / final layer over-specialized toward next-token prediction), peak in the back-middle.
+
+**First combination attempt (5 LLM layers + vision 4-layer-per-head, 70 features) -- val AUC=0.6425,
+looked like the best model yet, but FAILED downstream just like section 9's 9-layer variant.**
+Fitted coefficients revealed something unexpected: layer 48 (best ALONE) got a near-zero fitted
+coefficient (+0.0066), while layer 32 (weaker alone) got the single largest coefficient found in the
+whole investigation (+0.7593) -- a suppressor-variable pattern. Pipeline-tested on the SAME leaked
+400-image subset used for fitting (fair only against the 4-layer vision model's own equally-leaked
+number, 84.75%/339/400 -- see section 9(f)'s leakage-correction methodology, `[[feedback_check_train_eval_leakage_for_fitted_pscores]]`):
+**82.50% (330/400), mean_iou 0.7358 -- 2.25pp BELOW vision-only's own leaked number.** Same failure
+signature as the 9-layer vision variant: better AUC, worse real accuracy even on its own training
+images. **Abandoned without a full-dataset run.**
+
+**Isolating which LLM layer actually helps**: fit vision+llmattn_48-ONLY (no other LLM layers) --
+val AUC=0.6191, essentially IDENTICAL to vision-only's 0.6195 (coefficient +0.0203, rank 19th from
+bottom of 65 attention features by magnitude). **Layer 48's information is almost entirely redundant
+with what the 64 vision per-head features already capture** -- despite being the single best
+STANDALONE signal in the investigation, it adds nothing once combined. Then fit
+vision+llmattn_32-ONLY: val AUC=**0.6270**, a real (and, critically, PROPORTIONATE-looking, not a
+suspicious jump) +0.0075 improvement -- layer 32's weaker-alone signal is the genuinely
+COMPLEMENTARY one, not layer 48's stronger-alone one. Adding both 32+48 together only reaches
+0.6275, confirming 48 contributes almost nothing on top of 32.
+
+**vision+llmattn_32 (layer-mean) -- validated in the real pipeline, the best CONFIRMED result of
+this investigation:**
+
+| check | Acc@0.5 | mean_iou | vs vision-only's own equally-measured number |
+|---|---|---|---|
+| nr=64 (mostly-unseen, different stride) | 87.50% (56/64) | **0.7566** | tied on acc (87.50%/56 both), clearly better IoU (vs 0.7292) |
+| nr=400 (same leaked training images) | **85.00% (340/400)** | **0.7428** | +0.25pp acc (vs 84.75%/339), better IoU |
+
+Both independent checks (mostly-unseen nr=64, leaked-but-fairly-compared nr=400) point the same
+positive direction -- unlike every other multi-layer/multi-feature variant tried in this section, this
+one did not show the "great AUC, real regression" failure mode. Promoted to a full-dataset
+confirmation run (in progress / see below for result once landed).
+
+**Per-head LLM attention, applying the vision-side lesson (per
+`[[feedback_apply_validated_techniques_proactively]]` -- should have been done from the first LLM
+pass, not after being asked twice) -- another severe overfitting failure, worse than the 5-layer
+layer-mean attempt.** Collected per-head data for layers 32 and 48 (40 heads each, `--per-head`).
+Per-head AUC confirmed layer 48 has the same "hides both great and terrible heads" structure already
+seen in vision's layer 31: best individual head anywhere in the whole investigation is
+**layer48-head32, AUC=0.6747**, while layer48-head10 is 0.4497 (worse than random) -- a >0.22 AUC
+spread within one layer. Fit vision(64 heads)+llm-per-head(80 heads across layers 32/48) = 145
+features: val AUC=**0.7323**, by far the highest of any model fit in this investigation -- but with
+fitted coefficient magnitudes up to |3.80| (layer48 heads dominate: h17=+3.80, h29=-2.96, h6=+2.58,
+...), roughly 5x larger than anything seen before (prior max ~0.76). This size jump, on top of this
+exact investigation's now-repeated "great AUC does not imply real improvement" pattern, was flagged
+as suspicious BEFORE pipeline testing. Confirmed: nr=64 smoke test scored **84.38% (54/64), mean_iou
+0.7233** -- clearly below both vision-only (87.50%/0.7292) and the simple vision+llmattn_32-layer-mean
+model (87.50%/0.7566). **Abandoned without further testing.**
+
+**Working theory for why per-head LLM overfits so much more severely than per-head vision did**: the
+vision per-head win (section 9(f)) added 64 features from 4 layers (16 heads each) to a model that
+was previously using only 4 layer-mean features, on the SAME 400-image/280-training-image data
+pool -- already a large feature/image ratio, but it worked. Adding 80 MORE features (LLM heads from
+just 2 layers) on top pushes total feature count to 145 against only 280 training images -- past
+whatever implicit capacity the 70/30 image-level split's held-out AUC check can reliably certify.
+LLM attention may also be intrinsically noisier per-head than vision attention (GQA means many query
+heads share only 8 KV head "views" for the 32B model, vs vision's non-GQA one-K/V-per-head), giving
+more opportunity for individual heads to reflect request-specific idiosyncrasies of the 400-image
+pool rather than a generalizable pattern.
+
+**Conclusion for task #56, current best confirmed pscore in the whole investigation:**
+`residual_energy` (log1p) + vision 64-head-per-head (layers 7/15/23/31) + LLM layer 32's text->image
+attention (layer-mean, NOT per-head) -- `/tmp/attn_fused_vision_llm32only_model.npz`. Beats every
+purely-content pscore from section 9, confirming that query-conditioning (task #56's original goal)
+does add real, if modest, value on top of the best query-agnostic signal found -- but ONLY when kept
+to a small number of well-chosen, genuinely complementary features; every attempt to add more LLM
+signal (5 layers, or per-head decomposition of the 2 best layers) made things worse, not better,
+despite uniformly BETTER held-out AUC on the localization proxy task each time.

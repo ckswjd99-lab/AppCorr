@@ -55,6 +55,7 @@ from offload.server.model.qwen25vl_executor import Qwen25VLExecutor
 from analysis.experiments.refcoco_offload_eval import GROUNDING_PROMPT_TMPL, score_answer
 from analysis.experiments.refcoco_gqa_batched_eval import batched_generate_fallback
 from analysis.experiments.qwen25vl_attn_pscore_diagnostic import _manual_attention_received
+from analysis.experiments.qwen25vl_llm_attn_pscore_diagnostic import compute_llm_text_to_image_attention
 
 
 def parse_args():
@@ -81,10 +82,11 @@ def parse_args():
 
 
 class WeightedFusionModel:
-    """Loads a StandardScaler + logistic-regression fit over [log1p_residual, attn_L..., or
-    attn_L_hH...] (see the weight-fitting work in qwen25vl_attn_pscore_diagnostic.py) and applies
-    it as a fused score. Supports both layer-mean features (attn_<L>) and per-head features
-    (attn_<L>_h<H>) in the same fit, parsed from feature_order at load time."""
+    """Loads a StandardScaler + logistic-regression fit over [log1p_residual, attn_L...,
+    attn_L_hH..., or llmattn_L...] (see the weight-fitting work in
+    qwen25vl_attn_pscore_diagnostic.py / qwen25vl_llm_attn_pscore_diagnostic.py) and applies it as
+    a fused score. Supports vision layer-mean (attn_<L>), vision per-head (attn_<L>_h<H>), and LLM
+    text->image layer-mean (llmattn_<L>) features in the same fit, parsed from feature_order."""
 
     def __init__(self, npz_path):
         d = np.load(npz_path, allow_pickle=True)
@@ -94,10 +96,14 @@ class WeightedFusionModel:
         self.coef = d["coef"].astype(np.float64)
         intercept = d["intercept"]
         self.intercept = float(intercept.reshape(-1)[0])
-        self.attn_layers = set()       # layers needed as layer-mean (attn_<L>)
-        self.per_head_layers = set()   # layers needed with per-head breakdown (attn_<L>_h<H>)
+        self.attn_layers = set()       # vision layers needed as layer-mean (attn_<L>)
+        self.per_head_layers = set()   # vision layers needed with per-head breakdown (attn_<L>_h<H>)
+        self.llm_layers = set()        # LLM layers needed as layer-mean (llmattn_<L>)
         for name in self.feature_order:
             if name == "log1p_residual":
+                continue
+            if name.startswith("llmattn_"):
+                self.llm_layers.add(int(name.split("_")[1]))
                 continue
             parts = name.split("_")
             layer = int(parts[1])
@@ -106,15 +112,19 @@ class WeightedFusionModel:
             else:
                 self.per_head_layers.add(layer)
 
-    def score(self, residual, attn_by_layer, attn_by_layer_head=None):
-        """residual: np.array [N]. attn_by_layer: dict layer_idx -> np.array [N] (layer-mean,
-        native order, gathered per-patch). attn_by_layer_head: dict layer_idx -> np.array
-        [num_heads, N] (per-head, native order, gathered per-patch). Returns fused score
-        np.array [N] (higher = keep)."""
+    def score(self, residual, attn_by_layer, attn_by_layer_head=None, llm_attn_by_layer=None):
+        """residual: np.array [N]. attn_by_layer: dict layer_idx -> np.array [N] (vision
+        layer-mean, native order, gathered per-patch). attn_by_layer_head: dict layer_idx ->
+        np.array [num_heads, N] (vision per-head, native order, gathered per-patch).
+        llm_attn_by_layer: dict layer_idx -> np.array [N] (LLM text->image layer-mean, native
+        order, gathered per-patch). Returns fused score np.array [N] (higher = keep)."""
         feats = []
         for name in self.feature_order:
             if name == "log1p_residual":
                 feats.append(np.log1p(residual))
+                continue
+            if name.startswith("llmattn_"):
+                feats.append(llm_attn_by_layer[int(name.split("_")[1])])
                 continue
             parts = name.split("_")
             layer = int(parts[1])
@@ -220,17 +230,23 @@ def build_attn_fused_context(executor, encoder, raw_config, image_np, prompt, ke
         else:
             all_group1_patches = group_patches  # ALL merge-groups (keep_rate=1.0), not yet applied
 
-    # Attention score(s) from the JUST-COMPLETED approx pass (group 0's vision_ctx).
+    # Attention score(s) from the JUST-COMPLETED approx pass (group 0's vision_ctx / llm_input_embeds).
     if weighted_model is not None:
         with torch.no_grad():
             layer_mean_scores, per_head_scores = compute_all_attn_native_order(
                 executor, context["vision_ctx"], weighted_model.attn_layers,
                 weighted_model.per_head_layers, device)
+            llm_layer_scores = {}
+            if weighted_model.llm_layers:
+                llm_received = compute_llm_text_to_image_attention(
+                    executor, context, weighted_model.llm_layers, per_head=False)
+                llm_layer_scores = {l: v.cpu().numpy() for l, v in llm_received.items()}
         residual_arr = np.array([p.pscore_hint for p in all_group1_patches], dtype=np.float64)
         spatial_idxs = np.array([p.spatial_idx for p in all_group1_patches])
         attn_for_patches = {l: arr[spatial_idxs] for l, arr in layer_mean_scores.items()}
         attn_head_for_patches = {l: arr[:, spatial_idxs] for l, arr in per_head_scores.items()}
-        fused_scores = weighted_model.score(residual_arr, attn_for_patches, attn_head_for_patches)
+        llm_attn_for_patches = {l: arr[spatial_idxs] for l, arr in llm_layer_scores.items()}
+        fused_scores = weighted_model.score(residual_arr, attn_for_patches, attn_head_for_patches, llm_attn_for_patches)
         fused = list(zip(all_group1_patches, fused_scores))
     else:
         with torch.no_grad():
