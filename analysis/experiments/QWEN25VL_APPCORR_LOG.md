@@ -865,3 +865,22 @@ does add real, if modest, value on top of the best query-agnostic signal found -
 to a small number of well-chosen, genuinely complementary features; every attempt to add more LLM
 signal (5 layers, or per-head decomposition of the 2 best layers) made things worse, not better,
 despite uniformly BETTER held-out AUC on the localization proxy task each time.
+
+**Correction, mid-investigation: nr=64/nr=400 conclusions above for the two "abandoned" variants
+were premature.** The user caught this directly ("샘플은 sanity check로만 쓰고... 제대로 된 값은
+full eval만으로만 얻어라") after a further layer-mean fine-sweep found llmattn_36 (standalone
+AUC=0.6268) combines even better with vision than llmattn_32 -- val AUC=**0.6618** (vs 32's 0.6270),
+stable across C=0.01-100, non-extreme coefficient (max |0.72|). Its nr=64 result looked bad (84.38%,
+54/64, mean_iou 0.7376 -- below both vision-only and vision+llmattn_32), which would have been
+grounds to abandon it under this section's earlier (too-hasty) practice. **Its nr=400 (same leaked
+400 training images) result reversed positive: 85.25% (341/400), mean_iou 0.7535 -- BEATING
+vision+llmattn_32's own leaked nr=400 (85.00%/340, mean_iou 0.7428) and vision-only's (84.75%/339).**
+This is at least the fourth nr=64/nr=400-then-reversed instance in this investigation
+(`[[feedback_nr400_sanity_check_only]]`). Similarly, the 145-feature vision+LLM-per-head model
+(section above, val AUC=0.7323) was declared "abandoned without further testing" based on ONE
+nr=64 result (84.38%/54) -- also too hasty per the same standing rule. **Both models have now been
+queued for genuine full-dataset (N=8811) confirmation runs** (`visionllm36...`,
+`visionllmperhead_kr035_FULL` with `--log-jsonl` for a clean leaked/held-out split from a single
+run) rather than being written off on nr<=400 evidence. Results to follow once they land; this
+section's earlier "abandoned"/"conclusion" language for those two variants should be read as
+provisional, not final, until then.
