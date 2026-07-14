@@ -572,3 +572,100 @@ content-only attention signal, which doesn't look at the question/expression tex
 Threading the question/expression text through `encode()`/`ExperimentConfig` to reach
 `_compute_patch_pscore_hint` is required for any of these (currently not plumbed at all) --
 non-trivial but mechanical.
+
+**(e, resolved) Full pipeline integration of single-layer-7 attention-fused selection, at
+full-dataset scale.** Built `refcoco_attn_fused_eval.py`, which bypasses `progressive.py` entirely
+(no fork/shared-code changes): calls `encoder.encode(..., keep_rate=1.0)` so every merge-group gets a
+`Patch` with `pscore_hint` attached, processes the base/blurred group normally through
+`approx_forward` to get `vision_ctx`, reads off layer-7's `patch_attn_prob`-style attention-received
+score from that SAME pass (no extra forward needed), fuses via `fused = pscore_hint * attn_score`,
+ranks descending, and corrects only the top `keep_rate` fraction. An nr=400 smoke test initially
+looked like a THIRD reversal (fused lost to `top_energy` by -1.75pp) -- per the user's standing
+sanity-check-only rule for nr<=400 (see `[[feedback_nr400_sanity_check_only]]` memory), this was
+not trusted and a full-dataset (N=8811) run was launched instead:
+
+| condition | keep_rate | Acc@0.5 (N=8811) | mean_iou | gap vs baseline (85.75%) |
+|---|---|---|---|---|
+| `top_energy` (matched control) | 0.35 | 81.07% (7143) | -- | -4.68pp |
+| residual x layer-7-attention (fused) | 0.35 | **81.64% (7193)** | 0.7177 | -4.11pp |
+
+At full scale, single-layer-7 attention-fusion **beats matched top_energy by +0.57pp (50 samples)** --
+reversing the nr=400 result a THIRD time in this investigation (see the nr=400-is-sanity-check-only
+memory this pattern motivated). Modest but real, and directionally consistent with the AUC finding
+(layer 7 alone: 0.5763 vs residual alone: 0.5376).
+
+**(f) Weighted multi-layer combination -- does combining all 4 full-attention layers (not just layer
+7) do even better, and how should the weights be chosen?** Per the user's follow-up question, fit a
+`StandardScaler` + L2-regularized logistic regression over `[log1p(residual), attn_7, attn_15,
+attn_23, attn_31]` (5 features) on the nr=400 AUC-diagnostic data (145,776 merge-group rows, split
+70/30 BY IMAGE to avoid leakage across rows from the same picture). Val AUC=**0.5713**, beating
+layer-7-alone's AUC on the same val split (0.5516) and residual alone (0.5380) -- stable across
+C=0.01..1000. Notably layer 31 (the worst single-layer AUC, 0.5189) received a strong NEGATIVE
+fitted weight (-0.25 to -0.29) rather than simply ~0, i.e. the fit actively uses it as a
+disconfirming signal, not just discards it.
+
+Pipeline-integrated this (`WeightedFusionModel` class in `refcoco_attn_fused_eval.py`, loading a
+saved `StandardScaler`+logistic `.npz` and computing the fused score as the standardized linear
+combination, ranking descending by that pre-sigmoid score since sigmoid is monotonic) and ran
+full-dataset (N=8811, no nr=400/64 detour this time, per the standing rule):
+
+| condition | Acc@0.5 (N=8811) | mean_iou | gap vs baseline |
+|---|---|---|---|
+| layer-mean weighted (residual + attn_7/15/23/31, logistic, val AUC 0.5713) | 81.19% (7154) | 0.7162 | -4.56pp |
+
+**This UNDERPERFORMED single-layer-7 alone (81.64%) despite a better held-out AUC (0.5713 vs
+0.5516) -- yet another instance of the AUC-vs-downstream-accuracy disconnect seen repeatedly in this
+investigation.** The likely cause: layer 31's per-layer AUC (0.5189) hides enormous WITHIN-layer
+variance -- see below -- so folding it in at the whole-layer granularity, even with a fitted
+(negative) weight, still injects head-level noise the fit can't fully cancel out with one scalar per
+layer.
+
+**Per-head weighting, following the user's follow-up question ("attention differs per head too --
+can we weight individual heads?"):** extended `qwen25vl_attn_pscore_diagnostic.py --per-head` to keep
+the head dimension instead of collapsing it (`_manual_attention_received(..., collapse_heads=False)`
+returns `[num_heads, seq_len]`; DINOv3's `patch_attn_prob` mean-over-heads step is simply skipped),
+re-ran the nr=400 collection (16 heads x 4 layers = 64 attention features + residual = 65 total,
+145,776 rows, saved to `/tmp/qwen25vl_attn_perhead_data.npz`). Per-head AUC breakdown confirmed the
+within-layer-variance hypothesis directly:
+
+| | best | worst |
+|---|---|---|
+| layer 31 (whole-layer AUC 0.5189, WORST of the 4) | head 10: **0.5874** (top-5 overall) | head 4: **0.4248** (worse than random) |
+| layer 15 (whole-layer AUC 0.5759) | head 12: **0.6011** (best single feature found in this entire investigation) | -- |
+
+Layer 31's poor whole-layer AUC is explained: it contains both the single best-localizing individual
+head found anywhere in this investigation (head 10, AUC=0.5874) AND several heads worse than random
+(heads 4/12/14/1, AUC 0.42-0.49) -- averaging them together produces the mediocre 0.5189 layer
+score, discarding real signal in the process.
+
+Fit the same StandardScaler+logistic recipe over all 65 features (image-level 70/30 split, same as
+before): val AUC=**0.6195**, stable across C=0.01..100 -- a much larger jump over layer-mean's 0.5713
+than layer-mean's jump over residual-alone's 0.5376. Interestingly, **the residual feature's fitted
+coefficient nearly vanished (0.0024, refit on all 400 samples)** -- once per-head attention is
+available, the model finds almost no additional value in the pixel-residual signal at all.
+
+Pipeline-integrated (`compute_all_attn_native_order` in `refcoco_attn_fused_eval.py`, a single
+shared-prefix forward pass that captures per-head OR layer-mean attention as needed per layer,
+avoiding a redundant second pass; `WeightedFusionModel` extended to parse both `attn_<L>` and
+`attn_<L>_h<H>` feature names transparently) and run full-dataset (nr=64 smoke test first: 87.50%,
+56/64, mean_iou 0.7292 -- passed cleanly -- then straight to full per the standing rule):
+
+| condition | Acc@0.5 (N=8811) | mean_iou | gap vs baseline (85.75%) |
+|---|---|---|---|
+| `top_energy` (matched control, kr=0.35) | 81.07% (7143) | -- | -4.68pp |
+| single-layer-7 attention-fused | 81.64% (7193) | 0.7177 | -4.11pp |
+| layer-mean weighted (4 layers, logistic) | 81.19% (7154) | 0.7162 | -4.56pp |
+| **per-head weighted (65 features, logistic)** | **82.22% (7244)** | **0.7245** | **-3.53pp** |
+
+**Per-head weighting wins outright** -- +1.15pp over matched `top_energy`, +0.58pp over
+single-layer-7 alone, +1.03pp over layer-mean weighting, and the best `mean_iou` of any condition
+tested in this whole section. Two-part takeaway for task #57/#56:
+1. **Naive/logistic layer-level averaging can actively HURT vs. the single best layer**, even when
+   the fitted combination has a measurably better held-out AUC -- a layer's AUC is a lossy summary
+   that can hide a good head and several bad ones cancelling out, and one scalar weight per layer
+   cannot fully undo that once collapsed.
+2. **Going finer-grained (per-head) recovers this loss and then some**, because the optimizer can
+   down-weight specifically the bad heads within layer 31 (and elsewhere) instead of being forced to
+   either keep or discard the whole layer. This is the strongest attention-derived pscore signal
+   found in this entire investigation, and the first one to clear a full +1pp margin over matched
+   `top_energy` at full-dataset scale.
