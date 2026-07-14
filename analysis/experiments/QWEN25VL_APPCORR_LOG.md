@@ -915,3 +915,36 @@ signal at full-dataset scale, despite several promising-looking smaller-sample a
 `llmattn_36`'s full-dataset run and the 145-feature model's held-out-corrected result are still
 pending and will be the next data points on whether ANY query-conditioned variant can clear this
 bar.
+
+**145-feature vision+LLM-per-head model's full-dataset result CONFIRMS the overfitting suspicion --
+this one is a genuine, large, statistically-solid negative result, not nr<=400 noise.** Full run
+(with `--log-jsonl` for a clean single-run leaked/held-out split): **79.47% (7002/8811), mean_iou
+0.6933.** Splitting by the known leaked-400 indices:
+
+| subset | N | Acc@0.5 |
+|---|---|---|
+| leaked (own training images) | 400 | 80.25% (321) |
+| held-out | 8411 | **79.43% (6681)** |
+| vision-only 4-layer held-out (reference) | 8411 | 82.09% (6905) |
+| vision+llmattn_32 held-out (reference) | 8411 | 81.86% (6885) |
+
+**-2.66pp below vision-only, -2.43pp below vision+llmattn_32 -- confirmed at full N=8811, not a
+small-sample artifact.** Notably, even the LEAKED subset (80.25%) scores well below vision-only's
+own leaked number (84.75%) -- this model doesn't even fit its OWN training images well in terms of
+real downstream accuracy, despite the best held-out val AUC of the whole investigation (0.7323).
+**This is the clearest, most full-power confirmation in this investigation that a fitted score's
+AUC on the GT-bbox-overlap proxy task can be almost completely decoupled from real task accuracy**
+once feature count/coefficient magnitude gets large enough (145 features, max |coef|=3.80, ~280
+training images) -- unlike the vision+llmattn_32/llmattn_36 cases above where full-dataset
+confirmation was genuinely uncertain and worth checking, this one's negative nr=64 signal turned
+out to be a correct, if premature, early warning. **Definitively abandoned.**
+
+**Running tally of what full-dataset confirmation has actually validated in task #56:** of every
+LLM-attention-augmented variant tested so far (5-layer, 145-feature per-head, vision+llmattn_32),
+NONE has beaten vision-only 4-layer per-head (82.09% held-out) once taken to full-dataset scale --
+llmattn_36's full run is still pending and is the last remaining candidate. If it also fails to
+clear 82.09%, the honest conclusion for task #56 would be: this investigation has NOT yet found a
+query-conditioned signal that improves on the best query-agnostic (vision-only) one at full-dataset
+scale, despite several that looked promising on AUC, nr=64, and/or nr=400 alone -- a genuinely
+useful negative result (and a strong empirical case for the nr<=400-is-sanity-check-only /
+full-eval-only-is-real methodology the user has now reinforced twice this session).
