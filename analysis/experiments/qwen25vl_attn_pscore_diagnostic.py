@@ -51,6 +51,12 @@ def parse_args():
     p.add_argument("--num-samples", type=int, default=400)
     p.add_argument("--attn-layer", type=int, default=31, help="Which full-attention layer's Q/K to use "
                     "for the manual attention-weight readout (must be in fullatt_block_indexes).")
+    p.add_argument("--layers", type=int, nargs="+", default=None, help="Override which vision-tower "
+                    "block indices to extract attention-received from (default: the 4 full-attention "
+                    "layers, tower.fullatt_block_indexes). Layers NOT in fullatt_block_indexes use "
+                    "windowed (local, ~112px) attention instead of global -- _manual_attention_received "
+                    "already dispatches on this per-layer via vctx['cu_window_seqlens_ranges'], so any "
+                    "0-31 index works, it's just a genuinely different (local-only) signal for those.")
     p.add_argument("--save-npz", type=str, default=None,
                     help="If set, dump raw per-merge-group [image_idx, label, residual, attn_<layer>...] "
                          "rows to this .npz path for offline weight-fitting (e.g. logistic regression to "
@@ -140,7 +146,7 @@ def main():
     min_pixels, max_pixels = ip.size["shortest_edge"], ip.size["longest_edge"]
     factor = ip.patch_size * ip.merge_size * 4
     encoder = get_transmission(raw_config["transmission_policy_name"])
-    fullatt_layers = sorted(executor.vision_tower.fullatt_block_indexes)
+    fullatt_layers = sorted(args.layers) if args.layers is not None else sorted(executor.vision_tower.fullatt_block_indexes)
     num_heads = executor.vision_tower.blocks[fullatt_layers[0]].attn.num_heads
     per_layer_inside = {i: [] for i in fullatt_layers}
     per_layer_outside = {i: [] for i in fullatt_layers}

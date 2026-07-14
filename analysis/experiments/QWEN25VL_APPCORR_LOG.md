@@ -714,3 +714,44 @@ one used for evaluation, or (c) always report a held-out-only number (as compute
 full-dataset number for a FITTED (not fixed-formula) score. This is a distinct lesson from the
 existing nr=400-is-sanity-check-only memory (that one is about small-N noise; this one is about
 train/eval independence) and has been saved separately.
+
+**(g) ABANDONED: extending to windowed (non-full-attention) layers 0/1/2 and 29/30 -- negative
+result, not pursued further.** Per the user's follow-up ("earlier/later layers too?"), generalized
+`qwen25vl_attn_pscore_diagnostic.py --layers` to accept arbitrary block indices (not just
+`fullatt_block_indexes`) and collected per-head data for layers 0/1/2 (before layer 7) and 29/30
+(the two windowed layers immediately before the final full-attention layer 31), same 400 images:
+
+| layer | whole-layer AUC | best head AUC |
+|---|---|---|
+| 0 | 0.4887 (worse than random) | layer0 h7: 0.5138 |
+| 1 | 0.5000 | layer1 h3: 0.5249 |
+| 2 | 0.5044 | layer2 h10: 0.5305 |
+| 29 | 0.4975 | layer29 h7: 0.5354 |
+| 30 | 0.4927 | layer30 h14: 0.5361 |
+
+All five are near-random (0.48-0.53), well below any of the four full-attention layers (best:
+layer7=0.5763). **Architectural explanation, not a depth-direction effect**: layers 0/1/2/29/30 all
+use WINDOWED (local ~112px) attention, not global -- `patch_attn_prob` there only reflects
+within-window structure, which carries little information about whether a patch is inside a
+GLOBAL referring-expression bbox. The earlier "early full-attention layers beat late ones" finding
+(e) was about attention SCOPE (global vs local) more than raw depth, now confirmed by this negative
+result: going earlier/later in depth doesn't help once you leave the four global-attention layers.
+
+Merged all 9 layers (0,1,2,7,15,23,29,30,31) x 16 heads = 145 features (with residual) and refit:
+val AUC=**0.6247**, only +0.0052 over the 4-layer-only model's 0.6195 -- a much smaller jump than
+4-layer's own +0.048 jump over layer-mean. Interesting asymmetry in the fitted coefficients even
+though individual AUCs were all near-random: layers 29/30 got fitted weight magnitudes comparable
+to the full-attention layers (Sigma|coef|: layer29=0.674, layer30=0.925, vs layer31=1.123), while
+layers 0/1/2 got much smaller weights (0.175-0.270) -- the network's TAIL (windowed or not) still
+carries some usable combination-level signal, the network's FRONT does not.
+
+Pipeline-tested (nr=64 smoke: 76.56%, 49/64, mean_iou 0.7022 -- an 11pp drop from the 4-layer
+model's nr=64 result of 87.50%; nr=400 same-leaked-subset check: 83.25%, 333/400, mean_iou 0.7380
+-- still 1.5pp BELOW the 4-layer model's own same-leaked-subset number of 84.75%, i.e. even on its
+own "home" training images the 9-layer model underperforms the simpler 4-layer model). Three
+independent signals (marginal AUC gain, large nr=64 drop, worse-than-4-layer even on leaked data)
+all point the same direction: **abandoned without a full-dataset run** -- feature bloat from ~80
+near-random windowed-attention features appears to dilute/overfit rather than help. The `--layers`
+CLI generalization itself is kept (useful infra), but the 9-layer weighted model is not adopted.
+**Conclusion for task #57: the 4-layer full-attention-only per-head model (val AUC 0.6195,
+held-out full-dataset accuracy 82.09%) remains the best pscore found in this investigation.**
