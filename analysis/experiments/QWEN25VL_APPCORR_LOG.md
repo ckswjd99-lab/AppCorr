@@ -669,3 +669,48 @@ tested in this whole section. Two-part takeaway for task #57/#56:
    either keep or discard the whole layer. This is the strongest attention-derived pscore signal
    found in this entire investigation, and the first one to clear a full +1pp margin over matched
    `top_energy` at full-dataset scale.
+
+**(f, correction) Train/eval image leakage check -- the 82.22% headline above is CONTAMINATED.**
+Per the user's question ("was there any cheating in the training process?"): both weighted models
+(layer-mean and per-head) were fit on the SAME 400-image nr=400 diagnostic subsample
+(`indices = list(range(0, n_total, stride))[:400]`), and the `--full` pipeline eval runs on
+`range(n_total)` -- i.e. **all 400 fitting images are a strict subset of the 8811-image full-dataset
+eval set** (verified: 400/400 overlap). The fitted weights had literally seen (via
+`_manual_attention_received`/residual features, at the merge-group level, for the GT-bbox
+localization objective) every one of those 400 images before being scored on them again as part of
+"full-dataset accuracy."
+
+Measured the effect directly: re-ran the per-head weighted model on ONLY those same 400 training
+indices (`leakage_check_perhead_trainset`, nr=400 but the trained-on 400, not a fresh sample):
+
+| subset | N | Acc@0.5 |
+|---|---|---|
+| training images (leaked) | 400 | **84.75%** (339) |
+| held-out images (`full - training`, clean) | 8411 | **82.09%** (6905) |
+| full (contaminated headline) | 8811 | 82.22% (7244) |
+
+**The leaked subset scores +2.66pp higher than the true held-out estimate -- real, measurable
+overfitting/leakage, not noise.** Correcting for it:
+
+| condition | Acc@0.5 | vs top_energy | vs single-layer-7 |
+|---|---|---|---|
+| `top_energy` (clean, no fitting at all) | 81.07% | -- | -0.57pp |
+| single-layer-7 (clean, fixed formula, no fitting) | 81.64% | +0.57pp | -- |
+| per-head weighted, **held-out-corrected** | **82.09%** | **+1.02pp** | **+0.45pp** |
+| per-head weighted, contaminated headline (WRONG) | ~~82.22%~~ | ~~+1.15pp~~ | ~~+0.58pp~~ |
+
+**The core finding survives but is smaller than first reported**: per-head weighting still beats
+both clean baselines on a genuinely held-out N=8411, but the margin over single-layer-7 shrinks from
++0.58pp to +0.45pp -- real at this sample size, but modest. The layer-mean weighted result (81.19%)
+has the identical leakage exposure (same 400 fitting images, same `--full` overlap) and was NOT
+re-measured this way, but since leakage only inflates, its true held-out number is likely <=81.19%,
+i.e. its underperformance vs single-layer-7 (finding (f) point 1 above) is unaffected or reinforced,
+not reversed, by this correction.
+
+**Root cause and fix for any future weight-fitting in this investigation:** the nr=400 diagnostic
+subsample and any `--full` evaluation of a model fit on it are NOT independent -- either (a) exclude
+the fitting indices from the eval index set, or (b) fit on a disjoint stride/split of images from the
+one used for evaluation, or (c) always report a held-out-only number (as computed here) alongside any
+full-dataset number for a FITTED (not fixed-formula) score. This is a distinct lesson from the
+existing nr=400-is-sanity-check-only memory (that one is about small-N noise; this one is about
+train/eval independence) and has been saved separately.
