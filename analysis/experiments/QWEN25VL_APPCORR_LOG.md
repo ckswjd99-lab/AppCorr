@@ -884,3 +884,34 @@ queued for genuine full-dataset (N=8811) confirmation runs** (`visionllm36...`,
 run) rather than being written off on nr<=400 evidence. Results to follow once they land; this
 section's earlier "abandoned"/"conclusion" language for those two variants should be read as
 provisional, not final, until then.
+
+**vision+llmattn_32 FULL-DATASET result lands -- a FIFTH reversal, this time from TWO independent
+positive small-sample signals to a negative full-dataset one.** Both nr=64 (tied accuracy with
+vision-only, clearly better mean_iou: 0.7566 vs 0.7292) and nr=400-leaked (85.00%/340 vs
+vision-only's own leaked 84.75%/339) pointed positive. The full run: **82.00% (7225/8811),
+mean_iou 0.7198.**
+
+| condition | Acc@0.5 | held-out (N=8411) |
+|---|---|---|
+| top_energy | 81.07% (7143/8811) | -- |
+| single-layer-7 (fixed formula, no leakage risk) | 81.64% (7193/8811) | -- |
+| vision-only 4-layer per-head | 82.22% (7244/8811, contaminated) | **82.09%** (6905/8411) |
+| vision+llmattn_32 | 82.00% (7225/8811, contaminated) | **81.86%** (6885/8411) |
+
+**vision+llmattn_32 is actually SLIGHTLY WORSE than vision-only, both in the raw contaminated
+comparison (-0.22pp) and held-out (-0.24pp)** -- reversing what BOTH smaller-sample checks
+indicated. It still clearly beats the older single-layer-7 (+0.36pp) and top_energy (+0.93pp)
+baselines, so query-conditioning is not actively harmful relative to the pre-per-head-vision
+baselines -- but the specific claim "adding llmattn_32 improves on the already-strong 4-layer
+vision model" does NOT survive full-dataset confirmation. **This is the most striking instance yet
+of the nr<=400-unreliability lesson in this investigation**: not a single nr=64-then-nr=400 flip
+(as in the llmattn_36 case above) but TWO independently-passing small-sample checks (nr=64 AND
+nr=400-leaked) both pointing the same wrong direction, only caught by going all the way to
+N=8811. Updated per the user's explicit correction to this section's methodology --
+**the actual current best-CONFIRMED pscore in this investigation remains the vision-only 4-layer
+per-head model (82.09% held-out)**, not vision+llmattn_32; query-conditioning via the LLM decoder's
+text->image attention has not yet been shown to improve on the best query-agnostic (vision-only)
+signal at full-dataset scale, despite several promising-looking smaller-sample and AUC signals.
+`llmattn_36`'s full-dataset run and the 145-feature model's held-out-corrected result are still
+pending and will be the next data points on whether ANY query-conditioned variant can clear this
+bar.
