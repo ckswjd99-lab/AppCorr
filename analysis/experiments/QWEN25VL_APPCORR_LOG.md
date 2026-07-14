@@ -948,3 +948,36 @@ query-conditioned signal that improves on the best query-agnostic (vision-only) 
 scale, despite several that looked promising on AUC, nr=64, and/or nr=400 alone -- a genuinely
 useful negative result (and a strong empirical case for the nr<=400-is-sanity-check-only /
 full-eval-only-is-real methodology the user has now reinforced twice this session).
+
+**vision+llmattn_36 FULL-DATASET result lands: 82.68% (7285/8811), mean_iou 0.7290 -- HEADLINE
+FINDING for task #56, the first query-conditioned pscore confirmed to beat the best query-agnostic
+one, at full N=8811 scale.** Held-out (subtracting its known leaked 341/400):
+
+| condition | held-out (N=8411) | vs vision+llmattn_36 |
+|---|---|---|
+| top_energy (raw, N=8811, no leakage) | -- | +1.61pp (raw vs raw) |
+| single-layer-7 (raw, N=8811, no leakage) | -- | +1.04pp (raw vs raw) |
+| vision-only 4-layer per-head | 82.09% (6905/8411) | +0.46pp |
+| vision+llmattn_32 | 81.86% (6885/8411) | +0.70pp |
+| **vision+llmattn_36** | **82.56% (6944/8411)** | -- |
+
+This landed after its own nr=64 check was clearly NEGATIVE (84.38%/54, mean_iou 0.7376, worse than
+both vision-only and vision+llmattn_32), which reversed positive at nr=400-leaked (85.25%/341,
+beating both), and now clears full-dataset held-out too -- the single cleanest illustration in this
+entire investigation of why the nr<=400-is-sanity-check-only rule matters: at nr=64 this looked like
+the worst variant tried; at full scale it is the best.
+
+**Definitive conclusion for task #56:** `residual_energy` (log1p) + vision 64-head-per-head (layers
+7/15/23/31, layer-mean AND per-head as appropriate) + LLM layer 36's text->image attention
+(layer-mean only, NOT per-head -- per-head LLM attention was tried and catastrophically overfit, see
+above) is the best-confirmed pscore in this entire investigation --
+`/tmp/attn_fused_vision_llm36only_model.npz`. It beats every purely-content-based signal from
+section 9 and every other LLM-augmented variant tried in this section, confirming query-conditioning
+via the LLM decoder's own causal self-attention CAN add real value on top of the best query-agnostic
+signal -- but only with a single, carefully-chosen, moderate-depth layer (36 of 64, layer-mean), not
+with more layers, not with the best-standalone-AUC layer (48, which turned out redundant with
+vision), and not with per-head decomposition of that layer (which overfit as badly as it did for the
+5-layer/145-feature attempts). The margin is modest (+0.46pp over vision-only) but real, and is the
+first genuinely positive result task #56 has produced after several false starts -- fitting given
+this was originally scoped as an open, uncertain exploration (design options listed at the end of
+section 9), not a guaranteed win.
