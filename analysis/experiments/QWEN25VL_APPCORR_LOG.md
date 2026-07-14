@@ -504,6 +504,15 @@ cleanest possible apples-to-apples read on the more interesting (tied-looking) c
 kr=0.3452 control was also queued but redirected to the attention-pscore diagnostic below once a
 sharper, higher-leverage finding emerged (see (e)) -- can be resumed if still useful.
 
+**(d, resolved) The matched-budget `top_energy` kr=0.4635 full-dataset control landed: 83.00%
+(7313/8811), -2.75pp.** Direct, no-interpolation comparison against threshold=500K's 83.08%
+(7320/8811), -2.67pp: a **+0.08pp difference (7 samples out of 8811) -- a dead tie**, mean_iou also
+essentially identical (0.7351 vs 0.7346). The nr=400 result that suggested threshold had a real
++0.50pp edge here shrinks to statistical noise at full scale. **Final verdict for (b)/(d) together:
+pure-residual threshold-based selection and fixed top-K% are equivalent in practice at this budget
+level** -- neither clearly better, consistent with the AUC=0.5376 finding (c) that the underlying
+residual-energy score itself, not the selection RULE built on top of it, is the limiting factor.
+
 **(e) The real breakthrough: WHICH attention signal, not IF attention helps.** Per the user's
 correction that this investigation had been missing an already-validated pattern from this repo's
 DINOv3/OpenVLA/ImageNet work (commits `26384fa`/`46d1016`/`7a4eb55`/`1f33a1f`: fuse
