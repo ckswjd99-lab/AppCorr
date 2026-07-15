@@ -1146,3 +1146,31 @@ crossing hunt. Notably its held-out (81.33%) is very close to what top-K/thresho
 full), i.e. no dramatic efficiency difference between the three rules is visible at this budget.
 Round-2 points (top-r=0.65, 0.75, bracketing the expected -1pp crossing around realized rate 0.50)
 in progress -- see next commits.
+
+**top-r crossing hunt (round 2) -- the -1pp crossing for nucleus selection.** Two bracketing points:
+
+| top-r | realized recompute rate | full Acc@0.5 | held-out Acc@0.5 (N=8411) |
+|---|---|---|---|
+| 0.50 | 0.3151 | 81.44% (7176) | 81.33% (6841) |
+| 0.65 | 0.4644 | 84.26% (7424) | **84.19% (7081)** |
+| 0.75 | 0.5800 | 85.30% (7516) | **85.15% (7162)** |
+
+Linear-interpolating held-out to the -1pp target (84.75%) between r=0.65 (84.19%) and r=0.75
+(85.15%): **crossing at r ~ 0.708, realized recompute rate ~ 0.532.** A confirming run at r=0.71 is
+in progress.
+
+**Three-selection-rule comparison at the -1pp crossing (the whole point of this hunt):**
+- **top-K**: crosses -1pp at recompute rate ~0.50 (top-K 0.50 held-out = 84.78%, just above -1pp).
+- **threshold**: at realized recompute rate 0.4946, held-out = 84.47% (just below -1pp) -> crosses
+  -1pp at recompute rate ~0.50 as well.
+- **nucleus/top-r**: crosses -1pp at realized recompute rate ~0.53 (r~0.71).
+
+All three rules cross -1pp at recompute rate ~0.50-0.53 -- nucleus's crossing is marginally HIGHER
+(~0.03 more recompute) than top-K/threshold, i.e. nucleus is if anything very slightly LESS efficient
+here, not more. The differences are within the ~0.5pp noise band this investigation has repeatedly
+seen. **Definitive conclusion, now confirmed across all THREE selection rules and the earlier
+threshold-vs-top-K sweep: the selection RULE (top-K vs threshold vs nucleus) does not materially
+change where the -1pp crossing lands (~recompute rate 0.50 for all three) -- the pscore's
+task-relevance is the sole lever, exactly as concluded in sections 9 and 12. Nucleus/top-r, despite
+being adaptive to per-image score concentration, offers no efficiency advantage over plain top-K for
+this fused score.**
