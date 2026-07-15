@@ -61,14 +61,26 @@ from analysis.experiments.qwen25vl_llm_attn_pscore_diagnostic import compute_llm
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--config", type=str, default="offload/config/realworldqa_qwen25vl_32b_interleaved_g4.json")
-    p.add_argument("--keep-rate", type=float, default=None, help="Fraction of merge-groups to correct "
-                    "(fixed-count top-K by fused score). Exactly one of --keep-rate/--threshold required.")
+    p.add_argument("--recompute-rate", "--keep-rate", type=float, default=None, dest="keep_rate",
+                    help="RECOMPUTE RATE: fraction of merge-groups to correct (fixed-count top-K by "
+                    "fused score). --keep-rate is a deprecated alias for the same thing (the framework's "
+                    "'keep' naming is confusing -- it is the fraction RECOMPUTED/corrected, not kept "
+                    "stale). Exactly one of --recompute-rate/--threshold/--top-r required.")
     p.add_argument("--threshold", type=float, default=None, help="Absolute cutoff on the fused score "
                     "(itself a WeightedFusionModel logistic decision-function value, NOT a probability) "
-                    "-- correct every merge-group scoring >= this, so the realized keep-fraction varies "
+                    "-- correct every merge-group scoring >= this, so the realized recompute rate varies "
                     "per image (mirrors top_energy_threshold's semantics in progressive.py, but computed "
                     "on the fused vision+LLM score instead of pure CPU residual energy). Requires "
-                    "--weighted-model. Exactly one of --keep-rate/--threshold required.")
+                    "--weighted-model. Exactly one of --recompute-rate/--threshold/--top-r required.")
+    p.add_argument("--top-r", type=float, default=None, help="Nucleus/top-r selection on the fused "
+                    "score's LOGISTIC PROBABILITIES (sigmoid of the decision function): rank patches by "
+                    "score descending, accumulate their probability mass, and correct the top patches "
+                    "until the cumulative mass reaches fraction r of the image's TOTAL probability mass "
+                    "(0<r<=1). Unlike top-K (fixed patch COUNT) or threshold (fixed absolute cutoff), "
+                    "top-r keeps a fixed fraction of predicted-correction-probability MASS, so it adapts "
+                    "the per-image recompute rate to how concentrated the scores are. Requires "
+                    "--weighted-model (needs real logistic probabilities, not just the ranking). "
+                    "Exactly one of --recompute-rate/--threshold/--top-r required.")
     p.add_argument("--attn-layers", type=int, nargs="+", default=[7], help="Full-attention layer index/indices "
                     "to use for the attention score (mean if multiple). Default: layer 7 alone (best single-layer "
                     "AUC found in qwen25vl_attn_pscore_diagnostic.py).")
@@ -204,7 +216,7 @@ def compute_all_attn_native_order(executor, vctx, layer_mean_layers, per_head_la
 
 
 def build_attn_fused_context(executor, encoder, raw_config, image_np, prompt, keep_rate, attn_layers, device,
-                              weighted_model=None, threshold=None):
+                              weighted_model=None, threshold=None, top_r=None):
     """Mirrors refcoco_gqa_batched_eval.py's build_first_token_context, but selects the corrected
     merge-groups by (residual x attention) fused score instead of pure top_energy."""
     image_config = dict(raw_config)
@@ -261,6 +273,18 @@ def build_attn_fused_context(executor, encoder, raw_config, image_np, prompt, ke
     fused.sort(key=lambda t: t[1], reverse=True)
     if threshold is not None:
         selected = [p for p, s in fused if s >= threshold]
+    elif top_r is not None:
+        # Nucleus/top-r on logistic probabilities: keep top-scored patches until their cumulative
+        # probability mass reaches r * (total probability mass). Scores are already sorted desc, and
+        # sigmoid is monotonic so score-desc == prob-desc.
+        probs = 1.0 / (1.0 + np.exp(-np.array([s for _, s in fused], dtype=np.float64)))
+        total = probs.sum()
+        target = top_r * total
+        cum = np.cumsum(probs)
+        # smallest prefix whose cumulative mass reaches the target; always keep >=1 if any patches.
+        keep_n = int(np.searchsorted(cum, target, side="left")) + 1
+        keep_n = min(max(keep_n, 1), len(fused))
+        selected = [p for p, _ in fused[:keep_n]]
     else:
         keep_n = int(round(keep_rate * len(fused)))
         selected = [p for p, _ in fused[:keep_n]]
@@ -281,22 +305,33 @@ def build_attn_fused_context(executor, encoder, raw_config, image_np, prompt, ke
 
 def main():
     args = parse_args()
-    if (args.keep_rate is None) == (args.threshold is None):
-        raise ValueError("Exactly one of --keep-rate/--threshold is required.")
-    if args.threshold is not None and args.weighted_model is None:
-        raise ValueError("--threshold requires --weighted-model (the fused score it cuts on).")
+    n_modes = sum(x is not None for x in (args.keep_rate, args.threshold, args.top_r))
+    if n_modes != 1:
+        raise ValueError("Exactly one of --recompute-rate/--threshold/--top-r is required.")
+    if (args.threshold is not None or args.top_r is not None) and args.weighted_model is None:
+        raise ValueError("--threshold/--top-r require --weighted-model (the fused score they operate on).")
     with open(args.config, "r", encoding="utf-8") as f:
         raw_config = json.load(f)
     raw_config["batch_size"] = 1
     raw_config["device"] = args.device
-    label = args.label or (f"attnfused_thr{args.threshold}" if args.threshold is not None else f"attnfused_kr{args.keep_rate}")
+    if args.threshold is not None:
+        label = args.label or f"attnfused_thr{args.threshold}"
+    elif args.top_r is not None:
+        label = args.label or f"attnfused_topr{args.top_r}"
+    else:
+        label = args.label or f"attnfused_rr{args.keep_rate}"
 
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
     from datasets import load_dataset
     from PIL import Image
 
     weighted_model = WeightedFusionModel(args.weighted_model) if args.weighted_model else None
-    budget_desc = f"threshold={args.threshold}" if args.threshold is not None else f"keep_rate={args.keep_rate}"
+    if args.threshold is not None:
+        budget_desc = f"threshold={args.threshold}"
+    elif args.top_r is not None:
+        budget_desc = f"top_r={args.top_r}"
+    else:
+        budget_desc = f"recompute_rate={args.keep_rate}"
     if weighted_model is not None:
         print(f"[attnfused] === Run: {label} === {budget_desc} "
               f"weighted_model={args.weighted_model} (layers={weighted_model.attn_layers})")
@@ -363,7 +398,7 @@ def main():
                 acc = 100.0 * correct / processed
                 print(f"    [{processed}/{len(indices)}] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} "
                       f"pred={pred_text[:50]!r} correct={ok} running_acc={acc:.2f}% mean_iou={iou_sum/processed:.3f} "
-                      f"mean_keep_frac={keep_frac_sum/processed:.4f} elapsed={time.time()-t_start:.0f}s")
+                      f"mean_recompute_rate={keep_frac_sum/processed:.4f} elapsed={time.time()-t_start:.0f}s")
                 sys.stdout.flush()
         batch_items.clear()
         batch_meta.clear()
@@ -372,7 +407,7 @@ def main():
         image_np, prompt, gt, grid_hw = load_example(idx)
         first_token, context, keep_frac = build_attn_fused_context(
             executor, encoder, raw_config, image_np, prompt, args.keep_rate, args.attn_layers, args.device,
-            weighted_model=weighted_model, threshold=args.threshold)
+            weighted_model=weighted_model, threshold=args.threshold, top_r=args.top_r)
         batch_items.append({"input_ids": context["input_ids"], "first_token": first_token,
                              "pixel_values": context["pixel_values"], "image_grid_thw": context["image_grid_thw"]})
         batch_meta.append((idx, gt, grid_hw, keep_frac))
@@ -387,7 +422,7 @@ def main():
     print(f"\n[attnfused] === Summary: {label} ===")
     print(f"    samples: {processed}")
     print(f"    accuracy@0.5: {acc:.2f}%  ({correct}/{processed})  mean_iou: {iou_sum/max(processed,1):.4f}")
-    print(f"    mean realized keep_frac: {keep_frac_sum/max(processed,1):.4f}")
+    print(f"    mean realized recompute_rate: {keep_frac_sum/max(processed,1):.4f}")
     print(f"    total wall time: {total_wall:.1f}s ({total_wall/max(processed,1):.2f}s/sample avg)")
 
 
