@@ -153,19 +153,38 @@ def llm_decoder_flops(q_c, n_llm, arch: LLMArch):
     return arch.depth * llm_layer_flops(q_c, n_llm, arch)
 
 
-def correct_forward_flops(kr, rounds, n_v_raw, n_merge_groups, n_llm, text_tokens, v_arch, l_arch):
+def correct_forward_flops(kr, rounds, n_v_raw, n_merge_groups, n_llm, text_tokens, v_arch, l_arch,
+                           repeat_text=True):
     """Total correct_forward FLOPs for a given keep_rate, split evenly across `rounds`
     interleaved correction rounds (rounds=1 == single-shot, the original behavior).
+
+    repeat_text=True (the real current implementation): every round's token_idx includes the
+    full permanent group (text_tokens), matching `executor.correct_forward`'s
+    `token_idx = cat([permanent_group_idx, image_token_positions]).unique()` -- the text tokens'
+    hidden states are re-corrected every round so they reflect whichever image tokens have
+    arrived so far.
+
+    repeat_text=False (an UNIMPLEMENTED optimization, modeled here for comparison only): only
+    the LAST round corrects the permanent group; earlier rounds correct ONLY that round's
+    arriving image tokens. Valid if intermediate rounds' text-token hidden states are never
+    read (nothing consumes them until the final pre-generation state) -- defers all of the
+    permanent-group refresh cost to a single pass instead of paying it G times. Rounds 1..G-1
+    do image-only corrections of (kr/rounds)*n_merge_groups queries each; round G does
+    text_tokens + (kr/rounds)*n_merge_groups (the last batch of image tokens, plus the one and
+    only permanent-group refresh).
     Returns (vision_flops, llm_flops, total_flops)."""
     if kr == 0.0:
         return 0.0, 0.0, 0.0
     # Vision: round-count-invariant (linear in query count, no per-round fixed cost) -- compute
     # directly from the total kr rather than summing rounds, though the sum would be identical.
     vision = vision_tower_flops(kr * n_v_raw, n_v_raw, v_arch)
-    # LLM: NOT round-invariant -- every round re-pays the full permanent-group (text_tokens) cost.
+    # LLM: NOT round-invariant when repeat_text=True -- every round re-pays the full
+    # permanent-group (text_tokens) cost. When repeat_text=False, only the last round does.
     llm = 0.0
-    for _ in range(rounds):
-        q_c_llm_round = text_tokens + (kr / rounds) * n_merge_groups
+    per_round_image = (kr / rounds) * n_merge_groups
+    for r in range(rounds):
+        is_last = (r == rounds - 1)
+        q_c_llm_round = per_round_image + (text_tokens if (repeat_text or is_last) else 0)
         llm += llm_decoder_flops(q_c_llm_round, n_llm, l_arch)
     return vision, llm, vision + llm
 
@@ -183,6 +202,11 @@ def main():
                     help="Number of interleaved correction rounds to sweep (1 = single-shot, "
                     "the original behavior; e.g. 4 for an interleaved_g4-style schedule). "
                     "Total keep_rate is split evenly across rounds.")
+    p.add_argument("--text-modes", choices=["repeat", "defer"], nargs="+", default=["repeat"],
+                    help="repeat: every round re-corrects the permanent group (the real current "
+                    "implementation). defer: only the LAST round corrects the permanent group "
+                    "(an unimplemented optimization, modeled for comparison only -- see "
+                    "correct_forward_flops docstring). Pass both to compare side by side.")
     args = p.parse_args()
 
     v_arch, l_arch = VisionArch(), LLMArch()
@@ -204,36 +228,46 @@ def main():
     print(f"    llm:    {approx_llm/1e9:10.2f} GFLOPs")
     print(f"    total:  {approx_total/1e9:10.2f} GFLOPs\n")
 
-    for rounds in args.rounds:
-        label = "single-shot" if rounds == 1 else f"interleaved, {rounds} rounds"
-        print(f"[flops] correct_forward sweep over keep_rate ({label}):")
-        print(f"    {'keep_rate':>10s} {'vision GFLOPs':>15s} {'llm GFLOPs':>13s} "
-              f"{'correct total':>15s} {'correct/approx':>15s} {'grand total':>13s} {'grand/approx':>13s}")
-        for kr in args.keep_rates:
-            correct_vision, correct_llm, correct_total = correct_forward_flops(
-                kr, rounds, n_v_raw, n_merge_groups, n_llm, args.text_tokens, v_arch, l_arch)
-            grand_total = approx_total + correct_total
-            print(f"    {kr:10.2f} {correct_vision/1e9:15.2f} {correct_llm/1e9:13.2f} "
-                  f"{correct_total/1e9:15.2f} {correct_total/approx_total:15.3f} "
-                  f"{grand_total/1e9:13.2f} {grand_total/approx_total:13.3f}")
-        print()
+    for text_mode in args.text_modes:
+        repeat_text = (text_mode == "repeat")
+        for rounds in args.rounds:
+            if rounds == 1 and text_mode == "defer":
+                continue  # defer vs repeat are identical at rounds=1 (only one round exists anyway)
+            label = "single-shot" if rounds == 1 else f"interleaved, {rounds} rounds, text={text_mode}"
+            print(f"[flops] correct_forward sweep over keep_rate ({label}):")
+            print(f"    {'keep_rate':>10s} {'vision GFLOPs':>15s} {'llm GFLOPs':>13s} "
+                  f"{'correct total':>15s} {'correct/approx':>15s} {'grand total':>13s} {'grand/approx':>13s}")
+            for kr in args.keep_rates:
+                correct_vision, correct_llm, correct_total = correct_forward_flops(
+                    kr, rounds, n_v_raw, n_merge_groups, n_llm, args.text_tokens, v_arch, l_arch,
+                    repeat_text=repeat_text)
+                grand_total = approx_total + correct_total
+                print(f"    {kr:10.2f} {correct_vision/1e9:15.2f} {correct_llm/1e9:13.2f} "
+                      f"{correct_total/1e9:15.2f} {correct_total/approx_total:15.3f} "
+                      f"{grand_total/1e9:13.2f} {grand_total/approx_total:13.3f}")
+            print()
 
     if len(args.rounds) > 1:
-        print(f"[flops] interleaving overhead at fixed keep_rate points (extra LLM cost from "
-              f"re-paying the {args.text_tokens}-token permanent group each round):")
-        print(f"    {'keep_rate':>10s} " + " ".join(f"{'G='+str(g):>12s}" for g in args.rounds))
+        print(f"[flops] interleaving overhead at fixed keep_rate points, repeat-text vs defer-text "
+              f"(extra LLM cost from re-paying the {args.text_tokens}-token permanent group every "
+              f"round vs only once, at the last round):")
+        header = f"    {'keep_rate':>10s} " + " ".join(
+            f"{('G='+str(g)+'/'+m):>16s}" for g in args.rounds for m in (["repeat", "defer"] if g > 1 else ["repeat"]))
+        print(header)
         for kr in [0.35, 0.5, 0.65, 1.0]:
             if kr not in args.keep_rates:
                 continue
-            row = [kr]
             base_total = None
             cells = []
             for rounds in args.rounds:
-                _, _, total = correct_forward_flops(
-                    kr, rounds, n_v_raw, n_merge_groups, n_llm, args.text_tokens, v_arch, l_arch)
-                if base_total is None:
-                    base_total = total
-                cells.append(f"{total/base_total:11.3f}x" if base_total else f"{'--':>12s}")
+                modes = ["repeat", "defer"] if rounds > 1 else ["repeat"]
+                for m in modes:
+                    _, _, total = correct_forward_flops(
+                        kr, rounds, n_v_raw, n_merge_groups, n_llm, args.text_tokens, v_arch, l_arch,
+                        repeat_text=(m == "repeat"))
+                    if base_total is None:
+                        base_total = total
+                    cells.append(f"{total/base_total:15.3f}x")
             print(f"    {kr:10.2f} " + " ".join(cells))
 
 
