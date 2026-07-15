@@ -1043,3 +1043,24 @@ any point in this investigation -- first demonstrated on a poor score (section 9
 a good one (this section). Task #57 is closed with this as its final, twice-validated answer; no
 further threshold-vs-top-K testing is planned unless a qualitatively different score family (e.g.
 one with a much more skewed/bimodal distribution) suggests the rule might matter there.
+
+**Second budget point (keep_frac~0.40) confirms the dead tie again.** threshold=-1.4421 realized
+keep_frac=0.4006; matched top-K at kr=0.4006 realized 0.4009. Held-out (N=8411, subtracting the
+leaked 400 fitting images from each):
+
+| condition | realized keep_frac | full Acc@0.5 (N=8811) | held-out Acc@0.5 (N=8411) | mean_iou |
+|---|---|---|---|---|
+| threshold=-1.4421 | 0.4006 | 83.62% (7368/8811) | **83.53% (7026/8411)** | 0.7376 |
+| matched top-K (kr=0.4006) | 0.4009 | 83.24% (7334/8811) | **83.11% (6990/8411)** | 0.7359 |
+
+**+0.43pp held-out (threshold slightly ahead), 36 samples out of 8411** -- a bit larger than the
+keep_frac~0.28 gap (+0.06pp) but still small and within the range where this session's own McNemar
+work has shown ~0.4pp can be borderline. Directionally threshold has edged top-K at both budget
+points now (+0.06pp at 0.28, +0.43pp at 0.40), which is a weak hint that threshold MIGHT have a
+tiny real edge on a genuinely-predictive score (unlike the residual-only case where it was a
+perfect tie) -- plausibly because a good score's per-image distribution is skewed enough that a
+fixed absolute cutoff adapts the per-image budget more sensibly than a fixed top-K count. But +0.43pp
+is not strong enough to overturn the headline "rule ~doesn't matter" conclusion; at most it softens
+it to "top-K and threshold are equivalent to within ~0.5pp, with a faint, unconfirmed lean toward
+threshold on strong scores." Not pursued further unless the user wants a McNemar test on this
+specific pair.
