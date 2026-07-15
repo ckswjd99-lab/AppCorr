@@ -1071,6 +1071,17 @@ expected, accuracy keeps climbing toward baseline (85.75% full) as the correctio
 at ~64% budget vision+llmattn_36 is essentially AT baseline. A matched top-K control at kr=0.6372 was
 not run (pending user decision); the two lower budget points already establish the near-equivalence.
 
+**Fourth budget point (recompute rate ~0.50), threshold vs top-K.** threshold=-1.5699 (interpolated
+from the two earlier threshold points to target realized recompute rate ~0.50) realized 0.4946:
+full 84.59% (7453/8811), held-out **84.47% (7105/8411)**, mean_iou 0.7478. Against top-K at recompute
+rate 0.50 (held-out 84.78%): threshold is **-0.31pp** below. So across all four budget points the
+threshold-vs-top-K comparison reads: +0.06pp (rate 0.28), +0.43pp (rate 0.40), **-0.31pp (rate 0.50)**,
+(no matched pair at 0.637). The direction is no longer consistent -- threshold led at 0.28/0.40 but
+trails at 0.50 -- which weakens even the "faint lean toward threshold" hint from the earlier two
+points. Cleanest read across all four: **top-K and threshold are equivalent to within ~0.5pp at every
+budget, with no reliable winner** -- fully consistent with section 9/12's headline that the selection
+RULE is not the bottleneck, the SCORE is.
+
 ## 13. Query-FIRST vs image-first prompt ordering (does putting the question before the image help?)
 
 Motivating question (user): Qwen2.5-VL's standard format is image-BEFORE-text, so the current
