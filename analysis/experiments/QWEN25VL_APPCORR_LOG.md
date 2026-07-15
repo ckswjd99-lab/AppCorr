@@ -1113,3 +1113,25 @@ query-conditioned signal (AUC 0.62->0.47). image-first + text->image (the curren
 is confirmed as the correct ordering. A clean negative result: for a model trained image-first, the
 text->image attention this investigation already uses is the right query-conditioned signal, and
 there is no free lunch in reordering to make the signal "more per-patch."
+
+## 14. top-r (nucleus) selection + finding the -1pp crossing across three selection rules
+
+A third selection RULE beyond top-K (fixed patch count) and threshold (fixed absolute cutoff):
+**top-r / nucleus** selection. Compute each patch's logistic probability (sigmoid of the fused
+vision+llmattn_36 decision function), rank descending, and correct the top patches until their
+cumulative probability MASS reaches fraction r of the image's total mass -- analogous to top-p
+(nucleus) sampling. Unlike top-K/threshold, it keeps a fixed fraction of predicted-correction-
+probability mass, so the realized recompute rate adapts per image to how concentrated the scores are.
+Implemented as `--top-r` in `refcoco_attn_fused_eval.py`.
+
+Because high-scoring patches carry most of the mass, r realizes a much LOWER recompute rate than its
+face value: an offline nr=400 nucleus estimate (calibrated -- r=0.5 predicted 0.32 vs observed 0.315
+in the real pipeline) gives r=0.60->0.42, 0.65->0.47, 0.70->0.53, 0.75->0.59, 0.80->0.65.
+
+**Anchor point (top-r=0.5):** full 81.44% (7176/8811), held-out **81.33% (6841/8411)**, realized
+recompute rate 0.3151. As expected this is well below -1pp (84.75%) -- the low anchor for the
+crossing hunt. Notably its held-out (81.33%) is very close to what top-K/threshold give at the same
+~0.31-0.32 recompute rate (interpolating top-K 0.35=82.56% down and the ~0.28 threshold=81.33%
+full), i.e. no dramatic efficiency difference between the three rules is visible at this budget.
+Round-2 points (top-r=0.65, 0.75, bracketing the expected -1pp crossing around realized rate 0.50)
+in progress -- see next commits.
