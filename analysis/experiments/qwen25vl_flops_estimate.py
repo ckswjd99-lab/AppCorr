@@ -51,26 +51,37 @@ Key modeling choices (see module docstring comments at each formula for why):
     fraction of image tokens, matching `executor.correct_forward`'s
     `token_idx = cat([permanent_group_idx, image_token_positions]).unique()`.
 
-Interleaved (multi-round, `--rounds G>1`) correction, e.g. the `interleaved_g4` configs used
-elsewhere in this investigation: the total keep_rate is assumed split EVENLY across G rounds
-(kr/G merge-groups arrive per round) -- a simplifying assumption for a symmetric-round FLOPs
-estimate, not a claim about how any specific grouping strategy schedules its rounds.
-  - VISION correction cost is PROVABLY INVARIANT to round count: `vision_tower_flops` is linear
-    in query count (every term is proportional to q_c, no fixed per-call overhead), so summing
-    G rounds of (kr/G * n_v_raw) queries each gives exactly the same total as one round of
-    (kr * n_v_raw) queries. Interleaving does not change vision's total FLOPs.
-  - LLM correction cost is NOT invariant to round count, and this is the whole point of modeling
-    interleaving separately: `executor.correct_forward` includes the FULL permanent group (72
-    text tokens) in `token_idx` on EVERY round (`torch.cat([permanent_group_idx,
-    image_token_positions]).unique()`), not just once total. G rounds means the 72-token
-    permanent-group refresh cost is paid G times, not amortized -- this is real, necessary work
-    (the final pre-generation hidden state must reflect whatever image tokens have arrived so
-    far, every round), not an implementation inefficiency, but it IS extra FLOPs that single-shot
-    (G=1) correction doesn't pay.
+Two DIFFERENT "multi-round" models are implemented, and they are NOT the same mechanism --
+read carefully before comparing their numbers:
+
+1. `correct_forward_flops(..., rounds=G)` -- a HYPOTHETICAL, naive round-splitting model (NOT
+   what any actual grouping strategy in this codebase does): assumes every one of G rounds
+   re-runs a full single-shot-style correction (all LLM layers, 0..total_layers) for that
+   round's kr/G share of merge-groups plus the full permanent group. This overestimates real
+   interleaved-schedule cost substantially, because it does not account for layer-chunking.
+   Kept only for the repeat-text-vs-defer-text comparison (see `--text-modes` below), which is
+   a genuine, orthogonal question (how much does re-correcting the permanent group every round
+   cost) independent of whether layers are chunked.
+
+2. `group_trigger_flops(...)` -- the ACCURATE model of this repo's real `GroupTriggerPolicy`
+   (offload/policies/scheduling/group_trigger.py), e.g. the `interleaved_g4` configs. THIS is
+   what "interleaved" actually costs. Confirmed by reading `_get_pipeline_instructions`: the
+   total LLM depth (`total_layers`) is split into `num_groups` chunks; each arriving group
+   triggers ONE approx chunk-advance (full N_llm sequence, that chunk's layers only) plus,
+   for every group after the first, a CATCH-UP correct through 0..(that group's chunk index)*
+   chunk_size layers -- i.e. EARLY-arriving groups only need to catch up through EARLY (few)
+   layers, not the full depth; only the LAST group needs a nearly-full-depth catch-up. Vision
+   correction is per-group, own-slice-only, full depth (this part matches assumption #1 above
+   and is genuinely round-count-invariant either way). See `group_trigger_flops`'s own
+   docstring for the full derivation. This is dramatically cheaper than model #1's naive
+   full-depth-every-round assumption, because most of the "correction" work across groups is
+   actually a single shared approx pass (summing to exactly one full-depth pass total, not G
+   redundant ones) plus comparatively small partial-depth catch-ups.
 
 Run:
     python analysis/experiments/qwen25vl_flops_estimate.py
-    python analysis/experiments/qwen25vl_flops_estimate.py --rounds 1 2 4 8
+    python analysis/experiments/qwen25vl_flops_estimate.py --group-trigger-groups 4
+    python analysis/experiments/qwen25vl_flops_estimate.py --rounds 1 2 4 8   # hypothetical model only
 """
 
 import argparse
@@ -189,6 +200,53 @@ def correct_forward_flops(kr, rounds, n_v_raw, n_merge_groups, n_llm, text_token
     return vision, llm, vision + llm
 
 
+def group_trigger_flops(g_exit, num_groups, n_v_raw, n_merge_groups, n_llm, text_tokens, v_arch, l_arch):
+    """FLOPs for the REAL `GroupTriggerPolicy` mechanism
+    (offload/policies/scheduling/group_trigger.py), exiting after `g_exit` of `num_groups`
+    grid-partitioned data groups have arrived and been processed. This corrects the earlier
+    `correct_forward_flops`(rounds=...) model, which WRONGLY assumed every round re-corrects
+    the full N_llm-sized permanent-group-plus-image query set through ALL LLM layers -- the
+    real code does something much cheaper, confirmed by reading `_get_pipeline_instructions`:
+
+    Vision: correction happens ONCE per group, to FULL 32-block depth, for ONLY that group's own
+    raw patches (n_v_raw/num_groups of them) -- group 0's patches get this "for free" as part of
+    the one-time full-image vision APPROX pass (`executor.approx_forward`'s vision branch always
+    runs full-image, full-depth, exactly once per request, on the very first call). Groups
+    1..g_exit-1 each trigger their own separate `vision_tower.correct_forward` for their own
+    slice only (NOT the whole image re-corrected each time).
+
+    LLM: chunked into num_groups pieces of `total_layers/num_groups` layers each. Each arriving
+    group triggers ONE approx chunk advance (over the FULL N_llm-token sequence, for that
+    group's `chunk_size` layers only) -- g_exit chunks together cover g_exit*chunk_size layers,
+    summing to exactly ONE full-depth pass if g_exit==num_groups (each layer processed exactly
+    once, just staggered across groups' arrival times, not redundantly). Groups 1..g_exit-1
+    ALSO each trigger a CORRECT catch-up for their own (text_tokens + n_merge_groups/num_groups)
+    query positions, through 0..g*chunk_size layers -- **increasing depth for LATER-arriving
+    groups, not full depth for every group**: group 1 only catches up through the first chunk
+    (shallow), group (num_groups-1) catches up through nearly the whole depth (deep). This is
+    exactly the "early group only recomputes early layers" saving the user pointed out --
+    the OLD `correct_forward_flops`(rounds=G) model missed this entirely.
+    Returns (vision_flops, llm_flops, total_flops)."""
+    chunk_size = l_arch.depth // num_groups
+    per_group_raw = n_v_raw / num_groups
+    per_group_merge = n_merge_groups / num_groups
+
+    # Vision: one full-image full-depth pass (group 0, "for free" inside the approx pass) +
+    # each subsequent group's own-slice-only correct.
+    vision = vision_tower_flops(n_v_raw, n_v_raw, v_arch)
+    for g in range(1, g_exit):
+        vision += vision_tower_flops(per_group_raw, n_v_raw, v_arch)
+
+    # LLM: g_exit approx chunks (full N_llm sequence, chunk_size layers each) + increasing-depth
+    # catch-up corrects for groups 1..g_exit-1.
+    llm = g_exit * chunk_size * llm_layer_flops(n_llm, n_llm, l_arch)
+    for g in range(1, g_exit):
+        q_c = text_tokens + per_group_merge
+        llm += (g * chunk_size) * llm_layer_flops(q_c, n_llm, l_arch)
+
+    return vision, llm, vision + llm
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--image-h", type=int, default=448)
@@ -207,6 +265,9 @@ def main():
                     "implementation). defer: only the LAST round corrects the permanent group "
                     "(an unimplemented optimization, modeled for comparison only -- see "
                     "correct_forward_flops docstring). Pass both to compare side by side.")
+    p.add_argument("--group-trigger-groups", type=int, default=4, help="num_groups for the "
+                    "ACCURATE GroupTriggerPolicy model (see group_trigger_flops) -- 4 matches "
+                    "the interleaved_g4 configs used elsewhere in this investigation.")
     args = p.parse_args()
 
     v_arch, l_arch = VisionArch(), LLMArch()
@@ -269,6 +330,28 @@ def main():
                         base_total = total
                     cells.append(f"{total/base_total:15.3f}x")
             print(f"    {kr:10.2f} " + " ".join(cells))
+
+    # The ACCURATE interleaved model: real GroupTriggerPolicy mechanism.
+    G = args.group_trigger_groups
+    single_shot_full = approx_total + correct_forward_flops(
+        1.0, 1, n_v_raw, n_merge_groups, n_llm, args.text_tokens, v_arch, l_arch)[2]
+    print(f"[flops] group_trigger_flops -- the ACCURATE interleaved_g{G} model (real "
+          f"GroupTriggerPolicy mechanism, layer-chunked LLM catch-up), exiting after g_exit of "
+          f"{G} groups have arrived:")
+    print(f"    {'g_exit':>7s} {'eff. kr':>8s} {'vision GFLOPs':>15s} {'llm GFLOPs':>13s} "
+          f"{'total GFLOPs':>14s} {'total/approx':>13s} {'vs single-shot-at-same-kr':>26s}")
+    for g_exit in range(1, G + 1):
+        gv, gl, gtotal = group_trigger_flops(
+            g_exit, G, n_v_raw, n_merge_groups, n_llm, args.text_tokens, v_arch, l_arch)
+        eff_kr = g_exit / G
+        # naive single-shot cost at the SAME effective keep_rate, for a direct comparison.
+        ss_correct = correct_forward_flops(
+            eff_kr, 1, n_v_raw, n_merge_groups, n_llm, args.text_tokens, v_arch, l_arch)[2]
+        ss_total = approx_total + ss_correct
+        print(f"    {g_exit:7d} {eff_kr:8.2f} {gv/1e9:15.2f} {gl/1e9:13.2f} "
+              f"{gtotal/1e9:14.2f} {gtotal/approx_total:13.3f} {gtotal/ss_total:26.3f}x")
+    print(f"\n    (single-shot at kr=1.0, for reference: {single_shot_full/1e9:.2f} GFLOPs, "
+          f"{single_shot_full/approx_total:.3f}x approx)")
 
 
 if __name__ == "__main__":
