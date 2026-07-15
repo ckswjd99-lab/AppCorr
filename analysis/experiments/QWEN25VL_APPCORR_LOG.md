@@ -981,3 +981,25 @@ vision), and not with per-head decomposition of that layer (which overfit as bad
 first genuinely positive result task #56 has produced after several false starts -- fitting given
 this was originally scoped as an open, uncertain exploration (design options listed at the end of
 section 9), not a guaranteed win.
+
+## 11. Correction-rate (keep_rate) sweep for vision+llmattn_36
+
+Having confirmed vision+llmattn_36 as the best pscore at keep_rate=0.35, sweeping across other
+keep_rate values to see whether the improvement over top_energy holds at other correction budgets
+(not just the specific 0.35 point everything above was tuned/tested at).
+
+**kr=0.50:** full-dataset (N=8811, `--log-jsonl` this time so held-out is computed directly from
+one run): **84.87% (7478/8811), mean_iou 0.7488.** Held-out (subtracting leaked 347/400):
+**84.78% (7131/8411).**
+
+| condition | kr | Acc@0.5 | mean_iou |
+|---|---|---|---|
+| top_energy (prior definitive sweep) | 0.50 | 83.49% (7356/8811) | 0.7381 |
+| vision+llmattn_36 | 0.50 | **84.87%** (7478/8811, raw) / **84.78%** (held-out) | **0.7488** |
+| vision+llmattn_36 (reference) | 0.35 | 82.68% (raw) / 82.56% (held-out) | 0.7290 |
+
+**+1.29pp to +1.38pp over top_energy at kr=0.5 (larger margin than kr=0.35's +0.93pp raw
+advantage)** -- the improvement not only holds but grows at a higher correction budget. Also, as
+expected, raising the budget from 0.35->0.50 correction improved vision+llmattn_36's own accuracy
+substantially (+2.22pp held-out, 82.56%->84.78%), confirming the pscore behaves sensibly as more
+budget is made available. Sweep to be continued at other keep_rate values per the user's direction.
