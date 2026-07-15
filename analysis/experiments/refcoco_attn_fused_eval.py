@@ -61,8 +61,14 @@ from analysis.experiments.qwen25vl_llm_attn_pscore_diagnostic import compute_llm
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--config", type=str, default="offload/config/realworldqa_qwen25vl_32b_interleaved_g4.json")
-    p.add_argument("--keep-rate", type=float, required=True, help="Fraction of merge-groups to correct, "
-                    "selected by fused (residual x attention) score instead of residual alone.")
+    p.add_argument("--keep-rate", type=float, default=None, help="Fraction of merge-groups to correct "
+                    "(fixed-count top-K by fused score). Exactly one of --keep-rate/--threshold required.")
+    p.add_argument("--threshold", type=float, default=None, help="Absolute cutoff on the fused score "
+                    "(itself a WeightedFusionModel logistic decision-function value, NOT a probability) "
+                    "-- correct every merge-group scoring >= this, so the realized keep-fraction varies "
+                    "per image (mirrors top_energy_threshold's semantics in progressive.py, but computed "
+                    "on the fused vision+LLM score instead of pure CPU residual energy). Requires "
+                    "--weighted-model. Exactly one of --keep-rate/--threshold required.")
     p.add_argument("--attn-layers", type=int, nargs="+", default=[7], help="Full-attention layer index/indices "
                     "to use for the attention score (mean if multiple). Default: layer 7 alone (best single-layer "
                     "AUC found in qwen25vl_attn_pscore_diagnostic.py).")
@@ -198,7 +204,7 @@ def compute_all_attn_native_order(executor, vctx, layer_mean_layers, per_head_la
 
 
 def build_attn_fused_context(executor, encoder, raw_config, image_np, prompt, keep_rate, attn_layers, device,
-                              weighted_model=None):
+                              weighted_model=None, threshold=None):
     """Mirrors refcoco_gqa_batched_eval.py's build_first_token_context, but selects the corrected
     merge-groups by (residual x attention) fused score instead of pure top_energy."""
     image_config = dict(raw_config)
@@ -253,8 +259,12 @@ def build_attn_fused_context(executor, encoder, raw_config, image_np, prompt, ke
             attn_scores = compute_attn_scores_native_order(executor, context["vision_ctx"], attn_layers, device)
         fused = [(p, p.pscore_hint * float(attn_scores[p.spatial_idx])) for p in all_group1_patches]
     fused.sort(key=lambda t: t[1], reverse=True)
-    keep_n = int(round(keep_rate * len(fused)))
-    selected = [p for p, _ in fused[:keep_n]]
+    if threshold is not None:
+        selected = [p for p, s in fused if s >= threshold]
+    else:
+        keep_n = int(round(keep_rate * len(fused)))
+        selected = [p for p, _ in fused[:keep_n]]
+    realized_keep_frac = len(selected) / len(fused) if fused else 0.0
 
     if selected:
         patch_buffer.extend(selected)
@@ -266,27 +276,32 @@ def build_attn_fused_context(executor, encoder, raw_config, image_np, prompt, ke
 
     with torch.no_grad():
         first_token = executor.decode_first_token(context["llm_current_feature"])
-    return first_token, context
+    return first_token, context, realized_keep_frac
 
 
 def main():
     args = parse_args()
+    if (args.keep_rate is None) == (args.threshold is None):
+        raise ValueError("Exactly one of --keep-rate/--threshold is required.")
+    if args.threshold is not None and args.weighted_model is None:
+        raise ValueError("--threshold requires --weighted-model (the fused score it cuts on).")
     with open(args.config, "r", encoding="utf-8") as f:
         raw_config = json.load(f)
     raw_config["batch_size"] = 1
     raw_config["device"] = args.device
-    label = args.label or f"attnfused_kr{args.keep_rate}"
+    label = args.label or (f"attnfused_thr{args.threshold}" if args.threshold is not None else f"attnfused_kr{args.keep_rate}")
 
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
     from datasets import load_dataset
     from PIL import Image
 
     weighted_model = WeightedFusionModel(args.weighted_model) if args.weighted_model else None
+    budget_desc = f"threshold={args.threshold}" if args.threshold is not None else f"keep_rate={args.keep_rate}"
     if weighted_model is not None:
-        print(f"[attnfused] === Run: {label} === keep_rate={args.keep_rate} "
+        print(f"[attnfused] === Run: {label} === {budget_desc} "
               f"weighted_model={args.weighted_model} (layers={weighted_model.attn_layers})")
     else:
-        print(f"[attnfused] === Run: {label} === keep_rate={args.keep_rate} attn_layers={args.attn_layers}")
+        print(f"[attnfused] === Run: {label} === {budget_desc} attn_layers={args.attn_layers}")
     config = ExperimentConfig(**raw_config)
     executor = Qwen25VLExecutor(torch.device(args.device))
     executor.load_model(config.model_name, config)
@@ -323,6 +338,7 @@ def main():
     correct = 0
     processed = 0
     iou_sum = 0.0
+    keep_frac_sum = 0.0
     t_start = time.time()
     print_every = 1 if len(indices) <= 40 else max(len(indices) // 200, 10)
     log_f = open(args.log_jsonl, "a", encoding="utf-8") if args.log_jsonl else None
@@ -330,34 +346,36 @@ def main():
     batch_items, batch_meta = [], []
 
     def flush_batch():
-        nonlocal correct, processed, iou_sum
+        nonlocal correct, processed, iou_sum, keep_frac_sum
         if not batch_items:
             return
         texts = batched_generate_fallback(executor.model, processor.tokenizer, batch_items, args.max_new_tokens, args.device)
-        for (idx, gt, grid_hw), pred_text in zip(batch_meta, texts):
+        for (idx, gt, grid_hw, keep_frac), pred_text in zip(batch_meta, texts):
             ok, iou = score_answer(pred_text, gt)
             iou_sum += iou
             correct += int(ok)
+            keep_frac_sum += keep_frac
             processed += 1
             if log_f is not None:
-                log_f.write(json.dumps({"idx": idx, "label": label, "pred": pred_text, "correct": bool(ok), "iou": iou}) + "\n")
+                log_f.write(json.dumps({"idx": idx, "label": label, "pred": pred_text, "correct": bool(ok),
+                                          "iou": iou, "keep_frac": keep_frac}) + "\n")
             if processed % print_every == 0 or processed == len(indices):
                 acc = 100.0 * correct / processed
                 print(f"    [{processed}/{len(indices)}] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} "
                       f"pred={pred_text[:50]!r} correct={ok} running_acc={acc:.2f}% mean_iou={iou_sum/processed:.3f} "
-                      f"elapsed={time.time()-t_start:.0f}s")
+                      f"mean_keep_frac={keep_frac_sum/processed:.4f} elapsed={time.time()-t_start:.0f}s")
                 sys.stdout.flush()
         batch_items.clear()
         batch_meta.clear()
 
     for idx in indices:
         image_np, prompt, gt, grid_hw = load_example(idx)
-        first_token, context = build_attn_fused_context(executor, encoder, raw_config, image_np, prompt,
-                                                          args.keep_rate, args.attn_layers, args.device,
-                                                          weighted_model=weighted_model)
+        first_token, context, keep_frac = build_attn_fused_context(
+            executor, encoder, raw_config, image_np, prompt, args.keep_rate, args.attn_layers, args.device,
+            weighted_model=weighted_model, threshold=args.threshold)
         batch_items.append({"input_ids": context["input_ids"], "first_token": first_token,
                              "pixel_values": context["pixel_values"], "image_grid_thw": context["image_grid_thw"]})
-        batch_meta.append((idx, gt, grid_hw))
+        batch_meta.append((idx, gt, grid_hw, keep_frac))
         if len(batch_items) >= args.batch_size:
             flush_batch()
     flush_batch()
@@ -369,6 +387,7 @@ def main():
     print(f"\n[attnfused] === Summary: {label} ===")
     print(f"    samples: {processed}")
     print(f"    accuracy@0.5: {acc:.2f}%  ({correct}/{processed})  mean_iou: {iou_sum/max(processed,1):.4f}")
+    print(f"    mean realized keep_frac: {keep_frac_sum/max(processed,1):.4f}")
     print(f"    total wall time: {total_wall:.1f}s ({total_wall/max(processed,1):.2f}s/sample avg)")
 
 
