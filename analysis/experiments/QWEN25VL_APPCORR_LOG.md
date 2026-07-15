@@ -1003,3 +1003,32 @@ advantage)** -- the improvement not only holds but grows at a higher correction 
 expected, raising the budget from 0.35->0.50 correction improved vision+llmattn_36's own accuracy
 substantially (+2.22pp held-out, 82.56%->84.78%), confirming the pscore behaves sensibly as more
 budget is made available. Sweep to be continued at other keep_rate values per the user's direction.
+
+## 12. Threshold-based selection with the NEW pscore (task #57 re-tested against vision+llmattn_36)
+
+Section 9 concluded (on pure residual energy) that threshold-based selection and top-K% are
+equivalent -- the selection RULE didn't matter, the SCORE's task-relevance did. That conclusion was
+never re-tested against a fused score with actual predictive value. Added `--threshold` to
+`refcoco_attn_fused_eval.py` (absolute cutoff on the fused logistic-decision-function score, realized
+keep-fraction tracked and logged per-sample since it varies per image under thresholding, unlike
+top-K's fixed count) to test this properly.
+
+Two threshold points, both full-dataset (N=8811):
+
+| threshold | target keep_frac (400-img percentile) | **realized keep_frac (full N=8811)** | Acc@0.5 | mean_iou |
+|---|---|---|---|---|
+| -1.2399 (65th pctile) | 0.35 | **0.2778** | 81.33% (7166/8811) | 0.7165 |
+| -1.4421 (50th pctile) | 0.50 | **0.4006** | 83.62% (7368/8811) | 0.7376 |
+
+**The realized keep-fraction on the full dataset landed well below the 400-image percentile
+estimate for both points** (0.35 target -> 0.278 realized; 0.50 target -> 0.40 realized) -- the
+same "small-sample estimate doesn't transfer cleanly to full scale" pattern seen throughout this
+investigation, just applied to a budget estimate rather than an accuracy number this time.
+
+**Fair comparison requires a top-K control at the SAME realized budget**, not the originally-target
+one. Matched top-K control at keep_rate=0.2778 launched (in progress / pending -- see next commit
+for result once landed). Once complete, this will be the first apples-to-apples threshold-vs-top-K
+test using a genuinely predictive fused score, addressing whether section 9's "rule doesn't matter"
+conclusion still holds when the underlying score is actually good (vs. section 9's near-chance
+residual-energy score, AUC 0.5376, where the rule-doesn't-matter finding may simply reflect that
+neither rule can do much with a weak score).
