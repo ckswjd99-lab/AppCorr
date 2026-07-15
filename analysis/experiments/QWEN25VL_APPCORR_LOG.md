@@ -1174,3 +1174,34 @@ change where the -1pp crossing lands (~recompute rate 0.50 for all three) -- the
 task-relevance is the sole lever, exactly as concluded in sections 9 and 12. Nucleus/top-r, despite
 being adaptive to per-image score concentration, offers no efficiency advantage over plain top-K for
 this fused score.**
+
+**Confirming run (top-r=0.71) closes the crossing hunt.** full 84.78% (7470/8811), held-out
+**84.64% (7119/8411)**, realized recompute rate **0.5320** -- just -0.11pp from the -1pp target
+(84.75%), confirming the interpolated crossing almost exactly. Final top-r table:
+
+| top-r | realized recompute rate | held-out Acc@0.5 (N=8411) |
+|---|---|---|
+| 0.50 | 0.3151 | 81.33% |
+| 0.65 | 0.4644 | 84.19% |
+| **0.71** | **0.5320** | **84.64%** (-1pp crossing) |
+| 0.75 | 0.5800 | 85.15% |
+
+**-1pp crossing for nucleus/top-r: r~0.71, realized recompute rate ~0.53.**
+
+**FINAL three-selection-rule comparison at the -1pp crossing (crossing hunt complete):**
+
+| selection rule | recompute rate at -1pp crossing |
+|---|---|
+| top-K (fixed count) | ~0.50 |
+| threshold (fixed cutoff) | ~0.50 |
+| nucleus / top-r (fixed prob mass) | ~0.53 |
+
+All three cross -1pp of baseline within recompute rate 0.50-0.53; nucleus is marginally the LEAST
+efficient (needs ~0.03 more recompute), the opposite of the "nucleus adapts better per image" prior,
+though the gap is within the ~0.5pp noise band. **DEFINITIVE, thrice-confirmed conclusion: the
+patch-selection RULE does not materially change the compute-vs-accuracy frontier -- top-K, threshold,
+and nucleus all reach -1pp of baseline at essentially the same recompute rate (~0.50). The pscore's
+task-relevance is the sole lever (sections 9, 12, 14 all agree). The best pscore found in this whole
+investigation, vision+llmattn_36 (log1p residual + 64 vision per-head attentions from layers
+7/15/23/31 + LLM layer-36 text->image attention), reaches within 1pp of full-image baseline (85.75%)
+while recomputing only ~50% of merge-groups, regardless of which of the three selection rules is used.**
