@@ -1026,9 +1026,20 @@ same "small-sample estimate doesn't transfer cleanly to full scale" pattern seen
 investigation, just applied to a budget estimate rather than an accuracy number this time.
 
 **Fair comparison requires a top-K control at the SAME realized budget**, not the originally-target
-one. Matched top-K control at keep_rate=0.2778 launched (in progress / pending -- see next commit
-for result once landed). Once complete, this will be the first apples-to-apples threshold-vs-top-K
-test using a genuinely predictive fused score, addressing whether section 9's "rule doesn't matter"
-conclusion still holds when the underlying score is actually good (vs. section 9's near-chance
-residual-energy score, AUC 0.5376, where the rule-doesn't-matter finding may simply reflect that
-neither rule can do much with a weak score).
+one. Matched top-K control at keep_rate=0.2778 (using the exact realized budget from the threshold
+run) landed:
+
+| condition | realized keep_frac | Acc@0.5 (N=8811) | mean_iou |
+|---|---|---|---|
+| threshold=-1.2399 | 0.2778 | 81.33% (7166/8811) | 0.7165 |
+| **matched top-K (kr=0.2778)** | 0.2783 | **81.27% (7161/8811)** | **0.7148** |
+
+**+0.06pp (5 samples out of 8811) -- a dead tie**, essentially identical to section 9(d/resolved)'s
+finding on the OLD residual-only score (+0.08pp, 7 samples). **Definitive conclusion for task #57,
+now confirmed on a genuinely predictive fused score (val AUC ~0.66, not residual energy's
+near-chance 0.5376): threshold-based and top-K selection remain equivalent in practice, regardless
+of whether the underlying pscore is weak or strong.** The selection RULE was never the bottleneck at
+any point in this investigation -- first demonstrated on a poor score (section 9), now confirmed on
+a good one (this section). Task #57 is closed with this as its final, twice-validated answer; no
+further threshold-vs-top-K testing is planned unless a qualitatively different score family (e.g.
+one with a much more skewed/bimodal distribution) suggests the rule might matter there.
