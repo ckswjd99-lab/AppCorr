@@ -1064,3 +1064,52 @@ is not strong enough to overturn the headline "rule ~doesn't matter" conclusion;
 it to "top-K and threshold are equivalent to within ~0.5pp, with a faint, unconfirmed lean toward
 threshold on strong scores." Not pursued further unless the user wants a McNemar test on this
 specific pair.
+
+**Third budget point (keep_frac~0.637), threshold standalone.** threshold=-1.7462 realized
+keep_frac=0.6372: full 85.82% (7562/8811), held-out **85.72% (7210/8411)**, mean_iou 0.7617 -- as
+expected, accuracy keeps climbing toward baseline (85.75% full) as the correction budget grows, and
+at ~64% budget vision+llmattn_36 is essentially AT baseline. A matched top-K control at kr=0.6372 was
+not run (pending user decision); the two lower budget points already establish the near-equivalence.
+
+## 13. Query-FIRST vs image-first prompt ordering (does putting the question before the image help?)
+
+Motivating question (user): Qwen2.5-VL's standard format is image-BEFORE-text, so the current
+`llmattn` pscore is a text->image signal (later text causally attends back to earlier image). If the
+question were placed BEFORE the image instead, each image token (now after the text) would attend
+back to the question at its OWN query position -- an image->text signal that is per-patch by
+construction, potentially cleaner than aggregating text->image attention across text query rows. But
+Qwen2.5-VL is trained image-first, so query-first is off-distribution. `qwen25vl_query_first_diagnostic.py`
+tests both effects on nr=400 RefCOCO: (A) stock-model base accuracy under each ordering, (B) the
+query-conditioned attention AUC vs GT-bbox for text->image (image-first) vs image->text (query-first).
+
+**(A) Base accuracy (stock model.generate, full-res, N=400):**
+
+| ordering | Acc@0.5 | mean_iou |
+|---|---|---|
+| image-first (standard) | 88.25% (353/400) | 0.7995 |
+| query-first | 83.00% (332/400) | 0.7692 |
+
+Query-first costs **-5.25pp accuracy** -- a large, expected off-distribution penalty (the model was
+trained image-first).
+
+**(B) Query-conditioned attention AUC vs GT-bbox:**
+
+| LLM layer | text->image (image-first) | image->text (query-first) |
+|---|---|---|
+| 24 | 0.5700 | 0.4433 |
+| 32 | 0.5586 | 0.4794 |
+| 36 | **0.6268** | 0.4457 |
+| 40 | **0.6674** | 0.4704 |
+| 48 | 0.6242 | 0.4864 |
+
+**image->text is DRAMATICALLY WORSE -- every layer is at/below random (0.44-0.49)**, vs text->image's
+0.56-0.67. The intuition that "each patch attending to the question at its own position gives a
+cleaner signal" is decisively wrong: with the image after the text, the image tokens attend back to
+the question before their own visual understanding has formed (they're near the input), AND the
+off-distribution reorder degrades the attention structure itself.
+
+**Conclusion: query-first is worse on BOTH axes** -- lower base accuracy (-5.25pp) AND a far weaker
+query-conditioned signal (AUC 0.62->0.47). image-first + text->image (the current llmattn_36 setup)
+is confirmed as the correct ordering. A clean negative result: for a model trained image-first, the
+text->image attention this investigation already uses is the right query-conditioned signal, and
+there is no free lunch in reordering to make the signal "more per-patch."
