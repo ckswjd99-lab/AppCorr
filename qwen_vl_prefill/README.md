@@ -104,8 +104,28 @@ groups `G` is configurable via `--num-groups`.
   grounding (precise localization needs the target region sharp AND finalized with full context —
   −4.69pp on RefCOCO nr=64).** RealWorldQA's coarse base also hurts far less (−2.48pp) than RefCOCO's
   (−14pp), confirming VQA is much more robust to the coarse base than precise grounding.
-- [ ] Phase 5 — actual ProgVFM first-order correction on the Qwen visual encoder (cheap approximation
-  of the re-encoding above; expected to land at or below the progressive numbers).
+- [x] **Phase 5 — actual cheap correction on the Qwen visual encoder** (`progressive_correct.py`,
+  driving the validated `appcorr/models/qwen25vl/vision/ApproxCorrectQwen25VLVisionTower` fork
+  standalone; `progressive_accuracy.py --method correct`). Instead of re-encoding, band g's tokens are
+  recomputed exactly against ONE growing K/V cache (bands 1..g−1 corrected in prior rounds, g+1..G
+  still base) — the accumulated bidirectional staleness the re-encoding upper bound does NOT have.
+
+  **Fork validated standalone (`correct_validate.py`, vs the STOCK model, bit-exact / 0.0e+00):**
+  `approx(base)` == `get_image_features(base)`; `correct-all-in-one-round` == `get_image_features(full)`
+  (collapses the base→full gap, mean abs ~1.03, to exactly 0). The correction is mechanism-exact.
+
+  **Result (3B, RealWorldQA N=765, G=4, base factor 4) vs the re-encoding upper bound:**
+  | vision tokens | re-encoding upper bound | **cheap correction (real)** |
+  |---|---|---|
+  | full | 60.13% (460/765) | 60.13% (460/765) |
+  | base_only | 57.65% (441/765) | 57.65% (441/765) |
+  | **progressive** | 60.39% (462/765) | **61.05% (467/765)** |
+
+  The cheap first-order correction **reproduces the re-encoding upper bound** (+5 samples, noise):
+  progressive vs full **+0.92pp**, vs upper bound +0.66pp. **The accumulated bidirectional staleness
+  of the per-band cheap correction costs nothing measurable on VQA** — Phase 5 confirms the whole
+  scheme works with a realistic cheap correction, not just the re-encode upper bound. (full/base_only
+  are bit-identical to the Phase 4+6 run — same deterministic encodings — so only `progressive` moved.)
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
