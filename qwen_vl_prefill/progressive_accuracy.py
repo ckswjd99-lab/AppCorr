@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from qwen_vl_prefill import introspect as I
 from qwen_vl_prefill import progressive as PR
+from qwen_vl_prefill import progressive_correct as PC
 from qwen_vl_prefill import datasets_eval as DE
 
 
@@ -42,6 +43,8 @@ def main():
     ap.add_argument("--num-samples", type=int, default=64)
     ap.add_argument("--full", action="store_true", help="use all samples (ignores --num-samples)")
     ap.add_argument("--shard", default=None, help="'k/N' -- process only shard k of N contiguous slices (for multi-GPU)")
+    ap.add_argument("--method", default="correct", choices=["correct", "reencoding"],
+                    help="correct = cheap first-order fork (Phase 5, real); reencoding = re-encode upper bound (Phase 4+6)")
     ap.add_argument("--num-groups", type=int, default=4)
     ap.add_argument("--base-factor", type=int, default=4)
     ap.add_argument("--device", default="cuda:0")
@@ -62,6 +65,8 @@ def main():
     min_px, max_px = ip.size["shortest_edge"], ip.size["longest_edge"]
     eos = model.generation_config.eos_token_id
     eos_ids = set(eos) if isinstance(eos, (list, tuple)) else {eos}
+
+    tower = PC.build_tower(model) if args.method == "correct" else None
 
     spec = DE.get_spec(args.dataset)
     ds = load_dataset(spec.hf, split=spec.split)
@@ -94,7 +99,10 @@ def main():
         position_ids = I.compute_position_ids(model, prepared)
         bands = PR.band_layout(prepared.image_grid_thw, merge_size, patch_size, args.num_groups)
 
-        prog_e, full_e, base_e = PR.progressive_finalized_embeds(model, processor, full_np, base_np, bands, device)
+        if args.method == "correct":
+            prog_e, full_e, base_e = PC.progressive_corrected_embeds(model, tower, processor, full_np, base_np, bands, device)
+        else:
+            prog_e, full_e, base_e = PR.progressive_finalized_embeds(model, processor, full_np, base_np, bands, device)
         # guard: token counts must match the prompt's image slots
         assert full_e.shape[0] == prepared.n_visual_tokens, (full_e.shape, prepared.n_visual_tokens)
 
@@ -118,16 +126,19 @@ def main():
 
     n = len(indices)
     metric = "mean_iou" if args.dataset == "refcoco" else "mean_score"
-    print(f"\n===== PROGRESSIVE FINALIZATION ACCURACY ({args.dataset}, N={n}, G={args.num_groups}, "
-          f"base_factor={args.base_factor}) =====")
+    print(f"\n===== PROGRESSIVE FINALIZATION ACCURACY ({args.dataset}, method={args.method}, N={n}, "
+          f"G={args.num_groups}, base_factor={args.base_factor}) =====")
     for m in modes:
         print(f"  {m:12s}: acc = {100*correct[m]/n:6.2f}%  ({correct[m]}/{n})  {metric}={iou_sum[m]/n:.4f}")
     df = 100 * (correct["progressive"] - correct["full"]) / n
     db = 100 * (correct["progressive"] - correct["base_only"]) / n
     print(f"\n  progressive vs full:      {df:+.2f}pp   (staleness cost of freezing early groups)")
-    print(f"  progressive vs base_only: {db:+.2f}pp   (recovery from re-encoding residual bands)")
-    print(f"\n  Note: progressive uses actual re-encoding (upper bound); a cheap first-order correction")
-    print(f"  (Phase 5) would land at or below this.")
+    print(f"  progressive vs base_only: {db:+.2f}pp   (recovery from correcting residual bands)")
+    if args.method == "correct":
+        print(f"\n  method=correct: cheap first-order fork correction (Phase 5, the real system).")
+        print(f"  Compare against method=reencoding (the accuracy upper bound) to see the correction gap.")
+    else:
+        print(f"\n  method=reencoding: actual re-encoding = UPPER BOUND; the cheap correction lands at/below this.")
 
 
 if __name__ == "__main__":
