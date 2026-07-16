@@ -62,10 +62,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-id", default="Qwen/Qwen2.5-VL-3B-Instruct")
     ap.add_argument("--num-samples", type=int, default=64)
+    ap.add_argument("--full", action="store_true", help="use all RefCOCO val samples (ignores --num-samples)")
+    ap.add_argument("--shard", default=None, help="'k/N' -- process only shard k of N contiguous slices (for multi-GPU)")
     ap.add_argument("--num-groups", type=int, default=4)
     ap.add_argument("--base-factor", type=int, default=4)
     ap.add_argument("--device", default="cuda:0")
-    ap.add_argument("--max-new-tokens", type=int, default=48)
+    ap.add_argument("--max-new-tokens", type=int, default=32)
+    ap.add_argument("--out-jsonl", default=None, help="append per-sample (idx, mode ious/correct) rows for aggregation")
     args = ap.parse_args()
     device = args.device
 
@@ -84,8 +87,19 @@ def main():
 
     ds = load_dataset("lmms-lab/RefCOCO", split="val")
     n_total = len(ds)
-    stride = max(n_total // args.num_samples, 1)
-    indices = list(range(0, n_total, stride))[:args.num_samples]
+    if args.full:
+        indices = list(range(n_total))
+    else:
+        stride = max(n_total // args.num_samples, 1)
+        indices = list(range(0, n_total, stride))[:args.num_samples]
+    if args.shard is not None:
+        k, N = (int(x) for x in args.shard.split("/"))
+        per = (len(indices) + N - 1) // N
+        indices = indices[k * per:(k + 1) * per]
+        print(f"[prog-acc] shard {k}/{N}: {len(indices)} samples")
+
+    import json as _json
+    out_f = open(args.out_jsonl, "a", encoding="utf-8") if args.out_jsonl else None
 
     modes = ["full", "base_only", "progressive"]
     correct = {m: 0 for m in modes}
@@ -113,6 +127,7 @@ def main():
         # guard: token counts must match the prompt's image slots
         assert full_e.shape[0] == prepared.n_visual_tokens, (full_e.shape, prepared.n_visual_tokens)
 
+        row = {"idx": idx}
         for m, embeds in (("full", full_e), ("base_only", base_e), ("progressive", prog_e)):
             inputs_embeds = I.build_inputs_embeds(model, prepared, embeds)
             ids = PR.greedy_generate_from_embeds(model, inputs_embeds, position_ids,
@@ -121,6 +136,10 @@ def main():
             i = iou(parse_bbox(text), gt)
             iou_sum[m] += i
             correct[m] += int(i > 0.5)
+            row[m + "_iou"] = i
+            row[m + "_correct"] = int(i > 0.5)
+        if out_f is not None:
+            out_f.write(_json.dumps(row) + "\n"); out_f.flush()
 
         if (c + 1) % 16 == 0:
             msg = "  ".join(f"{m}={100*correct[m]/(c+1):.1f}%" for m in modes)
