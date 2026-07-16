@@ -88,8 +88,22 @@ groups `G` is configurable via `--num-groups`.
   progressive vs full: **−4.69pp acc / −0.009 mean_iou** (the bidirectional-staleness cost of
   freezing early bands); progressive vs base_only: **+6.25pp / +0.126** (recovery from re-encoding
   residual bands). It recovers ~57% of the base→full acc gap and ~93% of the mean_iou gap — the box
-  is nearly right, only borderline (IoU≈0.5) cases flip. **Staleness cost is real but small,
-  especially on IoU.** nr=64 is a sanity check — full-dataset confirmation pending.
+  is nearly right, only borderline (IoU≈0.5) cases flip. Staleness cost is real but small,
+  especially on IoU. (nr=64 sanity check.)
+
+  **Full-dataset confirmation on RealWorldQA (N=765, VQA — the primary test set going forward):**
+  | vision tokens | accuracy (N=765) |
+  |---|---|
+  | full (baseline) | 60.13% (460/765) |
+  | base_only (worst) | 57.65% (441/765) |
+  | **progressive** | **60.39% (462/765)** |
+
+  progressive vs full: **+0.26pp** (2 samples — negligible / noise). progressive vs base_only: +2.75pp
+  (fully recovers the base→full gap). **The staleness cost is TASK-DEPENDENT: negligible on VQA
+  (global scene understanding, robust to finalization staleness — full-dataset), but measurable on
+  grounding (precise localization needs the target region sharp AND finalized with full context —
+  −4.69pp on RefCOCO nr=64).** RealWorldQA's coarse base also hurts far less (−2.48pp) than RefCOCO's
+  (−14pp), confirming VQA is much more robust to the coarse base than precise grounding.
 - [ ] Phase 5 — actual ProgVFM first-order correction on the Qwen visual encoder (cheap approximation
   of the re-encoding above; expected to land at or below the progressive numbers).
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
