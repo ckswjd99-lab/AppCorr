@@ -126,6 +126,22 @@ groups `G` is configurable via `--num-groups`.
   of the per-band cheap correction costs nothing measurable on VQA** — Phase 5 confirms the whole
   scheme works with a realistic cheap correction, not just the re-encode upper bound. (full/base_only
   are bit-identical to the Phase 4+6 run — same deterministic encodings — so only `progressive` moved.)
+
+  **Full-dataset RefCOCO grounding (N=8811, cheap correction) — the staleness-sensitive stress test:**
+  | vision tokens | acc@0.5 | mean_iou |
+  |---|---|---|
+  | full | 85.05% (7494/8811) | 0.7859 |
+  | base_only | 77.40% (6820/8811) | 0.7027 |
+  | **progressive (cheap)** | **81.93% (7219/8811)** | **0.7570** |
+
+  progressive vs full **−3.12pp acc / −0.029 iou**; vs base_only +4.53pp / +0.054 — recovers **59% of
+  the base→full acc gap (65% of the iou gap)**. **So the staleness cost is TASK-DEPENDENT and REAL on
+  precise grounding** (−3.12pp, full-dataset) while negligible on VQA (+0.92pp): precise localization
+  is sensitive to which bands are finalized when (accumulated bidirectional staleness), global scene
+  understanding is not. The cheap correction still recovers most of the base→full gap on both.
+- [ ] Phase 5b (optional) — full-dataset re-encoding upper bound on RefCOCO, to split the −3.12pp into
+  "inherent progressive-finalization staleness" vs "cheap-correction overhead" (on VQA they matched;
+  grounding is where they could diverge).
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
