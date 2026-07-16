@@ -45,9 +45,25 @@ groups `G` is configurable via `--num-groups`.
   accumulation-order noise (97.4% argmax agreement, next-token argmax identical). Mechanism verified:
   chunked prefill with sliced M-RoPE position_ids + per-chunk `cache_position` into one `DynamicCache`
   reproduces monolithic prefill.
-- [ ] Phase 1 — monolithic baseline latency benchmark (stage-by-stage timing).
-- [ ] Phase 3 — oracle progressive visual-token streaming (simulated arrival schedule; upper-bound
-  latency benefit; timeline traces).
+- [x] **Phase 1 + Phase 3** — baseline stage timing + oracle progressive streaming
+  (`oracle_progressive.py`). Measures real GPU compute (CUDA-event, warmed up) for visual encoder /
+  monolithic prefill / per-group prefill / query prefill / decode, then runs a discrete-event
+  timeline simulation combining that with a simulated transmission schedule. Compares baseline
+  monolithic vs chunked-after-full vs oracle progressive; emits JSON timeline traces.
+
+  **Key findings (Qwen2.5-VL, B200):**
+  1. Chunked prefill has real per-chunk overhead (GPU underutilization at small chunk sizes), worst
+     on large models: `chunked_after_full` runs 17–38% SLOWER than monolithic. This overhead is a
+     cost that partially eats the overlap benefit.
+  2. The oracle progressive benefit scales strongly with **visual sequence length** (image resolution
+     → visual-token count), because the LLM prefill must be large relative to the vision encoder +
+     chunking overhead for hiding it under transmission to pay off:
+     - 345 visual tokens (typical RefCOCO): +2–6% TTFT speedup (3B/7B/32B).
+     - 3136 visual tokens (high-res, 32B): **+14.1% TTFT speedup** (baseline 777ms → oracle 667ms;
+       ~288ms of prefill hidden under transmission). This is the realistic high-res VLM/VLA regime.
+  3. Fundamental tail cost: causal attention makes later visual groups more expensive (they attend to
+     a longer KV cache — per-group prefill grows 75→136ms across G=4), and the last group + query
+     prefill depend on the final residual, so they cannot be hidden.
 - [ ] Phase 4 — Laplacian base/residual decomposition + visual-token-aligned grouping.
 - [ ] Phase 5 — actual ProgVFM first-order correction on the Qwen visual encoder.
 - [ ] Phase 6 — monotonic visual-token finalization + stale-cache analysis (bidirectional vision

@@ -84,6 +84,37 @@ def chunked_prefill(
     return logits, cache, per_chunk_logits
 
 
+@torch.inference_mode()
+def chunked_prefill_timed(model, inputs_embeds, position_ids, chunk_boundaries, device):
+    """Like chunked_prefill, but records each chunk's GPU forward time (ms, CUDA-event timed, no
+    warmup here -- caller should warm up). Returns (final_hidden_last, cache, per_chunk_ms:list,
+    labels:list). final_hidden_last is the last position's hidden state (for the decode step)."""
+    from transformers import DynamicCache
+
+    lm = model.model.language_model
+    cache = DynamicCache()
+    per_chunk_ms, labels = [], []
+    last_hidden = None
+    for a, b, label in chunk_boundaries:
+        torch.cuda.synchronize(device)
+        ev0 = torch.cuda.Event(enable_timing=True); ev1 = torch.cuda.Event(enable_timing=True)
+        ev0.record()
+        out = lm(
+            inputs_embeds=inputs_embeds[:, a:b],
+            position_ids=position_ids[:, :, a:b],
+            past_key_values=cache,
+            cache_position=torch.arange(a, b, device=device),
+            use_cache=True,
+        )
+        ev1.record()
+        torch.cuda.synchronize(device)
+        cache = out.past_key_values
+        per_chunk_ms.append(ev0.elapsed_time(ev1))
+        labels.append(label)
+        last_hidden = out.last_hidden_state[:, -1:]
+    return last_hidden, cache, per_chunk_ms, labels
+
+
 def compare_logits(logits_a: torch.Tensor, logits_b: torch.Tensor) -> dict:
     """Max/mean absolute + relative difference between two [1, T, vocab] logit tensors, plus whether
     the argmax next-token (last position) agrees."""
