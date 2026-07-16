@@ -71,10 +71,27 @@ groups `G` is configurable via `--num-groups`.
   (67.19%, mean_iou 0.60). Confirms the vision-side change is real and base-coarseness-dependent, and
   motivates residual finalization (base-only is the worst case; progressive finalization sits between
   base and full). nr=64 is a sanity check only — full-dataset confirmation pending.
-- [ ] Phase 4 — Laplacian base/residual decomposition + visual-token-aligned grouping.
-- [ ] Phase 5 — actual ProgVFM first-order correction on the Qwen visual encoder.
-- [ ] Phase 6 — monotonic visual-token finalization + stale-cache analysis (bidirectional vision
-  means later residuals perturb earlier tokens; measure the error, optional re-prefill fallback).
+- [x] **Phase 4 + Phase 6 (accuracy, via re-encoding)** — `progressive.py` (band-aligned
+  base/residual decomposition; visual-token groups == horizontal image bands in raster order) +
+  `progressive_accuracy.py`. Measures the ACCURACY of monotonic progressive finalization: band g's
+  visual tokens are re-encoded from "full-resolution in bands 1..g, coarse base below" and frozen
+  (bidirectional staleness -- band g attends to the still-coarse bottom). Re-encoding is the UPPER
+  BOUND of what a cheap first-order correction (Phase 5) can achieve.
+
+  **Result (3B, RefCOCO nr=64, G=4, coarse base factor 4):**
+  | vision tokens | acc@0.5 | mean_iou |
+  |---|---|---|
+  | full (baseline) | 84.38% | 0.7965 |
+  | base_only (worst) | 73.44% | 0.6622 |
+  | **progressive** | **79.69%** | **0.7878** |
+
+  progressive vs full: **−4.69pp acc / −0.009 mean_iou** (the bidirectional-staleness cost of
+  freezing early bands); progressive vs base_only: **+6.25pp / +0.126** (recovery from re-encoding
+  residual bands). It recovers ~57% of the base→full acc gap and ~93% of the mean_iou gap — the box
+  is nearly right, only borderline (IoU≈0.5) cases flip. **Staleness cost is real but small,
+  especially on IoU.** nr=64 is a sanity check — full-dataset confirmation pending.
+- [ ] Phase 5 — actual ProgVFM first-order correction on the Qwen visual encoder (cheap approximation
+  of the re-encoding above; expected to land at or below the progressive numbers).
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
