@@ -64,6 +64,13 @@ groups `G` is configurable via `--num-groups`.
   3. Fundamental tail cost: causal attention makes later visual groups more expensive (they attend to
      a longer KV cache — per-group prefill grows 75→136ms across G=4), and the last group + query
      prefill depend on the final residual, so they cannot be hidden.
+- [~] **Vision-side accuracy bracket** (`accuracy_impact.py`) — before any latency work, measured the
+  accuracy impact of the vision-side degradation on RefCOCO grounding (nr=64, 3B, exact-match IoU>0.5).
+  full image = 81.25% baseline; base-only worst case depends strongly on base coarseness:
+  half-res base (factor 2) −3.1pp (≈noise on nr=64), quarter-res base (factor 4) **−14.1pp**
+  (67.19%, mean_iou 0.60). Confirms the vision-side change is real and base-coarseness-dependent, and
+  motivates residual finalization (base-only is the worst case; progressive finalization sits between
+  base and full). nr=64 is a sanity check only — full-dataset confirmation pending.
 - [ ] Phase 4 — Laplacian base/residual decomposition + visual-token-aligned grouping.
 - [ ] Phase 5 — actual ProgVFM first-order correction on the Qwen visual encoder.
 - [ ] Phase 6 — monotonic visual-token finalization + stale-cache analysis (bidirectional vision
