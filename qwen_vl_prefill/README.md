@@ -139,9 +139,22 @@ groups `G` is configurable via `--num-groups`.
   precise grounding** (−3.12pp, full-dataset) while negligible on VQA (+0.92pp): precise localization
   is sensitive to which bands are finalized when (accumulated bidirectional staleness), global scene
   understanding is not. The cheap correction still recovers most of the base→full gap on both.
-- [ ] Phase 5b (optional) — full-dataset re-encoding upper bound on RefCOCO, to split the −3.12pp into
-  "inherent progressive-finalization staleness" vs "cheap-correction overhead" (on VQA they matched;
-  grounding is where they could diverge).
+- [x] **Phase 5b — decompose the RefCOCO −3.12pp** (full-dataset re-encoding upper bound, N=8811).
+  full/base_only are bit-identical to the cheap run (85.05% / 77.40%) — consistency confirmed.
+  | progressive | acc@0.5 | mean_iou | vs full |
+  |---|---|---|---|
+  | re-encode (upper bound) | 84.50% | 0.7796 | **−0.56pp / −0.006** |
+  | cheap correction (real) | 81.93% | 0.7570 | **−3.12pp / −0.029** |
+
+  **The −3.12pp splits as: inherent progressive-finalization staleness −0.56pp (nearly free!) +
+  cheap-correction overhead −2.56pp (the dominant part).** This flips the naive expectation: even on
+  precise grounding, *progressive finalization itself* costs almost nothing — the cost is the CHEAP
+  correction's accumulated cache staleness. Re-encoding jointly re-encodes bands 1..g (each fresh),
+  whereas the cheap correction attends band g against earlier bands' K/V **frozen from their own
+  earlier, staler rounds**; precise localization is sensitive to that accumulated staleness, global
+  VQA is not (on RealWorldQA cheap==re-encode==full). **Implication: the −2.56pp is recoverable
+  headroom** — a better correction (re-refresh earlier bands' K/V as residuals arrive, or extra
+  rounds) approaches the −0.56pp upper bound, at more compute.
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
