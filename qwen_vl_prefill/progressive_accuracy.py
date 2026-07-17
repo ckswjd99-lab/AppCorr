@@ -69,7 +69,7 @@ def main():
     tower = PC.build_tower(model) if args.method == "correct" else None
 
     spec = DE.get_spec(args.dataset)
-    ds = load_dataset(spec.hf, split=spec.split)
+    ds = spec.load(load_dataset)
     n_total = len(ds)
     if args.full:
         indices = list(range(n_total))

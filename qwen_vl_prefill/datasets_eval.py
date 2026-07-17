@@ -47,6 +47,9 @@ class RefCOCOSpec:
     hf = "lmms-lab/RefCOCO"
     split = "val"
 
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
     def prepare(self, ex, smart_resize, factor, min_px, max_px):
         image = ex["image"].convert("RGB")
         expr = ex["answer"][0] if isinstance(ex["answer"], list) and ex["answer"] else str(ex["answer"])
@@ -67,6 +70,9 @@ class RealWorldQASpec:
     hf = "lmms-lab/RealWorldQA"
     split = "test"
 
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
     def prepare(self, ex, smart_resize, factor, min_px, max_px):
         image = ex["image"].convert("RGB")
         th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
@@ -86,7 +92,35 @@ class RealWorldQASpec:
         return ok, float(ok)
 
 
-SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec}
+class GQASpec:
+    """GQA testdev-balanced (12578 questions over 398 images). Open-ended short-answer VQA -- a
+    second, larger, HARDER VQA point than RealWorldQA (MCQ). Instructions and images are separate HF
+    configs joined on imageId; the 398 images fit in memory."""
+    name = "gqa"
+    hf = "lmms-lab/GQA"
+    split = "testdev"
+
+    def load(self, load_dataset):
+        imgs = load_dataset(self.hf, "testdev_balanced_images", split=self.split)
+        self.imap = {r["id"]: r["image"] for r in imgs}
+        return load_dataset(self.hf, "testdev_balanced_instructions", split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = self.imap[ex["imageId"]].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = ex["question"].strip() + "\nAnswer the question using a single word or phrase."
+        return image_r, prompt, str(ex["answer"]).strip().lower()
+
+    def score(self, pred_text, gold):
+        # GQA exact-match, robustified: gold as a standalone word/phrase in the prediction
+        # (handles "No, it is clear." -> matches gold "no"; avoids "no" in "now").
+        g = gold.strip().lower()
+        ok = int(bool(re.search(r"\b" + re.escape(g) + r"\b", pred_text.lower()))) if g else 0
+        return ok, float(ok)
+
+
+SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec}
 
 
 def get_spec(name):
