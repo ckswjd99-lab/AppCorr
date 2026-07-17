@@ -155,6 +155,14 @@ groups `G` is configurable via `--num-groups`.
   VQA is not (on RealWorldQA cheap==re-encode==full). **Implication: the −2.56pp is recoverable
   headroom** — a better correction (re-refresh earlier bands' K/V as residuals arrive, or extra
   rounds) approaches the −0.56pp upper bound, at more compute.
+- [~] **Phase 5c — GQA (open-ended short-answer VQA, N=12578)**, a larger/harder VQA point than
+  RealWorldQA MCQ. Cheap correction: full 61.18% (7695), base_only 55.98% (7041),
+  progressive 60.34% (7590). **progressive vs full −0.83pp**; vs base_only +4.36pp (recovers most of
+  the −5.20pp base→full gap). GQA sits BETWEEN the two extremes — RealWorldQA global MCQ (+0.92pp, ~0)
+  < GQA compositional short-answer (−0.83pp) < RefCOCO precise grounding (−3.12pp): **the cheap
+  correction cost scales with the task's localization-sensitivity** (compositional questions need some
+  region attention, precise grounding needs exact localization, global MCQ needs neither). Re-encoding
+  upper-bound decomposition of the −0.83pp pending.
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
