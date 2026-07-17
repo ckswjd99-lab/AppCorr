@@ -155,14 +155,26 @@ groups `G` is configurable via `--num-groups`.
   VQA is not (on RealWorldQA cheap==re-encode==full). **Implication: the −2.56pp is recoverable
   headroom** — a better correction (re-refresh earlier bands' K/V as residuals arrive, or extra
   rounds) approaches the −0.56pp upper bound, at more compute.
-- [~] **Phase 5c — GQA (open-ended short-answer VQA, N=12578)**, a larger/harder VQA point than
-  RealWorldQA MCQ. Cheap correction: full 61.18% (7695), base_only 55.98% (7041),
-  progressive 60.34% (7590). **progressive vs full −0.83pp**; vs base_only +4.36pp (recovers most of
-  the −5.20pp base→full gap). GQA sits BETWEEN the two extremes — RealWorldQA global MCQ (+0.92pp, ~0)
-  < GQA compositional short-answer (−0.83pp) < RefCOCO precise grounding (−3.12pp): **the cheap
-  correction cost scales with the task's localization-sensitivity** (compositional questions need some
-  region attention, precise grounding needs exact localization, global MCQ needs neither). Re-encoding
-  upper-bound decomposition of the −0.83pp pending.
+- [x] **Phase 5c — GQA (open-ended short-answer VQA, N=12578)** + decomposition. Cheap correction:
+  full 61.18% (7695), base_only 55.98% (7041), progressive 60.34% (7590); **progressive vs full
+  −0.83pp**; vs base_only +4.36pp. Re-encode upper bound: progressive 60.42% (full/base_only
+  bit-identical to the cheap run). **Decomposition: −0.76pp inherent progressive-finalization staleness
+  + −0.07pp cheap-correction overhead** — the OPPOSITE of RefCOCO, where cheap overhead dominated.
+
+  **Three-task summary (3B, G=4, base factor 4, full datasets; progressive vs full, decomposed):**
+  | task | inherent (re-enc vs full) | cheap overhead (cheap vs re-enc) | total (cheap vs full) |
+  |---|---|---|---|
+  | RealWorldQA (global MCQ) | +0.66pp | +0.26pp | **+0.92pp** |
+  | GQA (compositional short-answer) | −0.76pp | −0.07pp | **−0.83pp** |
+  | RefCOCO (precise grounding) | −0.56pp | **−2.56pp** | **−3.12pp** |
+
+  **The refined conclusion:** (1) the **cheap-correction overhead is ~0 on BOTH VQA tasks** and blows
+  up (−2.56pp) **only on precise pixel grounding** — so the cheap correction is production-ready and
+  effectively lossless for VQA/VLA-style global+compositional understanding, matching the re-encode
+  upper bound; (2) the **inherent progressive-finalization staleness is uniformly small (≤0.76pp)**
+  across all tasks including grounding. Practical takeaway: deploy the cheap correction as-is for
+  VQA/VLA; the only place worth improving the correction (to recover the −2.56pp headroom) is precise
+  bbox grounding.
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
