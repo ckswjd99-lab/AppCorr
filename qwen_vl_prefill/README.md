@@ -175,6 +175,24 @@ groups `G` is configurable via `--num-groups`.
   across all tasks including grounding. Practical takeaway: deploy the cheap correction as-is for
   VQA/VLA; the only place worth improving the correction (to recover the −2.56pp headroom) is precise
   bbox grounding.
+- [~] **Phase C (preliminary) — dependence-aware `overlap` recovers the grounding cheap-correction
+  overhead.** Motivated by spatial_dependence.py (local dependence) + flops_windowed_vs_full.py (the
+  −2.56pp overhead lives entirely in the 4 full-attention layers, the only cross-band staleness
+  locus): at correction round g, re-refresh the trailing `overlap` already-arrived bands so those 4
+  layers mix fresher values for band g's nearest past dependencies (`progressive_correct.overlap`).
+  Token-level: mean‖prog−full‖ 27.7 (o=0) → 10.9 (o=1) → 5.1 (o=2) → 0 (o=3=G−1).
+
+  RefCOCO 3B, N=800 strided (directional; full/base = 85.12% / 77.75%):
+  | overlap | acc@0.5 | mean_iou | vs full | correction cost |
+  |---|---|---|---|---|
+  | 0 (plain cheap) | 81.88% | 0.7624 | −3.25pp | 1× |
+  | 1 | 83.25% | 0.7723 | −1.88pp (recovers ~42%) | ~1.75× |
+  | 2 | 83.75% | 0.7749 | −1.38pp (recovers ~58%) | ~2.25× |
+
+  A small local trailing re-refresh recovers most of the −2.56pp cheap-correction overhead at ≪ the
+  5× re-encode cost, approaching the −0.56pp upper bound — confirming the dependence-aware selection
+  idea. (This is a 1D trailing-band proxy; a 2D window-neighbor selector could recover more.)
+  Full-dataset confirmation + overlap-vs-full-dataset pending (GPUs busy with the 7B scaling sweep).
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
