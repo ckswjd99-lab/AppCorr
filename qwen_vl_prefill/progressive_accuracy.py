@@ -46,6 +46,8 @@ def main():
     ap.add_argument("--method", default="correct", choices=["correct", "reencoding"],
                     help="correct = cheap first-order fork (Phase 5, real); reencoding = re-encode upper bound (Phase 4+6)")
     ap.add_argument("--num-groups", type=int, default=4)
+    ap.add_argument("--overlap", type=int, default=0,
+                    help="method=correct only: trailing bands re-refreshed per round (0=plain cheap)")
     ap.add_argument("--base-factor", type=int, default=4)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--max-new-tokens", type=int, default=32)
@@ -100,7 +102,7 @@ def main():
         bands = PR.band_layout(prepared.image_grid_thw, merge_size, patch_size, args.num_groups)
 
         if args.method == "correct":
-            prog_e, full_e, base_e = PC.progressive_corrected_embeds(model, tower, processor, full_np, base_np, bands, device)
+            prog_e, full_e, base_e = PC.progressive_corrected_embeds(model, tower, processor, full_np, base_np, bands, device, overlap=args.overlap)
         else:
             prog_e, full_e, base_e = PR.progressive_finalized_embeds(model, processor, full_np, base_np, bands, device)
         # guard: token counts must match the prompt's image slots
@@ -126,8 +128,8 @@ def main():
 
     n = len(indices)
     metric = "mean_iou" if args.dataset == "refcoco" else "mean_score"
-    print(f"\n===== PROGRESSIVE FINALIZATION ACCURACY ({args.dataset}, method={args.method}, N={n}, "
-          f"G={args.num_groups}, base_factor={args.base_factor}) =====")
+    print(f"\n===== PROGRESSIVE FINALIZATION ACCURACY ({args.dataset}, method={args.method}, "
+          f"overlap={args.overlap}, N={n}, G={args.num_groups}, base_factor={args.base_factor}) =====")
     for m in modes:
         print(f"  {m:12s}: acc = {100*correct[m]/n:6.2f}%  ({correct[m]}/{n})  {metric}={iou_sum[m]/n:.4f}")
     df = 100 * (correct["progressive"] - correct["full"]) / n

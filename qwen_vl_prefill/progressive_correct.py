@@ -69,9 +69,15 @@ def _band_token_idx(tower, ctx, group_idx):
 
 
 @torch.inference_mode()
-def progressive_corrected_embeds(model, tower, processor, full_np, base_np, bands, device):
+def progressive_corrected_embeds(model, tower, processor, full_np, base_np, bands, device, overlap=0):
     """Cheap-correction analogue of progressive.progressive_finalized_embeds.
-    Returns (prog, full, base) merged embeds [Nv, H], raster order."""
+    Returns (prog, full, base) merged embeds [Nv, H], raster order.
+
+    overlap: at round g, re-correct bands [g-overlap .. g] together (not just band g). The trailing
+    `overlap` already-arrived bands get their K/V REFRESHED against the now-fresher cache, so the 4
+    full-attention layers -- the ONLY place cross-band staleness mixes in (flops_windowed_vs_full.py)
+    -- see fresher values for band g's nearest past dependencies. overlap=0 is the plain per-band
+    cheap correction; larger overlap interpolates toward the re-encode upper bound / full."""
     dtype = model.dtype
     pv_full, grid = encode_pixels(processor, full_np, device, dtype)
     pv_base, grid_b = encode_pixels(processor, base_np, device, dtype)
@@ -86,13 +92,15 @@ def progressive_corrected_embeds(model, tower, processor, full_np, base_np, band
     h_base, cache = tower.approx_forward(ctx_base["hidden_states"], 0, L, ctx_base, cache, "v")
     base_embeds = tower.get_merged_output(h_base, ctx)
 
-    # (2) progressive per-band correction against the ONE growing cache
+    # (2) progressive per-band correction against the ONE growing cache (with trailing re-refresh)
     h_prog = h_base.clone()
-    for band in bands:
-        group_idx = torch.arange(band.tok_start, band.tok_end, device=device)
+    for gi in range(len(bands)):
+        lo = max(0, gi - overlap)
+        # bands are contiguous top-to-bottom raster token ranges -> [lo..gi] is one contiguous span
+        group_idx = torch.arange(bands[lo].tok_start, bands[gi].tok_end, device=device)
         x_corr, cache = tower.correct_forward(ctx["hidden_states"].clone(), group_idx, 0, L, ctx, cache, "v")
         tok = _band_token_idx(tower, ctx, group_idx)
-        h_prog[tok] = x_corr[tok]  # freeze band g's finalized hidden
+        h_prog[tok] = x_corr[tok]  # (re)finalize the recomputed bands' hidden with the freshest context
 
     prog_embeds = tower.get_merged_output(h_prog, ctx)
     full_embeds = stock_embeds(model, pv_full, grid)     # stock reference (not the fork)
