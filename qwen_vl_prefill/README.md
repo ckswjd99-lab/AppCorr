@@ -182,17 +182,18 @@ groups `G` is configurable via `--num-groups`.
   layers mix fresher values for band g's nearest past dependencies (`progressive_correct.overlap`).
   Token-level: mean‖prog−full‖ 27.7 (o=0) → 10.9 (o=1) → 5.1 (o=2) → 0 (o=3=G−1).
 
-  RefCOCO 3B, N=800 strided (directional; full/base = 85.12% / 77.75%):
-  | overlap | acc@0.5 | mean_iou | vs full | correction cost |
-  |---|---|---|---|---|
-  | 0 (plain cheap) | 81.88% | 0.7624 | −3.25pp | 1× |
-  | 1 | 83.25% | 0.7723 | −1.88pp (recovers ~42%) | ~1.75× |
-  | 2 | 83.75% | 0.7749 | −1.38pp (recovers ~58%) | ~2.25× |
+  **RefCOCO 3B FULL-DATASET (N=8811)** confirmed (full 85.05% / 0.7859, base 77.40% / 0.7027):
+  | overlap | acc@0.5 | mean_iou | vs full | recovered | correction cost |
+  |---|---|---|---|---|---|
+  | 0 (plain cheap) | 81.93% | 0.7570 | −3.12pp | — | 1× |
+  | 1 | 84.05% | 0.7756 | **−1.00pp** | 68% | ~1.75× |
+  | 2 | 84.62% | 0.7821 | **−0.43pp** | 86% | ~2.25× |
 
-  A small local trailing re-refresh recovers most of the −2.56pp cheap-correction overhead at ≪ the
-  5× re-encode cost, approaching the −0.56pp upper bound — confirming the dependence-aware selection
-  idea. (This is a 1D trailing-band proxy; a 2D window-neighbor selector could recover more.)
-  Full-dataset confirmation + overlap-vs-full-dataset pending (GPUs busy with the 7B scaling sweep).
+  band_o0 reproduces the independent full-dataset cheap-correction number (−3.12pp) exactly. A small
+  local trailing re-refresh recovers most of the −2.56pp cheap-correction overhead at ≪ the 5×
+  re-encode cost: **overlap=2 reaches −0.43pp ≈ the −0.56pp re-encode upper bound (essentially
+  lossless)** at ~2.25×. Confirms the dependence-aware recovery idea. (Full-dataset is MORE optimistic
+  than the N=800 preliminary — o1 −1.88→−1.00, o2 −1.38→−0.43 — the nr-sanity rule again.)
 - [~] **Causal-order permutation of the visual prefill** (`causal_order.py`) — with M-RoPE positions
   carried along (each token keeps its true 2D position), only the causal MASK changes. Does it hurt?
   | order | RealWorldQA (full 765) | RefCOCO (full 8811) |
