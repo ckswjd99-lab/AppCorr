@@ -195,20 +195,19 @@ groups `G` is configurable via `--num-groups`.
   Full-dataset confirmation + overlap-vs-full-dataset pending (GPUs busy with the 7B scaling sweep).
 - [~] **Causal-order permutation of the visual prefill** (`causal_order.py`) — with M-RoPE positions
   carried along (each token keeps its true 2D position), only the causal MASK changes. Does it hurt?
-  | order | RealWorldQA (full 765) | RefCOCO (2000) |
+  | order | RealWorldQA (full 765) | RefCOCO (full 8811) |
   |---|---|---|
-  | identity (raster) | 60.13% | 84.85% |
-  | reverse | −0.13pp | **−43.70pp** |
-  | colmajor (=1-3-2-4) | −0.39pp | −24.00pp |
-  | random | −0.52pp | −16.20pp |
-  | **block4 (2D-local)** | +0.00pp | **−0.60pp** |
+  | identity (raster) | 60.13% | 85.05% |
+  | reverse | −0.13pp | **−44.19pp** |
+  | colmajor (=1-3-2-4) | −0.39pp | −23.60pp |
+  | random | −0.52pp | −15.99pp |
+  | **block4 (2D-local)** | +0.00pp | **−0.65pp** |
 
   **VQA is completely invariant to causal order; grounding is catastrophically sensitive to it —
   BUT only through 2D locality.** A causal order that keeps spatially-local tokens near each other
-  (block-raster) is essentially lossless (−0.60pp) while orders that scatter locality collapse
-  (reverse −44pp). So the visual prefill is NOT locked to raster: any 2D-locality-preserving order
-  works, enabling arrival/dependence/block-order streaming. (RefCOCO full-dataset confirmation of the
-  block4≈identity gap pending.)
+  (block-raster) is essentially lossless (−0.65pp on full 8811) while orders that scatter locality
+  collapse (reverse −44pp). So the visual prefill is NOT locked to raster: any 2D-locality-preserving
+  order works, enabling arrival/dependence/block-order streaming. Both datasets full-dataset confirmed.
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
