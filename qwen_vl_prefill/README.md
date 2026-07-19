@@ -208,6 +208,22 @@ groups `G` is configurable via `--num-groups`.
   (block-raster) is essentially lossless (−0.65pp on full 8811) while orders that scatter locality
   collapse (reverse −44pp). So the visual prefill is NOT locked to raster: any 2D-locality-preserving
   order works, enabling arrival/dependence/block-order streaming. Both datasets full-dataset confirmed.
+- [x] **2D-block vs 1D-band correction (NEGATIVE result)** (`block_correct.py`, `block_accuracy.py`).
+  Hypothesis: 2D-block granularity + spatial-nearest-neighbor overlap would recover more grounding
+  overhead than 1D trailing bands. **Refuted.** RefCOCO N=3000 strided (vs full):
+  | scheme | overlap 0 | 1 | 2 | 3 |
+  |---|---|---|---|---|
+  | 1D band (P=4,Q=1) | −2.47pp | −0.43pp | **−0.07pp** | — |
+  | 2D block (4×4, nearest) | −3.77pp | −2.00pp | −1.17pp | −0.63pp |
+
+  **1D horizontal bands beat 2D blocks at matched (or lower) refresh budget** — band_o0 (−2.47, budget
+  N) vs blk44_o0 (−3.77, budget N); best 1D band_o2 (−0.07, ~2.25N) beats best 2D blk44_o3 (−0.63,
+  ~3.8N). Grounding coordinate reasoning needs **horizontal consistency**: a full-width band finalizes
+  a whole Y-level together in one context, whereas 2D blocks fragment the width and finalize left/right
+  of the same row at different times/contexts, hurting precise localization. (Not a contradiction with
+  the block-causal-order result, which is about ORDER, not correction granularity.) **Takeaway: 1D
+  horizontal bands + overlap is the recovery mechanism; band overlap=2 recovers the −2.56pp overhead
+  to ~full (−0.07pp).** Full-dataset confirmation of band overlap pending.
 - [ ] Phase 7 — benchmarks + timeline plots across all modes.
 
 ## Notes on exactness
