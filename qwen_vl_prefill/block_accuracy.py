@@ -52,8 +52,14 @@ def main():
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--max-new-tokens", type=int, default=32)
     ap.add_argument("--out-jsonl", default=None)
+    ap.add_argument("--configs", default=None, help="comma-separated config names to run (default all)")
     args = ap.parse_args()
     dev = args.device
+
+    global CONFIGS
+    if args.configs:
+        keep = set(args.configs.split(","))
+        CONFIGS = [c for c in CONFIGS if c[0] in keep]
 
     print(f"[block-acc] loading {args.model_id} ...")
     model, proc = I.load_model(args.model_id, device=dev)
