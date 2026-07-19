@@ -116,9 +116,8 @@ def main():
         if out_f:
             out_f.write(json.dumps(row) + "\n"); out_f.flush()
         if (c_i + 1) % 32 == 0:
-            print(f"  [{c_i+1}/{len(indices)}] full={100*correct['full']/(c_i+1):.1f} "
-                  f"band_o0={100*correct['band_o0']/(c_i+1):.1f} blk44_o2={100*correct['blk44_o2']/(c_i+1):.1f}",
-                  flush=True)
+            msg = "  ".join(f"{m}={100*correct[m]/(c_i+1):.1f}" for m in modes[:4])
+            print(f"  [{c_i+1}/{len(indices)}] {msg}", flush=True)
 
     n = len(indices)
     metric = "iou" if args.dataset == "refcoco" else "score"
