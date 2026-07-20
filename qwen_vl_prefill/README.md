@@ -242,6 +242,13 @@ groups `G` is configurable via `--num-groups`.
   is stale-base), whereas tile-splitting discards the global coordinate frame + all cross-tile
   attention. So independent-tile encoding is not viable (grounding), and horizontal-preserving splits
   (2×1) always hurt least — consistent with the 1D-band / horizontal-consistency findings.
+- [x] **TextVQA (OCR VQA, N=5000, G=4 overlap=0)** — pipelined vs approx-only vs baseline. Mean soft
+  VQA score: full 80.53, base_only (approx-only) 61.47, progressive (pipelined) 79.70.
+  **progressive vs full −0.83pp; base_only vs full −19.05pp.** Reading text needs fine detail, so the
+  low-res base collapses (−19pp, text unreadable), but progressive (overlap=0) recovers it to ~−0.8pp
+  of full — because the fine detail is LOCAL (each band is corrected to high-res within itself), so
+  text reading is insensitive to the cross-band staleness. Places TextVQA near general VQA (~0) and
+  far from grounding (−3.12pp): the base→full gap is huge but almost fully recovered by progressive.
 - [ ] Phase 7 — benchmarks + timeline plots across all modes (deferred).
 
 ## Notes on exactness
