@@ -237,8 +237,35 @@ class InfoVQASpec(DocVQASpec):
         return load_dataset(self.hf, "InfographicVQA", split=self.split)
 
 
+_YESNO_RE = re.compile(r"\b(yes|no)\b")
+
+
+class POPESpec:
+    """POPE object-hallucination benchmark (test, yes/no 'Is there a X in the image?'). Accuracy on
+    yes/no; fits the per-sample driver like the other VQA sets."""
+    name = "pope"
+    hf = "lmms-lab/POPE"
+    split = "test"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = ex["question"].strip() + "\nAnswer the question using a single word (yes or no)."
+        return image_r, prompt, str(ex["answer"]).strip().lower()
+
+    def score(self, pred_text, gold):
+        m = _YESNO_RE.search(pred_text.lower())
+        pred = m.group(1) if m else ""
+        return int(pred == gold), float(pred == gold)
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
-         "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec, "infovqa": InfoVQASpec}
+         "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
+         "infovqa": InfoVQASpec, "pope": POPESpec}
 
 
 def get_spec(name):
