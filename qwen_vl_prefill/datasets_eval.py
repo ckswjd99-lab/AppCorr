@@ -120,7 +120,39 @@ class GQASpec:
         return ok, float(ok)
 
 
-SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec}
+_ARTICLES = {"a", "an", "the"}
+
+
+def _vqa_norm(s):
+    s = re.sub(r"[^\w\s]", " ", str(s).lower())
+    return " ".join(t for t in s.split() if t not in _ARTICLES)
+
+
+class TextVQASpec:
+    """TextVQA (OCR-heavy VQA, validation 5000). Standard VQA soft-accuracy: min(#matching answers/3,
+    1) over the 10 human answers, after VQA normalization. Headline metric = mean soft score."""
+    name = "textvqa"
+    hf = "lmms-lab/textvqa"
+    split = "validation"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = ex["question"].strip() + "\nAnswer the question using a single word or phrase."
+        return image_r, prompt, list(ex["answers"])
+
+    def score(self, pred_text, gold):
+        p = _vqa_norm(pred_text)
+        m = sum(1 for a in gold if _vqa_norm(a) == p)
+        sc = min(m / 3.0, 1.0)
+        return int(sc >= 0.5), float(sc)
+
+
+SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec, "textvqa": TextVQASpec}
 
 
 def get_spec(name):
