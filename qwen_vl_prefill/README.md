@@ -11,6 +11,30 @@ standard KV-cache API (`DynamicCache` / `past_key_values`). The ProgVFM first-or
 in later at the visual-embedding interface (a correction module outputs *corrected visual-embedding
 groups*; the LLM prefill path stays pure-stock).
 
+## Benchmark suite (3B, G=4, overlap=0) — appcorr is near-lossless on everything except grounding
+
+`baseline` = full-image encoding, `approx-only` = coarse base only (no correction), `appcorr` =
+progressive per-band cheap correction (overlap=0). Full datasets unless noted.
+
+| Task | metric | baseline | approx-only | appcorr | Δ appcorr | Δ approx |
+|---|---|---|---|---|---|---|
+| RealWorldQA | acc | 60.13 | 57.65 | 60.39 | **+0.26** | −2.48 |
+| GQA | acc | 61.18 | 55.98 | 60.34 | **−0.83** | −5.20 |
+| TextVQA | soft-acc | 80.53 | 61.47 | 79.70 | **−0.83** | −19.05 |
+| ChartQA | rel-acc | 84.64 | 29.00 | 83.04 | **−1.60** | −55.64 |
+| InfoVQA | ANLS | 74.24 | 56.22 | 74.05 | **−0.19** | −18.02 |
+| DocVQA | ANLS | 92.26 | 87.34 | 91.89 | **−0.37** | −4.93 |
+| COCO Caption | CIDEr | 108.0 | 104.2 | 106.2 | **−1.9** | −3.9 |
+| Flickr30k (1000) | CIDEr | 86.4 | 69.4 | 86.9 | **+0.5** | −17.0 |
+| POPE | acc | 87.42 | 82.49 | 87.62 | **+0.20** | −4.93 |
+| RefCOCO (grounding) | iou@.5 | 85.05 | 77.40 | 81.93 | **−3.12** | −7.65 |
+
+**appcorr is near-lossless (−1.9 to +0.5) on all 9 VQA/captioning tasks — even where the low-res base
+collapses (ChartQA −55.6, TextVQA −19, InfoVQA −18, Flickr −17).** Fine detail (reading text, charts,
+documents) is LOCAL, so per-band high-res correction recovers it despite cross-band staleness. Only
+precise **grounding** (RefCOCO −3.12pp) pays a real cost — precise localization is the sole
+staleness-sensitive task. (Datasets: `datasets_eval.py` + `caption_accuracy.py`/`cider.py` for CIDEr.)
+
 ## Modules (kept separate: introspection ≠ correction math ≠ benchmark logic)
 
 - `introspect.py` — model loading + multimodal input plumbing for the stock model: `prepare_inputs`,
