@@ -225,7 +225,24 @@ groups `G` is configurable via `--num-groups`.
   the block-causal-order result, which is about ORDER, not correction granularity.) **Takeaway: 1D
   horizontal bands + overlap is the recovery mechanism; band overlap=2 recovers the −2.56pp overhead
   to ~full (−0.07pp).** Full-dataset confirmation of band overlap pending.
-- [ ] Phase 7 — benchmarks + timeline plots across all modes.
+- [x] **Independent tile encoding (NEGATIVE result)** (`split_encode.py`). Test: encode P×Q image
+  tiles separately through the vision encoder, stitch tokens to raster, feed the LLM. Qwen2.5-VL
+  tokens ARE location-agnostic (2D RoPE relative, no absolute pos embedding; M-RoPE re-assigns global
+  position — verified 1×1==full bit-exact). But encoding tiles standalone destroys **cross-tile
+  relative structure AND cross-tile attention** (each tile restarts at pos (0,0), per-tile windowing,
+  no cross-tile mixing). Result (vs 1×1 full-image, interim ~30%):
+  | split | RealWorldQA (VQA) | RefCOCO (grounding) |
+  |---|---|---|
+  | 2×1 (full-width tiles) | −5.0pp | −43.9pp |
+  | 2×2 | −9.7pp | −76.0pp (85→9%) |
+  | 4×4 | −9.3pp | −79.6pp |
+
+  **Grounding collapses; VQA loses ~10pp.** Far worse than progressive correction (grounding −3.12pp)
+  because progressive keeps the SHARED encoder (full-image windowing/positions, only non-arrived K/V
+  is stale-base), whereas tile-splitting discards the global coordinate frame + all cross-tile
+  attention. So independent-tile encoding is not viable (grounding), and horizontal-preserving splits
+  (2×1) always hurt least — consistent with the 1D-band / horizontal-consistency findings.
+- [ ] Phase 7 — benchmarks + timeline plots across all modes (deferred).
 
 ## Notes on exactness
 
