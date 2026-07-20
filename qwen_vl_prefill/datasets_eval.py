@@ -152,7 +152,93 @@ class TextVQASpec:
         return int(sc >= 0.5), float(sc)
 
 
-SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec, "textvqa": TextVQASpec}
+def _to_float(s):
+    m = re.search(r"-?\d+(?:\.\d+)?", str(s).replace(",", ""))
+    return float(m.group()) if m else None
+
+
+class ChartQASpec:
+    """ChartQA (test ~2500). RELAXED accuracy: numeric answers correct within 5% relative tolerance,
+    text answers exact-match after VQA normalization. Single gold answer."""
+    name = "chartqa"
+    hf = "lmms-lab/ChartQA"
+    split = "test"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = ex["question"].strip() + "\nAnswer the question using a single word or phrase."
+        return image_r, prompt, str(ex["answer"])
+
+    def score(self, pred_text, gold):
+        g, p = _to_float(gold), _to_float(pred_text)
+        if g is not None and p is not None:
+            ok = int(abs(p - g) <= 0.05 * abs(g)) if g != 0 else int(abs(p) < 1e-9)
+        else:
+            ok = int(_vqa_norm(pred_text) == _vqa_norm(gold))
+        return ok, float(ok)
+
+
+def _levenshtein(a, b):
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+class DocVQASpec:
+    """DocVQA (config 'DocVQA', validation ~5349, document scans). Official metric = ANLS (Average
+    Normalized Levenshtein Similarity), threshold 0.5, max over the multiple gold answers.
+    Headline metric = mean ANLS."""
+    name = "docvqa"
+    hf = "lmms-lab/DocVQA"
+    split = "validation"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, "DocVQA", split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = ex["question"].strip() + "\nAnswer the question using a single word or phrase."
+        return image_r, prompt, list(ex["answers"])
+
+    def score(self, pred_text, gold):
+        p = pred_text.strip().lower()
+        best = 0.0
+        for a in gold:
+            a = str(a).strip().lower()
+            ml = max(len(p), len(a))
+            nl = _levenshtein(p, a) / ml if ml > 0 else 0.0
+            best = max(best, (1.0 - nl) if nl < 0.5 else 0.0)
+        return int(best >= 0.5), float(best)
+
+
+class InfoVQASpec(DocVQASpec):
+    """InfographicVQA (config 'InfographicVQA' of lmms-lab/DocVQA, validation). Same ANLS metric /
+    prompt as DocVQA; infographic images (large, dense text+graphics)."""
+    name = "infovqa"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, "InfographicVQA", split=self.split)
+
+
+SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
+         "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec, "infovqa": InfoVQASpec}
 
 
 def get_spec(name):
