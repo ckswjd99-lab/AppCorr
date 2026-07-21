@@ -20,9 +20,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+for _p in Path(__file__).resolve().parents[1:3]:  # analysis/ (qwen_vl_prefill) + repo root (appcorr)
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from qwen_vl_prefill import introspect as I
 from qwen_vl_prefill import progressive as PR

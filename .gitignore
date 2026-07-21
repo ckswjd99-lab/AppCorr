@@ -218,5 +218,6 @@ appcorr/weights
 .gitattributes
 graphify-out
 AGENTS.md
-CLAUDE.mdqwen_vl_prefill/_vsr_images/
-qwen_vl_prefill/_textvqa_samples/
+CLAUDE.md
+analysis/qwen_vl_prefill/_vsr_images/
+analysis/qwen_vl_prefill/_textvqa_samples/
