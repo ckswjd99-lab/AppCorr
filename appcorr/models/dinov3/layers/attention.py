@@ -254,11 +254,13 @@ class SelfAttention(nn.Module):
                 attn_cache_candidates=kwargs["attn_cache_candidates"],
                 attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
             )
+        if appcorr_method == "csr":
+            return self.approx_csr(x, rope, cache_feature, tag, **kwargs)
         raise ValueError(
             f"Unknown SelfAttention.approx method '{appcorr_method}'. "
-            "Available methods: partial_channel, partial_token"
+            "Available methods: csr, partial_channel, partial_token"
         )
-    
+
     def correct(
         self,
         x_sel: Tensor,
@@ -273,10 +275,136 @@ class SelfAttention(nn.Module):
             return self.correct_partial_token(x_sel, dindice, rope, cache_feature, tag, **kwargs)
         if appcorr_method == "partial_channel":
             return self.correct_partial_channel(x_sel, dindice, rope, cache_feature, tag, **kwargs)
+        if appcorr_method == "csr":
+            return self.correct_csr(x_sel, dindice, rope, cache_feature, tag, **kwargs)
         raise ValueError(
             f"Unknown SelfAttention.correct method '{appcorr_method}'. "
-            "Available methods: partial_channel, partial_token"
+            "Available methods: csr, partial_channel, partial_token"
         )
+
+    # ==== CSR approx/correct -- placeholder = plain full attention forward =============
+    # SKELETON: no-approximation full attention forward (ignores dindice / caching), so it behaves
+    # exactly like a normal forward. Replace with the real CSR logic.
+    def approx_csr(
+        self, x: Tensor, rope: Tensor, cache_feature: Dict, tag: str, **kwargs
+    ) -> Tuple[Tensor, dict]:
+        qkv = self.qkv(x)
+
+        # --- full (low-res) attention, inlined ---
+        B, N, _ = qkv.shape
+        C = self.qkv.in_features
+        qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        q, k, v = torch.unbind(qkv, 2)
+        q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+
+        if rope is not None:
+            q, k = self.apply_rope(q, k, rope)
+
+        # Cache K/V for token-pruned correction (partial-token style): [B, N, 2, H, Dh] with slot 0 =
+        # post-rope K, slot 1 = V. correct() refreshes only the active tokens' K/V here and lets the
+        # active queries attend over the mixed (fresh-active + stale-non-active) cache.
+        kv = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=2)  # [B, N, 2, H, Dh]
+        cache_feature[f"{tag}_kv"] = kv.detach()
+
+        attn_score = q @ k.transpose(-2, -1) * self.scale
+        attn_prob = attn_score.softmax(dim=-1)  # [B, H, N, N]
+        attn_v = attn_prob @ v  # [B, H, N, D//H]
+
+        # Predict the HR sparse support from the low-res attention prob: per query keep the top-k
+        # (25% of patches) keys + the prefix columns (CLS/registers, always). Cache the boolean mask;
+        # correct() turns it into a CSR mask for torch.sparse.sampled_addmm.
+        num_prefix = N - rope[0].shape[-2] if rope is not None else 0
+        num_keep_patch = max(1, int((N - num_prefix) * 0.25))
+        patch_topk = attn_prob[..., num_prefix:].topk(num_keep_patch, dim=-1).indices + num_prefix  # [B,H,N,kp]
+        csr_mask = torch.zeros_like(attn_prob, dtype=torch.bool)      # [B, H, N, N]
+        csr_mask.scatter_(-1, patch_topk, True)
+        if num_prefix > 0:
+            csr_mask[..., :num_prefix] = True                        # prefix always kept
+        cache_feature[f"{tag}_csr_mask"] = csr_mask.detach()
+
+        attn_v = attn_v.transpose(1, 2).reshape([B, N, C])
+        x = self.proj(attn_v)
+        x = self.proj_drop(x)
+        return x, cache_feature
+
+    def correct_csr(
+        self,
+        x_sel: Tensor,
+        dindice: Tensor,
+        rope: Tensor,
+        cache_feature: Dict,
+        tag: str,
+        **kwargs,
+    ) -> Tuple[Tensor, dict]:
+        # Token-pruned CSR correction (partial-token style). x_sel is the packed set of ACTIVE tokens
+        # [num_active, C] (from fixed_query_state). We refresh only those tokens' K/V in the cache and
+        # recompute sparse attention only for those queries; non-active tokens keep their cached (stale)
+        # K/V and their approx block output (the block reconstructs + scatters).
+        fixed_query_state = kwargs.get("fixed_query_state")
+
+        kv = cache_feature[f"{tag}_kv"]                     # [B, N, 2, H, Dh]
+        csr_mask = cache_feature[f"{tag}_csr_mask"]         # [B, H, N, N]
+        B, N = kv.shape[0], kv.shape[1]
+        H = self.num_heads
+        C = self.qkv.in_features
+        Dh = C // H
+
+        x_sel = x_sel.reshape(-1, C)
+        num_active = x_sel.shape[0]
+        qkv_new = self.qkv(x_sel).reshape(num_active, 3, H, Dh)
+        q_new = qkv_new[:, 0]                               # [num_active, H, Dh]
+        k_new = qkv_new[:, 1]
+        v_new = qkv_new[:, 2]
+
+        if fixed_query_state is not None:
+            abi = fixed_query_state.active_batch_idx
+            ati = fixed_query_state.active_token_idx
+        else:
+            # Fallback: treat every token as active (row-major (batch, token) packing).
+            abi = torch.arange(B, device=x_sel.device).repeat_interleave(N)
+            ati = torch.arange(N, device=x_sel.device).repeat(B)
+
+        if rope is not None:
+            prefix_len = N - rope[0].shape[0]
+            patch_mask = ati >= prefix_len
+            rope_idx = (ati - prefix_len).clamp_min(0)
+            q_new, k_new = self._apply_rope_to_active_tokens(
+                q_new, k_new, rope, ati, prefix_len, patch_mask=patch_mask, rope_idx=rope_idx,
+            )
+
+        # Refresh active tokens' K/V (slot 0 = post-rope K, slot 1 = V); non-active stay stale.
+        kv[abi, ati, 0] = k_new.to(kv.dtype)
+        kv[abi, ati, 1] = v_new.to(kv.dtype)
+        k_full, v_full = torch.unbind(kv, 2)               # [B, N, H, Dh]
+        k_full = k_full.transpose(1, 2)                    # [B, H, N, Dh]
+        v_full = v_full.transpose(1, 2)
+
+        # Sparse attention only for active query rows, over the mixed K/V cache. torch.sparse CUDA
+        # kernels are fp32/fp64 only -> disable the bf16 autocast for this block.
+        out = q_new.new_zeros((num_active, H, Dh))
+        with torch.autocast(device_type=x_sel.device.type, enabled=False):
+            for b in range(B):
+                sel = abi == b
+                pos = torch.nonzero(sel, as_tuple=True)[0]
+                if pos.numel() == 0:
+                    continue
+                idx_b = ati[pos]                            # [na_b] global token positions
+                q_b = q_new[pos].float()                   # [na_b, H, Dh]
+                kb = k_full[b].float()                     # [H, N, Dh]
+                vb = v_full[b].float()                     # [H, N, Dh]
+                mask_b = csr_mask[b]                        # [H, N, N]
+                for h in range(H):
+                    mask_csr = mask_b[h][idx_b].to(torch.float32).to_sparse_csr()  # [na_b, N]
+                    scores = torch.sparse.sampled_addmm(
+                        mask_csr, q_b[:, h], kb[h].transpose(0, 1), beta=0.0, alpha=self.scale,
+                    )
+                    probs = torch.sparse.softmax(scores.to_sparse_coo(), dim=-1)
+                    out[pos, h] = torch.sparse.mm(probs, vb[h]).to(out.dtype)
+
+        attn_out = out.reshape(num_active, C)
+        attn_out = self.proj(attn_out)
+        attn_out = self.proj_drop(attn_out)
+        return attn_out, cache_feature
 
     @staticmethod
     def _apply_rope_to_active_tokens(
