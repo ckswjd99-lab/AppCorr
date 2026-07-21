@@ -24,6 +24,7 @@ progressive per-band cheap correction (overlap=0). Full datasets unless noted.
 | ChartQA | rel-acc | 84.64 | 29.00 | 83.04 | **−1.60** | −55.64 |
 | InfoVQA | ANLS | 74.24 | 56.22 | 74.05 | **−0.19** | −18.02 |
 | DocVQA | ANLS | 92.26 | 87.34 | 91.89 | **−0.37** | −4.93 |
+| MMMU (single-img 857) | acc | 47.84 | 44.92 | 47.02 | **−0.82** | −2.92 |
 | COCO Caption | CIDEr | 108.0 | 104.2 | 106.2 | **−1.9** | −3.9 |
 | Flickr30k (1000) | CIDEr | 86.4 | 69.4 | 86.9 | **+0.5** | −17.0 |
 | POPE | acc | 87.42 | 82.49 | 87.62 | **+0.20** | −4.93 |
