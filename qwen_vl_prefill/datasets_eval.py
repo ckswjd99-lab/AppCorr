@@ -304,9 +304,42 @@ class MMMUSpec:
         return ok, float(ok)
 
 
+import os
+
+_VSR_IMG_DIR = os.path.join(os.path.dirname(__file__), "_vsr_images")
+_TF_RE = re.compile(r"\b(true|false)\b")
+
+
+class VSRSpec:
+    """VSR zeroshot (visual spatial reasoning, test 1222). True/false whether a spatial caption holds.
+    Images are COCO train2017 referenced by URL -> pre-cached to `_vsr_images/` (see the downloader);
+    rows whose image is missing from the cache are filtered out. Accuracy on true/false."""
+    name = "vsr"
+    hf = "cambridgeltl/vsr_zeroshot"
+    split = "test"
+
+    def load(self, load_dataset):
+        ds = load_dataset(self.hf, split=self.split)
+        return ds.filter(lambda r: os.path.exists(os.path.join(_VSR_IMG_DIR, r["image"])))
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = Image.open(os.path.join(_VSR_IMG_DIR, ex["image"])).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = (f'Based on the image, is the following statement true or false? "{ex["caption"]}"\n'
+                  "Answer with a single word: true or false.")
+        return image_r, prompt, ("true" if ex["label"] == 1 else "false")
+
+    def score(self, pred_text, gold):
+        p = pred_text.strip().lower()
+        m = _TF_RE.search(p)
+        pred = m.group(1) if m else ("true" if re.search(r"\byes\b", p) else ("false" if re.search(r"\bno\b", p) else ""))
+        return int(pred == gold), float(pred == gold)
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
-         "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec}
+         "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec}
 
 
 def get_spec(name):
