@@ -19,6 +19,7 @@ progressive per-band cheap correction (overlap=0). Full datasets unless noted.
 | Task | metric | baseline | approx-only | appcorr | Δ appcorr | Δ approx |
 |---|---|---|---|---|---|---|
 | RealWorldQA | acc | 60.13 | 57.65 | 60.39 | **+0.26** | −2.48 |
+| VSR | acc | 80.85 | 76.92 | 80.28 | **−0.57** | −3.93 |
 | GQA | acc | 61.18 | 55.98 | 60.34 | **−0.83** | −5.20 |
 | TextVQA | soft-acc | 80.53 | 61.47 | 79.70 | **−0.83** | −19.05 |
 | ChartQA | rel-acc | 84.64 | 29.00 | 83.04 | **−1.60** | −55.64 |
