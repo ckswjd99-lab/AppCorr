@@ -263,9 +263,50 @@ class POPESpec:
         return int(pred == gold), float(pred == gold)
 
 
+class MMMUSpec:
+    """MMMU (college-level multi-discipline, validation). Our pipeline is single-image, so we keep the
+    single-image questions only (image_2..7 all None) -- report as 'MMMU single-image subset'. MCQ
+    scored on the extracted option letter; open questions on normalized substring match."""
+    name = "mmmu"
+    hf = "lmms-lab/MMMU"
+    split = "validation"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split).filter(lambda ex: ex["image_2"] is None)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import ast
+        image = ex["image_1"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        q = re.sub(r"<image\s*\d+>", "", ex["question"]).strip()
+        letters = "ABCDEFGHIJ"
+        if ex["question_type"] == "multiple-choice":
+            try:
+                opts = ast.literal_eval(ex["options"])
+            except Exception:
+                opts = []
+            optstr = "\n".join(f"{letters[i]}. {o}" for i, o in enumerate(opts))
+            prompt = f"{q}\n{optstr}\nAnswer with the option's letter from the given choices directly."
+        else:
+            prompt = q + "\nAnswer the question using a single word or phrase."
+        return image_r, prompt, (str(ex["answer"]).strip(), ex["question_type"])
+
+    def score(self, pred_text, gold):
+        ans, qtype = gold
+        p = pred_text.strip()
+        if qtype == "multiple-choice":
+            m = re.search(r"\b([A-J])\b", p) or re.search(r"([A-J])", p)
+            pred = m.group(1).upper() if m else ""
+            ok = int(pred == ans.upper())
+        else:
+            ok = int(len(_vqa_norm(ans)) > 0 and _vqa_norm(ans) in _vqa_norm(p))
+        return ok, float(ok)
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
-         "infovqa": InfoVQASpec, "pope": POPESpec}
+         "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec}
 
 
 def get_spec(name):
