@@ -52,7 +52,7 @@ staleness-sensitive task. (Datasets: `datasets_eval.py` + `caption_accuracy.py`/
 conda activate appcorr
 
 # Monolithic-vs-chunked prefill equivalence test (first milestone)
-python qwen_vl_prefill/equivalence_test.py \
+python analysis/qwen_vl_prefill/equivalence_test.py \
     --model-id Qwen/Qwen2.5-VL-3B-Instruct --num-groups 4 --device cuda:0
 # default image = RefCOCO val[0]; add --image PATH --prompt "..." to override.
 # --dtype fp32 isolates bf16 accumulation noise from real bugs.
