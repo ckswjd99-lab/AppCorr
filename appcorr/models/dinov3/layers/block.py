@@ -268,11 +268,13 @@ class SelfAttentionBlock(nn.Module):
             return self.approx_partial_token(x, rope, cache_feature, tag, **kwargs)
         if appcorr_method == "partial_channel":
             return self.approx_partial_channel(x, rope, cache_feature, tag, **kwargs)
+        if appcorr_method == "csr":
+            return self.approx_csr(x, rope, cache_feature, tag, **kwargs)
         raise ValueError(
             f"Unknown SelfAttentionBlock.approx method '{appcorr_method}'. "
-            "Available methods: partial_channel, partial_token"
+            "Available methods: csr, partial_channel, partial_token"
         )
-    
+
     @nvtx.annotate("correct")
     def correct(
             self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
@@ -292,10 +294,104 @@ class SelfAttentionBlock(nn.Module):
                 attn_col_alive_ratio=kwargs.get("attn_col_alive_ratio", 1.0),
                 attn_cache_key=kwargs.get("attn_cache_key"),
             )
+        if appcorr_method == "csr":
+            return self.correct_csr(x, dindice, rope, cache_feature, tag, **kwargs)
         raise ValueError(
             f"Unknown SelfAttentionBlock.correct method '{appcorr_method}'. "
-            "Available methods: partial_channel, partial_token"
+            "Available methods: csr, partial_channel, partial_token"
         )
+
+    # ==== CSR block-level approx/correct -- placeholder = plain full forward ===========
+    # SKELETON: currently a no-approximation full block forward (ignores dindice / selection), so it
+    # behaves EXACTLY like a normal forward. Replace the bodies with the real CSR approx/correct logic.
+    @nvtx.annotate("approx_csr")
+    def approx_csr(
+        self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
+        server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
+        with torch.cuda.nvtx.range("approx_attn"):
+            x_attn, cache_feature = self.attn.approx(
+                self.norm1(x),
+                rope=rope,
+                cache_feature=cache_feature,
+                tag=tag,
+                appcorr_method="csr",
+                server_pscore=server_pscore,
+            )
+            x_attn = self.ls1(x_attn)  # [B, N, C]
+            cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
+
+            x_attn = x + x_attn
+
+        with torch.cuda.nvtx.range("approx_ffn"):
+            mlp_out, cache_feature = self.mlp.approx_csr(self.norm2(x_attn), cache_feature, tag)
+            mlp_out = self.ls2(mlp_out)  # [B, N, C]
+            cache_feature[f"{tag}_blocks_out_sum"] += mlp_out.detach()
+
+            x_ffn = x_attn + mlp_out
+
+        return x_ffn, cache_feature
+
+    @nvtx.annotate("correct_csr")
+    def correct_csr(
+        self, x: torch.Tensor, dindice: List[int], rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
+    ) -> List[Tensor]:
+        # Token-pruned CSR correction (partial-token style): correct only the ACTIVE tokens
+        # (fixed_query_state) with the sparse attention/FFN, reconstruct the approx block output for
+        # every token (x + blocks_out_sum, cached at approx time), then scatter the freshly-corrected
+        # active tokens back. Non-active tokens keep their approx value.
+        server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
+        fixed_query_state = kwargs.get("fixed_query_state")
+
+        with torch.cuda.nvtx.range("correct_attn"):
+            if fixed_query_state is not None:
+                active_batch_idx = fixed_query_state.active_batch_idx
+                active_token_idx = fixed_query_state.active_token_idx
+                x_active = x[active_batch_idx, active_token_idx].contiguous()  # [num_active, C]
+            else:
+                active_batch_idx = active_token_idx = None
+                x_active = x.reshape(-1, x.shape[-1])                          # [B*N, C]
+
+            x_attn_sel, cache_feature = self.attn.correct(
+                self.norm1(x_active),
+                dindice,
+                rope=rope,
+                cache_feature=cache_feature,
+                tag=tag,
+                appcorr_method="csr",
+                server_pscore=server_pscore,
+                fixed_query_state=fixed_query_state,
+            )
+            x_attn_active = x_active + self.ls1(x_attn_sel).to(dtype=x_active.dtype)
+
+        with torch.cuda.nvtx.range("correct_ffn"):
+            active_index = (
+                (active_batch_idx, active_token_idx) if fixed_query_state is not None else None
+            )
+            mlp_out_active, cache_feature = self.mlp.correct_csr(
+                self.norm2(x_attn_active), cache_feature, tag, active_index=active_index
+            )
+            mlp_out_active = self.ls2(mlp_out_active)  # [num_active, C]
+
+            # Approx block output for every token (blocks_out_sum was cached during approx).
+            residual = cache_feature[f"{tag}_blocks_out_sum"]
+            if residual.dtype != x.dtype:
+                residual = residual.to(dtype=x.dtype)
+            x_base = x + residual
+
+            if fixed_query_state is not None:
+                x = active_token_update_triton(
+                    x_base,
+                    active_batch_idx,
+                    active_token_idx,
+                    x_attn_active,
+                    mlp_out_active,
+                    clone_base=False,
+                )
+            else:
+                x = (x_attn_active + mlp_out_active).reshape(x.shape)
+
+        return x, cache_feature
 
     def approx_partial_token(
         self, x: torch.Tensor, rope: Tuple[torch.Tensor], cache_feature: Dict, tag: str, **kwargs
