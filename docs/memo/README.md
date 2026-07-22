@@ -11,6 +11,10 @@ produced them.
 - [ade20k_sr_residual_pruning_sweep.md](ade20k_sr_residual_pruning_sweep.md) — ADE20K m2f (ViT-7B):
   full-val threshold sweep of appcorr / appcorr+SR / appcorr+SR+SR-residual-pruning. Finding:
   SR-residual pruning only beats plain appcorr in a narrow ~30% recompute band; SR base alone ≈ a wash.
+- [ade20k_grid_vs_blockgrid_grouping.md](ade20k_grid_vs_blockgrid_grouping.md) — ADE20K m2f: interleaved
+  `grid` (dispersed) vs `block_grid` (contiguous quadrants). block_grid ~+0.5 mIoU at matched recompute
+  on full 2000 (nr=100 was misleadingly reversed by noise). Includes how block_grid maps onto the
+  sliding-window crops (global-coord quadrants) and why coherent per-crop correction timing helps.
 
 ## Related work elsewhere in the repo (not in this folder)
 
