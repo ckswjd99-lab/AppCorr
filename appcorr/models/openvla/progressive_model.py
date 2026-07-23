@@ -367,6 +367,63 @@ class OpenVLAProgressiveModel:
             )
         self.cache_feature["_x"] = x
 
+    # === True chunked causal prefill (no LLM approx-then-correct redundancy) ===
+    # For a CAUSAL decoder with sequential (raster, top-to-bottom) vision grouping, each vision
+    # token attends only to earlier positions, so its LLM state can be computed EXACTLY ONCE, when
+    # its group arrives, and never revisited -- unlike the bidirectional vision towers, which must
+    # be recomputed per group. This replaces `llm_approx_segment` (a full blur-vision LLM pass) +
+    # per-group `llm_correct_segment` (which re-corrects the whole text suffix every round). It is
+    # bit-equivalent to that path here: a corrected group's causal mask already excludes the
+    # not-yet-arrived (blur/zero) later positions, so the base approx's blur K/V for them was never
+    # read anyway; and the text suffix, prefilled once at the last group, attends to exactly the
+    # same per-group arrival-time vision K/V. Net LLM work drops from ~2x vision + ~5x text to 1x.
+
+    def _llm_prefill_positions(self, token_idx: torch.Tensor):
+        """Prefill `token_idx` through all LLM layers via the O(Q) `.prefill()` path (threads only
+        the Q query rows, never a full [B, N, C] tensor). The resulting top-layer states are
+        scattered back into `cache["_x"]` so `decode_action` (which reads the text-end position)
+        sees them. Reused for BOS, each vision group, and the final text suffix."""
+        token_idx = self._bucketize_token_idx(token_idx.to(dtype=torch.long, device=self.device))
+        x0 = self._x0
+        B = x0.shape[0]
+        position_ids_sel = token_idx.unsqueeze(0).expand(B, -1).to(device=x0.device)
+        cos, sin = self.llm_layers[0].self_attn.rotary_emb(x0, position_ids_sel)
+        x_sel = x0[:, token_idx]  # [B, Q, C]
+        for i in range(len(self.llm_layers)):
+            x_sel, self.cache_feature = self.llm_layers[i].prefill(
+                x_sel, token_idx, self.cache_feature, f"llm_layer{i}", cos=cos, sin=sin,
+            )
+        x_full = self.cache_feature.get("_x", x0)
+        x_full = x_full.clone()  # don't alias _x0 / the previous group's stream
+        x_full[:, token_idx] = x_sel.to(dtype=x_full.dtype)
+        self.cache_feature["_x"] = x_full
+
+    def llm_chunked_init(self):
+        """Base setup for chunked prefill: zero-initialise every layer's K/V cache (so later
+        `.prefill()` calls act as first-time prefills; positions not yet prefilled are never read
+        thanks to causal masking), then prefill BOS (position 0). No `blocks_out_sum` is needed --
+        the O(Q) prefill path never reconstructs non-queried positions. Sets the frontier to full
+        depth so HEAD_INFERENCE's readiness assertion passes."""
+        x = self._x0
+        B, N, _ = x.shape
+        attn0 = self.llm_layers[0].self_attn
+        h_kv, d_h = attn0.num_key_value_heads, attn0.head_dim
+        for i in range(len(self.llm_layers)):
+            self.cache_feature[f"llm_layer{i}_kv"] = torch.zeros(
+                B, h_kv, N, 2, d_h, device=x.device, dtype=x.dtype
+            )
+        self._llm_prefill_positions(torch.tensor([0], device=x.device, dtype=torch.long))
+        self.llm_frontier = len(self.llm_layers)
+
+    def llm_prefill_segment(self, vision_token_idx: torch.Tensor, include_text: bool):
+        """Prefill this group's vision-token positions (+ the text suffix once, on the last group)
+        through all layers. Causal + raster order makes this the exact, non-redundant counterpart of
+        `llm_correct_segment`."""
+        token_idx = vision_token_idx.to(dtype=torch.long, device=self.device)
+        if include_text:
+            token_idx = torch.cat([token_idx, self.permanent_group])
+        self._llm_prefill_positions(token_idx)
+
     def decode_action(self, num_action_tokens: Optional[int] = None, return_stats: bool = False):
         """Greedy-decodes the action tokens from the current prefill state and converts them to a
         continuous action using the exact same bin-center + un-normalize logic as

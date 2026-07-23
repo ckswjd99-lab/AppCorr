@@ -137,6 +137,10 @@ class OpenVLAExecutor(ModelExecutor):
         if not context.get("session_started"):
             self.pm.start_session_from_text(context.get("text", ""))
             self.pm.vision_approx(px)
+            if config.scheduler_kwargs.get("schedule") == "chunked":
+                # No blur-vision LLM approx pass; zero-init the K/V cache + prefill BOS so each
+                # arriving group's LLM positions are prefilled exactly once (chunked causal prefill).
+                self.pm.llm_chunked_init()
             context["session_started"] = True
             context["pending_idx"] = []
             return {"phase": "vision_approx"}
@@ -164,7 +168,12 @@ class OpenVLAExecutor(ModelExecutor):
         token_idx = context.get("last_vision_token_idx")
         if token_idx is None or token_idx.numel() == 0:
             return {"skipped": "no vision tokens to correct"}
-        self.pm.llm_correct_segment(end_l, token_idx)
+        if config.scheduler_kwargs.get("schedule") == "chunked":
+            # Chunked causal prefill: prefill this group's vision positions once (+ text suffix on
+            # the last group), never re-correcting earlier groups or the text.
+            self.pm.llm_prefill_segment(token_idx, include_text=bool(params.get("include_text", False)))
+        else:
+            self.pm.llm_correct_segment(end_l, token_idx)
 
     def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
         """Stock baseline: unmodified predict_action() on the current (fully assembled) canvas."""

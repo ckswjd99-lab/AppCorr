@@ -42,6 +42,10 @@ def parse_args():
     parser.add_argument("--task-suite", type=str, default="libero_spatial")
     parser.add_argument("--task-ids", type=str, default="0")
     parser.add_argument("--num-trials", type=int, default=1)
+    parser.add_argument("--trial-start", type=int, default=0,
+                         help="Index of the first LIBERO initial state to use (trial t -> "
+                              "initial_states[trial_start + t]). Lets two processes cover disjoint "
+                              "state ranges of the same schedule in parallel across GPUs.")
     parser.add_argument("--max-steps", type=int, default=220)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--num-groups", type=int, default=4)
@@ -50,6 +54,11 @@ def parse_args():
     parser.add_argument("--coverage", type=float, default=1.0)
     parser.add_argument("--base-factor", type=int, default=4)
     parser.add_argument("--schedules", type=str, default="interleaved,sequential,full")
+    parser.add_argument("--frontiers", type=str, default=None,
+                         help="Comma-separated per-group LLM correction depths for the 'interleaved' "
+                              "schedule, e.g. '32,32,32,32' = each arriving group is prefilled to FULL "
+                              "depth (per-group causal chunked prefill). Omit for uniform default "
+                              "frontiers (depth-interleaved).")
     parser.add_argument("--result-timeout", type=float, default=180.0)
     parser.add_argument("--server-pscore-threshold", type=float, default=None,
                          help="Gate CORRECT_FORWARD by the fused attn x residual score "
@@ -80,6 +89,8 @@ def make_config(args, schedule: str):
         scheduler_kwargs["server_pscore_threshold"] = args.server_pscore_threshold
     if args.sdpa_query_bucket_size:
         scheduler_kwargs["sdpa_query_bucket_size"] = args.sdpa_query_bucket_size
+    if getattr(args, "frontiers", None):
+        scheduler_kwargs["frontiers"] = [int(f) for f in args.frontiers.split(",")]
 
     return ExperimentConfig(
         exp_id=f"vla_{schedule}",
@@ -118,7 +129,7 @@ def request_action(encoder, config, frame_np, text, sched_q, result_q, timeout):
 
 
 def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result_q, op_times, correction_stats,
-                 correct_by_group=None):
+                 correct_by_group=None, init_state_idx=0):
     from libero.libero import benchmark
 
     from experiments.robot.libero.libero_utils import get_libero_dummy_action, get_libero_env, get_libero_image
@@ -129,7 +140,10 @@ def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result
     initial_states = task_suite.get_task_init_states(task_id)
     env, task_description = get_libero_env(task, "openvla", resolution=256)
     env.reset()
-    obs = env.set_init_state(initial_states[0])
+    # Each trial uses a DISTINCT LIBERO initial state so trials are independent samples
+    # (a greedy policy replays an identical episode from the same init state, so reusing
+    # initial_states[0] would make num_trials>1 pure duplication).
+    obs = env.set_init_state(initial_states[init_state_idx % len(initial_states)])
 
     t, done = 0, False
     while t < args.max_steps + args.num_steps_wait:
@@ -227,6 +241,7 @@ def main():
                         success, steps = run_episode(
                             args.task_suite, task_id, args, encoder, config, sched_q, result_q,
                             op_times, correction_stats, correct_by_group,
+                            init_state_idx=args.trial_start + trial,
                         )
                     except queue_mod.Empty:
                         print(f"    task {task_id}: TIMEOUT waiting for InferenceResult -- aborting schedule")
