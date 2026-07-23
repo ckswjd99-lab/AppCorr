@@ -19,6 +19,9 @@ class ADE20KInterleavedDynamicPolicy(ISchedulingPolicy):
         self.latest_approx_layer_queued = 0
         self.current_group_id = -1
         self.ahead_layers = 2
+        # N correction groups: fixed from config for grid/block_grid; overridden per
+        # image by patch.num_correction_groups for crop_cover (variable crop count).
+        self.num_groups = self._num_groups(config) if config is not None else 4
         if config is not None:
             self.ahead_layers = int(
                 config.scheduler_kwargs.get(
@@ -68,6 +71,9 @@ class ADE20KInterleavedDynamicPolicy(ISchedulingPolicy):
             target_count = int(head_patch.batch_group_total)
             if len(buffer) >= target_count:
                 task_id = next(task_id_gen)
+                n = int(getattr(head_patch, "num_correction_groups", 0) or 0)
+                if n > 0:
+                    self.num_groups = n
                 if current_group == 0 or self.current_request_id is None:
                     self.current_request_id = task_id
                     self.latest_approx_layer_queued = 0
@@ -109,7 +115,7 @@ class ADE20KInterleavedDynamicPolicy(ISchedulingPolicy):
         max_completed_layer: int,
     ) -> None:
         total_layers = self._total_layers(config)
-        num_groups = self._num_groups(config)
+        num_groups = self.num_groups
         if self.current_group_id == -1 or self.current_group_id >= num_groups:
             return
 
@@ -136,7 +142,7 @@ class ADE20KInterleavedDynamicPolicy(ISchedulingPolicy):
         max_completed_layer: int | None = None,
     ) -> List[Instruction]:
         total_layers = self._total_layers(config)
-        num_groups = self._num_groups(config)
+        num_groups = self.num_groups
         instructions = [Instruction(OpType.LOAD_INPUT), Instruction(OpType.PREPARE_TOKENS)]
 
         if group_id == 0:

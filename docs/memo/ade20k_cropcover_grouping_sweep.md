@@ -66,8 +66,12 @@ pscore differs per crop via the attention term.
 
 ## Configs / code
 
-- `offload/config/ade20k_m2f_cropwindow.json` (thres 1e-4 = the 42% point); sweep points use
-  `..._t12/_t28/_t52.json` (thres 5e-4 / 2e-4 / 4e-5) and `..._hi.json` (thres 5e-7 = 67%).
+- crop_cover is now the `ade20k_m2f_interleaved_static.json` config (transmission
+  `ADE20KWindowProgressiveLaplacian`, scheduler `ADE20KWindowInterleaved`, thres 4e-5 = the ~54% point).
+  The per-config sweep files were consolidated away; reproduce the other sweep points with
+  `--set appcorr_kwargs.token_keep_thres=<5e-4|2e-4|1e-4|4e-5|5e-7>` (→ ~8 / 28 / 42 / 54 / 67%).
+  `ade20k_m2f_interleaved_dynamic.json` runs the same crop_cover transmission under the dynamic
+  (approx-ahead) `ADE20KInterleavedDynamic` scheduler.
 - `offload/policies/transmission/ade20k_window_progressive.py`,
   `offload/policies/scheduling/ade20k_window_trigger.py`,
   `_build_crop_cover_group_map` in `offload/server/model/dinov3_segmentor_m2f.py`,

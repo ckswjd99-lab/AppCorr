@@ -53,8 +53,11 @@ timing imbalance would hurt.
 
 ## Config
 
-`offload/config/ade20k_m2f_interleaved_static_blockgrid.json` (= interleaved_static with
-`grouping_strategy: "block_grid"`).
+Historical: the `grid` / `block_grid` interleaved-static configs (`ProgressiveLaplacian`,
+`grouping_strategy: "grid"` / `"block_grid"`, `num_groups: 4`). These per-strategy configs were
+removed when the ADE20K m2f configs were consolidated (crop_cover superseded block_grid on the
+frontier — see [[ade20k_cropcover_grouping_sweep]]); reproduce by setting
+`transmission_kwargs.grouping_strategy` on a `ProgressiveLaplacian` + `GroupTrigger` config.
 
 ## Next idea (not yet run)
 
