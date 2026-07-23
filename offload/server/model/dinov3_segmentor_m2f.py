@@ -1823,6 +1823,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                     num_groups,
                     group_context,
                 )
+            elif grouping_strategy == "crop_cover":
+                group_map = self._build_crop_cover_group_map(
+                    input_tokens,
+                    tok_h,
+                    tok_w,
+                    group_context,
+                    config,
+                )
             else:
                 group_map = create_group_index(
                     num_tokens,
@@ -1980,6 +1988,71 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         group_cols = torch.div(patch_cols * side, full_grid_w, rounding_mode="floor").clamp_max(side - 1)
         group_2d = group_rows.unsqueeze(1) * side + group_cols.unsqueeze(0) + 1
         group_map = group_2d.reshape(-1)
+        return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
+
+    @staticmethod
+    def _compute_crops(h_img: int, w_img: int, crop: int, stride: int):
+        # Must mirror the sliding-window crop layout in prepare_tokens (and the mobile
+        # ADE20KWindowProgressiveLaplacianPolicy) exactly.
+        h_crop = w_crop = crop
+        if h_crop > h_img and w_crop > w_img:
+            h_crop = w_crop = min(h_img, w_img)
+        h_grids = max(h_img - h_crop + stride - 1, 0) // stride + 1
+        w_grids = max(w_img - w_crop + stride - 1, 0) // stride + 1
+        crops = []
+        for hi in range(h_grids):
+            for wi in range(w_grids):
+                y1 = hi * stride
+                x1 = wi * stride
+                y2 = min(y1 + h_crop, h_img)
+                x2 = min(x1 + w_crop, w_img)
+                y1 = max(y2 - h_crop, 0)
+                x1 = max(x2 - w_crop, 0)
+                crops.append((y1, y2, x1, x2))
+        return crops
+
+    def _build_crop_cover_group_map(
+        self,
+        input_tokens: torch.Tensor,
+        tok_h: int,
+        tok_w: int,
+        group_context: Dict[str, Any] | None,
+        config: Any,
+    ) -> torch.Tensor:
+        # Assign each of this crop's tokens to the FIRST (row-major) sliding crop that covers its
+        # GLOBAL center -> crop-cover grouping (matches the mobile residual grouping). A token in the
+        # overlap of crops i<j goes to crop i, so group i completes crop i plus the corresponding
+        # parts of later crops.
+        num_tokens = tok_h * tok_w
+        if not group_context:
+            return torch.ones(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
+
+        y1c, y2c, x1c, x2c = (int(v) for v in group_context.get("crop", (0, tok_h * 16, 0, tok_w * 16)))
+        h_img, w_img = (int(v) for v in group_context.get("image_hw", (y2c - y1c, x2c - x1c)))
+        apply_flip = bool(group_context.get("apply_flip", False))
+
+        prof = config.get_input_profile_config()
+        crop_size = int(prof.get("server_crop_size", 896))
+        stride = int(prof.get("server_stride", 596))
+
+        patch_h = max((y2c - y1c) // max(tok_h, 1), 1)
+        patch_w = max((x2c - x1c) // max(tok_w, 1), 1)
+        row_centers = y1c + torch.arange(tok_h, device=self.device, dtype=torch.long) * patch_h + patch_h // 2
+        col_centers = x1c + torch.arange(tok_w, device=self.device, dtype=torch.long) * patch_w + patch_w // 2
+        if apply_flip:
+            col_centers = (w_img - 1) - col_centers
+
+        rc = row_centers.view(tok_h, 1).expand(tok_h, tok_w).reshape(-1)
+        cc = col_centers.view(1, tok_w).expand(tok_h, tok_w).reshape(-1)
+
+        crops = self._compute_crops(h_img, w_img, crop_size, stride)
+        n = max(len(crops), 1)
+        group_map = torch.full((num_tokens,), n, dtype=torch.long, device=self.device)  # fallback: last crop
+        # iterate crops high->low so the earliest (lowest-index) covering crop wins (first-cover)
+        for idx in range(len(crops) - 1, -1, -1):
+            y1, y2, x1, x2 = crops[idx]
+            cover = (rc >= y1) & (rc < y2) & (cc >= x1) & (cc < x2)
+            group_map[cover] = idx + 1
         return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
 
     def prepare_group_maps_and_dindices(self, task: Task | None, context: Dict[str, Any], config: Any):

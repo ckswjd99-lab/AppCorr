@@ -6,6 +6,7 @@ from .scheduling import (
     ADE20KApproxCorrectPolicy,
     ADE20KInterleavedDynamicPolicy,
     ADE20KSequentialPolicy,
+    ADE20KWindowInterleavedPolicy,
     BatchCountBasedPolicy,
     COCOWindowDynamicPolicy,
     COCOWindowInterleavedPolicy,
@@ -17,6 +18,7 @@ from .transmission import (
     RawTransmissionPolicy, 
     ZlibTransmissionPolicy, 
     COCOWindowProgressiveLaplacianPolicy,
+    ADE20KWindowProgressiveLaplacianPolicy,
     LaplacianPyramidPolicy, 
     NYUAppCorrLaplacianPolicy,
     NYUAppCorrProgressiveLaplacianPolicy,
@@ -36,6 +38,7 @@ SCHEDULER_REGISTRY = {
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
     "COCOWindowInterleaved": COCOWindowInterleavedPolicy,
     "COCOWindowDynamic": COCOWindowDynamicPolicy,
+    "ADE20KWindowInterleaved": ADE20KWindowInterleavedPolicy,
 }
 
 TRANSMISSION_REGISTRY = {
@@ -47,6 +50,7 @@ TRANSMISSION_REGISTRY = {
     "ProgressiveLaplacian": ProgressiveLPyramidPolicy,
     "NYUAppCorrProgressiveLaplacian": NYUAppCorrProgressiveLaplacianPolicy,
     "COCOWindowProgressiveLaplacian": COCOWindowProgressiveLaplacianPolicy,
+    "ADE20KWindowProgressiveLaplacian": ADE20KWindowProgressiveLaplacianPolicy,
     "FullImageCompression": FullImageCompressionPolicy,
 }
 
