@@ -194,3 +194,18 @@ class ApproxCorrectLlamaDecoderLayer(nn.Module):
         x_out[:, token_idx] = (x_attn_active + mlp_out_new).to(dtype=x_out.dtype)
 
         return x_out, cache_feature
+
+    def prefill(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
+                cos: torch.Tensor = None, sin: torch.Tensor = None):
+        """Chunked causal PREFILL of `token_idx` -- the O(Q) counterpart of `.correct()`.
+
+        `.correct()` threads the full [B, N, C] residual stream and reconstructs every non-queried
+        position (`x + blocks_out_sum`) so it can be re-corrected later. Under chunked prefill a
+        position is computed exactly once and its downstream reads come only through the K/V cache,
+        so the non-queried positions are never needed: this operates purely on the Q query rows
+        (`x_sel = x[:, token_idx]`), returning [B, Q, C]. No `blocks_out_sum`, no [B, N, C] work."""
+        x_norm_sel = self.input_layernorm(x_sel)
+        x_attn_sel, cache_feature = self.self_attn.correct(x_norm_sel, token_idx, cache_feature, tag, cos=cos, sin=sin)
+        x_attn_active = x_sel + x_attn_sel
+        mlp_out_new = self.mlp(self.post_attention_layernorm(x_attn_active))
+        return x_attn_active + mlp_out_new, cache_feature

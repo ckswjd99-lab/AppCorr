@@ -91,6 +91,32 @@ class VLAInterleavedStaticPolicy(ISchedulingPolicy):
                 instructions.append(Instruction(OpType.SEND_RESPONSE))
                 instructions.append(Instruction(OpType.FREE_SESSION))
 
+        elif sched == "approx":
+            # Approx-only baseline: base layer gets a full-depth approx prefill; residual groups
+            # are ignored (canvas accumulates but is never corrected); decode from the approx state
+            # at the last group so the pipeline still yields exactly one InferenceResult per request.
+            if gid == 0:
+                instructions.append(Instruction(OpType.PREPARE_TOKENS))
+                instructions.append(Instruction(OpType.APPROX_FORWARD, {"layers": (0, L)}))
+                self.frontier = L
+            elif is_last:
+                self._finish(instructions)
+            # middle groups: LOAD only (ignored).
+
+        elif sched == "chunked":
+            # True chunked causal prefill: base does vision approx + LLM cache init + BOS prefill
+            # (in PREPARE_TOKENS); each residual group prefills only its own vision-token positions
+            # once, and the last group additionally prefills the text suffix, then decodes. No LLM
+            # approx pass, no per-group text re-correction.
+            instructions.append(Instruction(OpType.PREPARE_TOKENS))
+            if gid > 0:
+                instructions.append(
+                    Instruction(OpType.CORRECT_FORWARD,
+                                {"layers": (0, L), "group_id": gid, "include_text": is_last})
+                )
+                if is_last:
+                    self._finish(instructions)
+
         elif sched == "sequential":
             if gid == 0:
                 instructions.append(Instruction(OpType.PREPARE_TOKENS))
