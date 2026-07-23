@@ -388,10 +388,13 @@ class OpenVLAProgressiveModel:
         B = x0.shape[0]
         position_ids_sel = token_idx.unsqueeze(0).expand(B, -1).to(device=x0.device)
         cos, sin = self.llm_layers[0].self_attn.rotary_emb(x0, position_ids_sel)
+        # Causal + raster order: this group only reaches keys up to its top position, so bound the
+        # attention K/V to that prefix (computed once here, not 32x -- avoids per-layer GPU->CPU sync).
+        key_end = int(token_idx.max().item()) + 1
         x_sel = x0[:, token_idx]  # [B, Q, C]
         for i in range(len(self.llm_layers)):
             x_sel, self.cache_feature = self.llm_layers[i].prefill(
-                x_sel, token_idx, self.cache_feature, f"llm_layer{i}", cos=cos, sin=sin,
+                x_sel, token_idx, self.cache_feature, f"llm_layer{i}", cos=cos, sin=sin, key_end=key_end,
             )
         x_full = self.cache_feature.get("_x", x0)
         x_full = x_full.clone()  # don't alias _x0 / the previous group's stream

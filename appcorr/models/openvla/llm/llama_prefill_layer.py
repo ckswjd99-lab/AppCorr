@@ -89,7 +89,7 @@ class ApproxCorrectLlamaAttention(nn.Module):
         return self.o_proj(attn_out), cache_feature
 
     def correct(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-                cos: torch.Tensor = None, sin: torch.Tensor = None):
+                cos: torch.Tensor = None, sin: torch.Tensor = None, key_end: int = None):
         """
         Args:
             x_sel: [B, Q, C] -- input_layernorm(x) already sliced to the query positions (a superset
@@ -101,6 +101,13 @@ class ApproxCorrectLlamaAttention(nn.Module):
                 identical across all layers; computing them once per segment instead of once per
                 layer avoids ~32x redundant work -- empirically the single largest sub-cost in this
                 method, ~0.1ms/layer). Recomputed locally if not provided (e.g. standalone/test use).
+            key_end: optional variable-length K/V bound. Under causal masking a query at position p
+                only attends to keys <= p, so when the whole query set tops out at position
+                max(token_idx) (true for chunked prefill of an early raster group), attending over
+                the full N-length cache is wasted work -- every key > max(token_idx) is masked out
+                anyway. Passing key_end = max(token_idx)+1 slices K/V (and the mask) to that prefix,
+                cutting the attention cost of early groups roughly in half on average. Lossless: only
+                already-masked keys are dropped. `None` = attend over the full N keys.
         """
         kv = cache_feature[f"{tag}_kv"]  # [B, H_kv, N, 2, Dh]
         B, _, N = kv.shape[0], kv.shape[1], kv.shape[2]
@@ -117,17 +124,18 @@ class ApproxCorrectLlamaAttention(nn.Module):
         kv[:, :, token_idx, 1] = v_new.to(dtype=kv.dtype)
         cache_feature[f"{tag}_kv"] = kv
 
-        k_full, v_full = kv.unbind(3)  # each [B, H_kv, N, Dh]
+        n_keys = N if key_end is None else min(int(key_end), N)
+        k_full, v_full = kv[:, :, :n_keys].unbind(3)  # each [B, H_kv, n_keys, Dh]
         k_full = repeat_kv(k_full, self.num_key_value_groups)
         v_full = repeat_kv(v_full, self.num_key_value_groups)
 
         # Causal mask restricted to this (possibly non-contiguous) query set: query i may attend to
-        # key j iff j <= token_idx[i]. Shape [1, 1, Q, N] broadcasts over batch/heads.
-        key_positions = torch.arange(N, device=kv.device).view(1, N)
-        allowed = key_positions <= token_idx.view(Q, 1)  # [Q, N]
-        attn_mask = torch.zeros((Q, N), device=kv.device, dtype=q_new.dtype)
+        # key j iff j <= token_idx[i]. Shape [1, 1, Q, n_keys] broadcasts over batch/heads.
+        key_positions = torch.arange(n_keys, device=kv.device).view(1, n_keys)
+        allowed = key_positions <= token_idx.view(Q, 1)  # [Q, n_keys]
+        attn_mask = torch.zeros((Q, n_keys), device=kv.device, dtype=q_new.dtype)
         attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
-        attn_mask = attn_mask.view(1, 1, Q, N)
+        attn_mask = attn_mask.view(1, 1, Q, n_keys)
 
         attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, attn_mask=attn_mask)
         attn_out = attn_out.transpose(1, 2).reshape(B, Q, self.num_heads * self.head_dim)
@@ -196,16 +204,20 @@ class ApproxCorrectLlamaDecoderLayer(nn.Module):
         return x_out, cache_feature
 
     def prefill(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-                cos: torch.Tensor = None, sin: torch.Tensor = None):
+                cos: torch.Tensor = None, sin: torch.Tensor = None, key_end: int = None):
         """Chunked causal PREFILL of `token_idx` -- the O(Q) counterpart of `.correct()`.
 
         `.correct()` threads the full [B, N, C] residual stream and reconstructs every non-queried
         position (`x + blocks_out_sum`) so it can be re-corrected later. Under chunked prefill a
         position is computed exactly once and its downstream reads come only through the K/V cache,
         so the non-queried positions are never needed: this operates purely on the Q query rows
-        (`x_sel = x[:, token_idx]`), returning [B, Q, C]. No `blocks_out_sum`, no [B, N, C] work."""
+        (`x_sel = x[:, token_idx]`), returning [B, Q, C]. No `blocks_out_sum`, no [B, N, C] work.
+
+        `key_end` (= max(token_idx)+1, computed once per segment) bounds the causal attention to the
+        K/V prefix this group can actually reach -- see `correct()`'s docstring."""
         x_norm_sel = self.input_layernorm(x_sel)
-        x_attn_sel, cache_feature = self.self_attn.correct(x_norm_sel, token_idx, cache_feature, tag, cos=cos, sin=sin)
+        x_attn_sel, cache_feature = self.self_attn.correct(
+            x_norm_sel, token_idx, cache_feature, tag, cos=cos, sin=sin, key_end=key_end)
         x_attn_active = x_sel + x_attn_sel
         mlp_out_new = self.mlp(self.post_attention_layernorm(x_attn_active))
         return x_attn_active + mlp_out_new, cache_feature
