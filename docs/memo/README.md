@@ -15,6 +15,11 @@ produced them.
   `grid` (dispersed) vs `block_grid` (contiguous quadrants). block_grid ~+0.5 mIoU at matched recompute
   on full 2000 (nr=100 was misleadingly reversed by noise). Includes how block_grid maps onto the
   sliding-window crops (global-coord quadrants) and why coherent per-crop correction timing helps.
+- [ade20k_cropcover_grouping_sweep.md](ade20k_cropcover_grouping_sweep.md) — ADE20K m2f: dedicated
+  `crop_cover` policy (groups aligned to sliding crops, per-image variable group count). Full-2000
+  5-point sweep (8–67% recompute): crop_cover dominates the frontier — +1.56 mIoU over grid at matched
+  ~42%, matches block_grid's best (61.3) at less compute. Recompute plateaus ~67% (zero-residual
+  patches never corrected); avg-attention is per-crop.
 
 ## Related work elsewhere in the repo (not in this folder)
 

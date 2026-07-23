@@ -101,6 +101,7 @@ class SourceModule(multiprocessing.Process):
             "Laplacian",
             "ProgressiveLaplacian",
             "COCOWindowProgressiveLaplacian",
+            "ADE20KWindowProgressiveLaplacian",
             "NYUAppCorrLaplacian",
             "NYUAppCorrProgressiveLaplacian",
             "NYUAppCorrRaw",
