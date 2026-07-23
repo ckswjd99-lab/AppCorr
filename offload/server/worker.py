@@ -542,12 +542,28 @@ class WorkerModule(multiprocessing.Process):
                 if self.sr_engine is None:
                     raise RuntimeError("Low-resolution SR engine is not loaded.")
                 if context.get('input_sr_tensor') is None:
+                    # Super-resolve the low-res native, then interpolate the result to the ORIGINAL
+                    # image size so the SR base is pixel-grid-aligned with the real image: the segmentor
+                    # preprocess resizes it to the model input exactly like the real image (matching
+                    # sliding-window layout AND single-shot prediction grid). Falls back to the SR
+                    # native scale if the original size is unknown. Also rescale [0,1] -> [0,255].
+                    lr_native = context['input_lr_native_np']
+                    sr_scale = int(getattr(self.sr_engine, 'scale', 4))
+                    target_hw = (int(lr_native.shape[1]) * sr_scale, int(lr_native.shape[2]) * sr_scale)
+                    _tshapes = context.get('target_shapes')
+                    _orig = None
+                    if isinstance(_tshapes, dict):
+                        _orig = _tshapes.get(0)
+                    elif isinstance(_tshapes, (list, tuple)) and _tshapes:
+                        _orig = _tshapes[0]
+                    if _orig is not None and len(_orig) == 2:
+                        target_hw = (int(_orig[0]), int(_orig[1]))
                     with torch.cuda.nvtx.range("LowResSR"):
                         with torch.autocast('cuda', enabled=False):
                             context['input_sr_tensor'] = self.sr_engine.upscale_tensor(
-                                context['input_lr_native_np'],
-                                target_hw=self.config.image_shape[:2],
-                            )
+                                lr_native,
+                                target_hw=target_hw,
+                            ).mul(255.0)
                 batch_np = context['input_sr_tensor']
 
             # Wrap decoded images with target_shape metadata if available
