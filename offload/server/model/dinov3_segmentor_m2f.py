@@ -318,6 +318,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             images,
             config,
             selected_image_indices,
+            context=context,
         )
 
     def _as_image_list(self, batch_data: Any) -> tuple[List[np.ndarray], List[tuple[int, int] | None]]:
@@ -366,11 +367,18 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         images: List[np.ndarray],
         config: Any,
         selected_image_indices: List[int],
+        context: Dict[str, Any] | None = None,
     ) -> List[tuple[torch.Tensor, tuple[int, int]] | None] | None:
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         if appcorr_options["mobile_pscore"] == "none" or appcorr_options["mobile_pscore_weight"] == 0.0:
             return None
-        if not task.payload:
+        # Server-side residual pruning: when enabled, derive the per-patch mobile-pscore hint from the
+        # actual |real HR - SR base| residual computed on the server (the SR base is what the approx ran
+        # on), instead of the mobile's SR-unaware transmitted-refinement energy. This makes the SR base
+        # feed back into which tokens get corrected.
+        use_sr_residual = bool(appcorr_options.get("sr_residual_pscore", False))
+        sr_full = context.get("input_sr_tensor") if (use_sr_residual and context is not None) else None
+        if not use_sr_residual and not task.payload:
             return None
 
         if isinstance(config.patch_size, int):
@@ -400,20 +408,41 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             hint_shapes.append(hint_shape)
             shape_to_indices.setdefault(hint_shape, []).append(image_idx)
 
-        for patch in task.payload:
-            if int(getattr(patch, "res_level", target_res_level)) != target_res_level:
-                continue
-            patch_image_idx = int(getattr(patch, "image_idx", -1))
-            image_idx = original_to_local.get(patch_image_idx)
-            if image_idx is None:
-                continue
-            hint_map = hint_maps_cpu[image_idx]
-            hint_shape = hint_shapes[image_idx]
-            if hint_map is None or hint_shape is None:
-                continue
-            spatial_idx = int(getattr(patch, "spatial_idx", -1))
-            if 0 <= spatial_idx < hint_map.shape[0]:
-                hint_map[spatial_idx] = float(getattr(patch, "pscore_hint", 0.0))
+        filled_from_sr_residual = False
+        if sr_full is not None and torch.is_tensor(sr_full) and sr_full.ndim == 4:
+            # Per-patch residual RMS between the real HR image (images) and the SR base (resized to it).
+            for image_idx, image in enumerate(images):
+                hint_shape = hint_shapes[image_idx]
+                if hint_shape is None:
+                    continue
+                grid_h, grid_w = hint_shape
+                img_h, img_w = image.shape[:2]
+                sr_i = sr_full[min(image_idx, sr_full.shape[0] - 1)].unsqueeze(0).float()  # [1,3,Hs,Ws]
+                sr_r = F.interpolate(sr_i, size=(img_h, img_w), mode="bilinear", align_corners=False)
+                hr = torch.from_numpy(np.ascontiguousarray(image)).to(sr_r.device)
+                hr = hr.permute(2, 0, 1).unsqueeze(0).float()  # [1,3,H,W], [0,255]
+                diff = (hr - sr_r).square().mean(dim=1)  # [1,H,W]
+                diff = diff[:, : grid_h * ph, : grid_w * pw]
+                diff = diff.reshape(1, grid_h, ph, grid_w, pw).mean(dim=(2, 4))  # [1,grid_h,grid_w]
+                rms = diff.clamp_min(0).sqrt().reshape(grid_h * grid_w)
+                hint_maps_cpu[image_idx] = rms.detach().cpu().numpy().astype(np.float32)
+            filled_from_sr_residual = True
+
+        if not filled_from_sr_residual:
+            for patch in task.payload:
+                if int(getattr(patch, "res_level", target_res_level)) != target_res_level:
+                    continue
+                patch_image_idx = int(getattr(patch, "image_idx", -1))
+                image_idx = original_to_local.get(patch_image_idx)
+                if image_idx is None:
+                    continue
+                hint_map = hint_maps_cpu[image_idx]
+                hint_shape = hint_shapes[image_idx]
+                if hint_map is None or hint_shape is None:
+                    continue
+                spatial_idx = int(getattr(patch, "spatial_idx", -1))
+                if 0 <= spatial_idx < hint_map.shape[0]:
+                    hint_map[spatial_idx] = float(getattr(patch, "pscore_hint", 0.0))
 
         projected_input_maps: List[tuple[torch.Tensor, tuple[int, int]] | None] = [None] * len(images)
         for hint_shape, image_indices in shape_to_indices.items():
@@ -1794,6 +1823,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                     num_groups,
                     group_context,
                 )
+            elif grouping_strategy == "crop_cover":
+                group_map = self._build_crop_cover_group_map(
+                    input_tokens,
+                    tok_h,
+                    tok_w,
+                    group_context,
+                    config,
+                )
             else:
                 group_map = create_group_index(
                     num_tokens,
@@ -1951,6 +1988,71 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         group_cols = torch.div(patch_cols * side, full_grid_w, rounding_mode="floor").clamp_max(side - 1)
         group_2d = group_rows.unsqueeze(1) * side + group_cols.unsqueeze(0) + 1
         group_map = group_2d.reshape(-1)
+        return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
+
+    @staticmethod
+    def _compute_crops(h_img: int, w_img: int, crop: int, stride: int):
+        # Must mirror the sliding-window crop layout in prepare_tokens (and the mobile
+        # ADE20KWindowProgressiveLaplacianPolicy) exactly.
+        h_crop = w_crop = crop
+        if h_crop > h_img and w_crop > w_img:
+            h_crop = w_crop = min(h_img, w_img)
+        h_grids = max(h_img - h_crop + stride - 1, 0) // stride + 1
+        w_grids = max(w_img - w_crop + stride - 1, 0) // stride + 1
+        crops = []
+        for hi in range(h_grids):
+            for wi in range(w_grids):
+                y1 = hi * stride
+                x1 = wi * stride
+                y2 = min(y1 + h_crop, h_img)
+                x2 = min(x1 + w_crop, w_img)
+                y1 = max(y2 - h_crop, 0)
+                x1 = max(x2 - w_crop, 0)
+                crops.append((y1, y2, x1, x2))
+        return crops
+
+    def _build_crop_cover_group_map(
+        self,
+        input_tokens: torch.Tensor,
+        tok_h: int,
+        tok_w: int,
+        group_context: Dict[str, Any] | None,
+        config: Any,
+    ) -> torch.Tensor:
+        # Assign each of this crop's tokens to the FIRST (row-major) sliding crop that covers its
+        # GLOBAL center -> crop-cover grouping (matches the mobile residual grouping). A token in the
+        # overlap of crops i<j goes to crop i, so group i completes crop i plus the corresponding
+        # parts of later crops.
+        num_tokens = tok_h * tok_w
+        if not group_context:
+            return torch.ones(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
+
+        y1c, y2c, x1c, x2c = (int(v) for v in group_context.get("crop", (0, tok_h * 16, 0, tok_w * 16)))
+        h_img, w_img = (int(v) for v in group_context.get("image_hw", (y2c - y1c, x2c - x1c)))
+        apply_flip = bool(group_context.get("apply_flip", False))
+
+        prof = config.get_input_profile_config()
+        crop_size = int(prof.get("server_crop_size", 896))
+        stride = int(prof.get("server_stride", 596))
+
+        patch_h = max((y2c - y1c) // max(tok_h, 1), 1)
+        patch_w = max((x2c - x1c) // max(tok_w, 1), 1)
+        row_centers = y1c + torch.arange(tok_h, device=self.device, dtype=torch.long) * patch_h + patch_h // 2
+        col_centers = x1c + torch.arange(tok_w, device=self.device, dtype=torch.long) * patch_w + patch_w // 2
+        if apply_flip:
+            col_centers = (w_img - 1) - col_centers
+
+        rc = row_centers.view(tok_h, 1).expand(tok_h, tok_w).reshape(-1)
+        cc = col_centers.view(1, tok_w).expand(tok_h, tok_w).reshape(-1)
+
+        crops = self._compute_crops(h_img, w_img, crop_size, stride)
+        n = max(len(crops), 1)
+        group_map = torch.full((num_tokens,), n, dtype=torch.long, device=self.device)  # fallback: last crop
+        # iterate crops high->low so the earliest (lowest-index) covering crop wins (first-cover)
+        for idx in range(len(crops) - 1, -1, -1):
+            y1, y2, x1, x2 = crops[idx]
+            cover = (rc >= y1) & (rc < y2) & (cc >= x1) & (cc < x2)
+            group_map[cover] = idx + 1
         return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
 
     def prepare_group_maps_and_dindices(self, task: Task | None, context: Dict[str, Any], config: Any):

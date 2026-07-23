@@ -281,6 +281,9 @@ class Patch:
     arrival_time: float = 0.0
     pscore_hint: float = 0.0
     target_shape: tuple = ()
+    # Number of correction groups for this image (crop-cover policy: = sliding-crop count,
+    # which varies per image). 0 = unset / not applicable.
+    num_correction_groups: int = 0
 
 class OpType(Enum):
     # --- Computation Ops ---
