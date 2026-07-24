@@ -59,15 +59,22 @@ class ApproxCorrectGemmaAttention(nn.Module):
         return q, k, v
 
     def approx(self, x: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-               cos: torch.Tensor, sin: torch.Tensor):
-        """Full causal prefill over all N positions; caches post-RoPE K/V (pre-repeat_kv)."""
+               cos: torch.Tensor, sin: torch.Tensor, causal: bool = True,
+               attn_mask: torch.Tensor = None):
+        """Full prefill over all N positions; caches post-RoPE K/V (pre-repeat_kv).
+
+        `causal=True` (Llama/OpenVLA-style causal prefix) uses SDPA's is_causal. For a bidirectional
+        prefix (PaliGemma / pi0-FAST: image+language attend to each other), pass `causal=False`, and
+        optionally an explicit additive `attn_mask` [*, N, N] (e.g. the pi0-FAST 2D prefix mask)."""
         B, N, _ = x.shape
         q, k, v = self._project_heads(x)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
         cache_feature[f"{tag}_kv"] = torch.stack([k, v], dim=3)  # [B, H_kv, N, 2, Dh]
         k_full = repeat_kv(k, self.num_key_value_groups)
         v_full = repeat_kv(v, self.num_key_value_groups)
-        attn_out = F.scaled_dot_product_attention(q, k_full, v_full, is_causal=True, scale=self.scaling)
+        is_causal = causal and attn_mask is None
+        attn_out = F.scaled_dot_product_attention(
+            q, k_full, v_full, attn_mask=attn_mask, is_causal=is_causal, scale=self.scaling)
         attn_out = attn_out.transpose(1, 2).reshape(B, N, self.num_heads * self.head_dim)
         return self.o_proj(attn_out), cache_feature
 
@@ -119,8 +126,9 @@ class ApproxCorrectGemmaDecoderLayer(nn.Module):
         return cls(layer.input_layernorm, ApproxCorrectGemmaAttention.from_stock(layer.self_attn),
                    layer.post_attention_layernorm, layer.mlp)
 
-    def approx(self, x, cache_feature, tag, cos, sin):
-        x_attn, cache_feature = self.self_attn.approx(self.input_layernorm(x), cache_feature, tag, cos, sin)
+    def approx(self, x, cache_feature, tag, cos, sin, causal=True, attn_mask=None):
+        x_attn, cache_feature = self.self_attn.approx(
+            self.input_layernorm(x), cache_feature, tag, cos, sin, causal=causal, attn_mask=attn_mask)
         cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
         x_mid = x + x_attn
         mlp_out = self.mlp(self.post_attention_layernorm(x_mid))
