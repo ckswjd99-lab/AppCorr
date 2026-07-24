@@ -41,10 +41,15 @@ class ApproxCorrectSiglipAttention(nn.Module):
         v = self.v_proj(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         return q, k, v
 
-    def approx(self, x, cache_feature, tag):
+    def approx(self, x, cache_feature, tag, pscore=False):
         B, N, _ = x.shape
         q, k, v = self._heads(x)
         cache_feature[f"{tag}_kv"] = torch.stack([k, v], dim=3)  # [B, H, N, 2, Dh]
+        if pscore:
+            # patch_attn_prob (DINOv3 attention.py): softmax(qk^T*scale) -> mean over heads ->
+            # mean over query positions => avg attention RECEIVED by each patch key. [B, N]
+            attn_prob = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)  # [B, H, N, N]
+            cache_feature[f"{tag}_attn_pscore"] = attn_prob.mean(dim=1).mean(dim=1).detach()  # [B, N]
         o = F.scaled_dot_product_attention(q, k, v, scale=self.scale)
         return self.out_proj(o.transpose(1, 2).reshape(B, N, self.num_heads * self.head_dim)), cache_feature
 
@@ -72,12 +77,15 @@ class ApproxCorrectSiglipLayer(nn.Module):
         return cls(layer.layer_norm1, ApproxCorrectSiglipAttention.from_stock(layer.self_attn),
                    layer.layer_norm2, layer.mlp)
 
-    def approx(self, x, cache_feature, tag):
-        x_attn, cache_feature = self.self_attn.approx(self.layer_norm1(x), cache_feature, tag)
+    def approx(self, x, cache_feature, tag, pscore=False):
+        x_attn, cache_feature = self.self_attn.approx(self.layer_norm1(x), cache_feature, tag, pscore=pscore)
         cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
         x_mid = x + x_attn
         mlp_out = self.mlp(self.layer_norm2(x_mid))
         cache_feature[f"{tag}_blocks_out_sum"] = cache_feature[f"{tag}_blocks_out_sum"] + mlp_out.detach()
+        if pscore:
+            # residual magnitude: L2 norm over channels of this block's total output update. [B, N]
+            cache_feature[f"{tag}_residual_mag"] = cache_feature[f"{tag}_blocks_out_sum"].norm(dim=-1).detach()
         return x_mid + mlp_out, cache_feature
 
     def correct(self, x, token_idx, cache_feature, tag):
@@ -104,11 +112,27 @@ class ApproxCorrectSiglipBackbone(nn.Module):
     def _embed(self, pixel_values):
         return self.embeddings(pixel_values)  # [B, 256, D]
 
-    def approx_forward(self, pixel_values, cache_feature, tag_prefix) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    def approx_forward(self, pixel_values, cache_feature, tag_prefix, pscore=False) -> Tuple[torch.Tensor, Dict[str, Any]]:
         x = self._embed(pixel_values)
+        attn_acc = None
+        res_acc = None
         for i, blk in enumerate(self.layers):
-            x, cache_feature = blk.approx(x, cache_feature, f"{tag_prefix}_layer{i}")
+            x, cache_feature = blk.approx(x, cache_feature, f"{tag_prefix}_layer{i}", pscore=pscore)
+            if pscore:
+                a = cache_feature[f"{tag_prefix}_layer{i}_attn_pscore"]
+                r = cache_feature[f"{tag_prefix}_layer{i}_residual_mag"]
+                attn_acc = a if attn_acc is None else attn_acc + a
+                res_acc = r if res_acc is None else res_acc + r
+        if pscore:
+            n = len(self.layers)
+            cache_feature[f"{tag_prefix}_avg_attn"] = attn_acc / n       # [B, N] mean over layers
+            cache_feature[f"{tag_prefix}_residual_mag"] = res_acc / n     # [B, N] mean over layers
         return self.post_layernorm(x), cache_feature
+
+    @staticmethod
+    def get_pscore(cache_feature, tag_prefix) -> torch.Tensor:
+        """pscore_i = residual_i * avg_attn_i  (ProgVFM contrib_i; both from the approx pass). [B, N]"""
+        return cache_feature[f"{tag_prefix}_residual_mag"] * cache_feature[f"{tag_prefix}_avg_attn"]
 
     def correct_forward(self, pixel_values, patch_idx, cache_feature, tag_prefix) -> Tuple[torch.Tensor, Dict[str, Any]]:
         x = self._embed(pixel_values)
