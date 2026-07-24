@@ -88,7 +88,10 @@ def run_trial(M, env_pre, task_suite, suite_name, task_id, task_str, trial, max_
     from lerobot.envs.libero import LiberoEnv
     from lerobot.envs.utils import preprocess_observation
 
+    # observation 360x360 to MATCH the official LiberoEnv config (default 256 is OOD: training
+    # rendered at 360 then resized to 224).
     env = LiberoEnv(task_suite, task_id, suite_name, obs_type="pixels_agent_pos",
+                    observation_width=360, observation_height=360,
                     episode_index=trial, episode_length=max_steps)
     obs, _ = env.reset()
     M.pol.reset()

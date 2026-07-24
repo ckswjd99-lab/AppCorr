@@ -35,20 +35,34 @@ _SCALING_FIX_INSTALLED = False
 
 
 def install_gemma_scaling_fix():
-    """Neutralize transformers>=4.57 GemmaModel's internal sqrt(hidden) embedding scaling, which
-    double-scales lerobot's already-pre-scaled pi0-FAST embeds. Idempotent."""
+    """Fix the transformers>=4.57 x lerobot-0.4.4 pi0-FAST embedding double-scaling.
+
+    transformers>=4.57 `GemmaModel.forward` scales inputs_embeds by sqrt(hidden). lerobot's
+    `embed_prefix_fast` ALSO pre-scales the LANGUAGE/FAST embeds by sqrt(hidden) (via
+    `embed_language_tokens(...) * sqrt(dim)`), so those tokens get scaled twice and collapse the
+    model. The IMAGE embeds are NOT pre-scaled (they come from `get_image_features`, already
+    /sqrt(hidden)), so GemmaModel's single scaling is exactly right for them.
+
+    The correct fix therefore touches ONLY the language/FAST path: patch `embed_language_tokens` to
+    pre-divide by sqrt(hidden) so lerobot's subsequent `* sqrt(dim)` cancels, leaving those tokens
+    unscaled -> GemmaModel scales them once (correct). Images are untouched (stay correct). This
+    fixes BOTH teacher-forcing and closed-loop rollout. (An earlier version divided the *whole*
+    inputs_embeds in GemmaModel, which also shrank the already-correct image tokens by sqrt(hidden)
+    -> weak vision -> the arm approached objects but grasped imprecisely and never completed a task.)
+    Idempotent.
+    """
     global _SCALING_FIX_INSTALLED
     if _SCALING_FIX_INSTALLED:
         return
-    import transformers.models.gemma.modeling_gemma as GM
-    _orig = GM.GemmaModel.forward
+    import math
+    import lerobot.policies.pi0_fast.modeling_pi0_fast as MOD
+    _orig = MOD.PI0FastPaliGemma.embed_language_tokens
 
-    def _patched(self, *args, inputs_embeds=None, input_ids=None, **kwargs):
-        if inputs_embeds is not None:
-            inputs_embeds = inputs_embeds / (self.config.hidden_size ** 0.5)
-        return _orig(self, *args, inputs_embeds=inputs_embeds, input_ids=input_ids, **kwargs)
+    def _patched(self, tokens):
+        emb = _orig(self, tokens)
+        return emb / math.sqrt(emb.shape[-1])
 
-    GM.GemmaModel.forward = _patched
+    MOD.PI0FastPaliGemma.embed_language_tokens = _patched
     _SCALING_FIX_INSTALLED = True
 
 
