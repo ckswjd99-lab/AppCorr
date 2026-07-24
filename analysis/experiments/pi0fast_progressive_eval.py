@@ -57,25 +57,35 @@ def parse_args():
 
 
 def obs_from_sample(s):
+    # Keys MUST match config.image_features (this checkpoint: image/image2 + an auto-padded
+    # empty_camera_0). Using the wrong names silently pads the real cameras as "missing" (mask=0),
+    # so the model sees no vision and collapses to a constant action -- verified failure mode.
     return {
-        "observation.images.base_0_rgb": s["observation.images.image"][None],
-        "observation.images.left_wrist_0_rgb": s["observation.images.image2"][None],
-        "observation.images.empty_camera_0": torch.zeros_like(s["observation.images.image"])[None],
+        "observation.images.image": s["observation.images.image"][None],
+        "observation.images.image2": s["observation.images.image2"][None],
         "observation.state": s["observation.state"][None],
         "task": [s["task"]],
     }
 
 
 @torch.inference_mode()
-def teacher_forced_ce(M, obs, gt_action_chunk):
-    """Next-action-token CE + argmax acc through the stock lerobot forward (with our progressive
-    features already the exact ones -- this measures model quality, not the approximation)."""
+def teacher_forced_ce(M, obs, gt_action_chunk, features=None):
+    """Next-action-token cross-entropy against the GT action chunk (robust to the greedy decode's
+    occasional detokenizer spikes). If `features` is given, the (progressive) vision features are
+    injected via embed_image so this measures the approximation's effect on the model directly."""
     o = dict(obs)
     o["action"] = gt_action_chunk[None]
     b = M.pre(o)
-    out = M.pol.forward(b)
-    loss = float(out[0]) if isinstance(out, tuple) else float(out["loss"])
-    return loss
+    if features is None:
+        out = M.pol.forward(b)
+    else:
+        queue = list(features)
+        M.m.paligemma_with_expert.embed_image = lambda img: queue.pop(0)
+        try:
+            out = M.pol.forward(b)
+        finally:
+            M.m.paligemma_with_expert.embed_image = M._orig_embed_image
+    return float(out[0]) if isinstance(out, tuple) else float(out["loss"])
 
 
 def main():
@@ -100,39 +110,47 @@ def main():
             gt_chunk = torch.stack([ds[min(fi + k, n - 1)]["action"] for k in range(H)])
 
             a_exact = M.predict_action_exact(obs)
-            ce = teacher_forced_ce(M, obs, gt_chunk)
+            gt_l1 = float(np.abs(a_exact - gt_chunk.numpy()).mean())
 
+            npatch = M.tokens_per_image or 256   # SigLIP So400m/224 -> 256 patches/image
             for keep_frac in keeps:
+                # compute the (progressive) features ONCE at this compression, reuse for the free
+                # decode AND the (robust) teacher-forced CE.
+                M.cache_feature = {}
+                pixel_list = M._pixel_list(obs)
                 if keep_frac >= 1.0:
-                    a = M.predict_action_progressive(obs, num_groups=args.num_groups,
-                                                     base_factor=args.base_factor)
+                    feats = M._features_progressive(pixel_list, args.num_groups, args.base_factor, None)
                     kept = 1.0
                 else:
-                    # correct a top-to-bottom prefix of patches (same 256-patch grid per image)
-                    npatch = M.tokens_per_image or 256
                     k = int(round(keep_frac * npatch))
-                    keep_idx = [torch.arange(k, device=device)] * 3
-                    a = M.predict_action_progressive(obs, num_groups=args.num_groups,
-                                                     base_factor=args.base_factor, patch_keep=keep_idx)
+                    keep_idx = [torch.arange(k, device=device)] * len(pixel_list)
+                    feats = M._features_progressive(pixel_list, args.num_groups, args.base_factor, keep_idx)
                     kept = k / npatch
-                l1 = float(np.abs(a - a_exact).mean())
+                a = M._run_with_injected(obs, feats)
+                ce_k = teacher_forced_ce(M, obs, gt_chunk, features=feats)
+                # clip before diffing: the FAST detokenizer occasionally emits a single garbage token
+                # -> an absurd action value that would dominate a raw L1 (real actions are ~[-1,1]).
+                # The teacher-forced CE is the outlier-free primary metric; this keeps L1 readable.
+                l1 = float(np.abs(np.clip(a, -3, 3) - np.clip(a_exact, -3, 3)).mean())
                 key = f"keep={keep_frac:.2f}"
-                r = results.setdefault(key, {"l1_vs_exact": [], "recompute_rate": [], "tf_ce": []})
+                r = results.setdefault(key, {"l1_vs_exact": [], "recompute_rate": [], "tf_ce": [], "exact_l1_vs_gt": []})
                 r["l1_vs_exact"].append(l1)
                 r["recompute_rate"].append(kept)
-                r["tf_ce"].append(ce)
+                r["tf_ce"].append(ce_k)
+                r["exact_l1_vs_gt"].append(gt_l1)
 
     print("\n=== pi0-FAST progressive vision eval ===")
     print(f"checkpoint={args.checkpoint} dataset={args.dataset} frames={sum(1 for _ in results.get(list(results)[0], {}).get('l1_vs_exact', []))}")
-    print(f"{'config':14s} | recompute | L1 vs exact | teacher-forced CE")
+    print(f"{'config':14s} | recompute | L1 vs exact | exact L1 vs GT | teacher-forced CE")
     summary = {}
     for key, r in results.items():
         rc = float(np.mean(r["recompute_rate"]))
         l1 = float(np.mean(r["l1_vs_exact"]))
         ce = float(np.mean(r["tf_ce"]))
-        print(f"{key:14s} | {rc:8.3f}  | {l1:10.6f}  | {ce:.3f}")
+        gt = float(np.mean(r["exact_l1_vs_gt"]))
+        print(f"{key:14s} | {rc:8.3f}  | {l1:10.6f}  | {gt:12.4f}  | {ce:.3f}")
         summary[key] = {"recompute_rate": rc, "l1_vs_exact": l1, "tf_ce": ce,
-                        "n_frames": len(r["l1_vs_exact"])}
+                        "exact_l1_vs_gt": gt, "n_frames": len(r["l1_vs_exact"])}
 
     if args.results_json:
         with open(args.results_json, "w") as f:
