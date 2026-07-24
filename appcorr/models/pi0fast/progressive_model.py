@@ -71,29 +71,40 @@ class Pi0FastProgressiveModel:
                  stats_dataset_repo: str = "HuggingFaceVLA/libero"):
         from lerobot.policies.pi0_fast.modeling_pi0_fast import PI0FastPolicy
         from lerobot.policies.factory import make_pre_post_processors
-        from appcorr.models.pi0fast.siglip_vision import ApproxCorrectSiglipBackbone
 
         install_gemma_scaling_fix()
-        self.device = device
         pol = PI0FastPolicy.from_pretrained(checkpoint).to(device).eval()
         # Consistent float32 (native mixed precision throws Float-vs-BFloat16 in SigLIP layer_norm).
         pol.model.paligemma_with_expert.to_bfloat16_for_selected_params("float32")
-        self.pol = pol
-        self.m = pol.model
-        self.pg = self.m.paligemma_with_expert.paligemma
         self.pre, self.post = make_pre_post_processors(
             pol.config, pretrained_path=checkpoint,
             preprocessor_overrides={"device_processor": {"device": device}})
+        self._setup(pol, device)
 
+    @classmethod
+    def from_policy(cls, pol, device: torch.device):
+        """Build around an already-loaded PI0FastPolicy (e.g. lerobot-eval's) -- no reload, no
+        preprocessor (the eval feeds a preprocessed batch to _partial_from_batch). Keeps the policy's
+        own precision (autocast bf16 under eval)."""
+        install_gemma_scaling_fix()
+        self = cls.__new__(cls)
+        self.pre = self.post = None
+        self._setup(pol, device)
+        return self
+
+    def _setup(self, pol, device: torch.device):
+        from appcorr.models.pi0fast.siglip_vision import ApproxCorrectSiglipBackbone
+        from appcorr.models.pi0fast.gemma_prefill_layer import ApproxCorrectGemmaDecoderLayer
+
+        self.device = device
+        self.pol = pol
+        self.m = pol.model
+        self.pg = self.m.paligemma_with_expert.paligemma
         self.projector = self.pg.model.multi_modal_projector
         self.hidden_size = self.pg.config.text_config.hidden_size
         self.img_scale = self.hidden_size ** 0.5   # get_image_features /sqrt
 
-        # progressive-vision fork (the CORE technique)
         self.siglip = ApproxCorrectSiglipBackbone(self.pg.model.vision_tower.vision_model).to(device)
-
-        # LLM (Gemma) fork + handles, for partial-token LLM correct
-        from appcorr.models.pi0fast.gemma_prefill_layer import ApproxCorrectGemmaDecoderLayer
         self.lm = self.pg.model.language_model
         self.llm_layers = [ApproxCorrectGemmaDecoderLayer.from_stock(l).to(device) for l in self.lm.layers]
         self.embed_tokens = self.lm.embed_tokens
@@ -136,7 +147,14 @@ class Pi0FastProgressiveModel:
     @torch.inference_mode()
     def predict_action_partial_token(self, obs: Dict[str, Any], keep: float = 0.5,
                                      base_factor: int = 4, correct_text: bool = True) -> np.ndarray:
-        """DINOv3-style partial-token progressive prefill on BOTH the SigLIP ViT and the Gemma LLM.
+        """obs -> preprocess -> _partial_from_batch. See _partial_from_batch for the method."""
+        return self._partial_from_batch(self.pre(obs), keep, base_factor, correct_text)
+
+    @torch.inference_mode()
+    def _partial_from_batch(self, b: Dict[str, Any], keep: float = 0.5,
+                            base_factor: int = 4, correct_text: bool = True) -> torch.Tensor:
+        """DINOv3-style partial-token progressive prefill on BOTH the SigLIP ViT and the Gemma LLM,
+        given an already-preprocessed batch `b` (so it can patch PI0FastPolicy.predict_action_chunk).
 
         one approx + one pscore-selected correct:
           vision: SigLIP base approx (+pscore = residual*avg_attn) -> correct only the top-`keep`
@@ -151,7 +169,6 @@ class Pi0FastProgressiveModel:
             OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK)
         dev = self.device
         sqrtH = self.img_scale
-        b = self.pre(obs)
         images, img_masks = self.pol._preprocess_images(b)          # 3 imgs, masks [T,T,F]
         text_ids = b[OBS_LANGUAGE_TOKENS]
         text_mask = b[OBS_LANGUAGE_ATTENTION_MASK]
