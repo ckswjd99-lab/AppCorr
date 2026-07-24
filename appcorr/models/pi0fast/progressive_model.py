@@ -86,10 +86,24 @@ class Pi0FastProgressiveModel:
             preprocessor_overrides={"device_processor": {"device": device}})
 
         self.projector = self.pg.model.multi_modal_projector
-        self.img_scale = self.pg.config.text_config.hidden_size ** 0.5   # get_image_features /sqrt
+        self.hidden_size = self.pg.config.text_config.hidden_size
+        self.img_scale = self.hidden_size ** 0.5   # get_image_features /sqrt
 
         # progressive-vision fork (the CORE technique)
         self.siglip = ApproxCorrectSiglipBackbone(self.pg.model.vision_tower.vision_model).to(device)
+
+        # LLM (Gemma) fork + handles, for partial-token LLM correct
+        from appcorr.models.pi0fast.gemma_prefill_layer import ApproxCorrectGemmaDecoderLayer
+        self.lm = self.pg.model.language_model
+        self.llm_layers = [ApproxCorrectGemmaDecoderLayer.from_stock(l).to(device) for l in self.lm.layers]
+        self.embed_tokens = self.lm.embed_tokens
+        self.rotary_emb = self.lm.rotary_emb
+        self.lm_norm = self.lm.norm
+        self.lm_head = self.pg.lm_head
+        self.tok = pol._paligemma_tokenizer
+        self.max_decoding_steps = pol.config.max_decoding_steps
+        self.n_action_steps = pol.config.n_action_steps
+        self.action_dim = pol.config.output_features["action"].shape[0]
 
         self.cache_feature: Dict[str, Any] = {}
         self.tokens_per_image = None
@@ -107,6 +121,161 @@ class Pi0FastProgressiveModel:
     def _project(self, feats: torch.Tensor) -> torch.Tensor:
         """last_hidden_state -> multi_modal_projector -> /sqrt(hidden)  (== get_image_features)."""
         return self.projector(feats) / self.img_scale
+
+    def _proj_raw(self, feats: torch.Tensor) -> torch.Tensor:
+        """Image embed as the Gemma LAYER sees it (== get_image_features * sqrt(hidden) == raw
+        projector output). Our fork layers do no internal sqrt scaling, so we feed this directly;
+        text/FAST are fed embed_tokens * sqrt(hidden)."""
+        return self.projector(feats)
+
+    def _rope(self, positions: torch.Tensor):
+        dummy = torch.zeros(1, positions.shape[-1], self.hidden_size, device=self.device)
+        return self.rotary_emb(dummy, positions.unsqueeze(0) if positions.dim() == 1 else positions)
+
+    # ------------------------------------------------------------------ partial-token (ViT + LLM)
+    @torch.inference_mode()
+    def predict_action_partial_token(self, obs: Dict[str, Any], keep: float = 0.5,
+                                     base_factor: int = 4, correct_text: bool = True) -> np.ndarray:
+        """DINOv3-style partial-token progressive prefill on BOTH the SigLIP ViT and the Gemma LLM.
+
+        one approx + one pscore-selected correct:
+          vision: SigLIP base approx (+pscore = residual*avg_attn) -> correct only the top-`keep`
+                  patches per real image.
+          LLM:    bidirectional approx on the base vision features + text -> correct ONLY the selected
+                  vision tokens' K/V (+ the text 'permanent group' so it re-attends to them). Non-
+                  selected vision tokens keep their base LLM K/V. Then FAST-decode from the corrected
+                  prefix. At keep=1.0 (+correct_text) this reproduces the stock prefix -> stock action.
+        Returns the (still-normalized) action chunk, matching PI0FastPolicy.predict_action_chunk.
+        """
+        from lerobot.policies.pi0_fast.modeling_pi0_fast import (
+            OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK)
+        dev = self.device
+        sqrtH = self.img_scale
+        b = self.pre(obs)
+        images, img_masks = self.pol._preprocess_images(b)          # 3 imgs, masks [T,T,F]
+        text_ids = b[OBS_LANGUAGE_TOKENS]
+        text_mask = b[OBS_LANGUAGE_ATTENTION_MASK]
+        bos = torch.full((1, 1), self.tok.bos_token_id, device=dev, dtype=text_ids.dtype)
+        text_ids = torch.cat([text_ids, bos], dim=1)
+        text_mask = torch.cat([text_mask, torch.ones((1, 1), dtype=text_mask.dtype, device=dev)], dim=1)
+
+        # ---- vision: base approx (+pscore) then correct top-keep patches per real image ----
+        self.cache_feature = {}
+        base_feats, corr_feats, sel_per_image = [], [], []
+        for i, img in enumerate(images):
+            real = img_masks[i].any().item()
+            bf, self.cache_feature = self.siglip.approx_forward(
+                self._base_pixel(img, base_factor), self.cache_feature, f"img{i}", pscore=real)
+            base_feats.append(bf)
+            if real:
+                ps = self.siglip.get_pscore(self.cache_feature, f"img{i}")[0]     # [256]
+                npn = ps.shape[0]
+                k = max(1, min(int(round(keep * npn)), npn))
+                sel = torch.topk(ps.float(), k, largest=True).indices.sort().values
+                cf, self.cache_feature = self.siglip.correct_forward(img, sel, self.cache_feature, f"img{i}")
+                corr_feats.append(cf); sel_per_image.append(sel)
+            else:
+                corr_feats.append(bf); sel_per_image.append(torch.zeros(0, dtype=torch.long, device=dev))
+        tpi = base_feats[0].shape[1]                                  # tokens per image (256)
+        n_img = tpi * len(images)
+
+        # ---- build prefix embeds at the Gemma-layer scale ----
+        approx_img = torch.cat([self._proj_raw(f) for f in base_feats], dim=1)      # [1, n_img, D]
+        corr_img = torch.cat([self._proj_raw(f) for f in corr_feats], dim=1)        # [1, n_img, D]
+        text_emb = self.embed_tokens(text_ids) * sqrtH                              # [1, L, D]
+        approx_prefix = torch.cat([approx_img, text_emb], dim=1)
+        corr_prefix = torch.cat([corr_img, text_emb], dim=1)
+        P = approx_prefix.shape[1]; L = text_ids.shape[1]
+
+        # ---- pad mask, 2D bidirectional prefix mask, positions (match lerobot) ----
+        pad = torch.cat([
+            torch.ones(1, tpi, dtype=torch.bool, device=dev) if img_masks[i].any() else
+            torch.zeros(1, tpi, dtype=torch.bool, device=dev) for i in range(len(images))
+        ] + [text_mask.bool()], dim=1)                               # [1, P]
+        segs = [("image", n_img), ("language", L)]
+        mask2d = self.m._create_custom_attention_mask_fast(segs, pad, 1)            # [1, P, P] bool
+        mask4d = self.m._prepare_attention_masks_4d(mask2d, dtype=approx_prefix.dtype)  # [1,1,P,P]
+        positions = torch.cumsum(pad.long(), dim=1)[0] - 1                          # [P]
+        cos, sin = self._rope(positions)
+
+        # ---- LLM approx (bidirectional) on base vision features ----
+        x = approx_prefix
+        for i, layer in enumerate(self.llm_layers):
+            x, self.cache_feature = layer.approx(x, self.cache_feature, f"llm{i}", cos, sin,
+                                                 causal=False, attn_mask=mask4d)
+        self.cache_feature["_x"] = x
+
+        # ---- LLM correct: selected vision tokens (+ text permanent group) ----
+        sel_global = torch.cat([sel_per_image[i] + i * tpi for i in range(len(images))]) \
+            if any(s.numel() for s in sel_per_image) else torch.zeros(0, dtype=torch.long, device=dev)
+        tok_idx = sel_global
+        if correct_text:
+            tok_idx = torch.cat([sel_global, torch.arange(n_img, P, device=dev)])
+        tok_idx = tok_idx.sort().values
+        if tok_idx.numel() > 0:
+            cos_s, sin_s = cos[:, tok_idx], sin[:, tok_idx]
+            x_sel = corr_prefix[:, tok_idx]
+            mask_rows = mask4d[:, :, tok_idx, :]
+            for i, layer in enumerate(self.llm_layers):
+                x_sel, self.cache_feature = layer.prefill(
+                    x_sel, tok_idx, self.cache_feature, f"llm{i}", cos_s, sin_s,
+                    key_end=P, causal=False, attn_mask=mask_rows)
+            xf = self.cache_feature["_x"].clone()
+            xf[:, tok_idx] = x_sel.to(xf.dtype)
+            self.cache_feature["_x"] = xf
+
+        gen = self._generate_fast_from_cache(P, pad)
+        return self._detok(gen)
+
+    @torch.inference_mode()
+    def _generate_fast_from_cache(self, P: int, pad: torch.Tensor) -> torch.Tensor:
+        from transformers.models.gemma.modeling_gemma import apply_rotary_pos_emb, repeat_kv
+        eos = self.tok.eos_token_id
+        # additive key mask over the PREFIX: -inf for padding keys (empty camera + text pad) so the
+        # generated FAST tokens never attend to them (matches lerobot's prefix_pad_masks).
+        neg = torch.finfo(torch.float32).min
+        prefix_key_mask = torch.where(pad.view(1, P), torch.zeros(1, P, device=self.device),
+                                      torch.full((1, P), neg, device=self.device))  # [1, P]
+        # RoPE position for FAST tokens continues from the last VALID prefix position (padding does
+        # not advance position_ids = cumsum(pad)-1), NOT from the padded length P.
+        p_valid = int(pad.sum().item())
+        kcache, vcache = [], []
+        for i in range(len(self.llm_layers)):
+            k, v = self.cache_feature[f"llm{i}_kv"][:, :, :P].unbind(3)
+            kcache.append(k.clone()); vcache.append(v.clone())
+        first = int(self.lm_head(self.lm_norm(self.cache_feature["_x"][:, -1:]))[:, -1].argmax(-1))
+        gen = [] if first == eos else [first]
+        cur = first
+        for step in range(1, self.max_decoding_steps):
+            if not gen:
+                break
+            cos, sin = self._rope(torch.tensor([p_valid - 1 + step], device=self.device))
+            x = self.embed_tokens(torch.tensor([[cur]], device=self.device)) * self.img_scale
+            n_fast = kcache[0].shape[2] - P + 1                       # keys beyond prefix (incl this one)
+            key_mask = torch.cat([prefix_key_mask, torch.zeros(1, n_fast, device=self.device)], dim=1)
+            key_mask = key_mask.view(1, 1, 1, P + n_fast).to(x.dtype)
+            for i, layer in enumerate(self.llm_layers):
+                attn = layer.self_attn
+                h = layer.input_layernorm(x)
+                q, k, v = attn._project_heads(h)
+                q, k = apply_rotary_pos_emb(q, k, cos, sin)
+                kcache[i] = torch.cat([kcache[i], k], dim=2); vcache[i] = torch.cat([vcache[i], v], dim=2)
+                kf = repeat_kv(kcache[i], attn.num_key_value_groups); vf = repeat_kv(vcache[i], attn.num_key_value_groups)
+                o = F.scaled_dot_product_attention(q, kf, vf, attn_mask=key_mask, scale=attn.scaling)
+                o = o.transpose(1, 2).reshape(1, 1, -1)
+                x = x + attn.o_proj(o); x = x + layer.mlp(layer.post_attention_layernorm(x))
+            nxt = int(self.lm_head(self.lm_norm(x))[:, -1].argmax(-1))
+            if nxt == eos:
+                break
+            gen.append(nxt); cur = nxt
+        return torch.tensor([gen], device=self.device, dtype=torch.long)
+
+    def _detok(self, gen_tokens: torch.Tensor) -> np.ndarray:
+        pad = torch.zeros(1, self.max_decoding_steps, device=self.device, dtype=torch.long)
+        n = min(gen_tokens.shape[1], self.max_decoding_steps)
+        pad[:, :n] = gen_tokens[:, :n]
+        actions = self.pol.detokenize_actions(pad, action_horizon=self.n_action_steps, action_dim=self.action_dim)
+        return actions
 
     def _features_exact(self, pixel_list: List[torch.Tensor]) -> List[torch.Tensor]:
         outs = []

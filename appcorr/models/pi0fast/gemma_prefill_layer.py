@@ -79,9 +79,12 @@ class ApproxCorrectGemmaAttention(nn.Module):
         return self.o_proj(attn_out), cache_feature
 
     def correct(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-                cos: torch.Tensor, sin: torch.Tensor, key_end: int = None, causal: bool = True):
+                cos: torch.Tensor, sin: torch.Tensor, key_end: int = None, causal: bool = True,
+                attn_mask: torch.Tensor = None):
         """Recompute Q/K/V for `token_idx`, splice K/V into the cache, attend against the (optionally
-        prefix-bounded) cache. `causal=False` => bidirectional over the reachable keys."""
+        prefix-bounded) cache. `causal=False` => bidirectional over the reachable keys. An explicit
+        additive `attn_mask` [*, Q, n_keys] (e.g. the pi0-FAST bidirectional-prefix + pad mask for the
+        corrected rows) overrides the causal construction."""
         kv = cache_feature[f"{tag}_kv"]  # [B, H_kv, N, 2, Dh]
         B, _, N = kv.shape[0], kv.shape[1], kv.shape[2]
         Q = token_idx.shape[0]
@@ -99,14 +102,12 @@ class ApproxCorrectGemmaAttention(nn.Module):
         k_full = repeat_kv(k_full, self.num_key_value_groups)
         v_full = repeat_kv(v_full, self.num_key_value_groups)
 
-        if causal:
+        if attn_mask is None and causal:
             key_positions = torch.arange(n_keys, device=kv.device).view(1, n_keys)
             allowed = key_positions <= token_idx.view(Q, 1)
             attn_mask = torch.zeros((Q, n_keys), device=kv.device, dtype=q_new.dtype)
             attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
             attn_mask = attn_mask.view(1, 1, Q, n_keys)
-        else:
-            attn_mask = None
 
         attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, attn_mask=attn_mask, scale=self.scaling)
         attn_out = attn_out.transpose(1, 2).reshape(B, Q, self.num_heads * self.head_dim)
@@ -135,11 +136,11 @@ class ApproxCorrectGemmaDecoderLayer(nn.Module):
         cache_feature[f"{tag}_blocks_out_sum"] = cache_feature[f"{tag}_blocks_out_sum"] + mlp_out.detach()
         return x_mid + mlp_out, cache_feature
 
-    def prefill(self, x_sel, token_idx, cache_feature, tag, cos, sin, key_end=None, causal=True):
+    def prefill(self, x_sel, token_idx, cache_feature, tag, cos, sin, key_end=None, causal=True, attn_mask=None):
         """O(Q) chunked prefill: operate only on the Q query rows (no [B,N,C] reconstruction)."""
         x_norm_sel = self.input_layernorm(x_sel)
         x_attn_sel, cache_feature = self.self_attn.correct(
-            x_norm_sel, token_idx, cache_feature, tag, cos, sin, key_end=key_end, causal=causal)
+            x_norm_sel, token_idx, cache_feature, tag, cos, sin, key_end=key_end, causal=causal, attn_mask=attn_mask)
         x_attn_active = x_sel + x_attn_sel
         mlp_out_new = self.mlp(self.post_attention_layernorm(x_attn_active))
         return x_attn_active + mlp_out_new, cache_feature
