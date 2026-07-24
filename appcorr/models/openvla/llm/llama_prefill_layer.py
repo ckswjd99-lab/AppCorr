@@ -89,7 +89,7 @@ class ApproxCorrectLlamaAttention(nn.Module):
         return self.o_proj(attn_out), cache_feature
 
     def correct(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-                cos: torch.Tensor = None, sin: torch.Tensor = None, key_end: int = None):
+                cos: torch.Tensor = None, sin: torch.Tensor = None, key_end: int = None, causal: bool = True):
         """
         Args:
             x_sel: [B, Q, C] -- input_layernorm(x) already sliced to the query positions (a superset
@@ -129,13 +129,17 @@ class ApproxCorrectLlamaAttention(nn.Module):
         k_full = repeat_kv(k_full, self.num_key_value_groups)
         v_full = repeat_kv(v_full, self.num_key_value_groups)
 
-        # Causal mask restricted to this (possibly non-contiguous) query set: query i may attend to
-        # key j iff j <= token_idx[i]. Shape [1, 1, Q, n_keys] broadcasts over batch/heads.
-        key_positions = torch.arange(n_keys, device=kv.device).view(1, n_keys)
-        allowed = key_positions <= token_idx.view(Q, 1)  # [Q, n_keys]
-        attn_mask = torch.zeros((Q, n_keys), device=kv.device, dtype=q_new.dtype)
-        attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
-        attn_mask = attn_mask.view(1, 1, Q, n_keys)
+        # Causal (default): query i attends to key j iff j <= token_idx[i]. When causal=False (used
+        # for OpenVLA-OFT's parallel-decoding action block, which attends bidirectionally over the
+        # whole sequence), every query attends to all n_keys.
+        if causal:
+            key_positions = torch.arange(n_keys, device=kv.device).view(1, n_keys)
+            allowed = key_positions <= token_idx.view(Q, 1)  # [Q, n_keys]
+            attn_mask = torch.zeros((Q, n_keys), device=kv.device, dtype=q_new.dtype)
+            attn_mask.masked_fill_(~allowed, torch.finfo(q_new.dtype).min)
+            attn_mask = attn_mask.view(1, 1, Q, n_keys)
+        else:
+            attn_mask = None
 
         attn_out = F.scaled_dot_product_attention(q_new, k_full, v_full, attn_mask=attn_mask)
         attn_out = attn_out.transpose(1, 2).reshape(B, Q, self.num_heads * self.head_dim)
@@ -204,7 +208,7 @@ class ApproxCorrectLlamaDecoderLayer(nn.Module):
         return x_out, cache_feature
 
     def prefill(self, x_sel: torch.Tensor, token_idx: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-                cos: torch.Tensor = None, sin: torch.Tensor = None, key_end: int = None):
+                cos: torch.Tensor = None, sin: torch.Tensor = None, key_end: int = None, causal: bool = True):
         """Chunked causal PREFILL of `token_idx` -- the O(Q) counterpart of `.correct()`.
 
         `.correct()` threads the full [B, N, C] residual stream and reconstructs every non-queried
@@ -217,7 +221,7 @@ class ApproxCorrectLlamaDecoderLayer(nn.Module):
         K/V prefix this group can actually reach -- see `correct()`'s docstring."""
         x_norm_sel = self.input_layernorm(x_sel)
         x_attn_sel, cache_feature = self.self_attn.correct(
-            x_norm_sel, token_idx, cache_feature, tag, cos=cos, sin=sin, key_end=key_end)
+            x_norm_sel, token_idx, cache_feature, tag, cos=cos, sin=sin, key_end=key_end, causal=causal)
         x_attn_active = x_sel + x_attn_sel
         mlp_out_new = self.mlp(self.post_attention_layernorm(x_attn_active))
         return x_attn_active + mlp_out_new, cache_feature
