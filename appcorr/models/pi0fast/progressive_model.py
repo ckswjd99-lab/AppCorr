@@ -1,22 +1,18 @@
 """
 progressive_model.py  (pi0-FAST)
 
-pi0-FAST progressive-prefill model. The CORE progressive technique for pi0-FAST is
-*progressive vision*: the SigLIP tower runs a low-res base approx and then corrects only the
-arriving patch groups (ApproxCorrectSiglipBackbone, bit-exact at 100% correct). Everything
-downstream of the vision features -- PaliGemma's bidirectional image+language prefix, the FAST
-autoregressive action decode, the FAST detokenizer, the padded-sequence mask/position handling --
-is left to lerobot's own (correct) `PI0FastPolicy` pipeline, into which we simply *inject* our
-progressive vision features by temporarily overriding `embed_image`.
+pi0-FAST progressive-prefill model with two supported paths:
 
-Why not fork the LLM prefill too (as for OpenVLA/OFT)? pi0-FAST's PaliGemma prefix is
-BIDIRECTIONAL (image+language attend to each other), so a single-pass causal / block-causal chunked
-prefill is NOT lossless (measured: strict-causal +12% CE; the lossless block-causal pattern needs
-text<->image bidirectionality, which is not single-pass streamable). The bidirectional prefix is
-therefore run in full by lerobot; the progressive saving is entirely in the vision tower. Injecting
-features (rather than reimplementing generation) also guarantees bit-exact parity with the stock
-model -- at 100% vision correction, `predict_action_progressive == predict_action_exact ==
-stock lerobot`.
+* Progressive vision injection: SigLIP runs a low-res base and patch correction, then LeRobot owns
+  the full PaliGemma prefix and FAST decode.
+* Partial-token ViT+LLM: one SigLIP base pass and, optionally, Gemma vision-query or language-query
+  attention to vision keys produces a fused pscore. Selected vision tokens are corrected in SigLIP,
+  and the same selected vision positions plus the text permanent group are corrected in the
+  bidirectional Gemma prefix before an AppCorr KV-cache FAST decode.
+
+The partial-token path is bit-exact with stock at 100% correction in float32. Exactness depends on
+preserving LeRobot/Transformers' embedding scaling operation order, including mathematically
+redundant divide/multiply round trips whose float32 rounding can change a later FAST argmax.
 
 Double-scaling note: transformers>=4.57 `GemmaModel.forward` scales inputs_embeds by sqrt(hidden),
 but lerobot's `embed_prefix_fast` ALSO pre-scales them -- a double-scaling that collapses the model
@@ -24,7 +20,7 @@ but lerobot's `embed_prefix_fast` ALSO pre-scales them -- a double-scaling that 
 neutralizes the extra HF scaling; it is required for any pi0-FAST inference under transformers>=4.57.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import numpy as np
 import torch
@@ -32,6 +28,7 @@ import torch.nn.functional as F
 
 
 _SCALING_FIX_INSTALLED = False
+Pi0FastScoreMode = Literal["vit", "vit_llm_vision", "vit_llm_language"]
 
 
 def install_gemma_scaling_fix():
@@ -66,6 +63,28 @@ def install_gemma_scaling_fix():
     _SCALING_FIX_INSTALLED = True
 
 
+def configure_policy_precision(
+    policy,
+    precision: Literal["inherit", "float32", "bfloat16"] = "inherit",
+) -> str:
+    """Put an already-loaded LeRobot pi0-FAST policy in a known model precision.
+
+    ``lerobot-eval`` constructs the policy before AppCorr can wrap it, so precision must be
+    configured on that existing object. ``inherit`` is deliberately a no-op and is the mode used
+    for the official AMP/bfloat16 path. The helper is shared by stock and partial launch modes so
+    their comparisons cannot accidentally use different weight dtypes.
+    """
+    if precision not in {"inherit", "float32", "bfloat16"}:
+        raise ValueError(
+            f"Unsupported pi0-FAST precision {precision!r}; "
+            "expected 'inherit', 'float32', or 'bfloat16'."
+        )
+    if precision != "inherit":
+        policy.model.paligemma_with_expert.to_bfloat16_for_selected_params(precision)
+    policy._appcorr_precision = precision
+    return precision
+
+
 class Pi0FastProgressiveModel:
     def __init__(self, checkpoint: str, device: torch.device,
                  stats_dataset_repo: str = "HuggingFaceVLA/libero"):
@@ -82,11 +101,20 @@ class Pi0FastProgressiveModel:
         self._setup(pol, device)
 
     @classmethod
-    def from_policy(cls, pol, device: torch.device):
+    def from_policy(
+        cls,
+        pol,
+        device: torch.device,
+        precision: Literal["inherit", "float32", "bfloat16"] = "inherit",
+    ):
         """Build around an already-loaded PI0FastPolicy (e.g. lerobot-eval's) -- no reload, no
-        preprocessor (the eval feeds a preprocessed batch to _partial_from_batch). Keeps the policy's
-        own precision (autocast bf16 under eval)."""
+        preprocessor (the eval feeds a preprocessed batch to _partial_from_batch).
+
+        ``precision='inherit'`` preserves the policy's dtype (normally used with the official AMP
+        context); ``float32`` is the parity/debug path and must be paired with AMP disabled.
+        """
         install_gemma_scaling_fix()
+        configure_policy_precision(pol, precision)
         self = cls.__new__(cls)
         self.pre = self.post = None
         self._setup(pol, device)
@@ -134,41 +162,107 @@ class Pi0FastProgressiveModel:
         return self.projector(feats) / self.img_scale
 
     def _proj_raw(self, feats: torch.Tensor) -> torch.Tensor:
-        """Image embed as the Gemma LAYER sees it (== get_image_features * sqrt(hidden) == raw
-        projector output). Our fork layers do no internal sqrt scaling, so we feed this directly;
-        text/FAST are fed embed_tokens * sqrt(hidden)."""
-        return self.projector(feats)
+        """Image embed at Gemma-layer scale, preserving stock round-trip arithmetic.
+
+        Stock PaliGemma computes ``projector / sqrt(hidden)`` in get_image_features and GemmaModel
+        multiplies it back by ``sqrt(hidden)``. Returning the raw projector is mathematically equal
+        but not bit-exact because it skips that divide/multiply round trip.
+        """
+        return (self.projector(feats) / self.img_scale) * self.img_scale
+
+    def _language_at_layer_scale(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Match patched LeRobot embed -> LeRobot scale -> GemmaModel scale operation order."""
+        embeddings = self.m.paligemma_with_expert.embed_language_tokens(token_ids)
+        embeddings = embeddings * self.img_scale
+        return embeddings * self.img_scale
 
     def _rope(self, positions: torch.Tensor):
         dummy = torch.zeros(1, positions.shape[-1], self.hidden_size, device=self.device)
         return self.rotary_emb(dummy, positions.unsqueeze(0) if positions.dim() == 1 else positions)
 
+    @staticmethod
+    def _normalize_positive_score(score: torch.Tensor) -> torch.Tensor:
+        score = score.float().clamp_min(0)
+        return score / score.mean().clamp_min(1e-12)
+
+    @classmethod
+    def _fuse_vision_pscore(
+        cls,
+        vit_pscore: torch.Tensor,
+        llm_vision_attention: torch.Tensor,
+        llm_vision_weight: float,
+    ) -> torch.Tensor:
+        """Weighted geometric fusion; weight zero preserves the legacy ranking exactly."""
+        if llm_vision_weight < 0:
+            raise ValueError("llm_vision_weight must be non-negative")
+        if llm_vision_weight == 0:
+            return vit_pscore.float()
+        vit = cls._normalize_positive_score(vit_pscore).clamp_min(1e-12)
+        llm = cls._normalize_positive_score(llm_vision_attention).clamp_min(1e-12)
+        return torch.exp(vit.log() + llm_vision_weight * llm.log())
+
     # ------------------------------------------------------------------ partial-token (ViT + LLM)
     @torch.inference_mode()
     def predict_action_partial_token(self, obs: Dict[str, Any], keep: float = 0.5,
-                                     base_factor: int = 4, correct_text: bool = True) -> np.ndarray:
+                                     base_factor: int = 4, correct_text: bool = True,
+                                     score_mode: Pi0FastScoreMode = "vit",
+                                     llm_vision_weight: float = 1.0) -> np.ndarray:
         """obs -> preprocess -> _partial_from_batch. See _partial_from_batch for the method."""
-        return self._partial_from_batch(self.pre(obs), keep, base_factor, correct_text)
+        return self._partial_from_batch(
+            self.pre(obs),
+            keep,
+            base_factor,
+            correct_text,
+            score_mode,
+            llm_vision_weight,
+        )
 
     @torch.inference_mode()
     def _partial_from_batch(self, b: Dict[str, Any], keep: float = 0.5,
-                            base_factor: int = 4, correct_text: bool = True) -> torch.Tensor:
+                            base_factor: int = 4, correct_text: bool = True,
+                            score_mode: Pi0FastScoreMode = "vit",
+                            llm_vision_weight: float = 1.0) -> torch.Tensor:
+        """Return the normalized action chunk produced by partial-token generation."""
+        gen = self._partial_tokens_from_batch(
+            b,
+            keep,
+            base_factor,
+            correct_text,
+            score_mode,
+            llm_vision_weight,
+        )
+        return self._detok(gen)
+
+    @torch.inference_mode()
+    def _partial_tokens_from_batch(self, b: Dict[str, Any], keep: float = 0.5,
+                                   base_factor: int = 4, correct_text: bool = True,
+                                   score_mode: Pi0FastScoreMode = "vit",
+                                   llm_vision_weight: float = 1.0) -> torch.Tensor:
         """DINOv3-style partial-token progressive prefill on BOTH the SigLIP ViT and the Gemma LLM,
         given an already-preprocessed batch `b` (so it can patch PI0FastPolicy.predict_action_chunk).
 
         one approx + one pscore-selected correct:
-          vision: SigLIP base approx (+pscore = residual*avg_attn) -> correct only the top-`keep`
-                  patches per real image.
-          LLM:    bidirectional approx on the base vision features + text -> correct ONLY the selected
-                  vision tokens' K/V (+ the text 'permanent group' so it re-attends to them). Non-
-                  selected vision tokens keep their base LLM K/V. Then FAST-decode from the corrected
-                  prefix. At keep=1.0 (+correct_text) this reproduces the stock prefix -> stock action.
-        Returns the (still-normalized) action chunk, matching PI0FastPolicy.predict_action_chunk.
+          vision: SigLIP base approx (+pscore = residual*avg_attn).
+          LLM:    bidirectional approx on the base vision features + text, optionally collecting
+                  vision-query or valid-language-query -> vision-key received attention for pscore
+                  fusion.
+          select: rank each image's patches with the requested score mode, then correct the selected
+                  patches in SigLIP and the same vision positions (+ the text permanent group) in
+                  Gemma. At keep=1.0 (+correct_text) this reproduces the stock prefix -> stock action.
+        Returns generated FAST token IDs. `_partial_from_batch` detokenizes these to the normalized
+        action chunk expected by PI0FastPolicy.predict_action_chunk.
         """
         from lerobot.policies.pi0_fast.modeling_pi0_fast import (
             OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK)
+        supported_score_modes = {"vit", "vit_llm_vision", "vit_llm_language"}
+        if score_mode not in supported_score_modes:
+            raise ValueError(
+                f"Unsupported score_mode {score_mode!r}; expected one of "
+                f"{sorted(supported_score_modes)}"
+            )
+        if llm_vision_weight < 0:
+            raise ValueError("llm_vision_weight must be non-negative")
         dev = self.device
-        sqrtH = self.img_scale
         images, img_masks = self.pol._preprocess_images(b)          # 3 imgs, masks [T,T,F]
         text_ids = b[OBS_LANGUAGE_TOKENS]
         text_mask = b[OBS_LANGUAGE_ATTENTION_MASK]
@@ -176,32 +270,26 @@ class Pi0FastProgressiveModel:
         text_ids = torch.cat([text_ids, bos], dim=1)
         text_mask = torch.cat([text_mask, torch.ones((1, 1), dtype=text_mask.dtype, device=dev)], dim=1)
 
-        # ---- vision: base approx (+pscore) then correct top-keep patches per real image ----
+        # ---- vision base approximation and legacy ViT pscore ----
         self.cache_feature = {}
-        base_feats, corr_feats, sel_per_image = [], [], []
+        base_feats, vit_scores, real_flags = [], [], []
         for i, img in enumerate(images):
             real = img_masks[i].any().item()
+            real_flags.append(real)
             bf, self.cache_feature = self.siglip.approx_forward(
                 self._base_pixel(img, base_factor), self.cache_feature, f"img{i}", pscore=real)
             base_feats.append(bf)
             if real:
-                ps = self.siglip.get_pscore(self.cache_feature, f"img{i}")[0]     # [256]
-                npn = ps.shape[0]
-                k = max(1, min(int(round(keep * npn)), npn))
-                sel = torch.topk(ps.float(), k, largest=True).indices.sort().values
-                cf, self.cache_feature = self.siglip.correct_forward(img, sel, self.cache_feature, f"img{i}")
-                corr_feats.append(cf); sel_per_image.append(sel)
+                vit_scores.append(self.siglip.get_pscore(self.cache_feature, f"img{i}")[0])
             else:
-                corr_feats.append(bf); sel_per_image.append(torch.zeros(0, dtype=torch.long, device=dev))
+                vit_scores.append(None)
         tpi = base_feats[0].shape[1]                                  # tokens per image (256)
         n_img = tpi * len(images)
 
-        # ---- build prefix embeds at the Gemma-layer scale ----
+        # ---- build approximate prefix at the Gemma-layer scale ----
         approx_img = torch.cat([self._proj_raw(f) for f in base_feats], dim=1)      # [1, n_img, D]
-        corr_img = torch.cat([self._proj_raw(f) for f in corr_feats], dim=1)        # [1, n_img, D]
-        text_emb = self.embed_tokens(text_ids) * sqrtH                              # [1, L, D]
+        text_emb = self._language_at_layer_scale(text_ids)                          # [1, L, D]
         approx_prefix = torch.cat([approx_img, text_emb], dim=1)
-        corr_prefix = torch.cat([corr_img, text_emb], dim=1)
         P = approx_prefix.shape[1]; L = text_ids.shape[1]
 
         # ---- pad mask, 2D bidirectional prefix mask, positions (match lerobot) ----
@@ -215,12 +303,118 @@ class Pi0FastProgressiveModel:
         positions = torch.cumsum(pad.long(), dim=1)[0] - 1                          # [P]
         cos, sin = self._rope(positions)
 
-        # ---- LLM approx (bidirectional) on base vision features ----
+        real_vision_ranges = [
+            torch.arange(i * tpi, (i + 1) * tpi, device=dev)
+            for i, real in enumerate(real_flags)
+            if real
+        ]
+        real_vision_indices = (
+            torch.cat(real_vision_ranges)
+            if real_vision_ranges
+            else torch.zeros(0, dtype=torch.long, device=dev)
+        )
+        llm_query_group = None
+        score_query_groups = None
+        if score_mode == "vit_llm_vision":
+            llm_query_group = "vision"
+            score_query_groups = {llm_query_group: real_vision_indices}
+        elif score_mode == "vit_llm_language":
+            llm_query_group = "language"
+            language_indices = torch.arange(n_img, P, device=dev)
+            valid_language_indices = language_indices[text_mask[0].bool()]
+            score_query_groups = {llm_query_group: valid_language_indices}
+        score_key_indices = (
+            real_vision_indices if score_query_groups is not None else None
+        )
+
+        # ---- LLM approx on base vision features; collect attention only for fused scoring ----
         x = approx_prefix
         for i, layer in enumerate(self.llm_layers):
-            x, self.cache_feature = layer.approx(x, self.cache_feature, f"llm{i}", cos, sin,
-                                                 causal=False, attn_mask=mask4d)
+            x, self.cache_feature = layer.approx(
+                x,
+                self.cache_feature,
+                f"llm{i}",
+                cos,
+                sin,
+                causal=False,
+                attn_mask=mask4d,
+                score_query_groups=score_query_groups,
+                score_key_indices=score_key_indices,
+            )
         self.cache_feature["_x"] = x
+
+        llm_attention = None
+        if llm_query_group is not None:
+            llm_attention = torch.stack(
+                [
+                    self.cache_feature[f"llm{i}_received_attn_{llm_query_group}"]
+                    for i in range(len(self.llm_layers))
+                ]
+            ).mean(dim=0)[0]
+
+        # ---- fuse scores, select per image, and correct SigLIP only after LLM scoring ----
+        corr_feats, sel_per_image = [], []
+        pscore_components = []
+        llm_cursor = 0
+        for i, img in enumerate(images):
+            if not real_flags[i]:
+                corr_feats.append(base_feats[i])
+                sel_per_image.append(torch.zeros(0, dtype=torch.long, device=dev))
+                pscore_components.append(None)
+                continue
+            vit_pscore = vit_scores[i]
+            if llm_attention is None:
+                llm_pscore = None
+                combined_pscore = vit_pscore.float()
+            else:
+                llm_pscore = llm_attention[llm_cursor:llm_cursor + tpi]
+                llm_cursor += tpi
+                combined_pscore = self._fuse_vision_pscore(
+                    vit_pscore,
+                    llm_pscore,
+                    llm_vision_weight,
+                )
+            k = max(1, min(int(round(keep * tpi)), tpi))
+            sel = torch.topk(combined_pscore, k, largest=True).indices.sort().values
+            cf, self.cache_feature = self.siglip.correct_forward(
+                img,
+                sel,
+                self.cache_feature,
+                f"img{i}",
+            )
+            corr_feats.append(cf)
+            sel_per_image.append(sel)
+            pscore_components.append(
+                {
+                    "vit": vit_pscore.detach().clone(),
+                    "llm_vision": (
+                        llm_pscore.detach().clone()
+                        if llm_query_group == "vision"
+                        else None
+                    ),
+                    "llm_language": (
+                        llm_pscore.detach().clone()
+                        if llm_query_group == "language"
+                        else None
+                    ),
+                    "llm_attention": (
+                        llm_pscore.detach().clone() if llm_pscore is not None else None
+                    ),
+                    "combined": combined_pscore.detach().clone(),
+                    "selected": sel.detach().clone(),
+                }
+            )
+        self.last_pscore_components = {
+            "mode": score_mode,
+            "llm_query_group": llm_query_group,
+            "llm_vision_weight": llm_vision_weight,
+            "per_image": pscore_components,
+        }
+
+        corr_img = torch.cat([self._proj_raw(f) for f in corr_feats], dim=1)
+        corr_prefix = torch.cat([corr_img, text_emb], dim=1)
+        if getattr(self, "capture_debug", False):
+            self.debug_corrected_prefix = corr_prefix.detach().clone()
 
         # ---- LLM correct: selected vision tokens (+ text permanent group) ----
         sel_global = torch.cat([sel_per_image[i] + i * tpi for i in range(len(images))]) \
@@ -229,6 +423,32 @@ class Pi0FastProgressiveModel:
         if correct_text:
             tok_idx = torch.cat([sel_global, torch.arange(n_img, P, device=dev)])
         tok_idx = tok_idx.sort().values
+        real_image_count = sum(bool(mask.any()) for mask in img_masks)
+        self.last_recompute_stats = {
+            "score_mode": score_mode,
+            "llm_attention_query_group": llm_query_group,
+            "llm_vision_weight": llm_vision_weight,
+            "llm_attention_score_query_tokens": (
+                int(next(iter(score_query_groups.values())).numel())
+                if score_query_groups is not None
+                else 0
+            ),
+            "llm_attention_score_key_tokens": (
+                int(real_vision_indices.numel())
+                if score_query_groups is not None
+                else 0
+            ),
+            "real_images": real_image_count,
+            "tokens_per_image": tpi,
+            "vit_corrected_tokens": int(sel_global.numel()),
+            "vit_total_real_tokens": tpi * real_image_count,
+            "llm_corrected_query_tokens": int(tok_idx.numel()),
+            "llm_prefix_tokens": P,
+            "llm_valid_prefix_tokens": int(pad.sum().item()),
+            "text_group_tokens": L if correct_text else 0,
+        }
+        if getattr(self, "capture_debug", False):
+            self.debug_active_indices = tok_idx.detach().clone()
         if tok_idx.numel() > 0:
             cos_s, sin_s = cos[:, tok_idx], sin[:, tok_idx]
             x_sel = corr_prefix[:, tok_idx]
@@ -237,22 +457,17 @@ class Pi0FastProgressiveModel:
                 x_sel, self.cache_feature = layer.prefill(
                     x_sel, tok_idx, self.cache_feature, f"llm{i}", cos_s, sin_s,
                     key_end=P, causal=False, attn_mask=mask_rows)
+                if getattr(self, "capture_debug", False):
+                    self.cache_feature[f"llm{i}_corrected_x"] = x_sel.detach().clone()
             xf = self.cache_feature["_x"].clone()
             xf[:, tok_idx] = x_sel.to(xf.dtype)
             self.cache_feature["_x"] = xf
 
-        gen = self._generate_fast_from_cache(P, pad)
-        return self._detok(gen)
+        return self._generate_fast_from_cache(P, pad)
 
     @torch.inference_mode()
     def _generate_fast_from_cache(self, P: int, pad: torch.Tensor) -> torch.Tensor:
         from transformers.models.gemma.modeling_gemma import apply_rotary_pos_emb, repeat_kv
-        eos = self.tok.eos_token_id
-        # additive key mask over the PREFIX: -inf for padding keys (empty camera + text pad) so the
-        # generated FAST tokens never attend to them (matches lerobot's prefix_pad_masks).
-        neg = torch.finfo(torch.float32).min
-        prefix_key_mask = torch.where(pad.view(1, P), torch.zeros(1, P, device=self.device),
-                                      torch.full((1, P), neg, device=self.device))  # [1, P]
         # RoPE position for FAST tokens continues from the last VALID prefix position (padding does
         # not advance position_ids = cumsum(pad)-1), NOT from the padded length P.
         p_valid = int(pad.sum().item())
@@ -260,17 +475,33 @@ class Pi0FastProgressiveModel:
         for i in range(len(self.llm_layers)):
             k, v = self.cache_feature[f"llm{i}_kv"][:, :, :P].unbind(3)
             kcache.append(k.clone()); vcache.append(v.clone())
-        first = int(self.lm_head(self.lm_norm(self.cache_feature["_x"][:, -1:]))[:, -1].argmax(-1))
-        gen = [] if first == eos else [first]
+        first_hidden = self.lm_norm(self.cache_feature["_x"][:, -1:])
+        if getattr(self, "capture_debug", False):
+            self.debug_fast_hidden = [first_hidden.detach().clone()]
+        first = int(self.lm_head(first_hidden)[:, -1].argmax(-1))
+        # LeRobot's stock sample_actions_fast_kv_cache always emits max_decoding_steps tokens,
+        # including the tail after an EOS token. Match that fixed-length contract exactly: stopping
+        # at EOS produces the same decoded action but a different token trace.
+        gen = [first]
         cur = first
         for step in range(1, self.max_decoding_steps):
-            if not gen:
-                break
             cos, sin = self._rope(torch.tensor([p_valid - 1 + step], device=self.device))
-            x = self.embed_tokens(torch.tensor([[cur]], device=self.device)) * self.img_scale
+            x = self._language_at_layer_scale(
+                torch.tensor([[cur]], device=self.device)
+            )
             n_fast = kcache[0].shape[2] - P + 1                       # keys beyond prefix (incl this one)
-            key_mask = torch.cat([prefix_key_mask, torch.zeros(1, n_fast, device=self.device)], dim=1)
-            key_mask = key_mask.view(1, 1, 1, P + n_fast).to(x.dtype)
+            current_pad = torch.cat(
+                [
+                    pad,
+                    torch.ones(1, n_fast, dtype=torch.bool, device=self.device),
+                ],
+                dim=1,
+            )
+            # Preserve LeRobot's exact mask construction and tensor shape.
+            key_mask = self.m._prepare_attention_masks_4d(
+                current_pad.unsqueeze(1),
+                dtype=x.dtype,
+            )
             for i, layer in enumerate(self.llm_layers):
                 attn = layer.self_attn
                 h = layer.input_layernorm(x)
@@ -278,12 +509,14 @@ class Pi0FastProgressiveModel:
                 q, k = apply_rotary_pos_emb(q, k, cos, sin)
                 kcache[i] = torch.cat([kcache[i], k], dim=2); vcache[i] = torch.cat([vcache[i], v], dim=2)
                 kf = repeat_kv(kcache[i], attn.num_key_value_groups); vf = repeat_kv(vcache[i], attn.num_key_value_groups)
-                o = F.scaled_dot_product_attention(q, kf, vf, attn_mask=key_mask, scale=attn.scaling)
+                o = F.scaled_dot_product_attention(
+                    q, kf, vf, attn_mask=key_mask, scale=attn.scaling)
                 o = o.transpose(1, 2).reshape(1, 1, -1)
                 x = x + attn.o_proj(o); x = x + layer.mlp(layer.post_attention_layernorm(x))
-            nxt = int(self.lm_head(self.lm_norm(x))[:, -1].argmax(-1))
-            if nxt == eos:
-                break
+            step_hidden = self.lm_norm(x)
+            if getattr(self, "capture_debug", False):
+                self.debug_fast_hidden.append(step_hidden.detach().clone())
+            nxt = int(self.lm_head(step_hidden)[:, -1].argmax(-1))
             gen.append(nxt); cur = nxt
         return torch.tensor([gen], device=self.device, dtype=torch.long)
 

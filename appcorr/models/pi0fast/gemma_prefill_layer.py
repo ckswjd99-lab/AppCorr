@@ -18,9 +18,11 @@ differences are plumbing, all handled here or by the wrapped stock modules:
 
 Supports `causal=False` (bidirectional) for parity with the OpenVLA fork, though pi-FAST's action
 tokens are generated autoregressively (causal); the prefix prefill is the chunked-prefill target.
+The approximate path can also collect detached received-attention statistics for named query groups
+against selected key positions. This observational branch does not replace or modify SDPA output.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -60,7 +62,9 @@ class ApproxCorrectGemmaAttention(nn.Module):
 
     def approx(self, x: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
                cos: torch.Tensor, sin: torch.Tensor, causal: bool = True,
-               attn_mask: torch.Tensor = None):
+               attn_mask: torch.Tensor = None,
+               score_query_groups: Optional[Dict[str, torch.Tensor]] = None,
+               score_key_indices: Optional[torch.Tensor] = None):
         """Full prefill over all N positions; caches post-RoPE K/V (pre-repeat_kv).
 
         `causal=True` (Llama/OpenVLA-style causal prefix) uses SDPA's is_causal. For a bidirectional
@@ -72,6 +76,35 @@ class ApproxCorrectGemmaAttention(nn.Module):
         cache_feature[f"{tag}_kv"] = torch.stack([k, v], dim=3)  # [B, H_kv, N, 2, Dh]
         k_full = repeat_kv(k, self.num_key_value_groups)
         v_full = repeat_kv(v, self.num_key_value_groups)
+        if score_query_groups and score_key_indices is not None:
+            score_key_indices = score_key_indices.to(device=x.device, dtype=torch.long)
+            for group, query_indices in score_query_groups.items():
+                query_indices = query_indices.to(device=x.device, dtype=torch.long)
+                if query_indices.numel() == 0 or score_key_indices.numel() == 0:
+                    received = torch.zeros(
+                        (B, score_key_indices.numel()),
+                        dtype=torch.float32,
+                        device=x.device,
+                    )
+                else:
+                    # This branch observes the same post-RoPE Q/K and prefix mask as SDPA without
+                    # changing its output. Keep the full key axis in the softmax denominator, then
+                    # retain only the requested vision keys after normalization.
+                    score_logits = (
+                        q[:, :, query_indices].float()
+                        @ k_full.float().transpose(-2, -1)
+                    ) * self.scaling
+                    if attn_mask is not None:
+                        score_logits = score_logits + attn_mask[
+                            :, :, query_indices, :
+                        ].float()
+                    elif causal:
+                        key_positions = torch.arange(N, device=x.device).view(1, 1, 1, N)
+                        allowed = key_positions <= query_indices.view(1, 1, -1, 1)
+                        score_logits.masked_fill_(~allowed, torch.finfo(torch.float32).min)
+                    score_prob = score_logits.softmax(dim=-1)
+                    received = score_prob[..., score_key_indices].mean(dim=(1, 2))
+                cache_feature[f"{tag}_received_attn_{group}"] = received.detach()
         is_causal = causal and attn_mask is None
         attn_out = F.scaled_dot_product_attention(
             q, k_full, v_full, attn_mask=attn_mask, is_causal=is_causal, scale=self.scaling)
@@ -127,9 +160,29 @@ class ApproxCorrectGemmaDecoderLayer(nn.Module):
         return cls(layer.input_layernorm, ApproxCorrectGemmaAttention.from_stock(layer.self_attn),
                    layer.post_attention_layernorm, layer.mlp)
 
-    def approx(self, x, cache_feature, tag, cos, sin, causal=True, attn_mask=None):
+    def approx(
+        self,
+        x,
+        cache_feature,
+        tag,
+        cos,
+        sin,
+        causal=True,
+        attn_mask=None,
+        score_query_groups=None,
+        score_key_indices=None,
+    ):
         x_attn, cache_feature = self.self_attn.approx(
-            self.input_layernorm(x), cache_feature, tag, cos, sin, causal=causal, attn_mask=attn_mask)
+            self.input_layernorm(x),
+            cache_feature,
+            tag,
+            cos,
+            sin,
+            causal=causal,
+            attn_mask=attn_mask,
+            score_query_groups=score_query_groups,
+            score_key_indices=score_key_indices,
+        )
         cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
         x_mid = x + x_attn
         mlp_out = self.mlp(self.post_attention_layernorm(x_mid))
