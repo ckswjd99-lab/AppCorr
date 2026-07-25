@@ -23,6 +23,11 @@ This is essentially DONE and validated; you are in the **evaluation** phase. Rea
   MUJOCO_EGL_ALLOW_ANY_DEVICE=1`. **≥3 concurrent EGL sims deadlock** → run 1 task/process
   (`--env.task_ids=[N]`); up to 2 processes OK (one per GPU, both render on EGL device 2).
 - Always set `TORCHDYNAMO_DISABLE=1` (triton inductor cache crashes otherwise).
+- The pi0-FAST LIBERO eval entrypoints now call
+  `analysis/experiments/pi0fast_libero_runtime.py` before importing LeRobot. It automatically
+  applies the LIBERO sibling path and the four rendering/runtime variables above. Explicit
+  `LIBERO_ROOT`, `MUJOCO_GL`, `MUJOCO_EGL_DEVICE_ID`, `MUJOCO_EGL_ALLOW_ANY_DEVICE`, and
+  `TORCHDYNAMO_DISABLE` values override its defaults.
 - 2× B200 (GPU 0/1), 183 GB each. Model load ~90 s; each 10-episode rollout ~30-40 min (autocast).
 - Scratchpad for temp files/logs: `/tmp/claude-3092/-NHNHOME-share-cjpark-openvla/b626e184-fa94-416c-8644-34697e8e7372/scratchpad`.
 - Datasets: eval env is the LIBERO SIM (via lerobot). For OFFLINE numeric checks use dataset
@@ -300,3 +305,182 @@ Validation:
   count varies with instruction length.
 
 Output: `/tmp/codex_pi0fast_llmlanguage_k50_ep3`.
+
+## 2026-07-25 continuation: 4-group block-causal Gemma
+
+A separate `PTC_MODE=block_causal` path intentionally gives up stock-prefix exactness and does no
+token pruning or pscore selection:
+
+1. Run the low-resolution SigLIP base.
+2. Split each camera's 256 patches into four contiguous top-to-bottom groups.
+3. At round `g`, cumulatively correct all arrived SigLIP patches. The final round is therefore
+   bit-exact with the stock vision tower.
+4. Prefill only the newly arrived positions through Gemma. Queries in group `g` attend
+   bidirectionally to all keys in groups `0..g`, but never to future vision groups.
+5. Prefill valid language tokens plus appended BOS once as the final bidirectional block over all
+   real vision keys and the language block.
+6. Reuse the resulting prefix K/V cache for causal FAST decode.
+
+For two real cameras, each LLM vision block has 128 tokens. The first rollout call reported:
+
+```text
+vision block sizes = [128, 128, 128, 128]
+SigLIP correction queries = 1280  # cumulative: 2 cameras * (64+128+192+256)
+Gemma vision tokens = 512         # each exactly once
+Gemma language+BOS tokens = 151   # each exactly once
+Gemma valid prefix tokens = 663
+```
+
+Validation and measured result:
+
+- The deterministic grouped-prefill test matches an explicit block-lower-triangular attention mask
+  exactly.
+- Final progressive SigLIP features for both real cameras are bit-exact with stock, confirming that
+  downstream divergence comes from the intended Gemma mask change.
+- Dataset frames 0/7/14 all differ from stock actions; mean absolute action differences were
+  `0.342`, `0.463`, and `0.510`.
+- Three-frame timing was effectively flat: stock `2005.8 ms`, block-causal `1997.0 ms` (about 0.4%
+  faster, within run noise). Peak allocation delta increased from `264.6 MiB` to `387.6 MiB`.
+- Official LIBERO spatial task 0 rollout: **0/3**, outcomes `[False, False, False]`, versus the
+  matched stock/full-correction result **2/3**.
+
+Command:
+
+```bash
+PTC_MODE=block_causal PTC_NUM_GROUPS=4 PTC_BASE=4 \
+    python analysis/experiments/pi0fast_libero_partial_token_eval.py \
+    /tmp/pi0fast_block_causal
+```
+
+Output: `/tmp/codex_pi0fast_blockcausal_g4_ep3`.
+
+## 2026-07-25 continuation: L2-to-L0 visual-residual pscore
+
+The partial-token path now also accepts `score_mode="visual_residual_attn"`:
+
+```text
+visual_energy_i = sum over RGB and the 14x14 pixel patch of (L0 - upsample(L2))^2
+pscore_i = visual_energy_i * SigLIP layer-averaged received-attention_i
+```
+
+Here L0 is the exact 224x224 pi0-FAST input and L2 is the progressive model's bilinear
+1/4-resolution base restored to 224x224. This mode does not use Gemma attention. It corrects the
+selected SigLIP tokens and the same Gemma vision positions exactly like the other partial modes.
+
+Validation:
+
+- The deterministic patch-energy test matches an explicit 2x2-grid calculation.
+- On the saved task-0 rollout batch, keep=1.0 produces bit-exact stock FAST tokens and actions.
+- At diagnostic keep=0.5, its mask overlaps the legacy hidden-residual ViT pscore mask by 78.1% and
+  79.7% for the two real cameras.
+- The first official rollout call dumped two unique 128/256 selections and verified
+  `combined == visual_residual_energy * siglip_attention` exactly.
+- Official LIBERO spatial task-0 keep=0.5 rollout: **0/3**, outcomes
+  `[False, False, False]`. This matches ViT-only keep=0.5 (0/3) and is below language-query
+  keep=0.5 (1/3) and matched stock/full correction (2/3).
+
+Run:
+
+```bash
+PTC_MODE=partial PTC_SCORE_MODE=visual_residual_attn PTC_KEEP=0.5 PTC_BASE=4 \
+    python analysis/experiments/pi0fast_libero_partial_token_eval.py \
+    /tmp/pi0fast_visual_residual50
+```
+
+Measured output: `/tmp/codex_pi0fast_visualres_l2l0_k50_ep3`.
+
+## 2026-07-25 continuation: visual residual times language-query attention
+
+`score_mode="visual_residual_llm_language"` directly combines the L2-to-L0 visual residual with
+downstream language demand:
+
+```text
+visual_energy_i = sum over RGB and the 14x14 pixel patch of (L0 - upsample(L2))^2
+language_attn_i = mean over Gemma layers, heads, and valid language-prefix queries of attn(q, key_i)
+pscore_i = visual_energy_i * language_attn_i
+```
+
+The Gemma attention calculation keeps the full bidirectional prefix and its real additive mask in
+the softmax denominator. Selection remains per real camera, and a 50% keep rate selects 128 unique
+patches from each camera. A masked third image produces no score or selection.
+
+Validation:
+
+- The saved task-0 rollout batch at keep=1.0 produces bit-exact stock FAST tokens and actions.
+- The first keep=0.5 call verified `combined == visual_residual_energy * llm_attention` with zero
+  maximum error for both real cameras.
+- Both cameras selected 128 unique indices. Relative to the legacy ViT pscore mask, top-50%
+  overlap was 79.7% and 78.9%.
+- Official LIBERO spatial task-0 keep=0.5 rollout: **0/3**, outcomes
+  `[False, False, False]`. This does not improve on visual-residual × SigLIP-attention or ViT-only
+  selection (both 0/3), and is below fused language-query selection (1/3) and matched stock/full
+  correction (2/3).
+
+Run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 TASK_ID=0 N_EP=3 PTC_MODE=partial PTC_PRECISION=float32 \
+PTC_KEEP=0.5 PTC_BASE=4 PTC_SCORE_MODE=visual_residual_llm_language \
+PTC_SELECTION_VIDEO=1 \
+    /home/nxclab/anaconda3/envs/pi0fast/bin/python \
+    analysis/experiments/pi0fast_libero_partial_token_eval.py \
+    /tmp/pi0fast_visual_residual_llm_language50
+```
+
+`PTC_SELECTION_VIDEO=1` (the partial-mode default) records the actual two pi0 policy-input camera
+tensors side by side. Recomputed patches stay bright with cyan borders; approximate patches are
+dimmed. Each policy decision is repeated for the FAST action horizon so the diagnostic MP4 has the
+same frame count and FPS as the official simulator video.
+
+Measured output:
+`/tmp/codex_pi0fast_visualres_llmlanguage_k50_ep3`. All three original and all three selection
+videos are 280 frames at 80 FPS; selection videos are 448x262 and simulator videos are 256x256.
+
+### Base-resolution comparison
+
+The same `visual_residual_llm_language`, keep=0.5 task-0 rollout was repeated with
+`PTC_BASE=2`: downsample the 224x224 policy input to 112x112 instead of 56x56, then bilinearly
+restore it before the approximate SigLIP pass.
+
+- Official rollout: **0/3**, outcomes `[False, False, False]`, the same as `PTC_BASE=4`.
+- First-call mean visual residual energy fell from 3.8833 to 1.3647 for camera 1 and from 4.8991
+  to 1.8486 for camera 2.
+- Despite the smaller residual, the selected top-128 masks overlapped the factor-4 masks by 97.7%
+  and 95.3%. The ranking therefore changed very little.
+- The saved pscore again verified the direct energy-attention product with zero maximum error.
+- All original and selection videos are 280 frames at 80 FPS.
+
+Measured output: `/tmp/codex_pi0fast_visualres_llmlanguage_base2_k50_ep3`.
+
+The official LeRobot harness is seeded by default: global seed 1000 and environment reset seeds
+1000, 1001, and 1002 for these three episodes. The checkpoint uses FAST temperature 0.0, so action
+tokens are selected by argmax rather than multinomial sampling. Runs are therefore intentionally
+deterministic for matched software/hardware, although the harness does not request strict
+bitwise-deterministic CUDA execution (`cudnn.benchmark` and TF32 are enabled).
+
+### Deterministic rerun and OpenVLA comparison
+
+The earlier best compressed pi0-FAST setting was rerun unchanged:
+
+```text
+score_mode=vit_llm_language, llm_vision_weight=1.0
+keep=0.5, base_factor=4, precision=float32
+LIBERO spatial task 0, seeds 1000/1001/1002
+```
+
+It reproduced the prior result exactly: **1/3**, outcomes `[True, False, False]`. The first episode
+succeeded at step 152; the other two reached the 280-step limit. Output:
+`/tmp/codex_pi0fast_llmlanguage_k50_ep3_rerun`. Original and selection-overlay videos were saved;
+the successful episode has 152 frames and both failed episodes have 280 frames, all at 80 FPS.
+
+For context, the previously successful OpenVLA progressive configuration was also rerun on task 0
+initial states 0, 1, and 2:
+
+```text
+schedule=interleaved, num_groups=4, grouping=rank
+coverage=1.0, base_factor=4, max_steps=220
+```
+
+OpenVLA succeeded **3/3**, at 115, 107, and 98 steps. This is the full-coverage progressive path:
+all four spatial groups arrive and are corrected; it is not a 50% partial-token pruning setting.
+The prior larger measurements for this path were 38/50 and 36/50 on two shards.

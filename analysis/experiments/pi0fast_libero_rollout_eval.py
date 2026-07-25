@@ -10,9 +10,8 @@ RATE, comparing:
             patches (top-to-bottom), injected transparently by overriding embed_image, so the whole
             lerobot select_action / FAST-decode pipeline runs unchanged on the approximated features.
 
-Requires the double-scaling fix (installed by importing the progressive model) and EGL rendering on
-the working device:
-    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=2 MUJOCO_EGL_ALLOW_ANY_DEVICE=1 TORCHDYNAMO_DISABLE=1 \
+Requires the double-scaling fix (installed by importing the progressive model). The shared runtime
+bootstrap configures this host's LIBERO import path, EGL device, and TorchDynamo default:
     python analysis/experiments/pi0fast_libero_rollout_eval.py \
         --task-suite libero_spatial --task-ids 0,1 --num-trials 10 --modes stock,prog --keep 0.5
 
@@ -29,6 +28,12 @@ from pathlib import Path
 APPCORR_ROOT = Path(__file__).resolve().parents[2]
 if str(APPCORR_ROOT) not in sys.path:
     sys.path.insert(0, str(APPCORR_ROOT))
+
+from analysis.experiments.pi0fast_libero_runtime import (
+    configure_pi0fast_libero_runtime,
+)
+
+configure_pi0fast_libero_runtime()
 
 import numpy as np
 import torch

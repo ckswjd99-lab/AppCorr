@@ -23,14 +23,28 @@ Env vars: TASK_ID (default 0), N_EP (default 5), PROG_KEEP (unset=stock; e.g. "0
 (base downsample factor, default 4). First CLI arg = output dir.
 
 Run:
-    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=2 TORCHDYNAMO_DISABLE=1 TASK_ID=0 N_EP=10 \
+    TASK_ID=0 N_EP=10 \
         python analysis/experiments/pi0fast_libero_official_eval.py /tmp/out_stock
-    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=2 TORCHDYNAMO_DISABLE=1 TASK_ID=0 N_EP=10 PROG_KEEP=0.5 \
+    TASK_ID=0 N_EP=10 PROG_KEEP=0.5 \
         python analysis/experiments/pi0fast_libero_official_eval.py /tmp/out_prog50
+
+The shared pi0fast_libero_runtime bootstrap supplies this host's LIBERO path, EGL settings, and
+TORCHDYNAMO_DISABLE default. Set LIBERO_ROOT or the individual environment variables to override.
 """
 
 import os
 import sys
+from pathlib import Path
+
+APPCORR_ROOT = Path(__file__).resolve().parents[2]
+if str(APPCORR_ROOT) not in sys.path:
+    sys.path.insert(0, str(APPCORR_ROOT))
+
+from analysis.experiments.pi0fast_libero_runtime import (
+    configure_pi0fast_libero_runtime,
+)
+
+configure_pi0fast_libero_runtime()
 
 import torch
 import torch.nn.functional as F
