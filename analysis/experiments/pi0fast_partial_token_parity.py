@@ -1,8 +1,11 @@
-"""Offline stock-vs-partial parity check for the pi0-FAST official policy path.
+"""Offline stock comparison for pi0-FAST partial-token and block-causal policy paths.
 
 This intentionally compares generated FAST token IDs before detokenization. It uses one loaded
 PI0FastPolicy, one preprocessed batch, and one precision context for both paths, avoiding the
 standalone-vs-lerobot-eval precision mismatch that can otherwise hide rollout regressions.
+
+The block-causal path intentionally does not target parity; this driver reports its token/action
+divergence, timing, and memory with `--allow-mismatch`.
 
 Examples:
     TORCHDYNAMO_DISABLE=1 python analysis/experiments/pi0fast_partial_token_parity.py
@@ -36,11 +39,23 @@ def parse_args():
     parser.add_argument("--sample-stride", type=int, default=1)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--precision", choices=("float32", "amp_bf16"), default="float32")
+    parser.add_argument(
+        "--path",
+        choices=("partial", "block_causal"),
+        default="partial",
+    )
     parser.add_argument("--base-factor", type=int, default=4)
+    parser.add_argument("--num-groups", type=int, default=4)
     parser.add_argument("--correct-text", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--score-mode",
-        choices=("vit", "vit_llm_vision", "vit_llm_language"),
+        choices=(
+            "vit",
+            "visual_residual_attn",
+            "visual_residual_llm_language",
+            "vit_llm_vision",
+            "vit_llm_language",
+        ),
         default="vit",
     )
     parser.add_argument("--llm-vision-weight", type=float, default=1.0)
@@ -93,11 +108,33 @@ def score_diagnostics(progressive, keep):
         if item is None:
             continue
         vit = item["vit"].float()
-        llm = item["llm_attention"].float()
         combined = item["combined"].float()
         count = max(1, min(int(round(keep * vit.numel())), vit.numel()))
         vit_top = set(torch.topk(vit, count).indices.cpu().tolist())
         fused_top = set(torch.topk(combined, count).indices.cpu().tolist())
+        overlap = len(vit_top & fused_top) / count
+        if components["mode"] in {
+            "visual_residual_attn",
+            "visual_residual_llm_language",
+        }:
+            energy = item["visual_residual_energy"].float()
+            attention_key = (
+                "siglip_attention"
+                if components["mode"] == "visual_residual_attn"
+                else "llm_attention"
+            )
+            attention = item[attention_key].float()
+            print(
+                f"score image={image_index} report_keep={keep:g} "
+                f"metric={components['mode']} "
+                f"energy_mean={energy.mean().item():.8g} "
+                f"attention_mean={attention.mean().item():.8g} "
+                f"pscore_mean={combined.mean().item():.8g} "
+                f"vit_topk_overlap={overlap:.1%}",
+                flush=True,
+            )
+            continue
+        llm = item["llm_attention"].float()
         pearson = torch.corrcoef(torch.stack([vit, llm]))[0, 1].item()
 
         def ranks(values):
@@ -110,7 +147,6 @@ def score_diagnostics(progressive, keep):
             return result
 
         spearman = torch.corrcoef(torch.stack([ranks(vit), ranks(llm)]))[0, 1].item()
-        overlap = len(vit_top & fused_top) / count
         print(
             f"score image={image_index} report_keep={keep:g} "
             f"llm_query_group={query_group} "
@@ -406,7 +442,7 @@ def main():
                 reference_tokens, stock_trace = stock_tokens(
                     policy,
                     batch,
-                    capture_hidden=args.diagnose,
+                    capture_hidden=args.diagnose and args.path == "partial",
                 )
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
@@ -423,14 +459,21 @@ def main():
                 torch.cuda.reset_peak_memory_stats(device)
             partial_started = time.perf_counter()
             with precision_context(device, args.precision):
-                partial_tokens = progressive._partial_tokens_from_batch(
-                    batch,
-                    keep=1.0,
-                    base_factor=args.base_factor,
-                    correct_text=args.correct_text,
-                    score_mode=args.score_mode,
-                    llm_vision_weight=args.llm_vision_weight,
-                )
+                if args.path == "block_causal":
+                    partial_tokens = progressive._block_causal_tokens_from_batch(
+                        batch,
+                        num_groups=args.num_groups,
+                        base_factor=args.base_factor,
+                    )
+                else:
+                    partial_tokens = progressive._partial_tokens_from_batch(
+                        batch,
+                        keep=1.0,
+                        base_factor=args.base_factor,
+                        correct_text=args.correct_text,
+                        score_mode=args.score_mode,
+                        llm_vision_weight=args.llm_vision_weight,
+                    )
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
                 partial_peak_deltas_mb.append(
@@ -440,7 +483,29 @@ def main():
                     / (1024 ** 2)
                 )
             partial_times_ms.append((time.perf_counter() - partial_started) * 1000)
-            score_diagnostics(progressive, args.score_report_keep)
+            if args.path == "partial":
+                score_diagnostics(progressive, args.score_report_keep)
+            elif args.diagnose:
+                images, image_masks = policy._preprocess_images(batch)
+                for image_index, image in enumerate(images):
+                    if not image_masks[image_index].any():
+                        continue
+                    exact_vision = (
+                        policy.model.paligemma_with_expert.embed_image(image)
+                    )
+                    progressive_vision = progressive._project(
+                        progressive.debug_block_final_vision_features[image_index]
+                    )
+                    vision_difference = (
+                        exact_vision.float() - progressive_vision.float()
+                    ).abs()
+                    print(
+                        f"diagnose block_vision[{image_index}] exact="
+                        f"{torch.equal(exact_vision, progressive_vision)} "
+                        f"max_diff={vision_difference.max().item():.8g} "
+                        f"mean_diff={vision_difference.mean().item():.8g}",
+                        flush=True,
+                    )
 
             partial_tokens = padded_tokens(partial_tokens, reference_tokens.shape[1])
             reference_actions = policy.detokenize_actions(
@@ -464,7 +529,11 @@ def main():
                 f"action_mean_diff={mean_action_diff:.8g}",
                 flush=True,
             )
-            if args.diagnose and (not token_equal or max_action_diff != 0.0):
+            if (
+                args.path == "partial"
+                and args.diagnose
+                and (not token_equal or max_action_diff != 0.0)
+            ):
                 mismatch_positions = (
                     reference_tokens != partial_tokens
                 ).nonzero(as_tuple=False)
@@ -538,7 +607,8 @@ def main():
                 )
 
     print(
-        f"PARITY precision={args.precision} score_mode={args.score_mode} "
+        f"PARITY path={args.path} precision={args.precision} "
+        f"score_mode={args.score_mode if args.path == 'partial' else 'disabled'} "
         f"samples={len(sample_indices)} mismatches={mismatches}",
         flush=True,
     )

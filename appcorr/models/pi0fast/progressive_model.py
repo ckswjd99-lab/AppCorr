@@ -1,14 +1,20 @@
 """
 progressive_model.py  (pi0-FAST)
 
-pi0-FAST progressive-prefill model with two supported paths:
+pi0-FAST progressive-prefill model with three supported paths:
 
 * Progressive vision injection: SigLIP runs a low-res base and patch correction, then LeRobot owns
   the full PaliGemma prefix and FAST decode.
-* Partial-token ViT+LLM: one SigLIP base pass and, optionally, Gemma vision-query or language-query
-  attention to vision keys produces a fused pscore. Selected vision tokens are corrected in SigLIP,
-  and the same selected vision positions plus the text permanent group are corrected in the
-  bidirectional Gemma prefix before an AppCorr KV-cache FAST decode.
+* Partial-token ViT+LLM: one SigLIP base pass ranks patches with either the legacy hidden-residual
+  pscore, L2-to-L0 visual-residual energy times SigLIP attention, or an optional fusion with Gemma
+  vision/language-query attention. Selected vision tokens are corrected in SigLIP, and the same
+  selected positions plus the text permanent group are corrected in the bidirectional Gemma prefix
+  before an AppCorr KV-cache FAST decode.
+* Block-causal: SigLIP is cumulatively corrected in spatial arrival groups. Each newly arrived
+  vision group is prefilled through Gemma exactly once, bidirectionally within the group and
+  attending only to arrived vision groups. Language is one final bidirectional block over all
+  arrived vision and language tokens, followed by the stock-style causal FAST decode. This mode
+  intentionally changes PaliGemma's globally bidirectional prefix and is not an exactness tier.
 
 The partial-token path is bit-exact with stock at 100% correction in float32. Exactness depends on
 preserving LeRobot/Transformers' embedding scaling operation order, including mathematically
@@ -28,7 +34,13 @@ import torch.nn.functional as F
 
 
 _SCALING_FIX_INSTALLED = False
-Pi0FastScoreMode = Literal["vit", "vit_llm_vision", "vit_llm_language"]
+Pi0FastScoreMode = Literal[
+    "vit",
+    "visual_residual_attn",
+    "visual_residual_llm_language",
+    "vit_llm_vision",
+    "vit_llm_language",
+]
 
 
 def install_gemma_scaling_fix():
@@ -157,6 +169,39 @@ class Pi0FastProgressiveModel:
         low = F.interpolate(px, size=(h // factor, w // factor), mode="bilinear", align_corners=False)
         return F.interpolate(low, size=(h, w), mode="bilinear", align_corners=False)
 
+    @staticmethod
+    def _patch_visual_residual_energy(
+        exact_pixel: torch.Tensor,
+        base_pixel: torch.Tensor,
+        token_count: int,
+    ) -> torch.Tensor:
+        """Per-patch RGB energy of the L2-to-L0 visual residual. Returns [B, token_count]."""
+        grid_size = int(round(token_count ** 0.5))
+        if grid_size * grid_size != token_count:
+            raise ValueError(
+                f"Expected a square vision-token grid, got {token_count} tokens"
+            )
+        height, width = exact_pixel.shape[-2:]
+        if base_pixel.shape != exact_pixel.shape:
+            raise ValueError(
+                "Base and exact pixels must have the same shape, got "
+                f"{tuple(base_pixel.shape)} and {tuple(exact_pixel.shape)}"
+            )
+        if height % grid_size or width % grid_size:
+            raise ValueError(
+                f"Image shape {(height, width)} is not divisible by grid {grid_size}"
+            )
+        patch_height = height // grid_size
+        patch_width = width // grid_size
+        residual = exact_pixel.float() - base_pixel.float()
+        return (
+            residual.square()
+            .unfold(2, patch_height, patch_height)
+            .unfold(3, patch_width, patch_width)
+            .sum(dim=(1, 4, 5))
+            .reshape(exact_pixel.shape[0], token_count)
+        )
+
     def _project(self, feats: torch.Tensor) -> torch.Tensor:
         """last_hidden_state -> multi_modal_projector -> /sqrt(hidden)  (== get_image_features)."""
         return self.projector(feats) / self.img_scale
@@ -201,6 +246,297 @@ class Pi0FastProgressiveModel:
         llm = cls._normalize_positive_score(llm_vision_attention).clamp_min(1e-12)
         return torch.exp(vit.log() + llm_vision_weight * llm.log())
 
+    # ------------------------------------------------------------------ block-causal (progressive ViT, one-pass LLM)
+    def _init_block_causal_cache(self, prefix_length: int, dtype: torch.dtype) -> None:
+        """Allocate fixed-position Gemma K/V storage for first-time grouped prefills."""
+        attn0 = self.llm_layers[0].self_attn
+        for layer_index in range(len(self.llm_layers)):
+            self.cache_feature[f"llm{layer_index}_kv"] = torch.zeros(
+                1,
+                attn0.num_key_value_heads,
+                prefix_length,
+                2,
+                attn0.head_dim,
+                dtype=dtype,
+                device=self.device,
+            )
+
+    def _block_causal_prefill(
+        self,
+        x_sel: torch.Tensor,
+        query_indices: torch.Tensor,
+        allowed_key_indices: torch.Tensor,
+        prefix_length: int,
+        pad: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+    ) -> None:
+        """Prefill one block once: bidirectional inside the block, causal only between blocks."""
+        query_indices = query_indices.to(device=self.device, dtype=torch.long)
+        allowed_key_indices = allowed_key_indices.to(device=self.device, dtype=torch.long)
+        if query_indices.numel() == 0:
+            return
+        allowed = torch.zeros(
+            prefix_length,
+            dtype=torch.bool,
+            device=self.device,
+        )
+        allowed[allowed_key_indices] = True
+        allowed &= pad[0]
+        mask_rows = allowed.view(1, 1, prefix_length).expand(
+            1,
+            query_indices.numel(),
+            prefix_length,
+        )
+        mask4d = self.m._prepare_attention_masks_4d(mask_rows, dtype=x_sel.dtype)
+        cos_sel, sin_sel = cos[:, query_indices], sin[:, query_indices]
+        for layer_index, layer in enumerate(self.llm_layers):
+            x_sel, self.cache_feature = layer.prefill(
+                x_sel,
+                query_indices,
+                self.cache_feature,
+                f"llm{layer_index}",
+                cos_sel,
+                sin_sel,
+                key_end=prefix_length,
+                causal=False,
+                attn_mask=mask4d,
+            )
+        self.cache_feature["_x"][:, query_indices] = x_sel.to(
+            self.cache_feature["_x"].dtype
+        )
+
+    @torch.inference_mode()
+    def _block_causal_from_batch(
+        self,
+        b: Dict[str, Any],
+        num_groups: int = 4,
+        base_factor: int = 4,
+    ) -> torch.Tensor:
+        """Return normalized actions from progressive vision + one-pass block-causal Gemma."""
+        return self._detok(
+            self._block_causal_tokens_from_batch(
+                b,
+                num_groups=num_groups,
+                base_factor=base_factor,
+            )
+        )
+
+    @torch.inference_mode()
+    def predict_action_block_causal(
+        self,
+        obs: Dict[str, Any],
+        num_groups: int = 4,
+        base_factor: int = 4,
+    ) -> np.ndarray:
+        """Public observation-level entrypoint for the approximate block-causal path."""
+        return self._block_causal_from_batch(
+            self.pre(obs),
+            num_groups=num_groups,
+            base_factor=base_factor,
+        )
+
+    @torch.inference_mode()
+    def _block_causal_tokens_from_batch(
+        self,
+        b: Dict[str, Any],
+        num_groups: int = 4,
+        base_factor: int = 4,
+    ) -> torch.Tensor:
+        """Progressive SigLIP plus group-level block-causal PaliGemma prefix.
+
+        There is no token pruning and no Gemma approximate/correct pass. For each spatial arrival
+        round, SigLIP cumulatively corrects every arrived patch so the final vision state is exact.
+        Only the newly arrived positions are then finalized in Gemma. A block sees all prior vision
+        blocks and itself; its own queries/keys are fully bidirectional. Valid language tokens plus
+        the appended BOS form one final bidirectional block over the complete vision prefix.
+        """
+        from lerobot.policies.pi0_fast.modeling_pi0_fast import (
+            OBS_LANGUAGE_ATTENTION_MASK,
+            OBS_LANGUAGE_TOKENS,
+        )
+
+        if num_groups < 1:
+            raise ValueError("num_groups must be positive")
+        if base_factor < 1:
+            raise ValueError("base_factor must be positive")
+
+        dev = self.device
+        images, image_masks = self.pol._preprocess_images(b)
+        text_ids = b[OBS_LANGUAGE_TOKENS]
+        text_mask = b[OBS_LANGUAGE_ATTENTION_MASK]
+        bos = torch.full(
+            (1, 1),
+            self.tok.bos_token_id,
+            device=dev,
+            dtype=text_ids.dtype,
+        )
+        text_ids = torch.cat([text_ids, bos], dim=1)
+        text_mask = torch.cat(
+            [
+                text_mask,
+                torch.ones(
+                    (1, 1),
+                    dtype=text_mask.dtype,
+                    device=dev,
+                ),
+            ],
+            dim=1,
+        )
+
+        self.cache_feature = {}
+        base_features = []
+        real_flags = []
+        for image_index, image in enumerate(images):
+            real = bool(image_masks[image_index].any().item())
+            real_flags.append(real)
+            features, self.cache_feature = self.siglip.approx_forward(
+                self._base_pixel(image, base_factor),
+                self.cache_feature,
+                f"img{image_index}",
+            )
+            base_features.append(features)
+
+        tokens_per_image = base_features[0].shape[1]
+        num_image_positions = tokens_per_image * len(images)
+        text_embeddings = self._language_at_layer_scale(text_ids)
+        prefix_length = num_image_positions + text_ids.shape[1]
+        pad = torch.cat(
+            [
+                (
+                    torch.ones(
+                        1,
+                        tokens_per_image,
+                        dtype=torch.bool,
+                        device=dev,
+                    )
+                    if real
+                    else torch.zeros(
+                        1,
+                        tokens_per_image,
+                        dtype=torch.bool,
+                        device=dev,
+                    )
+                )
+                for real in real_flags
+            ]
+            + [text_mask.bool()],
+            dim=1,
+        )
+        positions = torch.cumsum(pad.long(), dim=1)[0] - 1
+        cos, sin = self._rope(positions)
+
+        prefix_dtype = text_embeddings.dtype
+        self._init_block_causal_cache(prefix_length, prefix_dtype)
+        self.cache_feature["_x"] = torch.zeros(
+            1,
+            prefix_length,
+            self.hidden_size,
+            dtype=prefix_dtype,
+            device=dev,
+        )
+
+        local_groups = [
+            group
+            for group in torch.tensor_split(
+                torch.arange(tokens_per_image, device=dev),
+                num_groups,
+            )
+            if group.numel() > 0
+        ]
+        arrived_local = torch.zeros(0, dtype=torch.long, device=dev)
+        vision_block_sizes = []
+        cumulative_vision_queries = 0
+        final_features = list(base_features)
+        for local_group in local_groups:
+            arrived_local = torch.cat([arrived_local, local_group])
+            block_indices = []
+            block_embeddings = []
+            arrived_indices = []
+            for image_index, image in enumerate(images):
+                if not real_flags[image_index]:
+                    continue
+                features, self.cache_feature = self.siglip.correct_forward(
+                    image,
+                    arrived_local,
+                    self.cache_feature,
+                    f"img{image_index}",
+                )
+                final_features[image_index] = features
+                projected = self._proj_raw(features)
+                block_indices.append(
+                    local_group + image_index * tokens_per_image
+                )
+                block_embeddings.append(projected[:, local_group])
+                arrived_indices.append(
+                    arrived_local + image_index * tokens_per_image
+                )
+                cumulative_vision_queries += int(arrived_local.numel())
+            if not block_indices:
+                continue
+            query_indices = torch.cat(block_indices)
+            allowed_key_indices = torch.cat(arrived_indices)
+            self._block_causal_prefill(
+                torch.cat(block_embeddings, dim=1),
+                query_indices,
+                allowed_key_indices,
+                prefix_length,
+                pad,
+                cos,
+                sin,
+            )
+            vision_block_sizes.append(int(query_indices.numel()))
+
+        valid_language_local = text_mask[0].bool().nonzero(as_tuple=False).flatten()
+        language_indices = valid_language_local + num_image_positions
+        real_vision_ranges = [
+            torch.arange(
+                image_index * tokens_per_image,
+                (image_index + 1) * tokens_per_image,
+                device=dev,
+            )
+            for image_index, real in enumerate(real_flags)
+            if real
+        ]
+        real_vision_indices = (
+            torch.cat(real_vision_ranges)
+            if real_vision_ranges
+            else torch.zeros(0, dtype=torch.long, device=dev)
+        )
+        self._block_causal_prefill(
+            text_embeddings[:, valid_language_local],
+            language_indices,
+            torch.cat([real_vision_indices, language_indices]),
+            prefix_length,
+            pad,
+            cos,
+            sin,
+        )
+
+        real_image_count = sum(real_flags)
+        self.last_pscore_components = None
+        if getattr(self, "capture_debug", False):
+            self.debug_block_final_vision_features = [
+                features.detach().clone() for features in final_features
+            ]
+        self.last_recompute_stats = {
+            "path": "block_causal",
+            "num_groups": len(local_groups),
+            "base_factor": base_factor,
+            "real_images": real_image_count,
+            "tokens_per_image": tokens_per_image,
+            "vision_block_sizes": vision_block_sizes,
+            "vit_corrected_query_tokens": cumulative_vision_queries,
+            "vit_unique_real_tokens": real_image_count * tokens_per_image,
+            "llm_prefilled_vision_tokens": sum(vision_block_sizes),
+            "llm_prefilled_language_tokens": int(language_indices.numel()),
+            "llm_prefilled_tokens": sum(vision_block_sizes)
+            + int(language_indices.numel()),
+            "llm_prefix_tokens": prefix_length,
+            "llm_valid_prefix_tokens": int(pad.sum().item()),
+        }
+        return self._generate_fast_from_cache(prefix_length, pad)
+
     # ------------------------------------------------------------------ partial-token (ViT + LLM)
     @torch.inference_mode()
     def predict_action_partial_token(self, obs: Dict[str, Any], keep: float = 0.5,
@@ -242,7 +578,7 @@ class Pi0FastProgressiveModel:
         given an already-preprocessed batch `b` (so it can patch PI0FastPolicy.predict_action_chunk).
 
         one approx + one pscore-selected correct:
-          vision: SigLIP base approx (+pscore = residual*avg_attn).
+          vision: SigLIP base approx (+legacy hidden or L2-to-L0 visual residual pscore).
           LLM:    bidirectional approx on the base vision features + text, optionally collecting
                   vision-query or valid-language-query -> vision-key received attention for pscore
                   fusion.
@@ -254,7 +590,13 @@ class Pi0FastProgressiveModel:
         """
         from lerobot.policies.pi0_fast.modeling_pi0_fast import (
             OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK)
-        supported_score_modes = {"vit", "vit_llm_vision", "vit_llm_language"}
+        supported_score_modes = {
+            "vit",
+            "visual_residual_attn",
+            "visual_residual_llm_language",
+            "vit_llm_vision",
+            "vit_llm_language",
+        }
         if score_mode not in supported_score_modes:
             raise ValueError(
                 f"Unsupported score_mode {score_mode!r}; expected one of "
@@ -264,6 +606,13 @@ class Pi0FastProgressiveModel:
             raise ValueError("llm_vision_weight must be non-negative")
         dev = self.device
         images, img_masks = self.pol._preprocess_images(b)          # 3 imgs, masks [T,T,F]
+        if getattr(self, "capture_selection_frames", False):
+            self.last_input_images = [
+                image.detach().clone() for image in images
+            ]
+            self.last_input_image_masks = [
+                mask.detach().clone() for mask in img_masks
+            ]
         text_ids = b[OBS_LANGUAGE_TOKENS]
         text_mask = b[OBS_LANGUAGE_ATTENTION_MASK]
         bos = torch.full((1, 1), self.tok.bos_token_id, device=dev, dtype=text_ids.dtype)
@@ -272,13 +621,15 @@ class Pi0FastProgressiveModel:
 
         # ---- vision base approximation and legacy ViT pscore ----
         self.cache_feature = {}
-        base_feats, vit_scores, real_flags = [], [], []
+        base_feats, base_pixels, vit_scores, real_flags = [], [], [], []
         for i, img in enumerate(images):
             real = img_masks[i].any().item()
             real_flags.append(real)
+            base_pixel = self._base_pixel(img, base_factor)
             bf, self.cache_feature = self.siglip.approx_forward(
-                self._base_pixel(img, base_factor), self.cache_feature, f"img{i}", pscore=real)
+                base_pixel, self.cache_feature, f"img{i}", pscore=real)
             base_feats.append(bf)
+            base_pixels.append(base_pixel)
             if real:
                 vit_scores.append(self.siglip.get_pscore(self.cache_feature, f"img{i}")[0])
             else:
@@ -318,7 +669,10 @@ class Pi0FastProgressiveModel:
         if score_mode == "vit_llm_vision":
             llm_query_group = "vision"
             score_query_groups = {llm_query_group: real_vision_indices}
-        elif score_mode == "vit_llm_language":
+        elif score_mode in {
+            "vit_llm_language",
+            "visual_residual_llm_language",
+        }:
             llm_query_group = "language"
             language_indices = torch.arange(n_img, P, device=dev)
             valid_language_indices = language_indices[text_mask[0].bool()]
@@ -363,7 +717,27 @@ class Pi0FastProgressiveModel:
                 pscore_components.append(None)
                 continue
             vit_pscore = vit_scores[i]
-            if llm_attention is None:
+            visual_residual_energy = None
+            siglip_attention = None
+            if score_mode == "visual_residual_attn":
+                visual_residual_energy = self._patch_visual_residual_energy(
+                    img,
+                    base_pixels[i],
+                    tpi,
+                )[0]
+                siglip_attention = self.cache_feature[f"img{i}_avg_attn"][0].float()
+                llm_pscore = None
+                combined_pscore = visual_residual_energy * siglip_attention
+            elif score_mode == "visual_residual_llm_language":
+                visual_residual_energy = self._patch_visual_residual_energy(
+                    img,
+                    base_pixels[i],
+                    tpi,
+                )[0]
+                llm_pscore = llm_attention[llm_cursor:llm_cursor + tpi]
+                llm_cursor += tpi
+                combined_pscore = visual_residual_energy * llm_pscore.float()
+            elif llm_attention is None:
                 llm_pscore = None
                 combined_pscore = vit_pscore.float()
             else:
@@ -387,6 +761,16 @@ class Pi0FastProgressiveModel:
             pscore_components.append(
                 {
                     "vit": vit_pscore.detach().clone(),
+                    "visual_residual_energy": (
+                        visual_residual_energy.detach().clone()
+                        if visual_residual_energy is not None
+                        else None
+                    ),
+                    "siglip_attention": (
+                        siglip_attention.detach().clone()
+                        if siglip_attention is not None
+                        else None
+                    ),
                     "llm_vision": (
                         llm_pscore.detach().clone()
                         if llm_query_group == "vision"
