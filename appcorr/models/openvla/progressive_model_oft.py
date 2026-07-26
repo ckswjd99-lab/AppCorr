@@ -118,6 +118,7 @@ class OFTProgressiveModel:
 
         self.cache_feature: Dict[str, Any] = {}
         self.num_patches_per_image = None
+        self.last_progressive_trace: List[Dict[str, Any]] = []
 
     # ---- preprocessing ----
     def _pixel_values_for_image(self, img_np: np.ndarray) -> torch.Tensor:
@@ -148,6 +149,7 @@ class OFTProgressiveModel:
         self.bos_embed = full[:, :1]            # [1,1,D]
         self.text_embed = full[:, 1:]           # [1, T_text-1, D]
         self.cache_feature = {}
+        self.last_progressive_trace = []
 
     # ---- vision ----
     def _vision_tokens(self, images_np: List[np.ndarray], correct: bool = False,
@@ -246,89 +248,242 @@ class OFTProgressiveModel:
         xf[:, token_idx] = x_sel.to(xf.dtype)
         self.cache_feature["_x"] = xf
 
-    def _grouped_vision_block(self, img_np: np.ndarray, tag_i: int, num_groups: int,
-                              base_img_np: Optional[np.ndarray], patch_keep: Optional[torch.Tensor]):
-        """One image -> 256 projected vision tokens, via base approx + (optionally partial) correct.
-        base_img_np None => exact (approx on the true image). `patch_keep` (indices) restricts which
-        patches get corrected (progressive compression); None => all patches."""
-        px = self._pixel_values_for_image(img_np)
-        dino_px, siglip_px = self._dino_siglip_split(px)
-        dtag, stag = f"dino{tag_i}", f"siglip{tag_i}"
-        if base_img_np is None:
-            dfeat, self.cache_feature = self.dino_backbone.approx_forward(dino_px, self.cache_feature, dtag)
-            sfeat, self.cache_feature = self.siglip_backbone.approx_forward(siglip_px, self.cache_feature, stag)
-        else:
-            bpx = self._pixel_values_for_image(base_img_np)
-            bd, bs = self._dino_siglip_split(bpx)
-            self.dino_backbone.approx_forward(bd, self.cache_feature, dtag)       # base (low-res) approx
-            self.siglip_backbone.approx_forward(bs, self.cache_feature, stag)
-            # which patches to correct: all (lossless) unless a keep-subset is given (compression)
-            idx = patch_keep if patch_keep is not None else torch.arange(256, device=self.device, dtype=torch.long)
-            dfeat, self.cache_feature = self.dino_backbone.correct_forward(dino_px, idx, self.cache_feature, dtag)
-            sfeat, self.cache_feature = self.siglip_backbone.correct_forward(siglip_px, idx, self.cache_feature, stag)
-        return self.vla.projector(torch.cat([dfeat, sfeat], dim=2))  # [1, 256, D]
+    def _vision_base(
+        self,
+        img_np: np.ndarray,
+        tag_i: int,
+        base_img_np: Optional[np.ndarray],
+    ):
+        """Initialize one camera's stateful ViTs and return its 256 base tokens.
 
-    def _llm_prefill_grouped(self, prefix_embed: torch.Tensor, num_images: int, npatch: int,
-                             num_groups: int) -> torch.Tensor:
-        """Chunked causal prefill of the prefix, PER IMAGE and PER top-to-bottom group (so image i's
-        tokens are finalized before image i+1's are prefilled -- matching the sequential
-        [image1(256), image2(256), proprio, text] layout), then one bidirectional pass over the 56
-        action tokens. Causal masking makes this bit-equivalent to prefilling the whole prefix at
-        once; doing it per group mirrors the real progressive-transmission pipeline (and is where
-        per-group pscore pruning would hook in)."""
-        B, P, D = prefix_embed.shape
-        n_act = NUM_ACTIONS_CHUNK * ACTION_DIM
-        N = P + n_act
-        x0 = torch.cat([prefix_embed, torch.zeros(B, n_act, D, device=self.device, dtype=prefix_embed.dtype)], dim=1)
+        The exact image is also prepared here for later group corrections.  If
+        ``base_img_np`` is absent, the base itself is exact and no correction is
+        necessary; this is the grouped-full parity path.
+        """
+        full_px = self._pixel_values_for_image(img_np)
+        dino_px, siglip_px = self._dino_siglip_split(full_px)
+        dtag, stag = f"dino{tag_i}", f"siglip{tag_i}"
+        if base_img_np is not None:
+            bpx = self._pixel_values_for_image(base_img_np)
+            base_dino_px, base_siglip_px = self._dino_siglip_split(bpx)
+        else:
+            base_dino_px, base_siglip_px = dino_px, siglip_px
+        dfeat, self.cache_feature = self.dino_backbone.approx_forward(
+            base_dino_px,
+            self.cache_feature,
+            dtag,
+        )
+        sfeat, self.cache_feature = self.siglip_backbone.approx_forward(
+            base_siglip_px,
+            self.cache_feature,
+            stag,
+        )
+        projected = self.vla.projector(torch.cat([dfeat, sfeat], dim=2))
+        return projected, dino_px, siglip_px
+
+    def _vision_correct_group(
+        self,
+        dino_px: torch.Tensor,
+        siglip_px: torch.Tensor,
+        tag_i: int,
+        patch_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        """Correct one camera's selected patches and project the fresh rows."""
+        dfeat, self.cache_feature = self.dino_backbone.correct_forward(
+            dino_px,
+            patch_idx,
+            self.cache_feature,
+            f"dino{tag_i}",
+        )
+        sfeat, self.cache_feature = self.siglip_backbone.correct_forward(
+            siglip_px,
+            patch_idx,
+            self.cache_feature,
+            f"siglip{tag_i}",
+        )
+        return self.vla.projector(torch.cat([dfeat, sfeat], dim=2))
+
+    def _init_chunked_prefill(self, prefix_embed: torch.Tensor):
+        """Allocate the fixed OFT KV/cache tensors and append no tokens yet."""
+        batch, prefix_len, dim = prefix_embed.shape
+        num_action_tokens = NUM_ACTIONS_CHUNK * ACTION_DIM
+        total_len = prefix_len + num_action_tokens
+        x0 = torch.cat(
+            [
+                prefix_embed,
+                torch.zeros(
+                    batch,
+                    num_action_tokens,
+                    dim,
+                    device=self.device,
+                    dtype=prefix_embed.dtype,
+                ),
+            ],
+            dim=1,
+        )
         attn0 = self.llm_layers[0].self_attn
-        for i in range(len(self.llm_layers)):
-            self.cache_feature[f"llm_layer{i}_kv"] = torch.zeros(
-                B, attn0.num_key_value_heads, N, 2, attn0.head_dim, device=self.device, dtype=x0.dtype
+        for layer_idx in range(len(self.llm_layers)):
+            self.cache_feature[f"llm_layer{layer_idx}_kv"] = torch.zeros(
+                batch,
+                attn0.num_key_value_heads,
+                total_len,
+                2,
+                attn0.head_dim,
+                device=self.device,
+                dtype=x0.dtype,
             )
         self.cache_feature["_x"] = x0.clone()
-        dev = self.device
-        per_group = npatch // num_groups
-        # BOS
-        self._prefill_block(x0, torch.arange(1, device=dev), causal=True, key_end=1)
-        # per image, per top-to-bottom group (vision tokens are at [1 + i*npatch, ...])
-        for i in range(num_images):
-            base = 1 + i * npatch
-            for g in range(num_groups):
-                idx = torch.arange(base + g * per_group,
-                                   base + (g + 1) * per_group if g < num_groups - 1 else base + npatch,
-                                   device=dev)
-                self._prefill_block(x0, idx, causal=True, key_end=int(idx[-1].item()) + 1)
-        # proprio + text (remaining prefix positions)
-        rest = torch.arange(1 + num_images * npatch, P, device=dev)
+        return x0, prefix_len, total_len
+
+    def _prefill_suffix_and_actions(
+        self,
+        x0: torch.Tensor,
+        prefix_len: int,
+        total_len: int,
+        vision_end: int,
+    ) -> torch.Tensor:
+        """Finish causal proprio/text, then run the stock bidirectional action block."""
+        rest = torch.arange(
+            vision_end,
+            prefix_len,
+            device=self.device,
+        )
         if rest.numel() > 0:
-            self._prefill_block(x0, rest, causal=True, key_end=P)
-        # action block: bidirectional over the whole sequence
-        self._prefill_block(x0, torch.arange(P, N, device=dev), causal=False, key_end=N)
+            self._prefill_block(
+                x0,
+                rest,
+                causal=True,
+                key_end=prefix_len,
+            )
+        self._prefill_block(
+            x0,
+            torch.arange(prefix_len, total_len, device=self.device),
+            causal=False,
+            key_end=total_len,
+        )
         x = self.vla.language_model.model.norm(self.cache_feature["_x"])
-        return x[:, P:P + n_act]
+        return x[:, prefix_len:total_len]
 
     @torch.inference_mode()
     def predict_action_progressive(self, images_np: List[np.ndarray], proprio_raw: np.ndarray,
                                    base_images_np: Optional[List[np.ndarray]] = None,
-                                   num_groups: int = 4,
-                                   patch_keep: Optional[List[torch.Tensor]] = None) -> np.ndarray:
-        """Proper per-image progressive OFT forward:
-          for each image: base (low-res) vision approx -> grouped patch correct -> chunked prefill
-          of that image's LLM tokens (causal), then proprio/text, then the bidirectional action block.
-        base_images_np=None => exact vision (approx on the true image). patch_keep[i] (indices)
-        restricts which patches of image i are corrected (progressive compression)."""
+                                   num_groups: int = 4) -> np.ndarray:
+        """Interleave per-camera vision correction with causal LLM cache appends.
+
+        Sequence order is fixed by OFT:
+        ``BOS -> agentview groups 0..3 -> wrist groups 0..3 -> proprio/text``.
+        A group's ViT rows are corrected and projected immediately before those
+        same 64 LLM positions are appended.  Earlier causal positions are never
+        revisited.  The final 56-token bidirectional action block remains stock.
+
+        ``base_images_np=None`` is the grouped-full parity path. The progressive
+        path always corrects all 256 patches as four complete groups; there is
+        no secondary token pruning or partial-correction policy.
+        """
         self.cache_feature = {}
+        self.last_progressive_trace = []
         npatch = 256
-        vision_blocks = []
-        for i, img in enumerate(images_np):
-            base_img = None if base_images_np is None else base_images_np[i]
-            keep = None if patch_keep is None else patch_keep[i]
-            vision_blocks.append(self._grouped_vision_block(img, i, num_groups, base_img, keep))
-        vision = torch.cat(vision_blocks, dim=1)  # [1, 512, D]
+        if len(images_np) != 2:
+            raise ValueError(f"OFT LIBERO expects two images, got {len(images_np)}")
+        if base_images_np is not None and len(base_images_np) != len(images_np):
+            raise ValueError("base_images_np must match images_np")
+        if npatch % num_groups:
+            raise ValueError(f"{npatch} patches are not divisible by {num_groups}")
+
+        # Future camera positions are allocated but remain unread (key_end
+        # excludes them) until that camera's base arrives. This gives the actual
+        # transmission order:
+        #   agent base -> agent groups -> wrist base -> wrist groups.
+        vision = torch.zeros(
+            1,
+            len(images_np) * npatch,
+            self.bos_embed.shape[-1],
+            device=self.device,
+            dtype=self.bos_embed.dtype,
+        )
         proprio = self._proprio_token(proprio_raw)
         prefix = torch.cat([self.bos_embed, vision, proprio, self.text_embed], dim=1)
-        action_hidden = self._llm_prefill_grouped(prefix, num_images=len(images_np),
-                                                  npatch=npatch, num_groups=num_groups)
+        x0, prefix_len, total_len = self._init_chunked_prefill(prefix)
+        self._prefill_block(
+            x0,
+            torch.arange(1, device=self.device),
+            causal=True,
+            key_end=1,
+        )
+
+        group_size = npatch // num_groups
+        for image_idx, image in enumerate(images_np):
+            base_img = (
+                None
+                if base_images_np is None
+                else base_images_np[image_idx]
+            )
+            base_tokens, dino_px, siglip_px = self._vision_base(
+                image,
+                image_idx,
+                base_img,
+            )
+            image_token_start = 1 + image_idx * npatch
+            x0[
+                :,
+                image_token_start:image_token_start + npatch,
+            ] = base_tokens.to(x0.dtype)
+            self.last_progressive_trace.append(
+                {
+                    "op": "vision_base",
+                    "image": image_idx,
+                    "tokens": npatch,
+                    "is_low_res": base_img is not None,
+                }
+            )
+            for group_idx in range(num_groups):
+                patch_start = group_idx * group_size
+                group_patches = torch.arange(
+                    patch_start,
+                    patch_start + group_size,
+                    device=self.device,
+                )
+                if base_images_np is not None:
+                    corrected = self._vision_correct_group(
+                        dino_px,
+                        siglip_px,
+                        image_idx,
+                        group_patches,
+                    )
+                    absolute = image_token_start + group_patches
+                    x0[:, absolute] = corrected[:, group_patches].to(x0.dtype)
+                    self.last_progressive_trace.append(
+                        {
+                            "op": "vision_correct",
+                            "image": image_idx,
+                            "group": group_idx,
+                            "patches": int(group_patches.numel()),
+                        }
+                    )
+
+                group_token_idx = image_token_start + group_patches
+                self._prefill_block(
+                    x0,
+                    group_token_idx,
+                    causal=True,
+                    key_end=int(group_token_idx[-1]) + 1,
+                )
+                self.last_progressive_trace.append(
+                    {
+                        "op": "llm_prefill",
+                        "image": image_idx,
+                        "group": group_idx,
+                        "tokens": int(group_token_idx.numel()),
+                        "key_end": int(group_token_idx[-1]) + 1,
+                    }
+                )
+
+        action_hidden = self._prefill_suffix_and_actions(
+            x0,
+            prefix_len,
+            total_len,
+            1 + len(images_np) * npatch,
+        )
         norm_actions = self.action_head.predict_action(action_hidden)
         return self._unnorm_actions(norm_actions[0].float().cpu().numpy())
 
