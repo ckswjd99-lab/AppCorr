@@ -5,8 +5,9 @@ This is the OFT counterpart of ``openvla_offload_libero_eval.py``.  It keeps one
 model resident on one GPU and evaluates three inference modes:
 
 * ``full``: stock-resolution images through the exact OFT forward.
-* ``pipelined``: 1/4-resolution bases, full vision correction, and four-group
-  causal LLM prefill, followed by OFT's bidirectional action block.
+* ``pipelined``: 1/4-resolution bases; for each camera and each four-way raster
+  group, vision correction immediately followed by causal LLM KV append; then
+  OFT's stock bidirectional action block.
 * ``approx``: 1/4-resolution images without vision correction.
 
 OFT predicts an eight-action chunk.  The chunk is queued and executed open-loop,
@@ -17,6 +18,7 @@ JSONL file after every episode, so an interrupted shard can be resumed safely.
 import argparse
 import glob
 import json
+import os
 import sys
 import time
 from collections import deque
@@ -29,6 +31,12 @@ from PIL import Image
 
 APPCORR_ROOT = Path(__file__).resolve().parents[2]
 OPENVLA_ROOT = Path("/NHNHOME/share/cjpark/openvla")
+PIPELINE_IMPL = "vision_llm_interleaved_v2"
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("MUJOCO_EGL_DEVICE_ID", "2")
+os.environ.setdefault("MUJOCO_EGL_ALLOW_ANY_DEVICE", "1")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
 for path in (APPCORR_ROOT, OPENVLA_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
@@ -132,7 +140,10 @@ def completed_keys(path: Path) -> set:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if row.get("record_type") == "episode":
+        if (
+            row.get("record_type") == "episode"
+            and row.get("pipeline_impl") == PIPELINE_IMPL
+        ):
             keys.add(
                 (
                     row.get("schedule"),
@@ -286,6 +297,7 @@ def main():
                 )
                 row = {
                     "record_type": "episode",
+                    "pipeline_impl": PIPELINE_IMPL,
                     "schedule": schedule,
                     "task_id": task_id,
                     "trial": trial + 1,
