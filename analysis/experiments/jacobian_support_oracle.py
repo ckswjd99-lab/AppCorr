@@ -96,6 +96,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", default=None)
     parser.add_argument("--image", action="append", default=[])
     parser.add_argument(
+        "--stratified-classes",
+        type=int,
+        default=0,
+        help=(
+            "For ImageNet, select one deterministic random image from this many "
+            "distinct classes instead of iterating ImageFolder order."
+        ),
+    )
+    parser.add_argument("--sample-seed", type=int, default=20260727)
+    parser.add_argument("--sample-shard-index", type=int, default=0)
+    parser.add_argument("--sample-num-shards", type=int, default=1)
+    parser.add_argument(
         "--synthetic",
         action="store_true",
         help="Use one deterministic synthetic image; intended only for smoke tests.",
@@ -1307,6 +1319,61 @@ def load_images(
                 None,
             )
         return
+    if args.stratified_classes:
+        if dataset_name != "imagenet-1k":
+            raise ValueError("--stratified-classes currently supports ImageNet only")
+        if args.stratified_classes < 1:
+            raise ValueError("--stratified-classes must be positive")
+        if args.sample_num_shards < 1:
+            raise ValueError("--sample-num-shards must be positive")
+        if not 0 <= args.sample_shard_index < args.sample_num_shards:
+            raise ValueError(
+                "--sample-shard-index must be in "
+                f"[0, {args.sample_num_shards - 1}]"
+            )
+
+        from PIL import Image
+        from torchvision.datasets import ImageFolder
+
+        data_root = determine_data_root(dataset_name, args.data_root)
+        dataset = ImageFolder(root=data_root)
+        samples_by_class: dict[int, list[str]] = {}
+        for filename, label in dataset.samples:
+            samples_by_class.setdefault(label, []).append(filename)
+        class_ids = np.asarray(sorted(samples_by_class), dtype=np.int64)
+        if args.stratified_classes > len(class_ids):
+            raise ValueError(
+                f"Requested {args.stratified_classes} classes, "
+                f"but only {len(class_ids)} are available"
+            )
+
+        generator = np.random.default_rng(args.sample_seed)
+        selected_classes = sorted(
+            int(value)
+            for value in generator.choice(
+                class_ids,
+                size=args.stratified_classes,
+                replace=False,
+            )
+        )
+        selected_samples = []
+        for label in selected_classes:
+            candidates = samples_by_class[label]
+            sample_index = int(generator.integers(0, len(candidates)))
+            selected_samples.append((candidates[sample_index], label))
+        selected_samples = selected_samples[
+            args.sample_shard_index::args.sample_num_shards
+        ]
+        for filename, label in selected_samples[: args.max_samples]:
+            image = Image.open(filename).convert("RGB").resize(
+                (image_size, image_size)
+            )
+            yield (
+                torch.from_numpy(np.asarray(image, dtype=np.uint8).copy())
+                .permute(2, 0, 1),
+                label,
+            )
+        return
 
     config, _ = load_config(args.config)
     data_root = determine_data_root(dataset_name, args.data_root)
@@ -1475,6 +1542,10 @@ def main() -> None:
         },
         "experiment": {
             "dataset": dataset_name,
+            "stratified_classes": args.stratified_classes,
+            "sample_seed": args.sample_seed,
+            "sample_shard_index": args.sample_shard_index,
+            "sample_num_shards": args.sample_num_shards,
             "image_shape": list(config.image_shape),
             "base_level": args.base_level,
             "num_groups": args.num_groups,
