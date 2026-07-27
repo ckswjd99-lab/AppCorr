@@ -193,46 +193,46 @@
     "observation": "Attention-edge support has the strongest early leverage; at requested 50 percent support its mean relative L2 is 0.2059 versus 0.3934 for input tokens and 0.4293 for FFN channels."
   },
   "layerwise_exact_difference_component_sweep": {
-    "dataset": "same three ImageNet validation images from distinct classes",
+    "dataset": "200 ImageNet validation images, one per distinct class selected with seed 20260727",
     "protocol": "vary one exact-difference component in one target layer, hold the other components exact, then run all downstream layers with stock full computation",
     "target_layers": 40,
     "ratios_per_component": 11,
     "full_support_endpoint": {
-      "count": 360,
+      "count": 24000,
       "max_final_relative_l2": 0.0
     },
-    "stage_mean_at_50_percent_requested_support": {
+    "stage_statistics_at_50_percent_requested_support": {
       "early_layers_0_12": {
-        "input_token": {"relative_l2": 0.359130, "cosine": 0.928069},
-        "attention_edge": {"relative_l2": 0.026583, "cosine": 0.999582},
-        "ffn_channel": {"relative_l2": 0.066956, "cosine": 0.997560}
+        "input_token": {"mean": 0.350683, "std": 0.076199, "ci95_half_width": 0.010561},
+        "attention_edge": {"mean": 0.022828, "std": 0.010293, "ci95_half_width": 0.001427},
+        "ffn_channel": {"mean": 0.060645, "std": 0.021539, "ci95_half_width": 0.002985}
       },
       "middle_layers_13_26": {
-        "input_token": {"relative_l2": 0.322398, "cosine": 0.942817},
-        "attention_edge": {"relative_l2": 0.026144, "cosine": 0.999621},
-        "ffn_channel": {"relative_l2": 0.049703, "cosine": 0.998698}
+        "input_token": {"mean": 0.327890, "std": 0.058211, "ci95_half_width": 0.008068},
+        "attention_edge": {"mean": 0.023125, "std": 0.008515, "ci95_half_width": 0.001180},
+        "ffn_channel": {"mean": 0.047202, "std": 0.012708, "ci95_half_width": 0.001761}
       },
       "late_layers_27_39": {
-        "input_token": {"relative_l2": 0.295544, "cosine": 0.952501},
-        "attention_edge": {"relative_l2": 0.020792, "cosine": 0.999773},
-        "ffn_channel": {"relative_l2": 0.051225, "cosine": 0.998597}
+        "input_token": {"mean": 0.316119, "std": 0.051614, "ci95_half_width": 0.007153},
+        "attention_edge": {"mean": 0.020873, "std": 0.004644, "ci95_half_width": 0.000644},
+        "ffn_channel": {"mean": 0.052964, "std": 0.009403, "ci95_half_width": 0.001303}
       }
     },
     "layer_extrema_at_50_percent_requested_support": {
       "input_token": {
-        "least_sensitive": {"layer": 34, "relative_l2": 0.282691},
-        "most_sensitive": {"layer": 0, "relative_l2": 0.393476}
+        "least_sensitive": {"layer": 33, "mean_relative_l2": 0.309230},
+        "most_sensitive": {"layer": 0, "mean_relative_l2": 0.389243}
       },
       "attention_edge": {
-        "least_sensitive": {"layer": 8, "relative_l2": 0.016057},
-        "most_sensitive": {"layer": 0, "relative_l2": 0.046371}
+        "least_sensitive": {"layer": 28, "mean_relative_l2": 0.018162},
+        "most_sensitive": {"layer": 0, "mean_relative_l2": 0.040753}
       },
       "ffn_channel": {
-        "least_sensitive": {"layer": 0, "relative_l2": 0.027058},
-        "most_sensitive": {"layer": 39, "relative_l2": 0.085929}
+        "least_sensitive": {"layer": 0, "mean_relative_l2": 0.023348},
+        "most_sensitive": {"layer": 39, "mean_relative_l2": 0.087244}
       }
     },
-    "observation": "Attention remains the most prunable component. Token-state pruning becomes safer in later layers, while FFN sensitivity is U-shaped with sensitive early layers 2-5 and final layer 39."
+    "observation": "The 200-class statistics retain the pilot result: attention is the most prunable component, token-state pruning becomes safer in later layers, and FFN sensitivity is U-shaped with sensitive early layers 2-4 and final layer 39."
   },
   "decision": {
     "strict_jvp_runtime_integration": "stopped",
