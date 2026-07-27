@@ -84,6 +84,23 @@ PYTHONPATH="$PWD" python analysis/experiments/jacobian_support_oracle.py \
   --output /tmp/exact_component_sweep.json
 ```
 
+Layer-isolated exact-difference component sweep:
+
+```bash
+PYTHONPATH="$PWD" python analysis/experiments/jacobian_support_oracle.py \
+  --image /path/to/image1.JPEG --image /path/to/image2.JPEG \
+  --max-samples 2 --num-groups 1 --layers 0 \
+  --support 0.5 --tail-epsilon 0.1 \
+  --exact-layer-component-sweep --target-layers 0,1,2,3,4,5 \
+  --sweep-ratios 0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1 \
+  --output /tmp/exact_layer_component_sweep.json
+
+MPLBACKEND=Agg python \
+  analysis/experiments/plot_jacobian_layer_sweep.py \
+  /tmp/exact_layer_component_sweep.json \
+  --output /tmp/exact_layer_component_sweep.png
+```
+
 B200 workload-shape benchmark:
 
 ```bash
@@ -217,3 +234,48 @@ per-image level, token L2 is strictly monotonic for 2/3 input sweeps, 2/3
 attention sweeps, and 3/3 FFN sweeps. The sole attention exception is a
 90%-to-100% BF16/arithmetic-order endpoint drift on one image, not a missing
 support effect.
+
+## Layer-isolated exact-difference sweeps
+
+All 40 layers were measured independently on the same three images. For a
+target layer, one component's support varies from 0% to 100%; the other
+components are exact and all downstream blocks run their stock full forward.
+The input-token component means support on the exact `full_state-base_state`
+at that layer input. This is a final-feature sensitivity experiment rather
+than a local layer-output-only comparison.
+
+At 50% requested support, the stage averages are:
+
+| Component | Early, layers 0--12 | Middle, layers 13--26 | Late, layers 27--39 |
+|---|---:|---:|---:|
+| Input-token state | 0.3591 / 0.9281 | 0.3224 / 0.9428 | 0.2955 / 0.9525 |
+| Attention edges | 0.0266 / 0.9996 | 0.0261 / 0.9996 | 0.0208 / 0.9998 |
+| FFN channels | 0.0670 / 0.9976 | 0.0497 / 0.9987 | 0.0512 / 0.9986 |
+
+Each cell is mean final normalized-token relative L2 / cosine. The realized
+50% keeps are 50.2% of tokens, about 54.8% of attention edges after block
+rounding, and exactly 50% of FFN channels.
+
+The layer dependence is material:
+
+- Token-state pruning becomes progressively safer through roughly layers
+  32--36, then worsens again at layers 38--39. At 50%, layer 34 is best
+  (`L2=0.2827`) and layer 0 worst (`0.3935`).
+- Attention is highly prunable throughout, but not uniform. Layer 0 is the
+  most sensitive 50% point (`0.0464`); layer 8 is least sensitive (`0.0161`).
+  With only 20% kept, sensitivity spikes again around layers 16--24 and 39.
+- FFN has the clearest U-shaped schedule after a uniquely insensitive layer
+  0. Layers 23--26 are generally most prunable, while early layers 2--5 and
+  the final layer are sensitive. At 50%, layer 24 gives `0.0387`, versus
+  `0.0844` at layer 2 and `0.0859` at layer 39.
+
+All 360 sample/layer/component 100%-support endpoints have exactly zero final
+feature error. These results reject a single global keep ratio: a useful
+allocator should be component- and layer-dependent, with especially
+conservative FFN support at layers 2--5 and 39.
+Because each point isolates one layer, these errors must not be added to
+predict a multi-layer schedule; mixed layer configurations are the next
+calibration step.
+
+The checked-in visualization is
+`analysis/experiments/results/jacobian_layer_support_sweep.png`.
