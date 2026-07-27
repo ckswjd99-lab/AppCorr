@@ -1,5 +1,7 @@
 from .rope import apply_rope_active_inplace_triton, apply_rope_partial_triton
 from .attention_pscore import sdpa_with_pscore_triton
+from .jacobian_attention import packed_attention_delta_triton
+from .jacobian_probability import selected_softmax_jvp_triton
 from .token_prune import token_prune_select_compact_triton
 from .token_update import (
     active_token_update_triton,
@@ -15,6 +17,8 @@ __all__ = [
     "fused_layerscale_add",
     "masked_residual_add_triton",
     "masked_token_update_triton",
+    "packed_attention_delta_triton",
+    "selected_softmax_jvp_triton",
     "sdpa_with_pscore_triton",
     "token_prune_select_compact_triton",
 ]
