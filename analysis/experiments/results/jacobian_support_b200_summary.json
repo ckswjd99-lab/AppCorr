@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "status": "strict_jacobian_accuracy_gate_failed",
+  "baseline_commit": "6726d26694c1a13e4f659c4a94e552496ff23e6a",
+  "hardware": {
+    "gpu": "NVIDIA B200",
+    "compute_capability": [
+      10,
+      0
+    ]
+  },
+  "software": {
+    "python": "3.12.3",
+    "torch": "2.10.0a0+b4e4ee81d3.nv25.12",
+    "cuda": "13.1",
+    "triton": "3.5.1"
+  },
+  "dense_gate": {
+    "dataset": "ImageNet-1K validation",
+    "selection": "first 25 deterministic ImageFolder samples; parity gate only",
+    "stock_correct": 24,
+    "num_samples": 25,
+    "backends": {
+      "base_only": {
+        "mean_logit_relative_l2": 0.4072,
+        "mean_logit_cosine": 0.9110,
+        "stock_top1_matches": 25,
+        "correct": 24
+      },
+      "split_jvp": {
+        "mean_logit_relative_l2": 1.8550,
+        "mean_logit_cosine": -0.4293,
+        "stock_top1_matches": 0,
+        "correct": 0
+      },
+      "linearized_product": {
+        "mean_logit_relative_l2": 2.0738,
+        "mean_logit_cosine": -0.3811,
+        "stock_top1_matches": 0,
+        "correct": 0
+      },
+      "exact_probability_product_jvp_ffn": {
+        "mean_logit_relative_l2": 1.7152,
+        "mean_logit_cosine": -0.3738,
+        "stock_top1_matches": 0,
+        "correct": 0
+      },
+      "exact_probability_product_exact_ffn": {
+        "mean_logit_relative_l2": 0.0062,
+        "mean_logit_cosine": 1.0,
+        "stock_top1_matches": 25,
+        "correct": 24
+      }
+    }
+  },
+  "b200_attention_pipeline_p50_ms_at_50_percent_support": {
+    "scope": "selected dlogit + softmax JVP + cached product consumer; QKV projection excluded",
+    "imagenet_b32_n261_q64": {
+      "dense": 0.439,
+      "sparse": 0.207,
+      "speedup": 2.12
+    },
+    "coco_b1_n4101_q64": {
+      "dense": 0.330,
+      "sparse": 0.174,
+      "speedup": 1.89
+    },
+    "ade20k_b1_n3141_q64": {
+      "dense": 0.264,
+      "sparse": 0.144,
+      "speedup": 1.83
+    },
+    "nyuv2_b8_n2309_q64": {
+      "dense": 0.809,
+      "sparse": 0.333,
+      "speedup": 2.43
+    }
+  },
+  "decision": {
+    "strict_jvp_runtime_integration": "stopped",
+    "reason": "Dense final-logit gate exceeded the 1 percentage point accuracy budget.",
+    "retained_followup": "Exact-probability attention product delta plus exact finite-difference SwiGLU on draft-guided block support."
+  }
+}

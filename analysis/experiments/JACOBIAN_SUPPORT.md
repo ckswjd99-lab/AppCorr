@@ -4,6 +4,9 @@ This branch tests whether a low-resolution DINOv3 pass can identify a
 GPU-friendly correction support. It deliberately keeps the existing
 `partial_token` and `partial_channel` meanings unchanged.
 
+The compact machine-readable result is
+`analysis/experiments/results/jacobian_support_b200_summary.json`.
+
 ## Frozen baseline
 
 - Base commit: `6726d26694c1a13e4f659c4a94e552496ff23e6a`
