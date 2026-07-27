@@ -131,6 +131,14 @@ def parse_args() -> argparse.Namespace:
         help="Sweep exact nonlinear delta support and compare final backbone features.",
     )
     parser.add_argument(
+        "--exact-component-sweep",
+        action="store_true",
+        help=(
+            "Sweep input-token, attention-edge, and FFN-channel support separately "
+            "while holding the other exact-delta components at 100%."
+        ),
+    )
+    parser.add_argument(
         "--sweep-ratios",
         default="0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0",
     )
@@ -766,11 +774,27 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
         base_bchw_uint8: torch.Tensor,
         full_bchw_uint8: torch.Tensor,
         ratios: list[float],
+        *,
+        component: str = "joint",
     ) -> list[dict[str, object]]:
         """Propagate exact nonlinear deltas at a variable structured support."""
 
         if any(ratio < 0 or ratio > 1 for ratio in ratios):
             raise ValueError("Sweep ratios must be in [0, 1]")
+        valid_components = {
+            "joint",
+            "input_token",
+            "attention_edge",
+            "ffn_channel",
+        }
+        if component not in valid_components:
+            raise ValueError(
+                f"Unknown sweep component {component!r}; expected {valid_components}"
+            )
+
+        def component_ratio(name: str, requested_ratio: float) -> float:
+            return requested_ratio if component in {"joint", name} else 1.0
+
         base_input = self._prepare_input(base_bchw_uint8)
         full_input = self._prepare_input(full_bchw_uint8)
         context = (
@@ -795,12 +819,13 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
             states: dict[float, torch.Tensor] = {}
             realized: dict[float, dict[str, float]] = {}
             for ratio in ratios:
-                if ratio <= 0:
+                input_ratio = component_ratio("input_token", ratio)
+                if input_ratio <= 0:
                     token_mask = torch.zeros_like(input_score, dtype=torch.bool)
-                elif ratio >= 1:
+                elif input_ratio >= 1:
                     token_mask = torch.ones_like(input_score, dtype=torch.bool)
                 else:
-                    keep = max(1, math.ceil(token_count * ratio))
+                    keep = max(1, math.ceil(token_count * input_ratio))
                     indices = torch.topk(input_score, k=keep, dim=-1).indices
                     token_mask = torch.zeros_like(input_score, dtype=torch.bool)
                     token_mask.scatter_(-1, indices, True)
@@ -830,13 +855,15 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
 
                 next_states = {}
                 for ratio, state in states.items():
-                    if ratio <= 0:
+                    if component == "joint" and ratio <= 0:
                         next_states[ratio] = (
                             x_base_attn + block.ls2(block.mlp(base_norm2))
                         )
                         realized[ratio]["layers"] += 1
                         continue
 
+                    attention_ratio = component_ratio("attention_edge", ratio)
+                    ffn_ratio = component_ratio("ffn_channel", ratio)
                     q_new, k_new, v_new = self._attention_qkv(
                         block, state, rope
                     )
@@ -851,7 +878,13 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                         backend="product_delta",
                         probability_mode="exact",
                     )
-                    if ratio >= 1:
+                    if attention_ratio <= 0:
+                        attention_mask = torch.zeros_like(
+                            exact_attention.base_probability,
+                            dtype=torch.bool,
+                        )
+                        corrected_attention_raw = exact_attention.base_output
+                    elif attention_ratio >= 1:
                         attention_mask = torch.ones_like(
                             exact_attention.base_probability,
                             dtype=torch.bool,
@@ -860,7 +893,7 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                     else:
                         attention_mask, _ = select_attention_block_support(
                             exact_attention.base_probability,
-                            keep_ratio=ratio,
+                            keep_ratio=attention_ratio,
                             key_block_size=self.key_block,
                             query_block_size=self.query_block,
                             head_group_size=self.head_group,
@@ -895,7 +928,12 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                         F.silu(corrected_gate) * corrected_up
                         - base_hidden
                     )
-                    if ratio >= 1:
+                    if ffn_ratio <= 0:
+                        ffn_mask = torch.zeros_like(
+                            exact_hidden_delta,
+                            dtype=torch.bool,
+                        )
+                    elif ffn_ratio >= 1:
                         ffn_mask = torch.ones_like(
                             exact_hidden_delta,
                             dtype=torch.bool,
@@ -904,7 +942,7 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                         channel_score = exact_hidden_delta.abs() * down_norm
                         ffn_mask = select_ffn_block_support(
                             channel_score,
-                            keep_ratio=ratio,
+                            keep_ratio=ffn_ratio,
                             channel_block_size=self.ffn_channel_block,
                             token_block_size=self.ffn_token_block,
                         )
@@ -933,7 +971,13 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                 tokens, pooled = self._normalized_backbone_features(states[ratio])
                 layer_count = max(realized[ratio]["layers"], 1)
                 rows.append({
+                    "component": component,
                     "requested_ratio": ratio,
+                    "input_token_ratio": component_ratio("input_token", ratio),
+                    "attention_edge_ratio": component_ratio(
+                        "attention_edge", ratio
+                    ),
+                    "ffn_channel_ratio": component_ratio("ffn_channel", ratio),
                     "realized_input_token_keep": realized[ratio][
                         "input_token_keep"
                     ],
@@ -950,9 +994,10 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                         tensor_sums(pooled, full_pooled)
                     ),
                 })
-            rows[0]["base_endpoint_check"] = finish_tensor_sums(
-                tensor_sums(base_tokens, full_tokens)
-            )
+            if component in {"joint", "input_token"}:
+                rows[0]["base_endpoint_check"] = finish_tensor_sums(
+                    tensor_sums(base_tokens, full_tokens)
+                )
             return rows
 
 
@@ -1087,6 +1132,23 @@ def main() -> None:
             if args.exact_support_sweep
             else None
         )
+        exact_component_sweeps = (
+            {
+                component: oracle.exact_support_feature_sweep(
+                    torch.from_numpy(base_bhwc).permute(2, 0, 1).unsqueeze(0),
+                    full_chw.unsqueeze(0),
+                    sweep_ratios,
+                    component=component,
+                )
+                for component in (
+                    "input_token",
+                    "attention_edge",
+                    "ffn_channel",
+                )
+            }
+            if args.exact_component_sweep
+            else None
+        )
         if dense_gate is not None and label is not None:
             dense_gate["label"] = label
             dense_gate["stock_correct"] = dense_gate["stock_top1"] == label
@@ -1099,6 +1161,7 @@ def main() -> None:
             "corrections": corrections,
             "dense_gate": dense_gate,
             "exact_support_sweep": exact_support_sweep,
+            "exact_component_sweeps": exact_component_sweeps,
         })
         if sample_index + 1 >= args.max_samples:
             break
@@ -1134,6 +1197,7 @@ def main() -> None:
             "ffn_token_block": args.ffn_token_block,
             "dense_gate": args.dense_gate,
             "exact_support_sweep": args.exact_support_sweep,
+            "exact_component_sweep": args.exact_component_sweep,
             "sweep_ratios": sweep_ratios,
         },
         "samples": samples,
