@@ -145,3 +145,31 @@ energy in middle/late layers. The viable follow-up is therefore:
 
 That follow-up must be described as draft-guided finite-difference support,
 not as sparse Jacobian evaluation.
+
+## Exact finite-difference support sweep
+
+As a follow-up sanity check, the same requested ratio was applied to input
+token deltas, exact-probability attention edge blocks, and exact
+finite-difference SwiGLU channel blocks. Three ImageNet images from distinct
+classes were propagated through all 40 layers.
+
+| Requested support | Token feature relative L2 | Token feature cosine |
+|---:|---:|---:|
+| 0% | 0.5583 | 0.8327 |
+| 10% | 0.5583 | 0.8329 |
+| 20% | 0.5550 | 0.8347 |
+| 30% | 0.5425 | 0.8421 |
+| 40% | 0.5215 | 0.8539 |
+| 50% | 0.4868 | 0.8729 |
+| 60% | 0.4411 | 0.8956 |
+| 70% | 0.3906 | 0.9185 |
+| 80% | 0.3090 | 0.9489 |
+| 90% | 0.2133 | 0.9759 |
+| 100% | 0.0224 | 0.9997 |
+
+The mean curve moves from the base endpoint toward the full-resolution
+endpoint. It is not mathematically monotonic per image: two of three samples
+showed a small regression at 10--20% support, while one sample was monotonic
+throughout. All samples improved consistently after the low-support region.
+The 100% residual error is BF16/arithmetic-order drift rather than missing
+support.
