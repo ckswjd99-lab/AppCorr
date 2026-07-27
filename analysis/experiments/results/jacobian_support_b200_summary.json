@@ -76,6 +76,70 @@
       "speedup": 2.43
     }
   },
+  "exact_finite_difference_support_sweep": {
+    "dataset": "three ImageNet validation images from distinct classes",
+    "support_definition": "same requested ratio for input tokens, exact-probability attention edge blocks, and exact finite-difference SwiGLU channel blocks",
+    "mean_final_normalized_token_feature": [
+      {
+        "ratio": 0.0,
+        "relative_l2": 0.558299,
+        "cosine": 0.832662
+      },
+      {
+        "ratio": 0.1,
+        "relative_l2": 0.558318,
+        "cosine": 0.832851
+      },
+      {
+        "ratio": 0.2,
+        "relative_l2": 0.554977,
+        "cosine": 0.834678
+      },
+      {
+        "ratio": 0.3,
+        "relative_l2": 0.542482,
+        "cosine": 0.842051
+      },
+      {
+        "ratio": 0.4,
+        "relative_l2": 0.521524,
+        "cosine": 0.853907
+      },
+      {
+        "ratio": 0.5,
+        "relative_l2": 0.486795,
+        "cosine": 0.872920
+      },
+      {
+        "ratio": 0.6,
+        "relative_l2": 0.441096,
+        "cosine": 0.895586
+      },
+      {
+        "ratio": 0.7,
+        "relative_l2": 0.390640,
+        "cosine": 0.918478
+      },
+      {
+        "ratio": 0.8,
+        "relative_l2": 0.309014,
+        "cosine": 0.948912
+      },
+      {
+        "ratio": 0.9,
+        "relative_l2": 0.213273,
+        "cosine": 0.975889
+      },
+      {
+        "ratio": 1.0,
+        "relative_l2": 0.022371,
+        "cosine": 0.999713
+      }
+    ],
+    "strictly_monotonic_samples": 1,
+    "num_samples": 3,
+    "observation": "Mean quality improves with support, but two samples show a small non-monotonic regression at 10-20 percent support."
+  },
   "decision": {
     "strict_jvp_runtime_integration": "stopped",
     "reason": "Dense final-logit gate exceeded the 1 percentage point accuracy budget.",

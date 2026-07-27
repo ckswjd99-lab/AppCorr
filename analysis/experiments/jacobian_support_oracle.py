@@ -126,6 +126,15 @@ def parse_args() -> argparse.Namespace:
         help="Propagate dense correction backends through all layers and compare logits.",
     )
     parser.add_argument(
+        "--exact-support-sweep",
+        action="store_true",
+        help="Sweep exact nonlinear delta support and compare final backbone features.",
+    )
+    parser.add_argument(
+        "--sweep-ratios",
+        default="0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("logs/analysis/jacobian_support_oracle.json"),
@@ -740,6 +749,212 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
             results["stock_top1"] = int(logits_full.argmax(-1).item())
             return results
 
+    def _normalized_backbone_features(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        output = self.backbone.post_features_list([x], [None])[0]
+        cls = output["x_norm_clstoken"]
+        patches = output["x_norm_patchtokens"]
+        tokens = torch.cat([cls.unsqueeze(1), patches], dim=1)
+        pooled = torch.cat([cls, patches.mean(dim=1)], dim=-1)
+        return tokens, pooled
+
+    @torch.no_grad()
+    def exact_support_feature_sweep(
+        self,
+        base_bchw_uint8: torch.Tensor,
+        full_bchw_uint8: torch.Tensor,
+        ratios: list[float],
+    ) -> list[dict[str, object]]:
+        """Propagate exact nonlinear deltas at a variable structured support."""
+
+        if any(ratio < 0 or ratio > 1 for ratio in ratios):
+            raise ValueError("Sweep ratios must be in [0, 1]")
+        base_input = self._prepare_input(base_bchw_uint8)
+        full_input = self._prepare_input(full_bchw_uint8)
+        context = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if self.device.type == "cuda"
+            else nullcontext()
+        )
+        with context:
+            x_base, hw = self.backbone.prepare_tokens_with_masks(base_input, None)
+            x_full, full_hw = self.backbone.prepare_tokens_with_masks(full_input, None)
+            if hw != full_hw:
+                raise RuntimeError("Exact support sweep token grids must match")
+            rope = (
+                self.backbone.rope_embed(H=hw[0], W=hw[1])
+                if self.backbone.rope_embed is not None
+                else None
+            )
+
+            input_delta = x_full - x_base
+            input_score = input_delta.float().square().sum(dim=-1)
+            token_count = x_base.shape[1]
+            states: dict[float, torch.Tensor] = {}
+            realized: dict[float, dict[str, float]] = {}
+            for ratio in ratios:
+                if ratio <= 0:
+                    token_mask = torch.zeros_like(input_score, dtype=torch.bool)
+                elif ratio >= 1:
+                    token_mask = torch.ones_like(input_score, dtype=torch.bool)
+                else:
+                    keep = max(1, math.ceil(token_count * ratio))
+                    indices = torch.topk(input_score, k=keep, dim=-1).indices
+                    token_mask = torch.zeros_like(input_score, dtype=torch.bool)
+                    token_mask.scatter_(-1, indices, True)
+                states[ratio] = x_base + input_delta * token_mask.unsqueeze(-1)
+                realized[ratio] = {
+                    "input_token_keep": float(token_mask.float().mean().item()),
+                    "attention_keep_sum": 0.0,
+                    "ffn_keep_sum": 0.0,
+                    "layers": 0.0,
+                }
+
+            for block in self.backbone.blocks:
+                q_base, k_base, v_base = self._attention_qkv(
+                    block, x_base, rope
+                )
+                q_base_f = q_base.float()
+                k_base_f = k_base.float()
+                v_base_f = v_base.float()
+                x_base_attn = x_base + block.ls1(
+                    block.attn(block.norm1(x_base), rope=rope)
+                )
+                base_norm2 = block.norm2(x_base_attn)
+                base_gate = block.mlp.w1(base_norm2).float()
+                base_up = block.mlp.w2(base_norm2).float()
+                base_hidden = F.silu(base_gate) * base_up
+                down_norm = block.mlp.w3.weight.float().square().sum(dim=0).sqrt()
+
+                next_states = {}
+                for ratio, state in states.items():
+                    if ratio <= 0:
+                        next_states[ratio] = (
+                            x_base_attn + block.ls2(block.mlp(base_norm2))
+                        )
+                        realized[ratio]["layers"] += 1
+                        continue
+
+                    q_new, k_new, v_new = self._attention_qkv(
+                        block, state, rope
+                    )
+                    exact_attention = attention_delta(
+                        q_base_f,
+                        k_base_f,
+                        v_base_f,
+                        q_new.float() - q_base_f,
+                        k_new.float() - k_base_f,
+                        v_new.float() - v_base_f,
+                        scale=float(block.attn.scale),
+                        backend="product_delta",
+                        probability_mode="exact",
+                    )
+                    if ratio >= 1:
+                        attention_mask = torch.ones_like(
+                            exact_attention.base_probability,
+                            dtype=torch.bool,
+                        )
+                        corrected_attention_raw = exact_attention.corrected_output
+                    else:
+                        attention_mask, _ = select_attention_block_support(
+                            exact_attention.base_probability,
+                            keep_ratio=ratio,
+                            key_block_size=self.key_block,
+                            query_block_size=self.query_block,
+                            head_group_size=self.head_group,
+                        )
+                        masked_attention = attention_delta(
+                            q_base_f,
+                            k_base_f,
+                            v_base_f,
+                            q_new.float() - q_base_f,
+                            k_new.float() - k_base_f,
+                            v_new.float() - v_base_f,
+                            scale=float(block.attn.scale),
+                            backend="product_delta",
+                            probability_mode="exact",
+                            support_mask=attention_mask,
+                        )
+                        corrected_attention_raw = masked_attention.corrected_output
+                    corrected_attention_raw = (
+                        corrected_attention_raw.transpose(1, 2)
+                        .reshape(state.shape)
+                        .to(dtype=state.dtype)
+                    )
+                    corrected_attention = block.attn.proj_drop(
+                        block.attn.proj(corrected_attention_raw)
+                    )
+                    state_attn = state + block.ls1(corrected_attention)
+
+                    corrected_norm2 = block.norm2(state_attn)
+                    corrected_gate = block.mlp.w1(corrected_norm2).float()
+                    corrected_up = block.mlp.w2(corrected_norm2).float()
+                    exact_hidden_delta = (
+                        F.silu(corrected_gate) * corrected_up
+                        - base_hidden
+                    )
+                    if ratio >= 1:
+                        ffn_mask = torch.ones_like(
+                            exact_hidden_delta,
+                            dtype=torch.bool,
+                        )
+                    else:
+                        channel_score = exact_hidden_delta.abs() * down_norm
+                        ffn_mask = select_ffn_block_support(
+                            channel_score,
+                            keep_ratio=ratio,
+                            channel_block_size=self.ffn_channel_block,
+                            token_block_size=self.ffn_token_block,
+                        )
+                    corrected_hidden = (
+                        base_hidden
+                        + exact_hidden_delta.masked_fill(~ffn_mask, 0)
+                    ).to(dtype=state.dtype)
+                    corrected_ffn = block.mlp.w3(corrected_hidden)
+                    next_states[ratio] = state_attn + block.ls2(corrected_ffn)
+                    realized[ratio]["attention_keep_sum"] += float(
+                        attention_mask.float().mean().item()
+                    )
+                    realized[ratio]["ffn_keep_sum"] += float(
+                        ffn_mask.float().mean().item()
+                    )
+                    realized[ratio]["layers"] += 1
+
+                states = next_states
+                x_base = x_base_attn + block.ls2(block.mlp(base_norm2))
+                x_full = block(x_full, rope)
+
+            full_tokens, full_pooled = self._normalized_backbone_features(x_full)
+            base_tokens, base_pooled = self._normalized_backbone_features(x_base)
+            rows = []
+            for ratio in ratios:
+                tokens, pooled = self._normalized_backbone_features(states[ratio])
+                layer_count = max(realized[ratio]["layers"], 1)
+                rows.append({
+                    "requested_ratio": ratio,
+                    "realized_input_token_keep": realized[ratio][
+                        "input_token_keep"
+                    ],
+                    "mean_attention_edge_keep": (
+                        realized[ratio]["attention_keep_sum"] / layer_count
+                    ),
+                    "mean_ffn_channel_keep": (
+                        realized[ratio]["ffn_keep_sum"] / layer_count
+                    ),
+                    "normalized_token_feature": finish_tensor_sums(
+                        tensor_sums(tokens, full_tokens)
+                    ),
+                    "pooled_cls_mean_feature": finish_tensor_sums(
+                        tensor_sums(pooled, full_pooled)
+                    ),
+                })
+            rows[0]["base_endpoint_check"] = finish_tensor_sums(
+                tensor_sums(base_tokens, full_tokens)
+            )
+            return rows
+
 
 def load_images(
     args: argparse.Namespace,
@@ -803,6 +1018,9 @@ def main() -> None:
     layers = parse_layers(args.layers)
     support_ratios = [float(value) for value in args.support.split(",")]
     tail_epsilons = [float(value) for value in args.tail_epsilon.split(",")]
+    sweep_ratios = [
+        float(value) for value in args.sweep_ratios.split(",") if value.strip()
+    ]
 
     oracle = Dinov3JacobianOracle(
         device=device,
@@ -860,6 +1078,15 @@ def main() -> None:
             if args.dense_gate
             else None
         )
+        exact_support_sweep = (
+            oracle.exact_support_feature_sweep(
+                torch.from_numpy(base_bhwc).permute(2, 0, 1).unsqueeze(0),
+                full_chw.unsqueeze(0),
+                sweep_ratios,
+            )
+            if args.exact_support_sweep
+            else None
+        )
         if dense_gate is not None and label is not None:
             dense_gate["label"] = label
             dense_gate["stock_correct"] = dense_gate["stock_top1"] == label
@@ -871,6 +1098,7 @@ def main() -> None:
             "label": label,
             "corrections": corrections,
             "dense_gate": dense_gate,
+            "exact_support_sweep": exact_support_sweep,
         })
         if sample_index + 1 >= args.max_samples:
             break
@@ -905,6 +1133,8 @@ def main() -> None:
             "ffn_channel_block": args.ffn_channel_block,
             "ffn_token_block": args.ffn_token_block,
             "dense_gate": args.dense_gate,
+            "exact_support_sweep": args.exact_support_sweep,
+            "sweep_ratios": sweep_ratios,
         },
         "samples": samples,
     }
