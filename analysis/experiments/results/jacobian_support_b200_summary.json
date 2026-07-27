@@ -140,6 +140,58 @@
     "num_samples": 3,
     "observation": "Mean quality improves with support, but two samples show a small non-monotonic regression at 10-20 percent support."
   },
+  "independent_exact_difference_component_sweeps": {
+    "dataset": "same three ImageNet validation images from distinct classes",
+    "protocol": "vary one component while holding the other two at 100 percent exact finite-difference support",
+    "mean_final_normalized_token_feature": {
+      "input_token": [
+        {"ratio": 0.0, "relative_l2": 0.558401, "cosine": 0.832596},
+        {"ratio": 0.1, "relative_l2": 0.558896, "cosine": 0.837247},
+        {"ratio": 0.2, "relative_l2": 0.530461, "cosine": 0.850572},
+        {"ratio": 0.3, "relative_l2": 0.469966, "cosine": 0.879815},
+        {"ratio": 0.4, "relative_l2": 0.427554, "cosine": 0.900628},
+        {"ratio": 0.5, "relative_l2": 0.393435, "cosine": 0.916196},
+        {"ratio": 0.6, "relative_l2": 0.346002, "cosine": 0.933739},
+        {"ratio": 0.7, "relative_l2": 0.302332, "cosine": 0.949853},
+        {"ratio": 0.8, "relative_l2": 0.247625, "cosine": 0.966165},
+        {"ratio": 0.9, "relative_l2": 0.174851, "cosine": 0.983268},
+        {"ratio": 1.0, "relative_l2": 0.022371, "cosine": 0.999713}
+      ],
+      "attention_edge": [
+        {"ratio": 0.0, "relative_l2": 0.565328, "cosine": 0.824562},
+        {"ratio": 0.1, "relative_l2": 0.509933, "cosine": 0.858245},
+        {"ratio": 0.2, "relative_l2": 0.397035, "cosine": 0.916049},
+        {"ratio": 0.3, "relative_l2": 0.311839, "cosine": 0.948738},
+        {"ratio": 0.4, "relative_l2": 0.278306, "cosine": 0.959337},
+        {"ratio": 0.5, "relative_l2": 0.205907, "cosine": 0.977753},
+        {"ratio": 0.6, "relative_l2": 0.152944, "cosine": 0.987454},
+        {"ratio": 0.7, "relative_l2": 0.128521, "cosine": 0.991094},
+        {"ratio": 0.8, "relative_l2": 0.087087, "cosine": 0.996025},
+        {"ratio": 0.9, "relative_l2": 0.043262, "cosine": 0.998992},
+        {"ratio": 1.0, "relative_l2": 0.022371, "cosine": 0.999713}
+      ],
+      "ffn_channel": [
+        {"ratio": 0.0, "relative_l2": 0.556705, "cosine": 0.833956},
+        {"ratio": 0.1, "relative_l2": 0.546000, "cosine": 0.840729},
+        {"ratio": 0.2, "relative_l2": 0.530819, "cosine": 0.849997},
+        {"ratio": 0.3, "relative_l2": 0.501913, "cosine": 0.866549},
+        {"ratio": 0.4, "relative_l2": 0.469831, "cosine": 0.883425},
+        {"ratio": 0.5, "relative_l2": 0.429326, "cosine": 0.903468},
+        {"ratio": 0.6, "relative_l2": 0.361721, "cosine": 0.932070},
+        {"ratio": 0.7, "relative_l2": 0.300434, "cosine": 0.953393},
+        {"ratio": 0.8, "relative_l2": 0.215553, "cosine": 0.976258},
+        {"ratio": 0.9, "relative_l2": 0.136332, "cosine": 0.990502},
+        {"ratio": 1.0, "relative_l2": 0.022371, "cosine": 0.999713}
+      ]
+    },
+    "strictly_monotonic_token_l2_samples": {
+      "input_token": 2,
+      "attention_edge": 2,
+      "ffn_channel": 3,
+      "num_samples": 3
+    },
+    "observation": "Attention-edge support has the strongest early leverage; at requested 50 percent support its mean relative L2 is 0.2059 versus 0.3934 for input tokens and 0.4293 for FFN channels."
+  },
   "decision": {
     "strict_jvp_runtime_integration": "stopped",
     "reason": "Dense final-logit gate exceeded the 1 percentage point accuracy budget.",

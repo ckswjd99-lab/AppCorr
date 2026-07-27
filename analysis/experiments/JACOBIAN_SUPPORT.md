@@ -73,6 +73,17 @@ PYTHONPATH="$PWD" python analysis/experiments/jacobian_support_oracle.py \
   --output /tmp/dense_gate.json
 ```
 
+Independent exact-difference component sweep:
+
+```bash
+PYTHONPATH="$PWD" python analysis/experiments/jacobian_support_oracle.py \
+  --image /path/to/image1.JPEG --image /path/to/image2.JPEG \
+  --max-samples 2 --num-groups 1 --layers 0 \
+  --support 0.5 --tail-epsilon 0.1 --exact-component-sweep \
+  --sweep-ratios 0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1 \
+  --output /tmp/exact_component_sweep.json
+```
+
 B200 workload-shape benchmark:
 
 ```bash
@@ -173,3 +184,36 @@ showed a small regression at 10--20% support, while one sample was monotonic
 throughout. All samples improved consistently after the low-support region.
 The 100% residual error is BF16/arithmetic-order drift rather than missing
 support.
+
+## Independent exact-difference component sweeps
+
+The same three images were also evaluated by varying one component at a time
+and holding the other two at 100%. Attention uses exact corrected softmax
+probabilities and product deltas. FFN uses the exact finite difference of the
+SwiGLU hidden product. Selection remains block structured.
+
+| Requested support | Input token L2 / cosine | Attention edge L2 / cosine | FFN channel L2 / cosine |
+|---:|---:|---:|---:|
+| 0% | 0.5584 / 0.8326 | 0.5653 / 0.8246 | 0.5567 / 0.8340 |
+| 10% | 0.5589 / 0.8372 | 0.5099 / 0.8582 | 0.5460 / 0.8407 |
+| 20% | 0.5305 / 0.8506 | 0.3970 / 0.9160 | 0.5308 / 0.8500 |
+| 30% | 0.4700 / 0.8798 | 0.3118 / 0.9487 | 0.5019 / 0.8665 |
+| 40% | 0.4276 / 0.9006 | 0.2783 / 0.9593 | 0.4698 / 0.8834 |
+| 50% | 0.3934 / 0.9162 | 0.2059 / 0.9778 | 0.4293 / 0.9035 |
+| 60% | 0.3460 / 0.9337 | 0.1529 / 0.9875 | 0.3617 / 0.9321 |
+| 70% | 0.3023 / 0.9499 | 0.1285 / 0.9911 | 0.3004 / 0.9534 |
+| 80% | 0.2476 / 0.9662 | 0.0871 / 0.9960 | 0.2156 / 0.9763 |
+| 90% | 0.1749 / 0.9833 | 0.0433 / 0.9990 | 0.1363 / 0.9905 |
+| 100% | 0.0224 / 0.9997 | 0.0224 / 0.9997 | 0.0224 / 0.9997 |
+
+Attention-edge support has the strongest early leverage: at a requested 50%
+support its mean token-feature relative L2 is 0.2059, versus 0.3934 for input
+tokens and 0.4293 for FFN channels. Its block rounding realizes 54.8% edge
+support at that point; input realizes 50.2% and FFN exactly 50%.
+
+The mean attention and FFN curves improve monotonically. The input-token mean
+L2 has one small 0% to 10% regression, although cosine improves. At the
+per-image level, token L2 is strictly monotonic for 2/3 input sweeps, 2/3
+attention sweeps, and 3/3 FFN sweeps. The sole attention exception is a
+90%-to-100% BF16/arithmetic-order endpoint drift on one image, not a missing
+support effect.
