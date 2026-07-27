@@ -559,6 +559,14 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         start_l, end_l = layers[0], layers[1]
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
+        if appcorr_method == "jacobian_support":
+            raise RuntimeError(
+                "jacobian_support runtime integration is intentionally disabled: "
+                "the dense final-logit accuracy gate failed for split JVP and "
+                "linearized product correction. Run "
+                "analysis/experiments/jacobian_support_oracle.py --dense-gate "
+                "and consult analysis/experiments/JACOBIAN_SUPPORT.md."
+            )
         
         if start_l == 0:
             x_feature = context['input_tokens']

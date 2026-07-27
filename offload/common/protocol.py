@@ -30,6 +30,23 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
         'method': 'partial_token',
+        'attn_delta_backend': 'auto',
+        'attn_probability_mode': 'linearized',
+        'attn_support_mode': 'ratio',
+        'attn_support_keep_ratio': 0.5,
+        'attn_tail_epsilon': 0.1,
+        'attn_key_block_size': 16,
+        'attn_query_block_size': 8,
+        'attn_head_group_size': 4,
+        'ffn_predictor': 'derivative_bound',
+        'ffn_support_keep_ratio': 0.5,
+        'ffn_channel_block_size': 128,
+        'ffn_token_block_size': 8,
+        'jacobian_stability_fallback': True,
+        'jacobian_attention_tail_threshold': 0.2,
+        'jacobian_logit_delta_threshold': 1.0,
+        'jacobian_ffn_curvature_threshold': 0.25,
+        'jacobian_schedule_path': None,
         'debug': False,
     }
 
@@ -159,6 +176,87 @@ def normalize_appcorr_kwargs(
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)
     options['method'] = str(options.get('method', defaults['method']))
+    valid_methods = {'partial_token', 'partial_channel', 'jacobian_support'}
+    if options['method'] not in valid_methods:
+        raise ValueError(
+            f"Unknown AppCorr method '{options['method']}'. "
+            f"Available values: {sorted(valid_methods)}"
+        )
+    options['attn_delta_backend'] = str(
+        options.get('attn_delta_backend', defaults['attn_delta_backend'])
+    ).lower()
+    if options['attn_delta_backend'] not in {'split_jvp', 'product_delta', 'auto'}:
+        raise ValueError(
+            "attn_delta_backend must be split_jvp, product_delta, or auto"
+        )
+    options['attn_probability_mode'] = str(
+        options.get('attn_probability_mode', defaults['attn_probability_mode'])
+    ).lower()
+    if options['attn_probability_mode'] not in {'linearized', 'exact'}:
+        raise ValueError("attn_probability_mode must be linearized or exact")
+    options['attn_support_mode'] = str(
+        options.get('attn_support_mode', defaults['attn_support_mode'])
+    ).lower()
+    if options['attn_support_mode'] not in {'ratio', 'tail_mass', 'residual_union'}:
+        raise ValueError(
+            "attn_support_mode must be ratio, tail_mass, or residual_union"
+        )
+    options['attn_support_keep_ratio'] = float(
+        options.get('attn_support_keep_ratio', defaults['attn_support_keep_ratio'])
+    )
+    if not 0 < options['attn_support_keep_ratio'] <= 1:
+        raise ValueError("attn_support_keep_ratio must be in (0, 1]")
+    options['attn_tail_epsilon'] = float(
+        options.get('attn_tail_epsilon', defaults['attn_tail_epsilon'])
+    )
+    if not 0 <= options['attn_tail_epsilon'] < 1:
+        raise ValueError("attn_tail_epsilon must be in [0, 1)")
+    for key in (
+        'attn_key_block_size',
+        'attn_query_block_size',
+        'attn_head_group_size',
+        'ffn_channel_block_size',
+        'ffn_token_block_size',
+    ):
+        options[key] = int(options.get(key, defaults[key]))
+        if options[key] <= 0:
+            raise ValueError(f"{key} must be positive")
+    options['ffn_predictor'] = str(
+        options.get('ffn_predictor', defaults['ffn_predictor'])
+    ).lower()
+    if options['ffn_predictor'] not in {
+        'base_magnitude',
+        'activation_derivative',
+        'derivative_bound',
+        'low_rank',
+    }:
+        raise ValueError(f"Unknown ffn_predictor: {options['ffn_predictor']}")
+    options['ffn_support_keep_ratio'] = float(
+        options.get('ffn_support_keep_ratio', defaults['ffn_support_keep_ratio'])
+    )
+    if not 0 < options['ffn_support_keep_ratio'] <= 1:
+        raise ValueError("ffn_support_keep_ratio must be in (0, 1]")
+    options['jacobian_stability_fallback'] = bool(
+        options.get(
+            'jacobian_stability_fallback',
+            defaults['jacobian_stability_fallback'],
+        )
+    )
+    for key in (
+        'jacobian_attention_tail_threshold',
+        'jacobian_logit_delta_threshold',
+        'jacobian_ffn_curvature_threshold',
+    ):
+        options[key] = float(options.get(key, defaults[key]))
+        if options[key] < 0:
+            raise ValueError(f"{key} must be non-negative")
+    schedule_path = options.get(
+        'jacobian_schedule_path',
+        defaults['jacobian_schedule_path'],
+    )
+    options['jacobian_schedule_path'] = (
+        None if schedule_path in {None, '', 'null', 'None'} else str(schedule_path)
+    )
     options['debug'] = bool(options.get('debug', defaults['debug']))
     return options
 
