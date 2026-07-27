@@ -106,17 +106,23 @@ path consumes cached block descriptors and reads full V/dV indirectly.
 
 ## Accuracy gate and decision
 
-The prescribed dense gate failed for strict Jacobian correction. On three
-real ImageNet validation images, correcting a 1/4-resolution canvas to full
+The prescribed dense gate failed for strict Jacobian correction. On 25 real
+ImageNet validation images, correcting a 1/4-resolution canvas to full
 resolution through all 40 layers produced:
 
 | Dense backend | Mean logit relative L2 | Mean cosine | Stock top-1 match |
 |---|---:|---:|---:|
-| Base only | 0.5267 | 0.8560 | 3/3 |
-| Split JVP attention + JVP FFN | 1.7822 | -0.3814 | 0/3 |
-| Linearized product attention + JVP FFN | 2.2128 | -0.3324 | 0/3 |
-| Exact-probability product + JVP FFN | 1.6241 | -0.2657 | 0/3 |
-| Exact-probability product + exact finite-difference FFN | 0.0066 | 1.0000 | 3/3 |
+| Base only | 0.4072 | 0.9110 | 25/25 |
+| Split JVP attention + JVP FFN | 1.8550 | -0.4293 | 0/25 |
+| Linearized product attention + JVP FFN | 2.0738 | -0.3811 | 0/25 |
+| Exact-probability product + JVP FFN | 1.7152 | -0.3738 | 0/25 |
+| Exact-probability product + exact finite-difference FFN | 0.0062 | 1.0000 | 25/25 |
+
+The 25-sample gate used the first deterministic `ImageFolder` entries and is
+therefore a parity gate, not an unbiased ImageNet accuracy estimate. Stock and
+the exact finite-difference tier were correct on 24/25; all three JVP tiers
+were correct on 0/25. This is far beyond the 1%p budget, so the planned
+1,024-sample sparse-runtime sweep was stopped early.
 
 Four cumulative 25%-patch correction steps did not rescue the local Taylor
 approximation: across layers 0/10/20/30/39 and four groups, median attention

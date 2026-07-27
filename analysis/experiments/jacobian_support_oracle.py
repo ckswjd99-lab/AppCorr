@@ -725,6 +725,7 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                     "top1_match": bool(
                         torch.equal(logits_base.argmax(-1), logits_full.argmax(-1))
                     ),
+                    "predicted_top1": int(logits_base.argmax(-1).item()),
                 }
             }
             for name, state in variant_states.items():
@@ -734,12 +735,17 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                     "top1_match": bool(
                         torch.equal(logits.argmax(-1), logits_full.argmax(-1))
                     ),
+                    "predicted_top1": int(logits.argmax(-1).item()),
                 }
             results["stock_top1"] = int(logits_full.argmax(-1).item())
             return results
 
 
-def load_images(args: argparse.Namespace, image_size: int, dataset_name: str) -> Iterable[torch.Tensor]:
+def load_images(
+    args: argparse.Namespace,
+    image_size: int,
+    dataset_name: str,
+) -> Iterable[tuple[torch.Tensor, int | None]]:
     if args.synthetic:
         generator = torch.Generator().manual_seed(31)
         yield torch.randint(
@@ -748,14 +754,17 @@ def load_images(args: argparse.Namespace, image_size: int, dataset_name: str) ->
             (3, image_size, image_size),
             generator=generator,
             dtype=torch.uint8,
-        )
+        ), None
         return
     if args.image:
         from PIL import Image
 
         for filename in args.image[: args.max_samples]:
             image = Image.open(filename).convert("RGB").resize((image_size, image_size))
-            yield torch.from_numpy(np.asarray(image, dtype=np.uint8).copy()).permute(2, 0, 1)
+            yield (
+                torch.from_numpy(np.asarray(image, dtype=np.uint8).copy()).permute(2, 0, 1),
+                None,
+            )
         return
 
     config, _ = load_config(args.config)
@@ -764,17 +773,18 @@ def load_images(args: argparse.Namespace, image_size: int, dataset_name: str) ->
     loader_kwargs["num_workers"] = args.num_workers
     from offload.mobile.dataset import get_dataset_loader
 
-    loader = get_dataset_loader(
+    dataset_loader = get_dataset_loader(
         dataset_name,
         data_root,
         batch_size=1,
         image_size=image_size,
         **loader_kwargs,
     )
+    loader = dataset_loader.get_loader()
     emitted = 0
     for images, _labels in loader:
-        for image in images:
-            yield image.to(torch.uint8)
+        for image, label in zip(images, _labels):
+            yield image.to(torch.uint8), int(label.item())
             emitted += 1
             if emitted >= args.max_samples:
                 return
@@ -809,7 +819,7 @@ def main() -> None:
     )
     samples = []
     images = load_images(args, image_h, dataset_name)
-    for sample_index, full_chw in enumerate(
+    for sample_index, (full_chw, label) in enumerate(
         tqdm(images, total=args.max_samples, desc="oracle")
     ):
         full_bhwc = full_chw.permute(1, 2, 0).contiguous().numpy()
@@ -842,17 +852,25 @@ def main() -> None:
                 ),
                 "layers": rows,
             })
+        dense_gate = (
+            oracle.dense_propagation_gate(
+                torch.from_numpy(base_bhwc).permute(2, 0, 1).unsqueeze(0),
+                full_chw.unsqueeze(0),
+            )
+            if args.dense_gate
+            else None
+        )
+        if dense_gate is not None and label is not None:
+            dense_gate["label"] = label
+            dense_gate["stock_correct"] = dense_gate["stock_top1"] == label
+            for value in dense_gate.values():
+                if isinstance(value, dict) and "predicted_top1" in value:
+                    value["correct"] = value["predicted_top1"] == label
         samples.append({
             "sample_index": sample_index,
+            "label": label,
             "corrections": corrections,
-            "dense_gate": (
-                oracle.dense_propagation_gate(
-                    torch.from_numpy(base_bhwc).permute(2, 0, 1).unsqueeze(0),
-                    full_chw.unsqueeze(0),
-                )
-                if args.dense_gate
-                else None
-            ),
+            "dense_gate": dense_gate,
         })
         if sample_index + 1 >= args.max_samples:
             break
