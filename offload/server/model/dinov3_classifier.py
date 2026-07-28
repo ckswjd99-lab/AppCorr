@@ -50,6 +50,97 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             return context['active_indices'].to(device=self.device, dtype=torch.long)
         return torch.arange(full_batch_size, device=self.device, dtype=torch.long)
 
+    @staticmethod
+    def _uses_l2l1l0_transmission(config: Any) -> bool:
+        return (
+            getattr(config, "transmission_policy_name", None)
+            == "L2L1L0ProgressiveLaplacian"
+        )
+
+    @classmethod
+    def _model_spatial_indices_for_patch(
+        cls,
+        patch,
+        config: Any,
+    ) -> tuple[int, ...]:
+        if not cls._uses_l2l1l0_transmission(config):
+            return (int(patch.spatial_idx),)
+
+        levels = list(config.transmission_kwargs.get("pyramid_levels", [2, 1, 0]))
+        target_level = min(levels)
+        patch_level = int(patch.res_level)
+        if patch_level < target_level:
+            raise ValueError(
+                f"Patch level {patch_level} is below target level {target_level}"
+            )
+
+        patch_h, patch_w = config.patch_size
+        image_h, image_w = config.image_shape[:2]
+        coarse_h = image_h // (2 ** patch_level)
+        coarse_w = image_w // (2 ** patch_level)
+        coarse_grid_h = coarse_h // patch_h
+        coarse_grid_w = coarse_w // patch_w
+        spatial_idx = int(patch.spatial_idx)
+        if spatial_idx < 0 or spatial_idx >= coarse_grid_h * coarse_grid_w:
+            raise IndexError(
+                f"Patch spatial_idx={spatial_idx} is outside level-{patch_level} "
+                f"grid {coarse_grid_h}x{coarse_grid_w}"
+            )
+
+        scale = 2 ** (patch_level - target_level)
+        target_w = image_w // (2 ** target_level)
+        target_grid_w = target_w // patch_w
+        coarse_row, coarse_col = divmod(spatial_idx, coarse_grid_w)
+        return tuple(
+            fine_row * target_grid_w + fine_col
+            for fine_row in range(
+                coarse_row * scale,
+                (coarse_row + 1) * scale,
+            )
+            for fine_col in range(
+                coarse_col * scale,
+                (coarse_col + 1) * scale,
+            )
+        )
+
+    def _expand_payload_token_records(
+        self,
+        task: Task,
+        context: Dict[str, Any],
+        config: Any,
+    ) -> tuple[list[int], list[int], list[int]]:
+        if (
+            "active_indices" in context
+            and len(context["active_indices"]) < config.batch_size
+        ):
+            active_list = context["active_indices"].tolist()
+            image_idx_map = {
+                original_idx: local_idx
+                for local_idx, original_idx in enumerate(active_list)
+            }
+        else:
+            image_idx_map = None
+
+        batch_indices = []
+        spatial_indices = []
+        group_ids = []
+        for patch in task.payload:
+            if image_idx_map is not None:
+                if patch.image_idx not in image_idx_map:
+                    continue
+                batch_idx = image_idx_map[patch.image_idx]
+            else:
+                batch_idx = int(patch.image_idx)
+
+            for spatial_idx in self._model_spatial_indices_for_patch(
+                patch,
+                config,
+            ):
+                batch_indices.append(batch_idx)
+                spatial_indices.append(spatial_idx)
+                group_ids.append(int(patch.group_id))
+        return batch_indices, spatial_indices, group_ids
+
     def _build_mobile_pscore_hint_map(
         self,
         task: Task,
@@ -59,6 +150,58 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         num_patches: int,
     ) -> torch.Tensor:
         hint_map = torch.zeros((batch_size, num_patches), device=self.device, dtype=torch.float32)
+        if self._uses_l2l1l0_transmission(config):
+            if (
+                "active_indices" in context
+                and len(context["active_indices"]) < config.batch_size
+            ):
+                active_list = context["active_indices"].tolist()
+                image_idx_map = {
+                    original_idx: local_idx
+                    for local_idx, original_idx in enumerate(active_list)
+                }
+            else:
+                image_idx_map = None
+
+            batch_indices = []
+            spatial_indices = []
+            hint_values = []
+            for patch in task.payload:
+                if image_idx_map is not None:
+                    if patch.image_idx not in image_idx_map:
+                        continue
+                    batch_idx = image_idx_map[patch.image_idx]
+                else:
+                    batch_idx = int(patch.image_idx)
+                patch_spatial_indices = self._model_spatial_indices_for_patch(
+                    patch,
+                    config,
+                )
+                batch_indices.extend([batch_idx] * len(patch_spatial_indices))
+                spatial_indices.extend(patch_spatial_indices)
+                hint_values.extend(
+                    [float(getattr(patch, "pscore_hint", 0.0))]
+                    * len(patch_spatial_indices)
+                )
+            if spatial_indices:
+                batch_tensor = torch.tensor(
+                    batch_indices,
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                spatial_tensor = torch.tensor(
+                    spatial_indices,
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                hint_tensor = torch.tensor(
+                    hint_values,
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+                hint_map[batch_tensor, spatial_tensor] = hint_tensor
+            return self._normalize_patch_score_map(hint_map)
+
         target_res_level = min(config.transmission_kwargs.get('pyramid_levels', [0]))
 
         if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
@@ -380,38 +523,16 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             
             group_map = context['group_map']
             
-            # Vectorized Update of Group Map - Map Original Index -> Local Index if sliced
-            if 'active_indices' in context and len(context['active_indices']) < config.batch_size:
-                # Build lookup: { original_idx : local_idx }
-                active_list = context['active_indices'].tolist()
-                idx_map = { orig: local for local, orig in enumerate(active_list) }
-                
-                # Filter payload
-                valid_payload = [p for p in task.payload if p.image_idx in idx_map]
-                
-                if valid_payload:
-                    b_list = [idx_map[p.image_idx] for p in valid_payload]
-                    s_list = [p.spatial_idx for p in valid_payload]
-                    g_list = [p.group_id for p in valid_payload]
-                    
-                    b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
-                    s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
-                    g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
-                    
-                    group_map[b_t, s_t] = g_t
-
-            else:
-                # Standard full-batch update (Identity mapping)
-                b_list = [p.image_idx for p in task.payload]
-                s_list = [p.spatial_idx for p in task.payload]
-                g_list = [p.group_id for p in task.payload]
-                
-                if b_list:
-                    b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
-                    s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
-                    g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
-                    
-                    group_map[b_t, s_t] = g_t
+            b_list, s_list, g_list = self._expand_payload_token_records(
+                task,
+                context,
+                config,
+            )
+            if b_list:
+                b_t = torch.tensor(b_list, device=self.device, dtype=torch.long)
+                s_t = torch.tensor(s_list, device=self.device, dtype=torch.long)
+                g_t = torch.tensor(g_list, device=self.device, dtype=torch.long)
+                group_map[b_t, s_t] = g_t
 
             num_patches = group_map.shape[1]
             context['mobile_pscore_hint_map'] = self._build_mobile_pscore_hint_map(
