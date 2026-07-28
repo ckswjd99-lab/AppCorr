@@ -63,6 +63,31 @@ def parse_args() -> argparse.Namespace:
             "only to patch tokens."
         ),
     )
+    parser.add_argument(
+        "--runtime-valid-support",
+        action="store_true",
+        help=(
+            "Select input residual tokens once, skip all correction work for "
+            "inactive tokens, use draft attention support, and predict FFN "
+            "blocks from a cached low-rank draft coordinate."
+        ),
+    )
+    parser.add_argument("--ffn-low-rank", type=int, default=32)
+    parser.add_argument("--ffn-low-rank-oversample", type=int, default=8)
+    parser.add_argument("--ffn-low-rank-power-iterations", type=int, default=1)
+    parser.add_argument(
+        "--include-token-only",
+        action="store_true",
+        help=(
+            "Also evaluate the same fixed token support with full attention "
+            "edge and FFN channel correction."
+        ),
+    )
+    parser.add_argument(
+        "--include-full-correction",
+        action="store_true",
+        help="Also evaluate 100% token, attention-edge, and FFN support.",
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -177,6 +202,12 @@ def make_state(
             "base_level": args.base_level,
             "image_size": args.image_size,
             "keep_special_tokens": args.keep_special_tokens,
+            "runtime_valid_support": args.runtime_valid_support,
+            "ffn_low_rank": args.ffn_low_rank,
+            "ffn_low_rank_oversample": args.ffn_low_rank_oversample,
+            "ffn_low_rank_power_iterations": args.ffn_low_rank_power_iterations,
+            "include_token_only": args.include_token_only,
+            "include_full_correction": args.include_full_correction,
             "batch_size": args.batch_size,
             "device": args.device,
             "policy_json": str(args.policy_json.resolve()),
@@ -213,6 +244,12 @@ def validate_resume(state: dict, expected: dict) -> None:
         "base_level",
         "image_size",
         "keep_special_tokens",
+        "runtime_valid_support",
+        "ffn_low_rank",
+        "ffn_low_rank_oversample",
+        "ffn_low_rank_power_iterations",
+        "include_token_only",
+        "include_full_correction",
         "policy_json",
         "targets",
     )
@@ -234,6 +271,34 @@ def finish_state(state: dict) -> dict:
         for key in SUM_KEYS:
             if key in method:
                 method[key.removesuffix("_sums")] = finish_tensor_sums(method[key])
+        workload_sums = method.get("workload_sums")
+        if workload_sums:
+            approx_flops = max(workload_sums.get("approx_flops", 0.0), 1.0)
+            method["workload"] = {
+                **workload_sums,
+                "correction_over_approx": (
+                    workload_sums.get("correction_flops", 0.0) / approx_flops
+                ),
+                "approx_support_over_approx": (
+                    workload_sums.get("approx_support_flops", 0.0)
+                    / approx_flops
+                ),
+                "active_token_fraction": (
+                    workload_sums.get("active_token_sum", 0.0)
+                    / max(workload_sums.get("active_token_total", 0.0), 1.0)
+                ),
+                "attention_edge_fraction": (
+                    workload_sums.get("attention_edge_sum", 0.0)
+                    / max(workload_sums.get("attention_edge_total", 0.0), 1.0)
+                ),
+                "ffn_channel_fraction": (
+                    workload_sums.get("ffn_channel_sum", 0.0)
+                    / max(workload_sums.get("ffn_channel_total", 0.0), 1.0)
+                ),
+                "cache_bytes_per_sample": (
+                    workload_sums.get("cache_bytes", 0.0) / samples
+                ),
+            }
     return result
 
 
@@ -260,6 +325,14 @@ def update_metrics(
         for key in SUM_KEYS:
             if key in output:
                 add_sums(stats[key], output[key])
+        workload = output.get("workload")
+        if workload is not None:
+            workload_sums = stats.setdefault("workload_sums", {})
+            for key, value in workload.items():
+                if key.endswith("_over_approx") or key.endswith("_fraction"):
+                    continue
+                if isinstance(value, (int, float)):
+                    workload_sums[key] = workload_sums.get(key, 0.0) + float(value)
 
 
 def make_l2_batch(images: torch.Tensor, level: int) -> torch.Tensor:
@@ -282,6 +355,46 @@ def main() -> None:
         raise ValueError("targets must contain pruning rates in [0, 1]")
 
     policies, policy_metadata = load_policies(args.policy_json, targets)
+    if args.include_token_only:
+        reference_schedule = next(iter(policies.values()))
+        token_only_schedule = []
+        for row in reference_schedule:
+            token_only_schedule.append({
+                **row,
+                "attention_edge_keep": 1.0,
+                "ffn_channel_keep": 1.0,
+            })
+        policies = {"token_only": token_only_schedule, **policies}
+        policy_metadata = {
+            "token_only": {
+                "description": (
+                    "Fixed input token support with full attention and FFN "
+                    "support."
+                ),
+                "input_token_keep": float(
+                    token_only_schedule[0]["input_token_keep"]
+                ),
+            },
+            **policy_metadata,
+        }
+    if args.include_full_correction:
+        reference_schedule = next(iter(policies.values()))
+        full_schedule = []
+        for row in reference_schedule:
+            full_schedule.append({
+                **row,
+                "input_token_keep": 1.0,
+                "attention_edge_keep": 1.0,
+                "ffn_channel_keep": 1.0,
+            })
+        policies = {"full_correction": full_schedule, **policies}
+        policy_metadata = {
+            "full_correction": {
+                "description": "100% strict-token exact correction parity gate.",
+                "input_token_keep": 1.0,
+            },
+            **policy_metadata,
+        }
     transform = transforms.Compose([
         transforms.Resize(args.image_size),
         transforms.CenterCrop(args.image_size),
@@ -343,12 +456,25 @@ def main() -> None:
     try:
         for batch_index, (images, labels) in enumerate(progress, start=1):
             l2_images = make_l2_batch(images, args.base_level)
-            outputs = oracle.exact_policy_classification_batch(
-                l2_images,
-                images,
-                policies,
-                always_keep_special_tokens=args.keep_special_tokens,
-            )
+            if args.runtime_valid_support:
+                outputs = oracle.runtime_policy_classification_batch(
+                    l2_images,
+                    images,
+                    policies,
+                    always_keep_special_tokens=args.keep_special_tokens,
+                    ffn_low_rank=args.ffn_low_rank,
+                    ffn_low_rank_oversample=args.ffn_low_rank_oversample,
+                    ffn_low_rank_power_iterations=(
+                        args.ffn_low_rank_power_iterations
+                    ),
+                )
+            else:
+                outputs = oracle.exact_policy_classification_batch(
+                    l2_images,
+                    images,
+                    policies,
+                    always_keep_special_tokens=args.keep_special_tokens,
+                )
             update_metrics(state, outputs, labels)
             state["processed_samples"] += labels.numel()
             if batch_index % args.save_every == 0:

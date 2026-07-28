@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-28",
+  "scope": "DINOv3 ViT-7B strict-token L2-to-L0 correction",
+  "dataset": {
+    "name": "ImageNet-1K validation",
+    "samples": 50,
+    "sampling": "indices 0,1000,...,49000",
+    "base_level": 2,
+    "image_size": 256
+  },
+  "runtime_support": {
+    "patch_token_keep": 0.5,
+    "active_tokens": 133,
+    "total_tokens": 261,
+    "special_tokens_always_active": 5,
+    "attention": "draft probability, query/head shared key blocks, exact full-key denominator",
+    "attention_product": "query/head-block Triton product-delta",
+    "ffn_predictor": "joint gate/up right subspace",
+    "ffn_low_rank": 16,
+    "ffn_exact": "selected gate/up/down channel blocks"
+  },
+  "parity": {
+    "samples": 3,
+    "full_support_l0_top1_match": 1.0,
+    "token_feature_relative_l2": 0.010120830031968352,
+    "pooled_feature_relative_l2": 0.0075203308678935,
+    "logit_relative_l2": 0.005976650414575081,
+    "logit_cosine": 0.9999822816773001
+  },
+  "results": {
+    "l0_full": {
+      "top1": 0.82
+    },
+    "l2_approx": {
+      "top1": 0.8,
+      "l0_top1_match": 0.92,
+      "logit_relative_l2": 0.39994805408402667,
+      "logit_cosine": 0.9185442959104103
+    },
+    "token_only": {
+      "top1": 0.82,
+      "l0_top1_match": 0.96,
+      "logit_relative_l2": 0.1790025529312708,
+      "logit_cosine": 0.983965838984652,
+      "correction_over_approx": 0.5095785440613027,
+      "approx_support_over_approx": 0.0,
+      "cache_mib_per_sample": 0.0,
+      "active_token_fraction": 0.5095785440613027,
+      "attention_edge_fraction": 1.0,
+      "ffn_channel_fraction": 1.0
+    },
+    "policy_25": {
+      "top1": 0.82,
+      "l0_top1_match": 0.94,
+      "logit_relative_l2": 0.22061238514962814,
+      "logit_cosine": 0.9754436283584246,
+      "correction_over_approx": 0.5081406376624418,
+      "approx_support_over_approx": 0.0015278377793368715,
+      "cache_mib_per_sample": 38.4453125,
+      "active_token_fraction": 0.5095785440613027,
+      "attention_edge_fraction": 0.5515245621237,
+      "ffn_channel_fraction": 1.0
+    },
+    "policy_50": {
+      "top1": 0.8,
+      "l0_top1_match": 0.92,
+      "logit_relative_l2": 0.3201212913864505,
+      "logit_cosine": 0.9475591338051582,
+      "correction_over_approx": 0.42062970218491114,
+      "approx_support_over_approx": 0.0011716272150354278,
+      "cache_mib_per_sample": 234.386474609375,
+      "active_token_fraction": 0.5095785440613027,
+      "attention_edge_fraction": 0.3170204440894096,
+      "ffn_channel_fraction": 0.7796474358974359
+    }
+  },
+  "notes": [
+    "Correction FLOPs include low-rank predictor work and exact selected block GEMMs.",
+    "Approx support FLOPs include low-rank z0 projection and cached selected base attention products.",
+    "LayerNorm, softmax, selection, packing, scatter, and memory traffic are excluded from FLOPs.",
+    "The reported 14.86 second evaluator time executes all five branches together and is not per-policy latency."
+  ]
+}

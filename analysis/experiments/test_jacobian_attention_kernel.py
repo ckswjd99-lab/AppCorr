@@ -14,6 +14,9 @@ import torch
 from appcorr.models.dinov3.layers.triton_kernels.jacobian_attention import (
     packed_attention_delta_triton,
 )
+from appcorr.models.dinov3.layers.triton_kernels.jacobian_attention_block import (
+    block_product_delta_triton,
+)
 from appcorr.models.dinov3.layers.triton_kernels.jacobian_probability import (
     selected_softmax_jvp_triton,
 )
@@ -223,6 +226,84 @@ class PackedAttentionDeltaKernelTest(unittest.TestCase):
         self.assertTrue(torch.all(probability.float().sum(dim=-1) < 1))
         torch.testing.assert_close(
             actual.float(), expected, rtol=1e-2, atol=1e-3
+        )
+
+    def test_query_head_block_product_descriptor(self) -> None:
+        generator = torch.Generator(device="cuda").manual_seed(41)
+        batch, heads, queries, keys, head_dim = 1, 4, 7, 19, 16
+        base_probability = torch.rand(
+            batch,
+            heads,
+            queries,
+            keys,
+            generator=generator,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        base_probability /= base_probability.sum(dim=-1, keepdim=True)
+        corrected_probability = torch.rand(
+            base_probability.shape,
+            generator=generator,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        corrected_probability /= corrected_probability.sum(
+            dim=-1,
+            keepdim=True,
+        )
+        base_value = torch.randn(
+            batch,
+            heads,
+            keys,
+            head_dim,
+            generator=generator,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        corrected_value = torch.randn(
+            base_value.shape,
+            generator=generator,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        block_index = torch.tensor(
+            [[[[0, 3], [1, 4]], [[2, 4], [0, 2]]]],
+            device="cuda",
+            dtype=torch.int32,
+        )
+        actual = block_product_delta_triton(
+            base_probability,
+            corrected_probability,
+            base_value,
+            corrected_value,
+            block_index,
+            head_group_size=2,
+            query_block_size=4,
+            key_block_size=4,
+        )
+        reference = torch.zeros_like(actual, dtype=torch.float32)
+        for head in range(heads):
+            for query in range(queries):
+                descriptor = block_index[0, head // 2, query // 4]
+                selected = torch.cat([
+                    torch.arange(
+                        int(block) * 4,
+                        min((int(block) + 1) * 4, keys),
+                        device="cuda",
+                    )
+                    for block in descriptor
+                ])
+                reference[0, head, query] = (
+                    corrected_probability[0, head, query, selected].float()
+                    @ corrected_value[0, head, selected].float()
+                    - base_probability[0, head, query, selected].float()
+                    @ base_value[0, head, selected].float()
+                )
+        torch.testing.assert_close(
+            actual.float(),
+            reference,
+            rtol=1e-2,
+            atol=1e-2,
         )
 
 
