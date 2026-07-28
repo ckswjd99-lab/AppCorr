@@ -1,0 +1,306 @@
+{
+  "base_level": 2,
+  "evaluation_source_commit": "8d9e4df40aafa15a746e52a5b6d70b35888949cb",
+  "execution": {
+    "aggregate_gpu_seconds": 5567.2135374457575,
+    "aggregate_images_per_parallel_second": 17.957567523038527,
+    "batch_size_per_gpu": 8,
+    "num_shards": 2,
+    "parallel_wall_clock_seconds": 2784.3414725214243,
+    "shard_runtime_seconds": [
+      2782.8720649243332,
+      2784.3414725214243
+    ]
+  },
+  "experiment": "ImageNet-1K L2-to-L0 exact-difference pruning policy",
+  "hardware": "NVIDIA B200",
+  "image_size": 256,
+  "implementation": "dense PyTorch structured-support oracle; accuracy validation, not optimized-kernel latency",
+  "keep_special_tokens": true,
+  "launch_base_commit": "8d9e4df40aafa15a746e52a5b6d70b35888949cb",
+  "methods": {
+    "l0_full": {
+      "l0_top1_match": 50000,
+      "l0_top1_match_rate": 1.0,
+      "samples": 50000,
+      "top1_accuracy": 0.88104,
+      "top1_correct": 44052,
+      "top1_delta_vs_l0": 0.0,
+      "top1_gain_vs_l2": 0.03608,
+      "top5_accuracy": 0.98438,
+      "top5_correct": 49219,
+      "top5_delta_vs_l0": 0.0
+    },
+    "l2_approx": {
+      "l0_top1_match": 45139,
+      "l0_top1_match_rate": 0.90278,
+      "logit": {
+        "actual_norm": 7176.504834095011,
+        "cosine": 0.9128256993650103,
+        "gap_recovery": 0.5835446430288906,
+        "reference_norm": 7215.523216956175,
+        "relative_l2_error": 0.4164553569711094
+      },
+      "pooled_feature": {
+        "actual_norm": 2466.89461355016,
+        "cosine": 0.8412622891566172,
+        "gap_recovery": 0.4488039834081856,
+        "reference_norm": 2600.3350973186452,
+        "relative_l2_error": 0.5511960165918144
+      },
+      "samples": 50000,
+      "token_feature": {
+        "actual_norm": 37062.535932739745,
+        "cosine": 0.8238224306509456,
+        "gap_recovery": 0.4118020497724063,
+        "reference_norm": 37785.82548059523,
+        "relative_l2_error": 0.5881979502275937
+      },
+      "top1_accuracy": 0.84496,
+      "top1_correct": 42248,
+      "top1_delta_vs_l0": -0.03608,
+      "top1_gain_vs_l2": 0.0,
+      "top5_accuracy": 0.97412,
+      "top5_correct": 48706,
+      "top5_delta_vs_l0": -0.010260000000000047
+    },
+    "prune_25": {
+      "l0_top1_match": 47864,
+      "l0_top1_match_rate": 0.95728,
+      "logit": {
+        "actual_norm": 7044.878090417029,
+        "cosine": 0.9727470430205323,
+        "gap_recovery": 0.7681030447319811,
+        "reference_norm": 7215.523216956175,
+        "relative_l2_error": 0.2318969552680189
+      },
+      "pooled_feature": {
+        "actual_norm": 2468.10271472583,
+        "cosine": 0.9439289302407059,
+        "gap_recovery": 0.6698100343981521,
+        "reference_norm": 2600.3350973186452,
+        "relative_l2_error": 0.3301899656018479
+      },
+      "samples": 50000,
+      "token_feature": {
+        "actual_norm": 37090.426646196385,
+        "cosine": 0.8863394847019488,
+        "gap_recovery": 0.527267326750162,
+        "reference_norm": 37785.82548059523,
+        "relative_l2_error": 0.47273267324983803
+      },
+      "top1_accuracy": 0.875,
+      "top1_correct": 43750,
+      "top1_delta_vs_l0": -0.006040000000000045,
+      "top1_gain_vs_l2": 0.030039999999999956,
+      "top5_accuracy": 0.98346,
+      "top5_correct": 49173,
+      "top5_delta_vs_l0": -0.0009200000000000319
+    },
+    "prune_50": {
+      "l0_top1_match": 46776,
+      "l0_top1_match_rate": 0.93552,
+      "logit": {
+        "actual_norm": 7066.902034293717,
+        "cosine": 0.9499335403135833,
+        "gap_recovery": 0.6861613247740501,
+        "reference_norm": 7215.523216956175,
+        "relative_l2_error": 0.3138386752259498
+      },
+      "pooled_feature": {
+        "actual_norm": 2449.605505448626,
+        "cosine": 0.896391227949975,
+        "gap_recovery": 0.554392460368544,
+        "reference_norm": 2600.3350973186452,
+        "relative_l2_error": 0.4456075396314561
+      },
+      "samples": 50000,
+      "token_feature": {
+        "actual_norm": 36868.26265951855,
+        "cosine": 0.8596511744892004,
+        "gap_recovery": 0.4761001283914762,
+        "reference_norm": 37785.82548059523,
+        "relative_l2_error": 0.5238998716085238
+      },
+      "top1_accuracy": 0.8655,
+      "top1_correct": 43275,
+      "top1_delta_vs_l0": -0.015539999999999998,
+      "top1_gain_vs_l2": 0.020540000000000003,
+      "top5_accuracy": 0.98074,
+      "top5_correct": 49037,
+      "top5_delta_vs_l0": -0.0036400000000000876
+    }
+  },
+  "notes": [
+    "L2 is produced by two pyrDown and two pyrUp operations at 256x256.",
+    "CLS/register tokens are always corrected; input-token keep ratios apply only to the 256 patch tokens.",
+    "Attention and FFN corrections use exact nonlinear output differences on block-structured support.",
+    "Reported pruning targets use the equal-component work model; they are not measured kernel-FLOP or latency reductions."
+  ],
+  "policy_metadata": {
+    "prune_25": {
+      "achieved_pruning_rate": 0.24999999999998934,
+      "budget_components": [
+        "attention_edge",
+        "ffn_channel"
+      ],
+      "component_summary": {
+        "attention_edge": {
+          "max_keep": 1.0,
+          "mean_keep": 0.5,
+          "mean_pruning": 0.5,
+          "min_keep": 0.2
+        },
+        "ffn_channel": {
+          "max_keep": 1.0,
+          "mean_keep": 1.0,
+          "mean_pruning": 0.0,
+          "min_keep": 1.0
+        },
+        "input_token": {
+          "max_keep": 0.5,
+          "mean_keep": 0.5,
+          "mean_pruning": 0.5,
+          "min_keep": 0.5
+        }
+      },
+      "fixed_component_keeps": {
+        "input_token": 0.5
+      },
+      "optimized_predicted_rms": 0.2014415549781838,
+      "overall_achieved_pruning_rate": 0.33333333333333337,
+      "predicted_rms_reduction_vs_uniform": 0.005014253422800596,
+      "stage_summary": {
+        "early_layers_0_12": {
+          "attention_edge": {
+            "mean_keep": 0.4769230769230769,
+            "mean_pruning": 0.5230769230769231
+          },
+          "ffn_channel": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "input_token": {
+            "mean_keep": 0.5,
+            "mean_pruning": 0.5
+          }
+        },
+        "late_layers_27_39": {
+          "attention_edge": {
+            "mean_keep": 0.4846153846153846,
+            "mean_pruning": 0.5153846153846153
+          },
+          "ffn_channel": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "input_token": {
+            "mean_keep": 0.5,
+            "mean_pruning": 0.5
+          }
+        },
+        "middle_layers_13_26": {
+          "attention_edge": {
+            "mean_keep": 0.5357142857142858,
+            "mean_pruning": 0.4642857142857142
+          },
+          "ffn_channel": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "input_token": {
+            "mean_keep": 0.5,
+            "mean_pruning": 0.5
+          }
+        }
+      },
+      "target_pruning_rate": 0.25,
+      "uniform_predicted_rms": 0.202456724300979
+    },
+    "prune_50": {
+      "achieved_pruning_rate": 0.4999999999999929,
+      "budget_components": [
+        "attention_edge",
+        "ffn_channel"
+      ],
+      "component_summary": {
+        "attention_edge": {
+          "max_keep": 0.9,
+          "mean_keep": 0.24500000000000002,
+          "mean_pruning": 0.755,
+          "min_keep": 0.0
+        },
+        "ffn_channel": {
+          "max_keep": 1.0,
+          "mean_keep": 0.7550000000000001,
+          "mean_pruning": 0.24499999999999988,
+          "min_keep": 0.0
+        },
+        "input_token": {
+          "max_keep": 0.5,
+          "mean_keep": 0.5,
+          "mean_pruning": 0.5,
+          "min_keep": 0.5
+        }
+      },
+      "fixed_component_keeps": {
+        "input_token": 0.5
+      },
+      "optimized_predicted_rms": 0.20284281421619524,
+      "overall_achieved_pruning_rate": 0.5,
+      "predicted_rms_reduction_vs_uniform": 0.007435813657602819,
+      "stage_summary": {
+        "early_layers_0_12": {
+          "attention_edge": {
+            "mean_keep": 0.17692307692307693,
+            "mean_pruning": 0.823076923076923
+          },
+          "ffn_channel": {
+            "mean_keep": 0.9230769230769231,
+            "mean_pruning": 0.07692307692307687
+          },
+          "input_token": {
+            "mean_keep": 0.5,
+            "mean_pruning": 0.5
+          }
+        },
+        "late_layers_27_39": {
+          "attention_edge": {
+            "mean_keep": 0.2769230769230769,
+            "mean_pruning": 0.7230769230769232
+          },
+          "ffn_channel": {
+            "mean_keep": 0.7307692307692307,
+            "mean_pruning": 0.2692307692307693
+          },
+          "input_token": {
+            "mean_keep": 0.5,
+            "mean_pruning": 0.5
+          }
+        },
+        "middle_layers_13_26": {
+          "attention_edge": {
+            "mean_keep": 0.2785714285714286,
+            "mean_pruning": 0.7214285714285714
+          },
+          "ffn_channel": {
+            "mean_keep": 0.6214285714285716,
+            "mean_pruning": 0.37857142857142845
+          },
+          "input_token": {
+            "mean_keep": 0.5,
+            "mean_pruning": 0.5
+          }
+        }
+      },
+      "target_pruning_rate": 0.5,
+      "uniform_predicted_rms": 0.20436241505314814
+    }
+  },
+  "pruning_targets": [
+    0.25,
+    0.5
+  ],
+  "samples": 50000,
+  "schema_version": 1
+}
