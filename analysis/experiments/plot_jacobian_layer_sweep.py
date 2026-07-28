@@ -73,10 +73,9 @@ def main() -> None:
                             full_endpoint_max = max(
                                 full_endpoint_max, relative_l2
                             )
-                        if ratio in DISPLAY_RATIOS:
-                            key = (layer, component, ratio)
-                            values[key].append(relative_l2)
-                            sample_record[key] = relative_l2
+                        key = (layer, component, ratio)
+                        values[key].append(relative_l2)
+                        sample_record[key] = relative_l2
             sample_records.append(sample_record)
 
     layers = sorted({key[0] for key in values})
@@ -143,6 +142,7 @@ def main() -> None:
     print(f"[saved] {args.output}")
 
     if args.summary_output is not None:
+        fit_ratios = sorted({key[2] for key in values})
         stage_ranges = {
             "early_layers_0_12": (0, 12),
             "middle_layers_13_26": (13, 26),
@@ -155,7 +155,7 @@ def main() -> None:
             component_layers = {}
             component_stages = {}
             component_contrasts = {}
-            for ratio in DISPLAY_RATIOS:
+            for ratio in fit_ratios:
                 ratio_key = f"{ratio:g}"
                 rows = []
                 for layer in layers:
@@ -229,6 +229,7 @@ def main() -> None:
             "sample_count": sample_count,
             "unique_label_count": len(labels),
             "display_ratios": list(DISPLAY_RATIOS),
+            "fit_ratios": fit_ratios,
             "uncertainty_definition": "sample standard deviation; CI uses 1.96*SEM",
             "full_support_endpoint": {
                 "count": full_endpoint_count,

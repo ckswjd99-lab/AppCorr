@@ -108,6 +108,15 @@ MPLBACKEND=Agg python \
   --summary-output /tmp/exact_layer_component_sweep_stats.json
 ```
 
+Fit trial pruning policies from the 200-class statistics:
+
+```bash
+python analysis/experiments/fit_jacobian_pruning_policy.py \
+  --target-pruning 0.25,0.5,0.75 \
+  --risk-sigma 0.25 --cost-mode equal \
+  --output /tmp/jacobian_pruning_policy.json
+```
+
 B200 workload-shape benchmark:
 
 ```bash
@@ -299,3 +308,40 @@ The checked-in visualization shows mean ± one standard deviation. Its compact
 machine-readable statistics, including every layer's 95% mean CI and paired
 stage contrasts, are in
 `analysis/experiments/results/jacobian_layer_support_sweep_stats.json`.
+
+## Trial pruning-policy allocator
+
+`fit_jacobian_pruning_policy.py` fits a deliberately simple policy model:
+
+1. For every layer/component, use the 200-class `mean + 0.25*STD` sensitivity.
+2. Apply decreasing isotonic regression so error cannot improve merely by
+   pruning more.
+3. Keep the measured 10% support grid; do not invent finer accuracy points.
+4. Starting from 100% keep, repeatedly remove the next 10% block whose
+   increase in squared isolated error per unit saved work is smallest.
+
+With equal cost assigned to each of the 120 layer/components, the prototype
+produces:
+
+| Overall target pruning | Token pruning | Attention pruning | FFN pruning | Predicted RMS | Uniform RMS |
+|---:|---:|---:|---:|---:|---:|
+| 25% | 0.0% | 66.8% | 8.2% | 0.0195 | 0.1345 |
+| 50% | 0.0% | 86.5% | 63.5% | 0.0460 | 0.2044 |
+| 75% | 25.0% | 100.0% | 100.0% | 0.1496 | 0.2732 |
+
+At the 50% target, FFN pruning is layer-aware: 46.9% early, 79.3% middle,
+and 63.1% late. Attention pruning is 92.3% early, 82.9% middle, and 84.6%
+late; token state remains unpruned. This follows the measured ordering rather
+than assigning one ratio globally.
+
+These RMS values are surrogate scores, not measured mixed-policy feature
+errors. The model assumes isolated errors add in squared error and has not
+learned cross-layer/component interactions. Also, equal work is not an actual
+latency model. `--cost-mode vit7b_flops` or explicit `--component-costs` can
+change the allocation substantially; for example, the FLOPs proxy spends a
+50% budget mostly on FFN because attention products are a small fraction of
+ViT-7B FLOPs. A production allocator must replace these proxy costs with
+selector-plus-kernel B200 latency and validate generated mixed schedules.
+
+The complete 40-layer policies are in
+`analysis/experiments/results/jacobian_pruning_policy_equal_work.json`.
