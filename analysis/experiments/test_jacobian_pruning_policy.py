@@ -56,6 +56,35 @@ class JacobianPruningPolicyTest(unittest.TestCase):
             policy["uniform_predicted_rms"],
         )
 
+    def test_allocator_supports_fixed_token_keep_and_attn_ffn_budget(self) -> None:
+        grid = np.asarray([0.0, 0.5, 1.0])
+        curves = {
+            (layer, component): np.asarray([1.0, 0.5, 0.0])
+            for layer in range(40)
+            for component in COMPONENTS
+        }
+        policy = allocate(
+            target_pruning=0.25,
+            grid=grid,
+            curves=curves,
+            component_costs={component: 1.0 for component in COMPONENTS},
+            fixed_component_keeps={"input_token": 0.5},
+            budget_components={"attention_edge", "ffn_channel"},
+        )
+        self.assertAlmostEqual(
+            policy["component_summary"]["input_token"]["mean_keep"],
+            0.5,
+        )
+        self.assertAlmostEqual(policy["achieved_pruning_rate"], 0.25)
+        self.assertAlmostEqual(
+            policy["overall_achieved_pruning_rate"],
+            1 / 3,
+        )
+        self.assertEqual(
+            policy["budget_components"],
+            ["attention_edge", "ffn_channel"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
