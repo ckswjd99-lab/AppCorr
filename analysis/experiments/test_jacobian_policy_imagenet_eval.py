@@ -9,6 +9,9 @@ from analysis.experiments.jacobian_policy_imagenet_eval import (
     load_policies,
     update_metrics,
 )
+from analysis.experiments.jacobian_support_oracle import (
+    select_residual_token_support,
+)
 
 
 def test_checked_in_policy_targets_are_complete() -> None:
@@ -57,3 +60,43 @@ def test_metric_accumulation_and_finalization() -> None:
         ]
         == 0.5
     )
+
+
+def test_residual_token_support_always_keeps_special_prefix() -> None:
+    delta = torch.arange(10, dtype=torch.float32).reshape(1, 10, 1)
+    mask = select_residual_token_support(
+        delta,
+        keep_ratio=0.5,
+        always_keep_prefix=2,
+    )
+    assert mask.tolist() == [[
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+        True,
+    ]]
+    assert int(mask.sum()) == 2 + 4
+
+    prefix_only = select_residual_token_support(
+        delta,
+        keep_ratio=0,
+        always_keep_prefix=2,
+    )
+    assert prefix_only.tolist() == [[
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]]

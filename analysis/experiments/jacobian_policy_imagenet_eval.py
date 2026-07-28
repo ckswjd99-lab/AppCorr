@@ -55,6 +55,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--targets", default="0.25,0.5,0.75")
     parser.add_argument("--base-level", type=int, default=2)
     parser.add_argument("--image-size", type=int, default=256)
+    parser.add_argument(
+        "--keep-special-tokens",
+        action="store_true",
+        help=(
+            "Always correct the CLS/register prefix; pruning ratios then apply "
+            "only to patch tokens."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -168,6 +176,7 @@ def make_state(
             "shard_samples": shard_samples,
             "base_level": args.base_level,
             "image_size": args.image_size,
+            "keep_special_tokens": args.keep_special_tokens,
             "batch_size": args.batch_size,
             "device": args.device,
             "policy_json": str(args.policy_json.resolve()),
@@ -203,6 +212,7 @@ def validate_resume(state: dict, expected: dict) -> None:
         "shard_samples",
         "base_level",
         "image_size",
+        "keep_special_tokens",
         "policy_json",
         "targets",
     )
@@ -337,6 +347,7 @@ def main() -> None:
                 l2_images,
                 images,
                 policies,
+                always_keep_special_tokens=args.keep_special_tokens,
             )
             update_metrics(state, outputs, labels)
             state["processed_samples"] += labels.numel()
