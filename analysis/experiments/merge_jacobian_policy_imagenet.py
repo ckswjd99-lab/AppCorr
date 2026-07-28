@@ -61,6 +61,7 @@ def validate_shards(shards: list[dict]) -> None:
         "num_shards",
         "base_level",
         "image_size",
+        "keep_special_tokens",
         "policy_json",
         "targets",
         "policy_metadata",
@@ -160,6 +161,7 @@ def main() -> None:
         "samples": total_samples,
         "base_level": first["base_level"],
         "image_size": first["image_size"],
+        "keep_special_tokens": first["keep_special_tokens"],
         "pruning_targets": first["targets"],
         "policy_metadata": first["policy_metadata"],
         "evaluation_source_commit": git_output("rev-parse", "HEAD"),
@@ -178,6 +180,12 @@ def main() -> None:
         "methods": methods,
         "notes": [
             "L2 is produced by two pyrDown and two pyrUp operations at 256x256.",
+            (
+                "CLS/register tokens are always corrected; input-token keep "
+                "ratios apply only to the 256 patch tokens."
+                if first["keep_special_tokens"]
+                else "Input-token keep ratios apply to all backbone tokens."
+            ),
             (
                 "Attention and FFN corrections use exact nonlinear output "
                 "differences on block-structured support."

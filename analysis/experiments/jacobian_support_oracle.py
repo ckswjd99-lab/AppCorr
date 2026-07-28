@@ -297,6 +297,53 @@ def add_sums(target: dict[str, float], values: dict[str, float]) -> None:
         target[key] = target.get(key, 0.0) + value
 
 
+def select_residual_token_support(
+    state_delta: torch.Tensor,
+    *,
+    keep_ratio: float,
+    always_keep_prefix: int = 0,
+) -> torch.Tensor:
+    """Select high-energy residual tokens while preserving a prefix.
+
+    ``keep_ratio`` applies only to tokens after ``always_keep_prefix``.  This
+    lets DINOv3 always correct CLS/register tokens while pruning patch-token
+    correction by its requested ratio.
+    """
+
+    if state_delta.ndim != 3:
+        raise ValueError("state_delta must have shape [batch, tokens, hidden]")
+    if not 0 <= keep_ratio <= 1:
+        raise ValueError("keep_ratio must be in [0, 1]")
+    token_count = state_delta.shape[1]
+    if not 0 <= always_keep_prefix <= token_count:
+        raise ValueError("always_keep_prefix must be in [0, token_count]")
+
+    mask = torch.zeros(
+        state_delta.shape[:2],
+        dtype=torch.bool,
+        device=state_delta.device,
+    )
+    mask[:, :always_keep_prefix] = True
+    selectable_count = token_count - always_keep_prefix
+    if selectable_count == 0 or keep_ratio <= 0:
+        return mask
+    if keep_ratio >= 1:
+        mask[:, always_keep_prefix:] = True
+        return mask
+
+    score = (
+        state_delta[:, always_keep_prefix:]
+        .float()
+        .square()
+        .sum(dim=-1)
+    )
+    keep = max(1, math.ceil(selectable_count * keep_ratio))
+    selected = torch.topk(score, k=keep, dim=-1).indices
+    suffix_mask = mask[:, always_keep_prefix:]
+    suffix_mask.scatter_(-1, selected, True)
+    return mask
+
+
 class Dinov3JacobianOracle(Dinov3SignalProbe):
     def __init__(
         self,
@@ -1299,6 +1346,8 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
         base_bchw_uint8: torch.Tensor,
         full_bchw_uint8: torch.Tensor,
         policies: dict[str, list[dict[str, float]]],
+        *,
+        always_keep_special_tokens: bool = False,
     ) -> dict[str, dict[str, object]]:
         """Apply mixed layer/component policies in one exact-difference pass.
 
@@ -1388,23 +1437,32 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                     ffn_ratio = float(row["ffn_channel_keep"])
 
                     if token_ratio <= 0:
-                        supported_state = x_base
+                        if always_keep_special_tokens:
+                            state_delta = state - x_base
+                            token_mask = select_residual_token_support(
+                                state_delta,
+                                keep_ratio=0,
+                                always_keep_prefix=self.patch_start,
+                            )
+                            supported_state = (
+                                x_base
+                                + state_delta * token_mask.unsqueeze(-1)
+                            )
+                        else:
+                            supported_state = x_base
                     elif token_ratio >= 1:
                         supported_state = state
                     else:
                         state_delta = state - x_base
-                        token_score = state_delta.float().square().sum(dim=-1)
-                        keep = max(
-                            1,
-                            math.ceil(state.shape[1] * token_ratio),
+                        token_mask = select_residual_token_support(
+                            state_delta,
+                            keep_ratio=token_ratio,
+                            always_keep_prefix=(
+                                self.patch_start
+                                if always_keep_special_tokens
+                                else 0
+                            ),
                         )
-                        token_indices = torch.topk(
-                            token_score, k=keep, dim=-1
-                        ).indices
-                        token_mask = torch.zeros_like(
-                            token_score, dtype=torch.bool
-                        )
-                        token_mask.scatter_(-1, token_indices, True)
                         supported_state = (
                             x_base
                             + state_delta * token_mask.unsqueeze(-1)
