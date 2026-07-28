@@ -234,6 +234,43 @@
     },
     "observation": "The 200-class statistics retain the pilot result: attention is the most prunable component, token-state pruning becomes safer in later layers, and FFN sensitivity is U-shaped with sensitive early layers 2-4 and final layer 39."
   },
+  "trial_pruning_policy_allocator": {
+    "model": "mean plus 0.25 standard deviations, decreasing isotonic curves, 10 percent grid, marginal greedy allocation",
+    "budget_definition": "equal cost for each of 40 layers times 3 components",
+    "policies": [
+      {
+        "target_pruning": 0.25,
+        "component_pruning": {
+          "input_token": 0.0,
+          "attention_edge": 0.6675,
+          "ffn_channel": 0.0825
+        },
+        "optimized_predicted_rms": 0.019517,
+        "uniform_predicted_rms": 0.134497
+      },
+      {
+        "target_pruning": 0.5,
+        "component_pruning": {
+          "input_token": 0.0,
+          "attention_edge": 0.865,
+          "ffn_channel": 0.635
+        },
+        "optimized_predicted_rms": 0.045989,
+        "uniform_predicted_rms": 0.204362
+      },
+      {
+        "target_pruning": 0.75,
+        "component_pruning": {
+          "input_token": 0.25,
+          "attention_edge": 1.0,
+          "ffn_channel": 1.0
+        },
+        "optimized_predicted_rms": 0.149643,
+        "uniform_predicted_rms": 0.273164
+      }
+    ],
+    "caveat": "Surrogate scores assume isolated layer/component errors add in squared error; mixed-policy accuracy and measured latency are not yet validated."
+  },
   "decision": {
     "strict_jvp_runtime_integration": "stopped",
     "reason": "Dense final-logit gate exceeded the 1 percentage point accuracy budget.",

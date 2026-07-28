@@ -1,0 +1,1320 @@
+{
+  "schema_version": 1,
+  "model": {
+    "type": "monotone_isotonic_curves_plus_marginal_greedy_allocator",
+    "source_stats": "analysis/experiments/results/jacobian_layer_support_sweep_stats.json",
+    "sample_count": 200,
+    "risk_sigma": 0.25,
+    "grid_step": 0.1,
+    "support_grid_semantics": "requested structured support ratio; realized block keep can differ",
+    "cost_mode": "equal",
+    "normalized_component_costs": {
+      "input_token": 1.0,
+      "attention_edge": 1.0,
+      "ffn_channel": 1.0
+    },
+    "objective": "root mean square of isolated final-feature L2",
+    "caveat": "Isolated layer/component errors are treated as additive in squared error; mixed-policy interaction is not calibrated."
+  },
+  "policies": [
+    {
+      "target_pruning_rate": 0.25,
+      "achieved_pruning_rate": 0.2499999999999858,
+      "optimized_predicted_rms": 0.01951653067633506,
+      "uniform_predicted_rms": 0.13449724649034367,
+      "predicted_rms_reduction_vs_uniform": 0.8548927120397497,
+      "component_summary": {
+        "input_token": {
+          "mean_keep": 1.0,
+          "mean_pruning": 0.0,
+          "min_keep": 1.0,
+          "max_keep": 1.0
+        },
+        "attention_edge": {
+          "mean_keep": 0.3325,
+          "mean_pruning": 0.6675,
+          "min_keep": 0.0,
+          "max_keep": 1.0
+        },
+        "ffn_channel": {
+          "mean_keep": 0.9175000000000001,
+          "mean_pruning": 0.0824999999999999,
+          "min_keep": 0.0,
+          "max_keep": 1.0
+        }
+      },
+      "stage_summary": {
+        "early_layers_0_12": {
+          "input_token": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "attention_edge": {
+            "mean_keep": 0.25384615384615383,
+            "mean_pruning": 0.7461538461538462
+          },
+          "ffn_channel": {
+            "mean_keep": 0.9230769230769231,
+            "mean_pruning": 0.07692307692307687
+          }
+        },
+        "middle_layers_13_26": {
+          "input_token": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "attention_edge": {
+            "mean_keep": 0.3714285714285714,
+            "mean_pruning": 0.6285714285714286
+          },
+          "ffn_channel": {
+            "mean_keep": 0.9071428571428574,
+            "mean_pruning": 0.09285714285714264
+          }
+        },
+        "late_layers_27_39": {
+          "input_token": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "attention_edge": {
+            "mean_keep": 0.3692307692307693,
+            "mean_pruning": 0.6307692307692307
+          },
+          "ffn_channel": {
+            "mean_keep": 0.9230769230769232,
+            "mean_pruning": 0.07692307692307676
+          }
+        }
+      },
+      "schedule": [
+        {
+          "layer": 0,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 1.0,
+          "attention_edge_pruning": 0.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 1,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 2,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 3,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 4,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 5,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 6,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 7,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 8,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 9,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 10,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 11,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 12,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 13,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 14,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 15,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 16,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 17,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 18,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 19,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 20,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 21,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 22,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 23,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 24,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.7000000000000001,
+          "ffn_channel_pruning": 0.29999999999999993
+        },
+        {
+          "layer": 25,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 26,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 27,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 28,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 29,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.9,
+          "ffn_channel_pruning": 0.09999999999999998
+        },
+        {
+          "layer": 30,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.9,
+          "ffn_channel_pruning": 0.09999999999999998
+        },
+        {
+          "layer": 31,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.9,
+          "ffn_channel_pruning": 0.09999999999999998
+        },
+        {
+          "layer": 32,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 33,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 34,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 35,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 36,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 0.9,
+          "ffn_channel_pruning": 0.09999999999999998
+        },
+        {
+          "layer": 37,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.9,
+          "ffn_channel_pruning": 0.09999999999999998
+        },
+        {
+          "layer": 38,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.5,
+          "attention_edge_pruning": 0.5,
+          "ffn_channel_keep": 0.9,
+          "ffn_channel_pruning": 0.09999999999999998
+        },
+        {
+          "layer": 39,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.6000000000000001,
+          "attention_edge_pruning": 0.3999999999999999,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        }
+      ]
+    },
+    {
+      "target_pruning_rate": 0.5,
+      "achieved_pruning_rate": 0.4999999999999739,
+      "optimized_predicted_rms": 0.0459888090907576,
+      "uniform_predicted_rms": 0.20436241505314814,
+      "predicted_rms_reduction_vs_uniform": 0.7749644469664474,
+      "component_summary": {
+        "input_token": {
+          "mean_keep": 1.0,
+          "mean_pruning": 0.0,
+          "min_keep": 1.0,
+          "max_keep": 1.0
+        },
+        "attention_edge": {
+          "mean_keep": 0.135,
+          "mean_pruning": 0.865,
+          "min_keep": 0.0,
+          "max_keep": 0.30000000000000004
+        },
+        "ffn_channel": {
+          "mean_keep": 0.36500000000000005,
+          "mean_pruning": 0.635,
+          "min_keep": 0.0,
+          "max_keep": 1.0
+        }
+      },
+      "stage_summary": {
+        "early_layers_0_12": {
+          "input_token": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "attention_edge": {
+            "mean_keep": 0.07692307692307693,
+            "mean_pruning": 0.9230769230769231
+          },
+          "ffn_channel": {
+            "mean_keep": 0.5307692307692308,
+            "mean_pruning": 0.46923076923076923
+          }
+        },
+        "middle_layers_13_26": {
+          "input_token": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "attention_edge": {
+            "mean_keep": 0.17142857142857146,
+            "mean_pruning": 0.8285714285714285
+          },
+          "ffn_channel": {
+            "mean_keep": 0.20714285714285716,
+            "mean_pruning": 0.7928571428571428
+          }
+        },
+        "late_layers_27_39": {
+          "input_token": {
+            "mean_keep": 1.0,
+            "mean_pruning": 0.0
+          },
+          "attention_edge": {
+            "mean_keep": 0.15384615384615385,
+            "mean_pruning": 0.8461538461538461
+          },
+          "ffn_channel": {
+            "mean_keep": 0.3692307692307692,
+            "mean_pruning": 0.6307692307692307
+          }
+        }
+      },
+      "schedule": [
+        {
+          "layer": 0,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 1,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 2,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 3,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 1.0,
+          "ffn_channel_pruning": 0.0
+        },
+        {
+          "layer": 4,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.8,
+          "ffn_channel_pruning": 0.19999999999999996
+        },
+        {
+          "layer": 5,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 6,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.6000000000000001,
+          "ffn_channel_pruning": 0.3999999999999999
+        },
+        {
+          "layer": 7,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 8,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 9,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 10,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 11,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.6000000000000001,
+          "ffn_channel_pruning": 0.3999999999999999
+        },
+        {
+          "layer": 12,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 13,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 14,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 15,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 16,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.2,
+          "ffn_channel_pruning": 0.8
+        },
+        {
+          "layer": 17,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 18,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.2,
+          "ffn_channel_pruning": 0.8
+        },
+        {
+          "layer": 19,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 20,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.2,
+          "ffn_channel_pruning": 0.8
+        },
+        {
+          "layer": 21,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.1,
+          "ffn_channel_pruning": 0.9
+        },
+        {
+          "layer": 22,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.1,
+          "ffn_channel_pruning": 0.9
+        },
+        {
+          "layer": 23,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.1,
+          "ffn_channel_pruning": 0.9
+        },
+        {
+          "layer": 24,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.1,
+          "ffn_channel_pruning": 0.9
+        },
+        {
+          "layer": 25,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.1,
+          "ffn_channel_pruning": 0.9
+        },
+        {
+          "layer": 26,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.1,
+          "ffn_channel_pruning": 0.9
+        },
+        {
+          "layer": 27,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.2,
+          "ffn_channel_pruning": 0.8
+        },
+        {
+          "layer": 28,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.1,
+          "ffn_channel_pruning": 0.9
+        },
+        {
+          "layer": 29,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 30,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 31,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.1,
+          "attention_edge_pruning": 0.9,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 32,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.30000000000000004,
+          "ffn_channel_pruning": 0.7
+        },
+        {
+          "layer": 33,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 34,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 35,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 36,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 37,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 38,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.2,
+          "attention_edge_pruning": 0.8,
+          "ffn_channel_keep": 0.4,
+          "ffn_channel_pruning": 0.6
+        },
+        {
+          "layer": 39,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.30000000000000004,
+          "attention_edge_pruning": 0.7,
+          "ffn_channel_keep": 0.9,
+          "ffn_channel_pruning": 0.09999999999999998
+        }
+      ]
+    },
+    {
+      "target_pruning_rate": 0.75,
+      "achieved_pruning_rate": 0.7499999999999776,
+      "optimized_predicted_rms": 0.1496432660779435,
+      "uniform_predicted_rms": 0.2731638800960209,
+      "predicted_rms_reduction_vs_uniform": 0.4521850179264483,
+      "component_summary": {
+        "input_token": {
+          "mean_keep": 0.75,
+          "mean_pruning": 0.25,
+          "min_keep": 0.6000000000000001,
+          "max_keep": 1.0
+        },
+        "attention_edge": {
+          "mean_keep": 0.0,
+          "mean_pruning": 1.0,
+          "min_keep": 0.0,
+          "max_keep": 0.0
+        },
+        "ffn_channel": {
+          "mean_keep": 0.0,
+          "mean_pruning": 1.0,
+          "min_keep": 0.0,
+          "max_keep": 0.0
+        }
+      },
+      "stage_summary": {
+        "early_layers_0_12": {
+          "input_token": {
+            "mean_keep": 0.8461538461538459,
+            "mean_pruning": 0.15384615384615408
+          },
+          "attention_edge": {
+            "mean_keep": 0.0,
+            "mean_pruning": 1.0
+          },
+          "ffn_channel": {
+            "mean_keep": 0.0,
+            "mean_pruning": 1.0
+          }
+        },
+        "middle_layers_13_26": {
+          "input_token": {
+            "mean_keep": 0.7714285714285712,
+            "mean_pruning": 0.22857142857142876
+          },
+          "attention_edge": {
+            "mean_keep": 0.0,
+            "mean_pruning": 1.0
+          },
+          "ffn_channel": {
+            "mean_keep": 0.0,
+            "mean_pruning": 1.0
+          }
+        },
+        "late_layers_27_39": {
+          "input_token": {
+            "mean_keep": 0.6307692307692309,
+            "mean_pruning": 0.36923076923076914
+          },
+          "attention_edge": {
+            "mean_keep": 0.0,
+            "mean_pruning": 1.0
+          },
+          "ffn_channel": {
+            "mean_keep": 0.0,
+            "mean_pruning": 1.0
+          }
+        }
+      },
+      "schedule": [
+        {
+          "layer": 0,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 1,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 2,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 3,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 4,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 5,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 6,
+          "input_token_keep": 0.8,
+          "input_token_pruning": 0.19999999999999996,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 7,
+          "input_token_keep": 0.8,
+          "input_token_pruning": 0.19999999999999996,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 8,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 9,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 10,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 11,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 12,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 13,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 14,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 15,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 16,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 17,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 18,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 19,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 20,
+          "input_token_keep": 1.0,
+          "input_token_pruning": 0.0,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 21,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 22,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 23,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 24,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 25,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 26,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 27,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 28,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 29,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 30,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 31,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 32,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 33,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 34,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 35,
+          "input_token_keep": 0.6000000000000001,
+          "input_token_pruning": 0.3999999999999999,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 36,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 37,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 38,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        },
+        {
+          "layer": 39,
+          "input_token_keep": 0.7000000000000001,
+          "input_token_pruning": 0.29999999999999993,
+          "attention_edge_keep": 0.0,
+          "attention_edge_pruning": 1.0,
+          "ffn_channel_keep": 0.0,
+          "ffn_channel_pruning": 1.0
+        }
+      ]
+    }
+  ]
+}
