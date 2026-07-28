@@ -1,0 +1,30 @@
+{
+    "exp_id": "imnet_l2l1l0_g4",
+    "model_name": "dinov3_classifier",
+    "dataset_name": "imagenet-1k",
+    "batch_size": 32,
+    "image_shape": [256, 256, 3],
+    "patch_size": [16, 16],
+    "scheduler_policy_name": "GroupTrigger",
+    "scheduler_kwargs": {
+        "final_full_layers": 0
+    },
+    "transmission_policy_name": "L2L1L0ProgressiveLaplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [2, 1, 0],
+        "grouping_strategy": "grid",
+        "l0_num_groups": 4,
+        "total_layers": 40,
+        "compression_level": 1
+    },
+    "appcorr_kwargs": {
+        "generated_from_client": true,
+        "method": "partial_token",
+        "token_keep_ratio": 0.4,
+        "mobile_pscore": "residual_energy",
+        "mobile_pscore_weight": 1.0,
+        "server_pscore": "cls_attn_prob_layermean",
+        "server_pscore_weight": 1.0,
+        "pscore_fusion": "multiply"
+    }
+}

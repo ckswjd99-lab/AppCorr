@@ -100,6 +100,7 @@ class SourceModule(multiprocessing.Process):
         laplacian_policies = {
             "Laplacian",
             "ProgressiveLaplacian",
+            "L2L1L0ProgressiveLaplacian",
             "COCOWindowProgressiveLaplacian",
             "ADE20KWindowProgressiveLaplacian",
             "NYUAppCorrLaplacian",
