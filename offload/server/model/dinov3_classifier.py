@@ -544,6 +544,12 @@ class DINOv3ClassifierExecutor(ModelExecutor):
 
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get('layers', range(0, 40))
+        cache_mode = str(params.get('cache_mode', 'correction'))
+        if cache_mode not in {'correction', 'none'}:
+            raise ValueError(
+                f"Unknown approx cache_mode '{cache_mode}'. "
+                "Available values: correction, none"
+            )
         # Ensure context has required items
         if 'current_feature' not in context:
              if 'input_tokens' in context:
@@ -562,6 +568,16 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         
         if start_l == 0:
             x_feature = context['input_tokens']
+
+        if cache_mode == 'none':
+            for lidx in range(start_l, end_l):
+                blk = self.model.backbone.blocks[lidx]
+                x_feature = blk(x_feature, rope_sincos)
+            context['current_feature'] = x_feature
+            return {
+                'cache_mode': cache_mode,
+                'layer_count': end_l - start_l,
+            }
 
         group_plans = self._get_group_plans(context)
         attn_cache_candidates = {
@@ -584,6 +600,10 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         
         context['current_feature'] = x_feature
         context['cache_feature'] = cache
+        return {
+            'cache_mode': cache_mode,
+            'layer_count': end_l - start_l,
+        }
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get('layers', range(0, 40))

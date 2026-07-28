@@ -626,7 +626,7 @@ class WorkerModule(multiprocessing.Process):
             self.executor.full_inference(task, context, self.config)
 
         elif op == OpType.APPROX_FORWARD:
-            self.executor.approx_forward(instr.params, context, self.config)
+            return self.executor.approx_forward(instr.params, context, self.config)
 
         elif op == OpType.CORRECT_FORWARD:
             self.executor.correct_forward(instr.params, context, self.config)
