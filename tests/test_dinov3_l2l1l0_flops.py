@@ -9,6 +9,7 @@ from analysis.experiments.dinov3_l2l1l0_eval import (
     wait_until_worker_ready,
 )
 from analysis.experiments.summarize_dinov3_l2l1l0_sweep import (
+    paired_latency_summary,
     paired_accuracy_delta,
 )
 from offload.common.protocol import ExperimentConfig
@@ -48,6 +49,41 @@ class FlopsEstimatorTest(unittest.TestCase):
         self.assertEqual(delta["delta_top1_points"], 0.0)
         self.assertLess(delta["ci95_low_points"], 0.0)
         self.assertGreater(delta["ci95_high_points"], 0.0)
+
+    def test_paired_latency_summary_reports_speedup(self):
+        def result(label, wall_values):
+            return {
+                "label": label,
+                "dataset_summary": {"top1_acc": 80.0},
+                "dominant_flops_ratio": {"p50": 1.2},
+                "mobile_encode_ms": {"p50": 3.0},
+                "model_compute_ms": {"p50": 7.0},
+                "avg_wire_bytes_per_sample": 1024.0,
+                "requests": [
+                    {
+                        "wall_ms": value,
+                        "event_ms": {
+                            "Decode": 2.0,
+                            "APPROX_FORWARD": 4.0,
+                        },
+                    }
+                    for value in wall_values
+                ],
+            }
+
+        baseline = result("full", [10.0, 12.0, 14.0, 16.0])
+        candidate = result("candidate", [5.0, 6.0, 7.0, 8.0])
+        summary = paired_latency_summary(
+            candidate,
+            baseline,
+            num_resamples=100,
+            seed=5,
+        )
+
+        self.assertEqual(summary["request_p50_ms"], 6.5)
+        self.assertEqual(summary["speedup_vs_full"], 2.0)
+        self.assertEqual(summary["decode_p50_ms"], 2.0)
+        self.assertEqual(summary["backbone_p50_ms"], 4.0)
 
     def test_worker_readiness_handshake_orders_config_before_time_sync(self):
         control_queue = mock.Mock()

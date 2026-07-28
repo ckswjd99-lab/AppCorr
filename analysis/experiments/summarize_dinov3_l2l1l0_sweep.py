@@ -29,6 +29,11 @@ def parse_args():
         "--output-dir",
         default="analysis/results/dinov3_l2l1l0",
     )
+    parser.add_argument(
+        "--isolated-dir",
+        default=None,
+        help="Optional directory containing isolated full/L2L0/L2L1L0 runs.",
+    )
     parser.add_argument("--bootstrap-resamples", type=int, default=10_000)
     return parser.parse_args()
 
@@ -40,7 +45,6 @@ def load_results(input_dir: Path) -> list[dict[str, Any]]:
             continue
         with path.open("r", encoding="utf-8") as handle:
             result = json.load(handle)
-        result["_source_path"] = str(path)
         results.append(result)
     if not results:
         raise FileNotFoundError(f"No result JSON files found under {input_dir}")
@@ -98,6 +102,138 @@ def sum_request_event_ms(result: dict[str, Any], event_names: set[str]) -> float
         for request in result.get("requests", [])
     ]
     return float(np.median(request_values)) if request_values else 0.0
+
+
+def paired_latency_summary(
+    result: dict[str, Any],
+    baseline: dict[str, Any],
+    *,
+    num_resamples: int,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, float | int | str]:
+    result_values = np.asarray(
+        [
+            float(request["wall_ms"])
+            for request in result.get("requests", [])
+        ],
+        dtype=np.float64,
+    )
+    baseline_values = np.asarray(
+        [
+            float(request["wall_ms"])
+            for request in baseline.get("requests", [])
+        ],
+        dtype=np.float64,
+    )
+    if result_values.shape != baseline_values.shape:
+        raise ValueError(
+            "Isolated latency runs must have matching request counts, got "
+            f"{result_values.shape} and {baseline_values.shape}"
+        )
+    if result_values.size == 0:
+        raise ValueError("Isolated latency runs contain no requests")
+
+    rng = np.random.default_rng(seed)
+    median_delta = np.empty(num_resamples, dtype=np.float64)
+    speedup = np.empty(num_resamples, dtype=np.float64)
+    for sample_idx in range(num_resamples):
+        indices = rng.integers(
+            0,
+            result_values.size,
+            size=result_values.size,
+        )
+        result_median = np.median(result_values[indices])
+        baseline_median = np.median(baseline_values[indices])
+        median_delta[sample_idx] = result_median - baseline_median
+        speedup[sample_idx] = baseline_median / result_median
+    delta_low, delta_high = np.percentile(
+        median_delta,
+        (2.5, 97.5),
+    )
+    speedup_low, speedup_high = np.percentile(
+        speedup,
+        (2.5, 97.5),
+    )
+
+    event_names = {
+        "FULL_INFERENCE",
+        "APPROX_FORWARD",
+        "CORRECT_FORWARD",
+        "FINAL_FULL_FORWARD",
+    }
+    return {
+        "label": result["label"],
+        "num_requests": int(result_values.size),
+        "top1_percent": float(result["dataset_summary"]["top1_acc"]),
+        "dominant_flops_ratio": float(
+            result["dominant_flops_ratio"]["p50"]
+        ),
+        "request_p50_ms": float(np.median(result_values)),
+        "request_p95_ms": float(np.percentile(result_values, 95)),
+        "paired_median_delta_ms": float(
+            np.median(result_values) - np.median(baseline_values)
+        ),
+        "paired_median_delta_ci95_low_ms": float(delta_low),
+        "paired_median_delta_ci95_high_ms": float(delta_high),
+        "speedup_vs_full": float(
+            np.median(baseline_values) / np.median(result_values)
+        ),
+        "speedup_ci95_low": float(speedup_low),
+        "speedup_ci95_high": float(speedup_high),
+        "mobile_encode_p50_ms": float(
+            result["mobile_encode_ms"]["p50"]
+        ),
+        "decode_p50_ms": sum_request_event_ms(result, {"Decode"}),
+        "backbone_p50_ms": sum_request_event_ms(result, event_names),
+        "model_compute_p50_ms": float(
+            result["model_compute_ms"]["p50"]
+        ),
+        "wire_kib_per_image": float(
+            result["avg_wire_bytes_per_sample"] / 1024.0
+        ),
+        "num_resamples": int(num_resamples),
+    }
+
+
+def build_isolated_rows(
+    isolated_dir: Path,
+    *,
+    bootstrap_resamples: int,
+) -> list[dict[str, Any]]:
+    results = load_results(isolated_dir)
+    by_label = {result["label"]: result for result in results}
+    baseline_label = "full_sequential_isolated"
+    if baseline_label not in by_label:
+        raise ValueError(
+            f"Isolated results must contain {baseline_label}"
+        )
+    baseline = by_label[baseline_label]
+    baseline_indices = baseline["sample_indices"]
+    rows = []
+    for result in results:
+        if result["sample_indices"] != baseline_indices:
+            raise ValueError(
+                f"{result['label']} does not use isolated baseline indices"
+            )
+        rows.append(
+            paired_latency_summary(
+                result,
+                baseline,
+                num_resamples=bootstrap_resamples,
+            )
+        )
+    preferred_order = {
+        "full_sequential_isolated": 0,
+        "l2l0_n3_k0.25_isolated": 1,
+        "l2l1l0_n3_k0.25_isolated": 2,
+    }
+    return sorted(
+        rows,
+        key=lambda row: (
+            preferred_order.get(row["label"], 99),
+            row["label"],
+        ),
+    )
 
 
 def build_rows(
@@ -181,7 +317,6 @@ def build_rows(
             "avg_actual_patch_keep_ratio": float(
                 result["avg_partial_token_keep_ratio"]
             ),
-            "source_path": result["_source_path"],
         }
         rows.append(row)
     return sorted(rows, key=lambda row: row["label"])
@@ -189,14 +324,86 @@ def build_rows(
 
 def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=list(rows[0]),
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
 
 
-def write_report(rows: list[dict[str, Any]], path: Path) -> None:
+def write_report(
+    rows: list[dict[str, Any]],
+    path: Path,
+    isolated_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    by_label = {row["label"]: row for row in rows}
+    full = by_label["full_sequential"]
+    low_res = by_label["l2_approx_only"]
+    l2l0_n0_k25 = by_label["l2l0_n0_k0.25"]
+    l2l0_n3_k25 = by_label["l2l0_n3_k0.25"]
+    l2l1l0_n3_k25 = by_label["l2l1l0_n3_k0.25"]
+    tail_overhead_reduction = (
+        (
+            (l2l0_n0_k25["dominant_flops_ratio"] - 1.0)
+            - (l2l0_n3_k25["dominant_flops_ratio"] - 1.0)
+        )
+        / (l2l0_n0_k25["dominant_flops_ratio"] - 1.0)
+        * 100.0
+    )
     lines = [
         "# DINOv3 tail-full and L2-L1-L0 calibration",
+        "",
+        "## Implemented semantics",
+        "",
+        "- `final_full_layers=N` partitions only layers `[0, 40-N)` "
+        "across progressive correction groups. The final group first "
+        "corrects that prefix, then runs `[40-N, 40)` once through the "
+        "stock block forward without creating correction caches.",
+        "- `L2L1L0ProgressiveLaplacian` emits L2 base, one complete L1 "
+        "residual group, then four L0 residual groups. A coarse L1 patch "
+        "maps to its 2×2 fine ViT token cells. Selection uses L1/L0 "
+        "residual energy multiplied by layer-mean CLS attention.",
+        "- CLS and four register tokens remain mandatory correction "
+        "queries. Existing `ProgressiveLaplacian` and N=0 scheduling "
+        "remain available unchanged.",
+        "",
+        "## Evaluation protocol",
+        "",
+        "DINOv3 ViT-7B/16 (BF16, 40 layers, hidden size 4096) was run "
+        "on one or two NVIDIA B200 GPUs. Calibration uses the same "
+        "deterministic 1,024 ImageNet validation samples for every "
+        "configuration, batch size 32, and 10,000 paired bootstrap "
+        "resamples. Dominant FLOPs include ViT projection, attention, "
+        "and SwiGLU matmuls; they exclude codec and host work.",
+        "",
+        "## Main findings",
+        "",
+        f"- Full resolution reaches {full['top1_percent']:.2f}% top-1; "
+        f"L2-only reaches {low_res['top1_percent']:.2f}% "
+        f"({low_res['delta_top1_points']:+.2f} points).",
+        f"- On the existing L2-L0 path, N=3/K=25% reaches "
+        f"{l2l0_n3_k25['top1_percent']:.2f}% "
+        f"({l2l0_n3_k25['delta_top1_points']:+.2f} points) at "
+        f"{l2l0_n3_k25['dominant_flops_ratio']:.3f}× dominant FLOPs. "
+        f"Compared with N=0/K=25%, tail deferral reduces correction "
+        f"overhead by {tail_overhead_reduction:.1f}% while preserving "
+        "the measured top-1.",
+        f"- The matching L2-L1-L0 N=3/K=25% point reaches "
+        f"{l2l1l0_n3_k25['top1_percent']:.2f}% at "
+        f"{l2l1l0_n3_k25['dominant_flops_ratio']:.3f}× FLOPs and "
+        f"{l2l1l0_n3_k25['avg_wire_bytes_per_sample'] / 1024.0:.1f} "
+        f"KiB/image. It is dominated by L2-L0 "
+        f"({l2l0_n3_k25['avg_wire_bytes_per_sample'] / 1024.0:.1f} "
+        "KiB/image).",
+        "- Every progressive point exceeds 1.0× dominant backbone "
+        "FLOPs because all layers still run one approximate/full pass "
+        "and correction is additional work. Any end-to-end gain must "
+        "therefore come from pipeline overlap or codec behavior, not "
+        "compute reduction.",
+        "",
+        "## Full calibration table",
         "",
         "All rows use identical deterministic ImageNet sample indices. "
         "Accuracy deltas and confidence intervals are paired against the "
@@ -233,15 +440,70 @@ def write_report(rows: list[dict[str, Any]], path: Path) -> None:
             "",
         ]
     )
+    if isolated_rows:
+        lines.extend(
+            [
+                "## Isolated B200 latency",
+                "",
+                "These runs use one B200 with no simultaneous model loading, "
+                "three warm-up batches, and 32 measured batch-32 requests. "
+                "Component times overlap and therefore must not be summed.",
+                "",
+                "| setting | top-1 | FLOPs/full | request p50 / p95 | "
+                "speedup vs full (95% CI) | encode | decode | backbone |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in isolated_rows:
+            lines.append(
+                f"| {row['label']} | {row['top1_percent']:.2f}% | "
+                f"{row['dominant_flops_ratio']:.3f}× | "
+                f"{row['request_p50_ms']:.1f} / "
+                f"{row['request_p95_ms']:.1f} ms | "
+                f"{row['speedup_vs_full']:.3f}× "
+                f"[{row['speedup_ci95_low']:.3f}, "
+                f"{row['speedup_ci95_high']:.3f}] | "
+                f"{row['mobile_encode_p50_ms']:.1f} ms | "
+                f"{row['decode_p50_ms']:.1f} ms | "
+                f"{row['backbone_p50_ms']:.1f} ms |"
+            )
+        lines.extend(
+            [
+                "",
+                "The progressive request speedup is a pipeline/codec effect, "
+                "not compute reduction: its backbone time and dominant FLOPs "
+                "are both higher than full inference.",
+                "",
+                "## Limitations",
+                "",
+                "- The 1,024-image calibration confidence intervals are "
+                "wide; these are ranking results, not final ImageNet claims.",
+                "- Calibration p95 latency is affected by simultaneous "
+                "checkpoint mmap on the other GPU. Only the isolated table "
+                "is used for latency conclusions.",
+                "- The isolated run has no imposed uplink delay. Finite-"
+                "bandwidth crossover must be measured separately because "
+                "progressive streams transmit more bytes.",
+                "- Progressive decode remains CPU-heavy. The L1 stage adds "
+                "both decode work and wire bytes, explaining much of its "
+                "end-to-end regression.",
+                "",
+            ]
+        )
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def write_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
+def write_plots(
+    rows: list[dict[str, Any]],
+    output_dir: Path,
+    isolated_rows: list[dict[str, Any]] | None = None,
+) -> None:
     os.environ.setdefault(
         "MPLCONFIGDIR",
         str((output_dir / ".mplconfig").resolve()),
     )
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     progressive_rows = [
         row for row in rows if row["mode"] in {"l2l0", "l2l1l0"}
@@ -250,11 +512,15 @@ def write_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
     colors = {"l2l0": "#4C78A8", "l2l1l0": "#E45756"}
     markers = {0: "o", 2: "s", 3: "^"}
     for row in progressive_rows:
-        low_error = row["top1_percent"] - row["top1_ci95_low"]
-        high_error = row["top1_ci95_high"] - row["top1_percent"]
+        low_error = (
+            row["delta_top1_points"] - row["ci95_low_points"]
+        )
+        high_error = (
+            row["ci95_high_points"] - row["delta_top1_points"]
+        )
         axis.errorbar(
             row["dominant_flops_ratio"],
-            row["top1_percent"],
+            row["delta_top1_points"],
             yerr=[[low_error], [high_error]],
             color=colors[row["mode"]],
             marker=markers[row["final_full_layers"]],
@@ -262,10 +528,33 @@ def write_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             capsize=2,
             linestyle="none",
         )
+    axis.axhline(0.0, color="black", linewidth=1.0, linestyle="--")
     axis.set_xlabel("Dominant ViT FLOPs / full-resolution backbone")
-    axis.set_ylabel("ImageNet top-1 (%)")
+    axis.set_ylabel("Paired top-1 delta vs full (points)")
     axis.grid(alpha=0.2)
-    axis.set_title("Accuracy–compute calibration")
+    axis.set_title("Paired accuracy–compute calibration")
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=colors[mode],
+            marker="o",
+            linestyle="none",
+            label=mode.upper(),
+        )
+        for mode in ("l2l0", "l2l1l0")
+    ] + [
+        Line2D(
+            [0],
+            [0],
+            color="black",
+            marker=markers[tail],
+            linestyle="none",
+            label=f"tail N={tail}",
+        )
+        for tail in (0, 2, 3)
+    ]
+    axis.legend(handles=legend_handles, ncol=2, fontsize=8)
     fig.tight_layout()
     fig.savefig(output_dir / "accuracy_vs_flops.png", dpi=180)
     fig.savefig(output_dir / "accuracy_vs_flops.pdf")
@@ -288,22 +577,62 @@ def write_plots(rows: list[dict[str, Any]], output_dir: Path) -> None:
             x = np.asarray(
                 [row["token_keep_ratio"] for row in selected]
             )
-            y = np.asarray([row["top1_percent"] for row in selected])
-            low = np.asarray([row["top1_ci95_low"] for row in selected])
-            high = np.asarray([row["top1_ci95_high"] for row in selected])
+            y = np.asarray(
+                [row["delta_top1_points"] for row in selected]
+            )
+            low = np.asarray(
+                [row["ci95_low_points"] for row in selected]
+            )
+            high = np.asarray(
+                [row["ci95_high_points"] for row in selected]
+            )
             axis.plot(x, y, marker=markers[tail], label=f"tail N={tail}")
             axis.fill_between(x, low, high, alpha=0.12)
         axis.set_title(mode.upper())
         axis.set_xlabel("Correction patch keep ratio")
+        axis.axhline(0.0, color="black", linewidth=1.0, linestyle="--")
         axis.grid(alpha=0.2)
         handles, labels = axis.get_legend_handles_labels()
         if handles:
             axis.legend(handles, labels)
-    axes[0].set_ylabel("ImageNet top-1 (%)")
+    axes[0].set_ylabel("Paired top-1 delta vs full (points)")
     fig.tight_layout()
     fig.savefig(output_dir / "keep_sweep.png", dpi=180)
     fig.savefig(output_dir / "keep_sweep.pdf")
     plt.close(fig)
+
+    if isolated_rows:
+        fig, axis = plt.subplots(figsize=(8.2, 4.6))
+        labels = [
+            row["label"]
+            .replace("_isolated", "")
+            .replace("full_sequential", "full")
+            for row in isolated_rows
+        ]
+        x = np.arange(len(labels))
+        width = 0.18
+        components = [
+            ("mobile_encode_p50_ms", "mobile encode"),
+            ("decode_p50_ms", "server decode"),
+            ("backbone_p50_ms", "backbone"),
+            ("request_p50_ms", "request p50"),
+        ]
+        for component_idx, (key, label) in enumerate(components):
+            axis.bar(
+                x + (component_idx - 1.5) * width,
+                [row[key] for row in isolated_rows],
+                width,
+                label=label,
+            )
+        axis.set_xticks(x, labels, rotation=10)
+        axis.set_ylabel("Latency (ms)")
+        axis.set_title("Isolated B200 pipeline components (overlapping)")
+        axis.grid(axis="y", alpha=0.2)
+        axis.legend(fontsize=8)
+        fig.tight_layout()
+        fig.savefig(output_dir / "isolated_latency.png", dpi=180)
+        fig.savefig(output_dir / "isolated_latency.pdf")
+        plt.close(fig)
 
 
 def main():
@@ -315,13 +644,36 @@ def main():
         load_results(input_dir),
         bootstrap_resamples=args.bootstrap_resamples,
     )
+    isolated_rows = None
+    if args.isolated_dir:
+        isolated_rows = build_isolated_rows(
+            Path(args.isolated_dir).resolve(),
+            bootstrap_resamples=args.bootstrap_resamples,
+        )
     write_csv(rows, output_dir / "calibration_summary.csv")
     (output_dir / "calibration_summary.json").write_text(
         json.dumps(rows, indent=2),
         encoding="utf-8",
     )
-    write_report(rows, output_dir / "REPORT.md")
-    write_plots(rows, output_dir)
+    if isolated_rows:
+        write_csv(
+            isolated_rows,
+            output_dir / "isolated_latency_summary.csv",
+        )
+        (output_dir / "isolated_latency_summary.json").write_text(
+            json.dumps(isolated_rows, indent=2),
+            encoding="utf-8",
+        )
+    write_report(
+        rows,
+        output_dir / "REPORT.md",
+        isolated_rows=isolated_rows,
+    )
+    write_plots(
+        rows,
+        output_dir,
+        isolated_rows=isolated_rows,
+    )
     print(f"[summary] wrote {output_dir}")
 
 
