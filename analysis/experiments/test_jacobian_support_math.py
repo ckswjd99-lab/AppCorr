@@ -15,10 +15,15 @@ import torch
 import torch.nn.functional as F
 
 from appcorr.models.dinov3.layers.jacobian_support import (
+    attention_block_index_from_mask,
     attention_delta,
     attention_edge_energy,
+    build_joint_swiglu_low_rank_factors,
     exact_attention_delta,
+    exact_swiglu_delta_selected_blocks,
     exact_swiglu_delta,
+    low_rank_swiglu_channel_score,
+    project_swiglu_low_rank,
     select_attention_block_support,
     select_ffn_block_support,
     softmax_jvp,
@@ -162,6 +167,38 @@ class AttentionDeltaTest(unittest.TestCase):
         self.assertGreater(stats.probability_mass, 0)
         self.assertLessEqual(stats.kept_fraction, 1)
 
+    def test_attention_block_mask_round_trips_to_descriptor(self) -> None:
+        base = attention_delta(
+            self.q, self.k, self.v, self.dq, self.dk, self.dv
+        ).base_probability
+        support, _ = select_attention_block_support(
+            base,
+            keep_ratio=0.5,
+            key_block_size=3,
+            query_block_size=4,
+            head_group_size=2,
+        )
+        descriptor = attention_block_index_from_mask(
+            support,
+            key_block_size=3,
+            query_block_size=4,
+            head_group_size=2,
+        )
+        self.assertEqual(tuple(descriptor.shape), (2, 2, 2, 2))
+        for batch in range(2):
+            for head_group in range(2):
+                for query_block in range(2):
+                    selected = descriptor[
+                        batch,
+                        head_group,
+                        query_block,
+                    ].tolist()
+                    for block in selected:
+                        query = min(query_block * 4, support.shape[2] - 1)
+                        head = head_group * 2
+                        key = min(block * 3, support.shape[-1] - 1)
+                        self.assertTrue(support[batch, head, query, key])
+
 
 class SwiGLUTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -215,6 +252,49 @@ class SwiGLUTest(unittest.TestCase):
             channel_mask=mask,
         )
         torch.testing.assert_close(selected, dense, rtol=0, atol=0)
+
+    def test_full_selected_exact_delta_matches_dense(self) -> None:
+        base_gate = F.linear(self.x, self.w_gate)
+        base_up = F.linear(self.x, self.w_up)
+        mask = torch.ones_like(base_gate, dtype=torch.bool)
+        actual = exact_swiglu_delta_selected_blocks(
+            base_gate,
+            base_up,
+            self.x + self.dx,
+            self.w_gate,
+            self.w_up,
+            self.w_down,
+            mask,
+            token_block_size=3,
+        )
+        expected = self._ffn(self.x + self.dx) - self._ffn(self.x)
+        torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+    def test_low_rank_predictor_uses_cached_projected_base(self) -> None:
+        factors = build_joint_swiglu_low_rank_factors(
+            self.w_gate,
+            self.w_up,
+            rank=self.x.shape[-1],
+            oversample=0,
+            power_iterations=0,
+            seed=13,
+        )
+        base_projected = project_swiglu_low_rank(self.x, factors)
+        score = low_rank_swiglu_channel_score(
+            base_projected,
+            self.x + self.dx,
+            factors,
+            self.w_down,
+        )
+        exact_hidden_delta = (
+            F.silu(F.linear(self.x + self.dx, self.w_gate))
+            * F.linear(self.x + self.dx, self.w_up)
+            - F.silu(F.linear(self.x, self.w_gate))
+            * F.linear(self.x, self.w_up)
+        )
+        down_norm = self.w_down.square().sum(dim=0).sqrt()
+        expected = (exact_hidden_delta.abs() * down_norm).float()
+        torch.testing.assert_close(score, expected, rtol=1e-4, atol=5e-5)
 
 
 if __name__ == "__main__":

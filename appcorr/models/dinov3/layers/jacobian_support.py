@@ -39,6 +39,19 @@ class SupportStatistics:
     total_block_count: int
 
 
+@dataclass(frozen=True)
+class LowRankSwiGLUFactors:
+    """Joint right-subspace approximation for SwiGLU gate/up projections."""
+
+    input_basis: Tensor
+    gate_coefficient: Tensor
+    up_coefficient: Tensor
+
+    @property
+    def rank(self) -> int:
+        return int(self.input_basis.shape[-1])
+
+
 def _check_attention_inputs(q: Tensor, k: Tensor, v: Tensor, dq: Tensor, dk: Tensor, dv: Tensor) -> None:
     if q.ndim != 4:
         raise ValueError(f"Expected attention tensors [B,H,Q,D], got q={tuple(q.shape)}")
@@ -331,6 +344,61 @@ def select_attention_block_support(
     return selected_keys, stats
 
 
+def attention_block_index_from_mask(
+    support_mask: Tensor,
+    *,
+    key_block_size: int,
+    query_block_size: int,
+    head_group_size: int,
+) -> Tensor:
+    """Compress an expanded structured attention mask into block indices."""
+
+    if support_mask.ndim != 4:
+        raise ValueError("support_mask must be [B,H,Q,K]")
+    if min(key_block_size, query_block_size, head_group_size) <= 0:
+        raise ValueError("block sizes must be positive")
+    batch, heads, queries, keys = support_mask.shape
+    key_blocks = math.ceil(keys / key_block_size)
+    padded = F.pad(
+        support_mask.to(dtype=torch.bool),
+        (0, key_blocks * key_block_size - keys),
+    )
+    blocked = padded.reshape(
+        batch,
+        heads,
+        queries,
+        key_blocks,
+        key_block_size,
+    ).any(dim=-1)
+    head_start = torch.arange(
+        0,
+        heads,
+        head_group_size,
+        device=support_mask.device,
+    )
+    query_start = torch.arange(
+        0,
+        queries,
+        query_block_size,
+        device=support_mask.device,
+    )
+    descriptor_mask = blocked.index_select(1, head_start).index_select(
+        2,
+        query_start,
+    )
+    counts = descriptor_mask.sum(dim=-1)
+    if not torch.equal(counts, counts.reshape(-1)[:1].expand_as(counts)):
+        raise ValueError("Every query/head block must select the same key-block count")
+    selected_blocks = int(counts.reshape(-1)[0].item())
+    if selected_blocks <= 0:
+        raise ValueError("At least one key block must be selected")
+    return torch.topk(
+        descriptor_mask.to(torch.int8),
+        k=selected_blocks,
+        dim=-1,
+    ).indices.to(torch.int32)
+
+
 def silu_derivative(x: Tensor) -> Tensor:
     sigmoid = torch.sigmoid(x)
     return sigmoid * (1 + x * (1 - sigmoid))
@@ -428,6 +496,214 @@ def swiglu_training_free_score(
         + F.silu(gate).float().abs() * up_row_norm
     )
     return dx_norm * factor * down_column_norm
+
+
+@torch.no_grad()
+def build_joint_swiglu_low_rank_factors(
+    w_gate: Tensor,
+    w_up: Tensor,
+    *,
+    rank: int,
+    oversample: int = 8,
+    power_iterations: int = 1,
+    seed: int = 0,
+) -> LowRankSwiGLUFactors:
+    """Approximate gate/up weights in one shared low-rank input subspace.
+
+    The basis approximates the leading eigenspace of
+    ``W_gate.T W_gate + W_up.T W_up``.  It is model-static and can therefore
+    be built offline or once at model load.  The approximate forward caches
+    only ``x @ input_basis`` for each token.
+    """
+
+    if w_gate.ndim != 2 or w_up.ndim != 2 or w_gate.shape != w_up.shape:
+        raise ValueError("w_gate and w_up must have the same [channels, hidden] shape")
+    channels, hidden = w_gate.shape
+    if rank <= 0 or rank > min(channels, hidden):
+        raise ValueError("rank must be in [1, min(channels, hidden)]")
+    if oversample < 0:
+        raise ValueError("oversample must be non-negative")
+    if power_iterations < 0:
+        raise ValueError("power_iterations must be non-negative")
+
+    sketch_rank = min(rank + oversample, channels, hidden)
+    generator = torch.Generator(device=w_gate.device)
+    generator.manual_seed(seed)
+    basis = torch.randn(
+        hidden,
+        sketch_rank,
+        generator=generator,
+        device=w_gate.device,
+        dtype=w_gate.dtype,
+    )
+    basis = torch.linalg.qr(basis.float(), mode="reduced").Q.to(w_gate.dtype)
+
+    # Subspace iteration reads the two model weights but never materializes a
+    # hidden-by-hidden covariance matrix.
+    for _ in range(power_iterations + 1):
+        gate_range = F.linear(basis.transpose(0, 1), w_gate).transpose(0, 1)
+        up_range = F.linear(basis.transpose(0, 1), w_up).transpose(0, 1)
+        next_basis = (
+            w_gate.transpose(0, 1) @ gate_range
+            + w_up.transpose(0, 1) @ up_range
+        )
+        basis = torch.linalg.qr(next_basis.float(), mode="reduced").Q.to(
+            w_gate.dtype
+        )
+
+    gate_range = w_gate @ basis
+    up_range = w_up @ basis
+    gram = (
+        gate_range.float().transpose(0, 1) @ gate_range.float()
+        + up_range.float().transpose(0, 1) @ up_range.float()
+    )
+    # The caller commonly runs under BF16 autocast; CUDA eigh requires FP32.
+    _, eigenvectors = torch.linalg.eigh(gram.float())
+    rotation = eigenvectors[:, -rank:].flip(dims=(-1,))
+    input_basis = (basis.float() @ rotation).to(w_gate.dtype).contiguous()
+    return LowRankSwiGLUFactors(
+        input_basis=input_basis,
+        gate_coefficient=(w_gate @ input_basis).contiguous(),
+        up_coefficient=(w_up @ input_basis).contiguous(),
+    )
+
+
+def project_swiglu_low_rank(
+    x: Tensor,
+    factors: LowRankSwiGLUFactors,
+) -> Tensor:
+    """Project token states into the model-static low-rank input space."""
+
+    if x.shape[-1] != factors.input_basis.shape[0]:
+        raise ValueError("x hidden size does not match the low-rank basis")
+    return x @ factors.input_basis
+
+
+def low_rank_swiglu_channel_score(
+    base_projected: Tensor,
+    corrected_x: Tensor,
+    factors: LowRankSwiGLUFactors,
+    w_down: Tensor,
+    *,
+    gate_bias: Tensor | None = None,
+    up_bias: Tensor | None = None,
+) -> Tensor:
+    """Predict exact finite-difference channel energy from cached draft state."""
+
+    corrected_projected = project_swiglu_low_rank(corrected_x, factors)
+    base_gate = F.linear(
+        base_projected,
+        factors.gate_coefficient,
+        gate_bias,
+    )
+    base_up = F.linear(
+        base_projected,
+        factors.up_coefficient,
+        up_bias,
+    )
+    corrected_gate = F.linear(
+        corrected_projected,
+        factors.gate_coefficient,
+        gate_bias,
+    )
+    corrected_up = F.linear(
+        corrected_projected,
+        factors.up_coefficient,
+        up_bias,
+    )
+    hidden_delta = (
+        F.silu(corrected_gate) * corrected_up
+        - F.silu(base_gate) * base_up
+    )
+    down_column_norm = w_down.float().square().sum(dim=0).sqrt()
+    return hidden_delta.float().abs() * down_column_norm
+
+
+def exact_swiglu_delta_selected_blocks(
+    base_gate: Tensor,
+    base_up: Tensor,
+    corrected_x: Tensor,
+    w_gate: Tensor,
+    w_up: Tensor,
+    w_down: Tensor,
+    channel_mask: Tensor,
+    *,
+    gate_bias: Tensor | None = None,
+    up_bias: Tensor | None = None,
+    token_block_size: int = 8,
+) -> Tensor:
+    """Evaluate exact finite differences only for selected channel blocks.
+
+    ``base_gate`` and ``base_up`` are outputs already produced by the
+    approximate FFN and cached for the active tokens.  The selector is shared
+    within each token block, so each loop body maps directly to one structured
+    gate/up/down GEMM workload in the optimized implementation.
+    """
+
+    if corrected_x.ndim != 3:
+        raise ValueError("corrected_x must have shape [batch, tokens, hidden]")
+    batch, tokens, _ = corrected_x.shape
+    channels = w_gate.shape[0]
+    if base_gate.shape != (batch, tokens, channels):
+        raise ValueError("base_gate shape does not match corrected_x/w_gate")
+    if base_up.shape != base_gate.shape:
+        raise ValueError("base_up must match base_gate")
+    if channel_mask.shape != base_gate.shape:
+        raise ValueError("channel_mask must match base_gate")
+    if w_up.shape != w_gate.shape or w_down.shape[1] != channels:
+        raise ValueError("SwiGLU weight shapes are inconsistent")
+    if token_block_size <= 0:
+        raise ValueError("token_block_size must be positive")
+
+    output = corrected_x.new_zeros(batch, tokens, w_down.shape[0])
+    for batch_index in range(batch):
+        for token_start in range(0, tokens, token_block_size):
+            token_end = min(tokens, token_start + token_block_size)
+            block_mask = channel_mask[
+                batch_index,
+                token_start:token_end,
+            ]
+            shared_mask = block_mask[0]
+            if not torch.equal(
+                block_mask,
+                shared_mask.unsqueeze(0).expand_as(block_mask),
+            ):
+                raise ValueError("channel support must be shared within a token block")
+            selected = shared_mask.nonzero(as_tuple=False).flatten()
+            if selected.numel() == 0:
+                continue
+            corrected_block = corrected_x[
+                batch_index,
+                token_start:token_end,
+            ]
+            corrected_gate = F.linear(
+                corrected_block,
+                w_gate.index_select(0, selected),
+                None if gate_bias is None else gate_bias.index_select(0, selected),
+            )
+            corrected_up = F.linear(
+                corrected_block,
+                w_up.index_select(0, selected),
+                None if up_bias is None else up_bias.index_select(0, selected),
+            )
+            base_hidden = (
+                F.silu(
+                    base_gate[
+                        batch_index,
+                        token_start:token_end,
+                    ].index_select(-1, selected)
+                )
+                * base_up[
+                    batch_index,
+                    token_start:token_end,
+                ].index_select(-1, selected)
+            )
+            hidden_delta = F.silu(corrected_gate) * corrected_up - base_hidden
+            output[batch_index, token_start:token_end] = F.linear(
+                hidden_delta,
+                w_down.index_select(1, selected),
+            )
+    return output
 
 
 def select_ffn_block_support(

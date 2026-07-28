@@ -17,6 +17,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import time
 from typing import Iterable
 
 import numpy as np
@@ -39,11 +40,20 @@ from tqdm import tqdm
 
 from analysis.shared.dinov3_probe import Dinov3SignalProbe
 from appcorr.models.dinov3.layers.jacobian_support import (
+    attention_block_index_from_mask,
     attention_delta,
     attention_edge_energy,
+    build_joint_swiglu_low_rank_factors,
+    exact_swiglu_delta_selected_blocks,
+    low_rank_swiglu_channel_score,
+    project_swiglu_low_rank,
     select_attention_block_support,
     select_ffn_block_support,
     silu_derivative,
+)
+from appcorr.models.dinov3.layers.attention import rope_apply
+from appcorr.models.dinov3.layers.triton_kernels import (
+    block_product_delta_triton,
 )
 from offload.common import ExperimentConfig
 
@@ -369,6 +379,8 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
         self.head_group = head_group
         self.ffn_channel_block = ffn_channel_block
         self.ffn_token_block = ffn_token_block
+        self._low_rank_ffn_factors = {}
+        self.low_rank_factor_build_seconds = 0.0
 
     def _attention_qkv(
         self,
@@ -390,6 +402,123 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
         if rope is not None:
             q, k = block.attn.apply_rope(q, k, rope)
         return q, k, v
+
+    @staticmethod
+    def _gather_tokens(x: torch.Tensor, token_index: torch.Tensor) -> torch.Tensor:
+        return x.gather(
+            1,
+            token_index.unsqueeze(-1).expand(-1, -1, x.shape[-1]),
+        )
+
+    @staticmethod
+    def _scatter_tokens(
+        base: torch.Tensor,
+        token_index: torch.Tensor,
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        output = base.clone()
+        return output.scatter(
+            1,
+            token_index.unsqueeze(-1).expand_as(values),
+            values.to(dtype=base.dtype),
+        )
+
+    def _attention_qkv_active(
+        self,
+        block,
+        x_active: torch.Tensor,
+        token_index: torch.Tensor,
+        *,
+        total_tokens: int,
+        rope,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Generate QKV and apply RoPE only for active token positions."""
+
+        qkv = block.attn.qkv(block.norm1(x_active))
+        batch, active_tokens, _ = qkv.shape
+        embed_dim = block.attn.qkv.in_features
+        qkv = qkv.reshape(
+            batch,
+            active_tokens,
+            3,
+            block.attn.num_heads,
+            embed_dim // block.attn.num_heads,
+        )
+        q, k, v = (
+            value.transpose(1, 2)
+            for value in torch.unbind(qkv, dim=2)
+        )
+        if rope is None:
+            return q, k, v
+
+        sin, cos = rope
+        patch_tokens = sin.shape[-2]
+        prefix_tokens = total_tokens - patch_tokens
+        patch_mask = token_index >= prefix_tokens
+        rope_index = (token_index - prefix_tokens).clamp(
+            min=0,
+            max=max(patch_tokens - 1, 0),
+        )
+        active_sin = sin.index_select(
+            -2,
+            rope_index.reshape(-1),
+        ).reshape(
+            *rope_index.shape,
+            sin.shape[-1],
+        )
+        active_cos = cos.index_select(
+            -2,
+            rope_index.reshape(-1),
+        ).reshape(
+            *rope_index.shape,
+            cos.shape[-1],
+        )
+        active_sin = active_sin.unsqueeze(1)
+        active_cos = active_cos.unsqueeze(1)
+        patch_mask = patch_mask[:, None, :, None]
+        q_dtype, k_dtype = q.dtype, k.dtype
+        q_rotated = rope_apply(
+            q.to(active_sin.dtype),
+            active_sin,
+            active_cos,
+        ).to(q_dtype)
+        k_rotated = rope_apply(
+            k.to(active_sin.dtype),
+            active_sin,
+            active_cos,
+        ).to(k_dtype)
+        return (
+            torch.where(patch_mask, q_rotated, q),
+            torch.where(patch_mask, k_rotated, k),
+            v,
+        )
+
+    def _get_low_rank_ffn_factors(
+        self,
+        block,
+        layer_index: int,
+        *,
+        rank: int,
+        oversample: int,
+        power_iterations: int,
+        seed: int,
+    ):
+        key = (layer_index, rank, oversample, power_iterations, seed)
+        factors = self._low_rank_ffn_factors.get(key)
+        if factors is not None:
+            return factors
+        start = time.perf_counter()
+        factors = build_joint_swiglu_low_rank_factors(
+            block.mlp.w1.weight,
+            block.mlp.w2.weight,
+            rank=rank,
+            oversample=oversample,
+            power_iterations=power_iterations,
+            seed=seed + layer_index,
+        )
+        self.low_rank_factor_build_seconds += time.perf_counter() - start
+        self._low_rank_ffn_factors[key] = factors
+        return factors
 
     def _audit_attention(
         self,
@@ -1339,6 +1468,487 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
 
                 results[str(target_layer)] = layer_results
             return results
+
+    @torch.no_grad()
+    def runtime_policy_classification_batch(
+        self,
+        base_bchw_uint8: torch.Tensor,
+        full_bchw_uint8: torch.Tensor,
+        policies: dict[str, list[dict[str, float]]],
+        *,
+        always_keep_special_tokens: bool = True,
+        ffn_low_rank: int = 32,
+        ffn_low_rank_oversample: int = 8,
+        ffn_low_rank_power_iterations: int = 1,
+        ffn_low_rank_seed: int = 20260728,
+    ) -> dict[str, dict[str, object]]:
+        """Evaluate runtime-valid strict-token exact-difference policies.
+
+        Token support is selected once from the input L2-to-L0 embedding
+        residual. Inactive tokens use the stock L2 output at every layer and
+        execute no correction QKV/output/FFN projections. Attention support is
+        selected only from the draft probability. Intermediate FFN support is
+        predicted from a cached low-rank draft coordinate and then evaluated
+        exactly on the selected gate/up/down channel blocks.
+
+        The PyTorch attention expression remains a numerical structured-mask
+        reference. ``workload`` reports the block GEMMs executed by the target
+        sparse implementation, including low-rank predictor work.
+        """
+
+        if ffn_low_rank <= 0:
+            raise ValueError("ffn_low_rank must be positive")
+        num_layers = len(self.backbone.blocks)
+        policy_rows = {}
+        token_keep = {}
+        for name, schedule in policies.items():
+            if len(schedule) != num_layers:
+                raise ValueError(
+                    f"Policy {name!r} has {len(schedule)} layers; "
+                    f"expected {num_layers}"
+                )
+            rows = {int(row["layer"]): row for row in schedule}
+            if set(rows) != set(range(num_layers)):
+                raise ValueError(
+                    f"Policy {name!r} must define every layer exactly once"
+                )
+            keeps = {float(row["input_token_keep"]) for row in rows.values()}
+            if len(keeps) != 1:
+                raise ValueError(
+                    "Runtime-valid input token support is selected once; "
+                    f"policy {name!r} varies it across layers"
+                )
+            for row in rows.values():
+                for component in (
+                    "input_token_keep",
+                    "attention_edge_keep",
+                    "ffn_channel_keep",
+                ):
+                    value = float(row[component])
+                    if not 0 <= value <= 1:
+                        raise ValueError(
+                            f"{name} layer {row['layer']} {component}={value} "
+                            "is outside [0, 1]"
+                        )
+            policy_rows[name] = rows
+            token_keep[name] = keeps.pop()
+
+        base_input = self._prepare_input(base_bchw_uint8)
+        full_input = self._prepare_input(full_bchw_uint8)
+        context = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if self.device.type == "cuda"
+            else nullcontext()
+        )
+        with context:
+            x_base, hw = self.backbone.prepare_tokens_with_masks(base_input, None)
+            x_full, full_hw = self.backbone.prepare_tokens_with_masks(
+                full_input, None
+            )
+            if hw != full_hw:
+                raise RuntimeError("Policy correction token grids must match")
+            rope = (
+                self.backbone.rope_embed(H=hw[0], W=hw[1])
+                if self.backbone.rope_embed is not None
+                else None
+            )
+            input_delta = x_full - x_base
+            token_masks = {
+                name: select_residual_token_support(
+                    input_delta,
+                    keep_ratio=keep,
+                    always_keep_prefix=(
+                        self.patch_start if always_keep_special_tokens else 0
+                    ),
+                )
+                for name, keep in token_keep.items()
+            }
+            token_indices = {}
+            for name, mask in token_masks.items():
+                counts = mask.sum(dim=-1)
+                if not torch.equal(counts, counts[:1].expand_as(counts)):
+                    raise RuntimeError("All batch items must retain the same token count")
+                token_indices[name] = mask.nonzero(as_tuple=False)[:, 1].reshape(
+                    mask.shape[0],
+                    int(counts[0].item()),
+                )
+            states = {
+                name: torch.where(mask.unsqueeze(-1), x_full, x_base)
+                for name, mask in token_masks.items()
+            }
+            workload = {
+                name: {
+                    "approx_flops": 0.0,
+                    "approx_support_flops": 0.0,
+                    "correction_flops": 0.0,
+                    "attention_projection_flops": 0.0,
+                    "attention_qk_flops": 0.0,
+                    "attention_product_flops": 0.0,
+                    "ffn_predictor_flops": 0.0,
+                    "ffn_exact_flops": 0.0,
+                    "cache_bytes": 0.0,
+                    "active_token_sum": 0.0,
+                    "active_token_total": 0.0,
+                    "attention_edge_sum": 0.0,
+                    "attention_edge_total": 0.0,
+                    "ffn_channel_sum": 0.0,
+                    "ffn_channel_total": 0.0,
+                }
+                for name in policies
+            }
+
+            for layer_index, block in enumerate(self.backbone.blocks):
+                q_base, k_base, v_base = self._attention_qkv(
+                    block,
+                    x_base,
+                    rope,
+                )
+                base_attention = block.attn(block.norm1(x_base), rope=rope)
+                x_base_attn = x_base + block.ls1(base_attention)
+                base_norm2 = block.norm2(x_base_attn)
+                base_gate = block.mlp.w1(base_norm2)
+                base_up = block.mlp.w2(base_norm2)
+                base_hidden = F.silu(base_gate) * base_up
+                base_ffn = block.mlp.w3(base_hidden)
+                x_base_next = x_base_attn + block.ls2(base_ffn)
+                batch, tokens, hidden = x_base.shape
+                heads = block.attn.num_heads
+                head_dim = hidden // heads
+                channels = block.mlp.w1.out_features
+                approx_layer_flops = (
+                    2 * 4 * batch * tokens * hidden * hidden
+                    + 2 * 2 * batch * tokens * tokens * hidden
+                    + 2 * 3 * batch * tokens * hidden * channels
+                )
+                base_projection_cache = {}
+                next_states = {}
+
+                for name, state in states.items():
+                    row = policy_rows[name][layer_index]
+                    attention_ratio = float(row["attention_edge_keep"])
+                    ffn_ratio = float(row["ffn_channel_keep"])
+                    mask = token_masks[name]
+                    index = token_indices[name]
+                    active_tokens = index.shape[1]
+                    stats = workload[name]
+                    stats["approx_flops"] += approx_layer_flops
+                    stats["active_token_sum"] += batch * active_tokens
+                    stats["active_token_total"] += batch * tokens
+
+                    # Reset every inactive position to the current draft state.
+                    state = torch.where(mask.unsqueeze(-1), state, x_base)
+                    state_active = self._gather_tokens(state, index)
+                    base_attention_active = self._gather_tokens(
+                        base_attention,
+                        index,
+                    )
+
+                    if attention_ratio <= 0:
+                        corrected_attention_active = base_attention_active
+                    else:
+                        q_new, k_new_active, v_new_active = (
+                            self._attention_qkv_active(
+                                block,
+                                state_active,
+                                index,
+                                total_tokens=tokens,
+                                rope=rope,
+                            )
+                        )
+                        gather_index = index[:, None, :, None].expand(
+                            batch,
+                            heads,
+                            active_tokens,
+                            head_dim,
+                        )
+                        q_base_active = q_base.gather(2, gather_index)
+                        k_new = k_base.clone().scatter(
+                            2,
+                            gather_index,
+                            k_new_active,
+                        )
+                        v_new = v_base.clone().scatter(
+                            2,
+                            gather_index,
+                            v_new_active,
+                        )
+                        scale = float(block.attn.scale)
+                        base_probability = torch.softmax(
+                            q_base_active @ k_base.transpose(-2, -1) * scale,
+                            dim=-1,
+                        )
+                        corrected_probability = torch.softmax(
+                            q_new @ k_new.transpose(-2, -1) * scale,
+                            dim=-1,
+                        )
+                        if attention_ratio >= 1:
+                            attention_mask = torch.ones_like(
+                                base_probability,
+                                dtype=torch.bool,
+                            )
+                        else:
+                            attention_mask, _ = select_attention_block_support(
+                                base_probability,
+                                keep_ratio=attention_ratio,
+                                key_block_size=self.key_block,
+                                query_block_size=self.query_block,
+                                head_group_size=self.head_group,
+                            )
+                        mask_value = attention_mask.to(base_probability.dtype)
+                        base_raw = base_probability @ v_base
+                        if attention_ratio >= 1:
+                            corrected_raw = corrected_probability @ v_new
+                        else:
+                            # The target product-delta kernel reads the support
+                            # descriptor and cached base-support product. This
+                            # exact-probability path keeps the denominator over
+                            # every key, then consumes selected products only.
+                            block_index = attention_block_index_from_mask(
+                                attention_mask,
+                                key_block_size=self.key_block,
+                                query_block_size=self.query_block,
+                                head_group_size=self.head_group,
+                            )
+                            if base_probability.is_cuda:
+                                kernel_dtype = v_base.dtype
+                                base_probability_kernel = (
+                                    base_probability.to(dtype=kernel_dtype)
+                                )
+                                corrected_probability_kernel = (
+                                    corrected_probability.to(
+                                        dtype=kernel_dtype
+                                    )
+                                )
+                                v_base_kernel = v_base.to(dtype=kernel_dtype)
+                                v_new_kernel = v_new.to(dtype=kernel_dtype)
+                                product_delta = block_product_delta_triton(
+                                    base_probability_kernel,
+                                    corrected_probability_kernel,
+                                    v_base_kernel,
+                                    v_new_kernel,
+                                    block_index,
+                                    head_group_size=self.head_group,
+                                    query_block_size=self.query_block,
+                                    key_block_size=self.key_block,
+                                )
+                            else:
+                                product_delta = (
+                                    (corrected_probability * mask_value) @ v_new
+                                    - (base_probability * mask_value) @ v_base
+                                )
+                            corrected_raw = base_raw + product_delta
+                        corrected_raw = (
+                            corrected_raw.transpose(1, 2)
+                            .reshape(batch, active_tokens, hidden)
+                            .to(state.dtype)
+                        )
+                        corrected_attention_active = block.attn.proj_drop(
+                            block.attn.proj(corrected_raw)
+                        )
+                        selected_edges = int(attention_mask.sum().item())
+                        full_edges = attention_mask.numel()
+                        projection_flops = (
+                            2 * 4 * batch * active_tokens * hidden * hidden
+                        )
+                        qk_flops = (
+                            2
+                            * batch
+                            * heads
+                            * active_tokens
+                            * tokens
+                            * head_dim
+                        )
+                        product_flops = 2 * selected_edges * head_dim
+                        stats["attention_projection_flops"] += projection_flops
+                        stats["attention_qk_flops"] += qk_flops
+                        stats["attention_product_flops"] += product_flops
+                        stats["correction_flops"] += (
+                            projection_flops + qk_flops + product_flops
+                        )
+                        stats["attention_edge_sum"] += selected_edges
+                        stats["attention_edge_total"] += full_edges
+                        if attention_ratio < 1:
+                            # Draft-cached selected S0V0 used by product-delta.
+                            stats["approx_support_flops"] += product_flops
+                            stats["cache_bytes"] += (
+                                batch
+                                * active_tokens
+                                * hidden
+                                * x_base.element_size()
+                            )
+
+                    state_attn_active = (
+                        state_active
+                        + block.ls1(corrected_attention_active)
+                    )
+                    corrected_norm2 = block.norm2(state_attn_active)
+                    base_ffn_active = self._gather_tokens(base_ffn, index)
+
+                    if ffn_ratio <= 0:
+                        corrected_ffn_active = base_ffn_active
+                    elif ffn_ratio >= 1:
+                        corrected_ffn_active = block.mlp(corrected_norm2)
+                        ffn_flops = (
+                            2
+                            * 3
+                            * batch
+                            * active_tokens
+                            * hidden
+                            * channels
+                        )
+                        stats["ffn_exact_flops"] += ffn_flops
+                        stats["correction_flops"] += ffn_flops
+                        stats["ffn_channel_sum"] += batch * active_tokens * channels
+                        stats["ffn_channel_total"] += batch * active_tokens * channels
+                    else:
+                        factors = self._get_low_rank_ffn_factors(
+                            block,
+                            layer_index,
+                            rank=ffn_low_rank,
+                            oversample=ffn_low_rank_oversample,
+                            power_iterations=ffn_low_rank_power_iterations,
+                            seed=ffn_low_rank_seed,
+                        )
+                        factor_key = (layer_index, ffn_low_rank)
+                        base_projected = base_projection_cache.get(factor_key)
+                        if base_projected is None:
+                            base_projected = project_swiglu_low_rank(
+                                base_norm2,
+                                factors,
+                            )
+                            base_projection_cache[factor_key] = base_projected
+                        base_projected_active = self._gather_tokens(
+                            base_projected,
+                            index,
+                        )
+                        channel_score = low_rank_swiglu_channel_score(
+                            base_projected_active,
+                            corrected_norm2,
+                            factors,
+                            block.mlp.w3.weight,
+                            gate_bias=block.mlp.w1.bias,
+                            up_bias=block.mlp.w2.bias,
+                        )
+                        ffn_mask = select_ffn_block_support(
+                            channel_score,
+                            keep_ratio=ffn_ratio,
+                            channel_block_size=self.ffn_channel_block,
+                            token_block_size=self.ffn_token_block,
+                        )
+                        base_gate_active = self._gather_tokens(
+                            base_gate,
+                            index,
+                        )
+                        base_up_active = self._gather_tokens(
+                            base_up,
+                            index,
+                        )
+                        delta_ffn = exact_swiglu_delta_selected_blocks(
+                            base_gate_active,
+                            base_up_active,
+                            corrected_norm2,
+                            block.mlp.w1.weight,
+                            block.mlp.w2.weight,
+                            block.mlp.w3.weight,
+                            ffn_mask,
+                            gate_bias=block.mlp.w1.bias,
+                            up_bias=block.mlp.w2.bias,
+                            token_block_size=self.ffn_token_block,
+                        )
+                        corrected_ffn_active = base_ffn_active + delta_ffn
+                        selected_channels = int(ffn_mask.sum().item())
+                        full_channels = ffn_mask.numel()
+                        predictor_flops = (
+                            2
+                            * batch
+                            * active_tokens
+                            * hidden
+                            * ffn_low_rank
+                            + 8
+                            * batch
+                            * active_tokens
+                            * channels
+                            * ffn_low_rank
+                        )
+                        exact_ffn_flops = 6 * selected_channels * hidden
+                        stats["ffn_predictor_flops"] += predictor_flops
+                        stats["ffn_exact_flops"] += exact_ffn_flops
+                        stats["correction_flops"] += (
+                            predictor_flops + exact_ffn_flops
+                        )
+                        stats["ffn_channel_sum"] += selected_channels
+                        stats["ffn_channel_total"] += full_channels
+                        # z0 plus exact base gate/up are draft outputs retained
+                        # only for layers using an intermediate FFN support.
+                        stats["approx_support_flops"] += (
+                            2
+                            * batch
+                            * tokens
+                            * hidden
+                            * ffn_low_rank
+                        )
+                        stats["cache_bytes"] += (
+                            batch
+                            * tokens
+                            * (ffn_low_rank + 2 * channels)
+                            * x_base.element_size()
+                        )
+
+                    next_active = (
+                        state_attn_active
+                        + block.ls2(corrected_ffn_active)
+                    )
+                    next_states[name] = self._scatter_tokens(
+                        x_base_next,
+                        index,
+                        next_active,
+                    )
+
+                states = next_states
+                x_base = x_base_next
+                x_full = block(x_full, rope)
+
+            full_tokens, full_pooled = self._normalized_backbone_features(x_full)
+            logits_full = self._classifier_logits(x_full).float()
+            outputs: dict[str, dict[str, object]] = {
+                "l0_full": {"logits": logits_full}
+            }
+            comparison_states = {"l2_approx": x_base, **states}
+            for name, state in comparison_states.items():
+                tokens_out, pooled = self._normalized_backbone_features(state)
+                logits = self._classifier_logits(state).float()
+                output = {
+                    "logits": logits,
+                    "token_feature_sums": tensor_sums(tokens_out, full_tokens),
+                    "pooled_feature_sums": tensor_sums(pooled, full_pooled),
+                    "logit_sums": tensor_sums(logits, logits_full),
+                }
+                if name in workload:
+                    stats = workload[name]
+                    approx_flops = max(stats["approx_flops"], 1.0)
+                    output["workload"] = {
+                        **stats,
+                        "correction_over_approx": (
+                            stats["correction_flops"] / approx_flops
+                        ),
+                        "approx_support_over_approx": (
+                            stats["approx_support_flops"] / approx_flops
+                        ),
+                        "active_token_fraction": (
+                            stats["active_token_sum"]
+                            / max(stats["active_token_total"], 1.0)
+                        ),
+                        "attention_edge_fraction": (
+                            stats["attention_edge_sum"]
+                            / max(stats["attention_edge_total"], 1.0)
+                        ),
+                        "ffn_channel_fraction": (
+                            stats["ffn_channel_sum"]
+                            / max(stats["ffn_channel_total"], 1.0)
+                        ),
+                    }
+                outputs[name] = output
+            return outputs
 
     @torch.no_grad()
     def exact_policy_classification_batch(
