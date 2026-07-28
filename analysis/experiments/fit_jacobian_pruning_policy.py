@@ -54,6 +54,22 @@ def parse_args() -> argparse.Namespace:
         help="Policy keep-ratio grid; 0.1 uses only measured support points.",
     )
     parser.add_argument(
+        "--fixed-component-keeps",
+        default=None,
+        help=(
+            "Comma-separated fixed keeps, for example input_token=0.5. "
+            "Fixed components are excluded from the allocation budget."
+        ),
+    )
+    parser.add_argument(
+        "--budget-components",
+        default=",".join(COMPONENTS),
+        help=(
+            "Components over which --target-pruning is defined and allocated. "
+            "Default: all three components."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(
@@ -124,6 +140,35 @@ def parse_component_costs(args: argparse.Namespace) -> dict[str, float]:
     return {name: value / scale for name, value in costs.items()}
 
 
+def parse_fixed_component_keeps(
+    value: str | None,
+) -> dict[str, float]:
+    if value is None or not value.strip():
+        return {}
+    keeps = {}
+    for item in value.split(","):
+        name, keep = item.split("=", maxsplit=1)
+        name = name.strip()
+        if name not in COMPONENTS:
+            raise ValueError(f"Unknown fixed component: {name}")
+        keeps[name] = float(keep)
+    if any(not 0 <= keep <= 1 for keep in keeps.values()):
+        raise ValueError("Fixed component keeps must be in [0, 1]")
+    return keeps
+
+
+def parse_budget_components(value: str) -> set[str]:
+    components = {
+        item.strip() for item in value.split(",") if item.strip()
+    }
+    unknown = components - set(COMPONENTS)
+    if unknown:
+        raise ValueError(f"Unknown budget components: {sorted(unknown)}")
+    if not components:
+        raise ValueError("At least one budget component is required")
+    return components
+
+
 def fit_curves(
     stats: dict,
     *,
@@ -177,12 +222,25 @@ def uniform_predicted_rms(
     grid: np.ndarray,
     curves: dict[tuple[int, str], np.ndarray],
     target_pruning: float,
+    *,
+    fixed_component_keeps: dict[str, float] | None = None,
+    budget_components: set[str] | None = None,
 ) -> float:
+    fixed_component_keeps = fixed_component_keeps or {}
+    budget_components = budget_components or set(COMPONENTS)
     target_keep = 1 - target_pruning
-    squared_errors = [
-        float(np.interp(target_keep, grid, curves[item])) ** 2
-        for item in items
-    ]
+    squared_errors = []
+    for item in items:
+        component = item[1]
+        if component in fixed_component_keeps:
+            keep = fixed_component_keeps[component]
+        elif component in budget_components:
+            keep = target_keep
+        else:
+            keep = 1.0
+        squared_errors.append(
+            float(np.interp(keep, grid, curves[item])) ** 2
+        )
     return math.sqrt(sum(squared_errors) / len(squared_errors))
 
 
@@ -192,18 +250,45 @@ def allocate(
     grid: np.ndarray,
     curves: dict[tuple[int, str], np.ndarray],
     component_costs: dict[str, float],
+    fixed_component_keeps: dict[str, float] | None = None,
+    budget_components: set[str] | None = None,
 ) -> dict:
     if not 0 <= target_pruning <= 1:
         raise ValueError("Target pruning rates must be in [0, 1]")
+    fixed_component_keeps = fixed_component_keeps or {}
+    budget_components = budget_components or set(COMPONENTS)
+    if set(fixed_component_keeps) & budget_components:
+        raise ValueError(
+            "Fixed components must be excluded from budget_components"
+        )
     items = sorted(curves)
     indices = {item: len(grid) - 1 for item in items}
-    full_cost = sum(component_costs[component] for _, component in items)
+    for item in items:
+        component = item[1]
+        if component not in fixed_component_keeps:
+            continue
+        keep = fixed_component_keeps[component]
+        matches = np.flatnonzero(np.isclose(grid, keep, atol=1e-9, rtol=0))
+        if len(matches) != 1:
+            raise ValueError(
+                f"Fixed keep {component}={keep} is not on policy grid"
+            )
+        indices[item] = int(matches[0])
+
+    budget_items = [
+        item for item in items if item[1] in budget_components
+    ]
+    if not budget_items:
+        raise ValueError("No allocatable items are in budget_components")
+    full_cost = sum(
+        component_costs[component] for _, component in budget_items
+    )
     target_cost = (1 - target_pruning) * full_cost
     current_cost = full_cost
 
     while current_cost > target_cost + full_cost * 1e-9:
         candidates = []
-        for item in items:
+        for item in budget_items:
             current_index = indices[item]
             if current_index == 0:
                 continue
@@ -231,9 +316,22 @@ def allocate(
 
     optimized_rms = predicted_rms(indices, curves)
     uniform_rms = uniform_predicted_rms(
-        items, grid, curves, target_pruning
+        items,
+        grid,
+        curves,
+        target_pruning,
+        fixed_component_keeps=fixed_component_keeps,
+        budget_components=budget_components,
     )
     achieved_pruning = 1 - current_cost / full_cost
+    total_full_cost = sum(
+        component_costs[component] for _, component in items
+    )
+    total_current_cost = sum(
+        float(grid[indices[item]]) * component_costs[item[1]]
+        for item in items
+    )
+    overall_achieved_pruning = 1 - total_current_cost / total_full_cost
 
     schedule = []
     for layer in range(40):
@@ -273,6 +371,9 @@ def allocate(
     return {
         "target_pruning_rate": target_pruning,
         "achieved_pruning_rate": achieved_pruning,
+        "overall_achieved_pruning_rate": overall_achieved_pruning,
+        "budget_components": sorted(budget_components),
+        "fixed_component_keeps": fixed_component_keeps,
         "optimized_predicted_rms": optimized_rms,
         "uniform_predicted_rms": uniform_rms,
         "predicted_rms_reduction_vs_uniform": (
@@ -293,6 +394,15 @@ def main() -> None:
         if value.strip()
     ]
     component_costs = parse_component_costs(args)
+    fixed_component_keeps = parse_fixed_component_keeps(
+        args.fixed_component_keeps
+    )
+    budget_components = parse_budget_components(args.budget_components)
+    if set(fixed_component_keeps) & budget_components:
+        raise ValueError(
+            "Components listed in --fixed-component-keeps must be excluded "
+            "from --budget-components"
+        )
     grid, curves = fit_curves(
         stats,
         risk_sigma=args.risk_sigma,
@@ -304,6 +414,8 @@ def main() -> None:
             grid=grid,
             curves=curves,
             component_costs=component_costs,
+            fixed_component_keeps=fixed_component_keeps,
+            budget_components=budget_components,
         )
         for target in target_pruning_rates
     ]
@@ -320,6 +432,9 @@ def main() -> None:
             ),
             "cost_mode": args.cost_mode,
             "normalized_component_costs": component_costs,
+            "fixed_component_keeps": fixed_component_keeps,
+            "budget_components": sorted(budget_components),
+            "target_pruning_scope": "budget_components_only",
             "objective": "root mean square of isolated final-feature L2",
             "caveat": (
                 "Isolated layer/component errors are treated as additive in "
@@ -338,6 +453,7 @@ def main() -> None:
         print(
             f"target={policy['target_pruning_rate']:.0%} "
             f"achieved={policy['achieved_pruning_rate']:.1%} "
+            f"overall={policy['overall_achieved_pruning_rate']:.1%} "
             f"predicted_rms={policy['optimized_predicted_rms']:.4f} "
             f"uniform={policy['uniform_predicted_rms']:.4f} "
             f"token/attn/ffn pruning="
