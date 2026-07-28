@@ -1293,6 +1293,226 @@ class Dinov3JacobianOracle(Dinov3SignalProbe):
                 results[str(target_layer)] = layer_results
             return results
 
+    @torch.no_grad()
+    def exact_policy_classification_batch(
+        self,
+        base_bchw_uint8: torch.Tensor,
+        full_bchw_uint8: torch.Tensor,
+        policies: dict[str, list[dict[str, float]]],
+    ) -> dict[str, dict[str, object]]:
+        """Apply mixed layer/component policies in one exact-difference pass.
+
+        Token support gates the current residual state against the stock L2
+        state at every layer. Attention and FFN use exact nonlinear output
+        differences on structured support. The returned L2-only and policy
+        tensors are compared against the same stock L0 full forward.
+        """
+
+        num_layers = len(self.backbone.blocks)
+        policy_rows = {}
+        for name, schedule in policies.items():
+            if len(schedule) != num_layers:
+                raise ValueError(
+                    f"Policy {name!r} has {len(schedule)} layers; "
+                    f"expected {num_layers}"
+                )
+            rows = {int(row["layer"]): row for row in schedule}
+            if set(rows) != set(range(num_layers)):
+                raise ValueError(
+                    f"Policy {name!r} must define every layer exactly once"
+                )
+            for row in rows.values():
+                for component in (
+                    "input_token_keep",
+                    "attention_edge_keep",
+                    "ffn_channel_keep",
+                ):
+                    value = float(row[component])
+                    if not 0 <= value <= 1:
+                        raise ValueError(
+                            f"{name} layer {row['layer']} {component}={value} "
+                            "is outside [0, 1]"
+                        )
+            policy_rows[name] = rows
+
+        base_input = self._prepare_input(base_bchw_uint8)
+        full_input = self._prepare_input(full_bchw_uint8)
+        context = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if self.device.type == "cuda"
+            else nullcontext()
+        )
+        with context:
+            x_base, hw = self.backbone.prepare_tokens_with_masks(base_input, None)
+            x_full, full_hw = self.backbone.prepare_tokens_with_masks(
+                full_input, None
+            )
+            if hw != full_hw:
+                raise RuntimeError("Policy correction token grids must match")
+            rope = (
+                self.backbone.rope_embed(H=hw[0], W=hw[1])
+                if self.backbone.rope_embed is not None
+                else None
+            )
+            states = {name: x_full.clone() for name in policies}
+
+            for layer_index, block in enumerate(self.backbone.blocks):
+                q_base, k_base, v_base = self._attention_qkv(
+                    block, x_base, rope
+                )
+                q_base_f = q_base.float()
+                k_base_f = k_base.float()
+                v_base_f = v_base.float()
+                base_attention = block.attn(block.norm1(x_base), rope=rope)
+                x_base_attn = x_base + block.ls1(base_attention)
+                base_norm2 = block.norm2(x_base_attn)
+                base_gate = block.mlp.w1(base_norm2).float()
+                base_up = block.mlp.w2(base_norm2).float()
+                base_hidden = F.silu(base_gate) * base_up
+                # Preserve the stock BF16 operation order at the 0% endpoint.
+                # The FP32 hidden value above is used only by an intermediate
+                # exact-difference correction.
+                base_ffn = block.mlp(base_norm2)
+                down_norm = (
+                    block.mlp.w3.weight.float()
+                    .square()
+                    .sum(dim=0)
+                    .sqrt()
+                )
+
+                next_states = {}
+                for name, state in states.items():
+                    row = policy_rows[name][layer_index]
+                    token_ratio = float(row["input_token_keep"])
+                    attention_ratio = float(row["attention_edge_keep"])
+                    ffn_ratio = float(row["ffn_channel_keep"])
+
+                    if token_ratio <= 0:
+                        supported_state = x_base
+                    elif token_ratio >= 1:
+                        supported_state = state
+                    else:
+                        state_delta = state - x_base
+                        token_score = state_delta.float().square().sum(dim=-1)
+                        keep = max(
+                            1,
+                            math.ceil(state.shape[1] * token_ratio),
+                        )
+                        token_indices = torch.topk(
+                            token_score, k=keep, dim=-1
+                        ).indices
+                        token_mask = torch.zeros_like(
+                            token_score, dtype=torch.bool
+                        )
+                        token_mask.scatter_(-1, token_indices, True)
+                        supported_state = (
+                            x_base
+                            + state_delta * token_mask.unsqueeze(-1)
+                        )
+
+                    if attention_ratio <= 0:
+                        corrected_attention = base_attention
+                    elif attention_ratio >= 1:
+                        corrected_attention = block.attn(
+                            block.norm1(supported_state), rope=rope
+                        )
+                    else:
+                        q_new, k_new, v_new = self._attention_qkv(
+                            block, supported_state, rope
+                        )
+                        dense_attention = attention_delta(
+                            q_base_f,
+                            k_base_f,
+                            v_base_f,
+                            q_new.float() - q_base_f,
+                            k_new.float() - k_base_f,
+                            v_new.float() - v_base_f,
+                            scale=float(block.attn.scale),
+                            backend="product_delta",
+                            probability_mode="exact",
+                        )
+                        attention_mask, _ = select_attention_block_support(
+                            dense_attention.base_probability,
+                            keep_ratio=attention_ratio,
+                            key_block_size=self.key_block,
+                            query_block_size=self.query_block,
+                            head_group_size=self.head_group,
+                        )
+                        sparse_attention = attention_delta(
+                            q_base_f,
+                            k_base_f,
+                            v_base_f,
+                            q_new.float() - q_base_f,
+                            k_new.float() - k_base_f,
+                            v_new.float() - v_base_f,
+                            scale=float(block.attn.scale),
+                            backend="product_delta",
+                            probability_mode="exact",
+                            support_mask=attention_mask,
+                        )
+                        corrected_raw = (
+                            sparse_attention.corrected_output.transpose(1, 2)
+                            .reshape(supported_state.shape)
+                            .to(dtype=supported_state.dtype)
+                        )
+                        corrected_attention = block.attn.proj_drop(
+                            block.attn.proj(corrected_raw)
+                        )
+
+                    state_attn = supported_state + block.ls1(
+                        corrected_attention
+                    )
+                    if ffn_ratio <= 0:
+                        corrected_ffn = base_ffn
+                    elif ffn_ratio >= 1:
+                        corrected_ffn = block.mlp(block.norm2(state_attn))
+                    else:
+                        corrected_norm2 = block.norm2(state_attn)
+                        corrected_gate = block.mlp.w1(
+                            corrected_norm2
+                        ).float()
+                        corrected_up = block.mlp.w2(
+                            corrected_norm2
+                        ).float()
+                        exact_hidden_delta = (
+                            F.silu(corrected_gate) * corrected_up
+                            - base_hidden
+                        )
+                        channel_score = exact_hidden_delta.abs() * down_norm
+                        ffn_mask = select_ffn_block_support(
+                            channel_score,
+                            keep_ratio=ffn_ratio,
+                            channel_block_size=self.ffn_channel_block,
+                            token_block_size=self.ffn_token_block,
+                        )
+                        corrected_hidden = (
+                            base_hidden
+                            + exact_hidden_delta.masked_fill(~ffn_mask, 0)
+                        ).to(dtype=state_attn.dtype)
+                        corrected_ffn = block.mlp.w3(corrected_hidden)
+                    next_states[name] = state_attn + block.ls2(corrected_ffn)
+
+                states = next_states
+                x_base = x_base_attn + block.ls2(base_ffn)
+                x_full = block(x_full, rope)
+
+            full_tokens, full_pooled = self._normalized_backbone_features(x_full)
+            logits_full = self._classifier_logits(x_full).float()
+            outputs: dict[str, dict[str, object]] = {
+                "l0_full": {"logits": logits_full}
+            }
+            comparison_states = {"l2_approx": x_base, **states}
+            for name, state in comparison_states.items():
+                tokens, pooled = self._normalized_backbone_features(state)
+                logits = self._classifier_logits(state).float()
+                outputs[name] = {
+                    "logits": logits,
+                    "token_feature_sums": tensor_sums(tokens, full_tokens),
+                    "pooled_feature_sums": tensor_sums(pooled, full_pooled),
+                    "logit_sums": tensor_sums(logits, logits_full),
+                }
+            return outputs
+
 
 def load_images(
     args: argparse.Namespace,
