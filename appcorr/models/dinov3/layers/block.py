@@ -316,6 +316,7 @@ class SelfAttentionBlock(nn.Module):
                 tag=tag,
                 appcorr_method="partial_token",
                 server_pscore=server_pscore,
+                cache_pre_rope_k=bool(kwargs.get("cache_pre_rope_k", False)),
             )
             x_attn = self.ls1(x_attn)  # [B, N, C]
             cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
