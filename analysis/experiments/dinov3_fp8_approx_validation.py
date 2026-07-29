@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and benchmark stage-selective DINOv3 FP8 approximate inference."""
+"""Validate and benchmark stage-selective DINOv3 FP8/FP4 approximate inference."""
 
 from __future__ import annotations
 
@@ -16,11 +16,16 @@ from offload.common.protocol import ExperimentConfig
 from offload.server.model.dinov3_precision import DINOv3ApproxPrecisionController
 
 
-def _make_block(dim: int, num_heads: int) -> SelfAttentionBlock:
+def _make_block(
+    dim: int,
+    num_heads: int,
+    *,
+    ffn_ratio: float = 4.0,
+) -> SelfAttentionBlock:
     block = SelfAttentionBlock(
         dim,
         num_heads,
-        ffn_ratio=4.0,
+        ffn_ratio=ffn_ratio,
         qkv_bias=True,
         mask_k_bias=True,
         init_values=None,
@@ -96,7 +101,7 @@ def _group_plans(
 
 
 def validate_config() -> None:
-    for precision in ("bf16", "fp8", "auto"):
+    for precision in ("bf16", "fp8", "fp4", "auto"):
         config = ExperimentConfig(precision=precision)
         assert config.precision == precision
         assert config.fp8_auto_min_rows == 3072
@@ -272,6 +277,97 @@ def validate_cuda_paths(dim: int = 1024, num_heads: int = 16) -> None:
     assert torch.isfinite(mixed_output).all()
 
 
+def validate_fp4_cuda_path(dim: int = 1024, num_heads: int = 16) -> None:
+    if torch.cuda.get_device_capability() < (10, 0):
+        print("SKIP: FP4 validation requires SM100+")
+        return
+
+    torch.manual_seed(0)
+    block = _make_block(dim, num_heads, ffn_ratio=3.0)
+    controller = DINOv3ApproxPrecisionController(
+        nn.ModuleList([block]),
+        precision="fp4",
+        auto_min_rows=3072,
+        device=torch.device("cuda"),
+    )
+    fp4_linears = list(controller.iter_fp4_linears())
+    assert len(fp4_linears) == 5
+    assert all(
+        type(module.weight).__name__ == "NVFP4Tensor"
+        for _, module in fp4_linears
+    )
+    assert controller._effective_precision(1) == "fp4"
+
+    batch_size, num_tokens, num_pretokens = 1, 64, 5
+    x_low = torch.randn(
+        batch_size,
+        num_tokens,
+        dim,
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    x_high = torch.randn_like(x_low)
+    rope = _rope(num_tokens, num_pretokens, dim // num_heads)
+    dindice = torch.arange(num_tokens, device="cuda").view(1, -1)
+
+    with torch.inference_mode():
+        controller.run_block(
+            0,
+            x_low,
+            rope,
+            {},
+            "profile",
+            **_partial_token_kwargs(),
+        )
+        torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as fp4_prof:
+        with torch.inference_mode():
+            fp4_output, fp4_cache = controller.run_block(
+                0,
+                x_low,
+                rope,
+                {},
+                "layer0",
+                **_partial_token_kwargs(),
+            )
+            torch.cuda.synchronize()
+    assert any("scaled_mm" in event.key for event in fp4_prof.key_averages())
+    assert fp4_output.dtype == torch.bfloat16
+    assert fp4_cache["layer0_kv"].dtype == torch.bfloat16
+
+    with torch.inference_mode():
+        mixed_output, _ = block.correct(
+            x_high,
+            dindice,
+            rope,
+            fp4_cache,
+            "layer0",
+            **_partial_token_correct_kwargs(),
+        )
+        _, bf16_cache = block.approx(
+            x_low,
+            rope,
+            {},
+            "layer0",
+            **_partial_token_kwargs(),
+        )
+        bf16_output, _ = block.correct(
+            x_high,
+            dindice,
+            rope,
+            bf16_cache,
+            "layer0",
+            **_partial_token_correct_kwargs(),
+        )
+        torch.cuda.synchronize()
+
+    assert torch.equal(mixed_output, bf16_output)
+    assert torch.isfinite(mixed_output).all()
+    metadata = controller.event_metadata()
+    assert metadata["approx_precision_effective"] == "fp4"
+    assert metadata["approx_fp4_sources"] == 1
+
+
 def _measure_ms(fn, warmup: int, iterations: int) -> float:
     for _ in range(warmup):
         fn()
@@ -352,9 +448,12 @@ def main() -> None:
 
     validate_config()
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for FP8 validation")
+        raise RuntimeError("CUDA is required for FP8/FP4 validation")
     validate_cuda_paths()
-    print("PASS: config, FP8 weights, auto routing, and full-correction parity")
+    validate_fp4_cuda_path()
+    print(
+        "PASS: config, FP8/FP4 weights, auto routing, and full-correction parity"
+    )
     if args.benchmark:
         benchmark(args)
 

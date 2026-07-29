@@ -198,9 +198,9 @@ class ExperimentConfig:
 
     def __post_init__(self):
         self.precision = str(self.precision).lower()
-        if self.precision not in {"bf16", "fp8", "auto"}:
+        if self.precision not in {"bf16", "fp8", "fp4", "auto"}:
             raise ValueError(
-                "precision must be one of 'bf16', 'fp8', or 'auto', "
+                "precision must be one of 'bf16', 'fp8', 'fp4', or 'auto', "
                 f"got {self.precision!r}"
             )
         self.fp8_auto_min_rows = int(self.fp8_auto_min_rows)
