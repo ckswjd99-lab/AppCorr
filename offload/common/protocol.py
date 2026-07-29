@@ -171,6 +171,8 @@ class ExperimentConfig:
     # Model Settings
     model_name: str = "dinov3_classifier"  # e.g. "dinov3_segmentor_m2f", "dinov3_segmentor_linhead"
     device: str = None  # User can specify "cuda:0", "cpu", etc. Default is None (auto-detect)
+    precision: str = "bf16"
+    fp8_auto_min_rows: int = 3072
     
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
@@ -193,6 +195,20 @@ class ExperimentConfig:
     scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
     appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.precision = str(self.precision).lower()
+        if self.precision not in {"bf16", "fp8", "auto"}:
+            raise ValueError(
+                "precision must be one of 'bf16', 'fp8', or 'auto', "
+                f"got {self.precision!r}"
+            )
+        self.fp8_auto_min_rows = int(self.fp8_auto_min_rows)
+        if self.fp8_auto_min_rows <= 0:
+            raise ValueError(
+                "fp8_auto_min_rows must be positive, "
+                f"got {self.fp8_auto_min_rows}"
+            )
 
     def get_input_profile_config(self) -> Dict[str, Any]:
         name = self.input_profile_name or "fixed_image_shape"
