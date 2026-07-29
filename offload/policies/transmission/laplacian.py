@@ -285,6 +285,10 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             
             prev_lvl = lvl
         
+        # The model input is always expressed at config.image_shape, even when
+        # only a coarse base level is transmitted (for example levels=[2]).
+        # Without this final expansion, base-only decode returns H/4 x W/4 and
+        # cannot be placed in the fixed-size output batch.
         if prev_lvl > 0:
             curr_img = self._iterative_upsample(curr_img, prev_lvl, 0, H, W)
 

@@ -366,6 +366,9 @@ class SelfAttentionBlock(nn.Module):
         k_refined = min(int(num_patch_candidates * token_keep_ratio), num_patch_candidates)
         if k_refined <= 0:
             return keep_patch_mask
+        if k_refined == num_patch_candidates:
+            keep_patch_mask.fill_(True)
+            return keep_patch_mask
 
         topk_local_idx = torch.topk(
             combined_patch_scores,
@@ -1042,6 +1045,22 @@ class SelfAttentionBlock(nn.Module):
             attn_col_alive_ratio: float = 1.0,
             attn_cache_key=None,
     ) -> List[Tensor]:
+        sparse_cache_key = f"{tag}_attn_sparse_cache_g{attn_cache_key}"
+        pending_sparse_caches = [
+            key
+            for key in cache_feature
+            if key.startswith(f"{tag}_attn_sparse_cache_g")
+        ]
+        if pending_sparse_caches == [sparse_cache_key]:
+            # The last spatial group completes the full token set. Recompute the
+            # block with the canonical BF16 weights so an FP8 approximate pass
+            # cannot leak quantization error into the 100%-correction tier.
+            x = self.forward(x, rope)
+            for key in list(cache_feature):
+                if key.startswith(f"{tag}_"):
+                    del cache_feature[key]
+            return x, cache_feature
+
         with torch.cuda.nvtx.range("correct_attn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
             x_base = x + blocks_out_sum.to(x.dtype)
