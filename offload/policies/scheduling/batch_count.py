@@ -4,7 +4,11 @@ from ..interface import ISchedulingPolicy
 
 class BatchCountBasedPolicy(ISchedulingPolicy):
     """
-    Waits for a full batch of patches across all groups, then triggers FULL_INFERENCE.
+    Waits for a full batch of patches across all groups, then triggers inference.
+
+    ``scheduler_kwargs.approx_only`` routes the completed low-resolution batch
+    through the stateful approximate backbone. This is required for approximate
+    precision modes such as FP8; FULL_INFERENCE intentionally remains BF16.
     """
 
     def __init__(self, config=None):
@@ -55,12 +59,24 @@ class BatchCountBasedPolicy(ISchedulingPolicy):
             t_id = next(task_id_gen)
             current_batch_patches = buffer[:total_expected]
 
-            instructions = [
-                Instruction(OpType.LOAD_INPUT),
-                Instruction(OpType.FULL_INFERENCE),
-                Instruction(OpType.SEND_RESPONSE),
-                Instruction(OpType.FREE_SESSION)
-            ]
+            if bool(config.scheduler_kwargs.get('approx_only', False)):
+                total_layers = int(config.transmission_kwargs.get('total_layers', 40))
+                instructions = [
+                    Instruction(OpType.LOAD_INPUT),
+                    Instruction(OpType.PREPARE_TOKENS),
+                    Instruction(OpType.APPROX_FORWARD, {'layers': (0, total_layers)}),
+                    Instruction(OpType.HEAD_INFERENCE),
+                    Instruction(OpType.EXIT_ALL),
+                    Instruction(OpType.SEND_RESPONSE),
+                    Instruction(OpType.FREE_SESSION),
+                ]
+            else:
+                instructions = [
+                    Instruction(OpType.LOAD_INPUT),
+                    Instruction(OpType.FULL_INFERENCE),
+                    Instruction(OpType.SEND_RESPONSE),
+                    Instruction(OpType.FREE_SESSION),
+                ]
 
             task = Task(
                 task_id=t_id,

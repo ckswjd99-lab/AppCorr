@@ -8,6 +8,49 @@ class ModelExecutor(ABC):
     def __init__(self, device: torch.device):
         self.device = device
         self.model = None
+        self._dinov3_approx_precision = None
+
+    def configure_dinov3_approx_precision(self, backbone: torch.nn.Module, config: Any):
+        from .dinov3_precision import DINOv3ApproxPrecisionController
+
+        self._dinov3_approx_precision = DINOv3ApproxPrecisionController.from_config(
+            backbone.blocks,
+            config,
+            self.device,
+        )
+
+    def begin_dinov3_approx_event(self):
+        if self._dinov3_approx_precision is None:
+            raise RuntimeError("DINOv3 approximate precision is not configured")
+        self._dinov3_approx_precision.begin_event()
+
+    def run_dinov3_approx_block(
+        self,
+        layer_idx: int,
+        x: torch.Tensor,
+        rope,
+        cache: Dict[str, Any],
+        tag: str,
+        *,
+        source_key: str = "default",
+        **kwargs,
+    ):
+        if self._dinov3_approx_precision is None:
+            raise RuntimeError("DINOv3 approximate precision is not configured")
+        return self._dinov3_approx_precision.run_block(
+            layer_idx,
+            x,
+            rope,
+            cache,
+            tag,
+            source_key=source_key,
+            **kwargs,
+        )
+
+    def dinov3_approx_event_metadata(self) -> Dict[str, Any]:
+        if self._dinov3_approx_precision is None:
+            return {}
+        return self._dinov3_approx_precision.event_metadata()
 
     @staticmethod
     def _normalize_patch_score_map(score_map: torch.Tensor | None) -> torch.Tensor | None:
