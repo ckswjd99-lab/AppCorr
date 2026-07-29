@@ -35,7 +35,27 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         "_partial_token_kept_patch_total",
         "_partial_token_full_patch_total",
         "_partial_token_sample_total",
+        "_partial_token_kept_patch_layer_total",
+        "_partial_token_full_patch_layer_total",
+        "_partial_token_sample_layer_total",
+        "_partial_token_l1_kept_patch_layer_total",
+        "_partial_token_l1_full_patch_layer_total",
+        "_partial_token_l0_kept_patch_layer_total",
+        "_partial_token_l0_full_patch_layer_total",
+        "_partial_token_l0_disjoint_excluded_patch_layer_total",
+        "_partial_token_l1_l0_overlap_total",
     })
+
+    _PARTIAL_TOKEN_PLAN_TOTAL_KEYS = (
+        "_partial_token_kept_patch_total",
+        "_partial_token_full_patch_total",
+        "_partial_token_sample_total",
+    )
+    _PARTIAL_TOKEN_LAYER_TOTAL_KEYS = (
+        "_partial_token_kept_patch_layer_total",
+        "_partial_token_full_patch_layer_total",
+        "_partial_token_sample_layer_total",
+    )
 
     def __init__(self, device: torch.device):
         super().__init__(device)
@@ -67,6 +87,158 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if normalized in {"fp32", "float32", "torch.float32"}:
             return torch.float32
         raise ValueError(f"Unsupported autocast dtype: {name}")
+
+    @staticmethod
+    def _uses_l2l1l0_transmission(config: Any) -> bool:
+        return (
+            getattr(config, "transmission_policy_name", None)
+            == "ADE20KWindowL2L1L0ProgressiveLaplacian"
+        )
+
+    @classmethod
+    def _uses_l1_l0_disjoint_support(cls, config: Any) -> bool:
+        if not cls._uses_l2l1l0_transmission(config):
+            return False
+        options = normalize_appcorr_kwargs(
+            getattr(config, "appcorr_kwargs", {}),
+            getattr(config, "transmission_kwargs", {}),
+        )
+        return bool(options["l1_l0_disjoint_support"])
+
+    @classmethod
+    def _uses_l1_l0_conditional_reentry(cls, config: Any) -> bool:
+        if not cls._uses_l2l1l0_transmission(config):
+            return False
+        options = normalize_appcorr_kwargs(
+            getattr(config, "appcorr_kwargs", {}),
+            getattr(config, "transmission_kwargs", {}),
+        )
+        return options["l1_l0_support_mode"] == "conditional_reentry"
+
+    @classmethod
+    def _uses_l1_l0_conditional_pscore(cls, config: Any) -> bool:
+        if not cls._uses_l2l1l0_transmission(config):
+            return False
+        options = normalize_appcorr_kwargs(
+            getattr(config, "appcorr_kwargs", {}),
+            getattr(config, "transmission_kwargs", {}),
+        )
+        return options["l1_l0_support_mode"] in {
+            "conditional_threshold",
+            "conditional_reentry",
+        }
+
+    @staticmethod
+    def _token_keep_threshold_for_group(
+        appcorr_options: Dict[str, Any],
+        *,
+        group_id: int,
+        l2l1l0_mode: bool,
+    ) -> float | None:
+        threshold = appcorr_options["token_keep_thres"]
+        if not l2l1l0_mode:
+            return threshold
+        if group_id == 1:
+            level_threshold = appcorr_options["l1_token_keep_thres"]
+        else:
+            level_threshold = appcorr_options["l0_token_keep_thres"]
+        return threshold if level_threshold is None else level_threshold
+
+    @staticmethod
+    def _patch_hw(config: Any) -> tuple[int, int]:
+        if isinstance(config.patch_size, int):
+            return int(config.patch_size), int(config.patch_size)
+        return tuple(int(value) for value in config.patch_size)
+
+    @classmethod
+    def _transmission_grid_hw(
+        cls,
+        config: Any,
+        level: int,
+        *,
+        original_hw: tuple[int, int] | None,
+        target_grid_hw: tuple[int, int],
+    ) -> tuple[int, int]:
+        target_level = min(config.transmission_kwargs.get("pyramid_levels", [0]))
+        if level == target_level:
+            return target_grid_hw
+
+        patch_h, patch_w = cls._patch_hw(config)
+        if original_hw:
+            original_h, original_w = (int(value) for value in original_hw)
+            short_side = int(
+                config.get_input_profile_config().get(
+                    "mobile_resize_short_side",
+                    min(config.image_shape[:2]),
+                )
+            )
+            target_short = max(short_side // (2 ** int(level)), 1)
+            if original_h <= original_w:
+                target_h = math.ceil(target_short / patch_h) * patch_h
+                target_w = (
+                    math.ceil(
+                        (original_w / max(original_h, 1) * target_h)
+                        / patch_w
+                    )
+                    * patch_w
+                )
+            else:
+                target_w = math.ceil(target_short / patch_w) * patch_w
+                target_h = (
+                    math.ceil(
+                        (original_h / max(original_w, 1) * target_w)
+                        / patch_h
+                    )
+                    * patch_h
+                )
+            return target_h // patch_h, target_w // patch_w
+
+        scale = 2 ** max(int(level) - int(target_level), 0)
+        target_grid_h, target_grid_w = target_grid_hw
+        return (
+            max(math.ceil(target_grid_h / scale), 1),
+            max(math.ceil(target_grid_w / scale), 1),
+        )
+
+    @classmethod
+    def _model_spatial_indices_for_patch(
+        cls,
+        patch: Any,
+        config: Any,
+        target_grid_hw: tuple[int, int],
+    ) -> tuple[int, ...]:
+        """Project a coarse residual cell onto the final model-input token grid."""
+        target_level = min(config.transmission_kwargs.get("pyramid_levels", [0]))
+        patch_level = int(getattr(patch, "res_level", target_level))
+        if patch_level < target_level:
+            raise ValueError(
+                f"Patch level {patch_level} is below target level {target_level}"
+            )
+
+        original_hw = getattr(patch, "target_shape", None) or None
+        coarse_grid_h, coarse_grid_w = cls._transmission_grid_hw(
+            config,
+            patch_level,
+            original_hw=original_hw,
+            target_grid_hw=target_grid_hw,
+        )
+        spatial_idx = int(getattr(patch, "spatial_idx", -1))
+        if spatial_idx < 0 or spatial_idx >= coarse_grid_h * coarse_grid_w:
+            return ()
+
+        target_grid_h, target_grid_w = target_grid_hw
+        coarse_row, coarse_col = divmod(spatial_idx, coarse_grid_w)
+        row_start = coarse_row * target_grid_h // coarse_grid_h
+        row_end = (coarse_row + 1) * target_grid_h // coarse_grid_h
+        col_start = coarse_col * target_grid_w // coarse_grid_w
+        col_end = (coarse_col + 1) * target_grid_w // coarse_grid_w
+        row_end = max(row_end, row_start + 1)
+        col_end = max(col_end, col_start + 1)
+        return tuple(
+            row * target_grid_w + col
+            for row in range(row_start, min(row_end, target_grid_h))
+            for col in range(col_start, min(col_end, target_grid_w))
+        )
 
     @staticmethod
     def _resize_short_side(image: Image.Image, short_side: int) -> Image.Image:
@@ -313,13 +485,32 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             selected_image_indices = filtered_image_indices
         context["input_images_uint8"] = [np.ascontiguousarray(image) for image in images]
         context["target_shapes"] = target_shapes
+        conditional_pscore = self._uses_l1_l0_conditional_pscore(config)
         context["m2f_mobile_pscore_hint_maps"] = self._build_mobile_pscore_hint_maps(
             task,
             images,
             config,
             selected_image_indices,
             context=context,
+            normalize=not conditional_pscore,
         )
+        if conditional_pscore:
+            context[
+                "m2f_mobile_pscore_if_l1_corrected_hint_maps"
+            ] = self._build_mobile_pscore_hint_maps(
+                task,
+                images,
+                config,
+                selected_image_indices,
+                context=context,
+                score_attribute="pscore_hint_if_l1_corrected",
+                normalize=False,
+            )
+        else:
+            context.pop(
+                "m2f_mobile_pscore_if_l1_corrected_hint_maps",
+                None,
+            )
 
     def _as_image_list(self, batch_data: Any) -> tuple[List[np.ndarray], List[tuple[int, int] | None]]:
         if isinstance(batch_data, list):
@@ -368,6 +559,9 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         config: Any,
         selected_image_indices: List[int],
         context: Dict[str, Any] | None = None,
+        *,
+        score_attribute: str = "pscore_hint",
+        normalize: bool = True,
     ) -> List[tuple[torch.Tensor, tuple[int, int]] | None] | None:
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         if appcorr_options["mobile_pscore"] == "none" or appcorr_options["mobile_pscore_weight"] == 0.0:
@@ -376,7 +570,10 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         # actual |real HR - SR base| residual computed on the server (the SR base is what the approx ran
         # on), instead of the mobile's SR-unaware transmitted-refinement energy. This makes the SR base
         # feed back into which tokens get corrected.
-        use_sr_residual = bool(appcorr_options.get("sr_residual_pscore", False))
+        use_sr_residual = (
+            score_attribute == "pscore_hint"
+            and bool(appcorr_options.get("sr_residual_pscore", False))
+        )
         sr_full = context.get("input_sr_tensor") if (use_sr_residual and context is not None) else None
         if not use_sr_residual and not task.payload:
             return None
@@ -429,8 +626,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             filled_from_sr_residual = True
 
         if not filled_from_sr_residual:
+            expand_coarse_hints = self._uses_l2l1l0_transmission(config)
             for patch in task.payload:
-                if int(getattr(patch, "res_level", target_res_level)) != target_res_level:
+                patch_level = int(
+                    getattr(patch, "res_level", target_res_level)
+                )
+                if patch_level != target_res_level and not expand_coarse_hints:
                     continue
                 patch_image_idx = int(getattr(patch, "image_idx", -1))
                 image_idx = original_to_local.get(patch_image_idx)
@@ -440,9 +641,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 hint_shape = hint_shapes[image_idx]
                 if hint_map is None or hint_shape is None:
                     continue
-                spatial_idx = int(getattr(patch, "spatial_idx", -1))
-                if 0 <= spatial_idx < hint_map.shape[0]:
-                    hint_map[spatial_idx] = float(getattr(patch, "pscore_hint", 0.0))
+                spatial_indices = self._model_spatial_indices_for_patch(
+                    patch,
+                    config,
+                    hint_shape,
+                )
+                if spatial_indices:
+                    hint_map[np.asarray(spatial_indices, dtype=np.int64)] = (
+                        float(getattr(patch, score_attribute, 0.0))
+                    )
 
         projected_input_maps: List[tuple[torch.Tensor, tuple[int, int]] | None] = [None] * len(images)
         for hint_shape, image_indices in shape_to_indices.items():
@@ -455,9 +662,16 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 dtype=torch.float32,
                 non_blocking=True,
             )
-            normalized_batch = self._normalize_patch_score_map(hint_batch)
+            score_batch = (
+                self._normalize_patch_score_map(hint_batch)
+                if normalize
+                else hint_batch
+            )
             for row_idx, image_idx in enumerate(image_indices):
-                projected_input_maps[image_idx] = (normalized_batch[row_idx:row_idx + 1], hint_shape)
+                projected_input_maps[image_idx] = (
+                    score_batch[row_idx:row_idx + 1],
+                    hint_shape,
+                )
         return projected_input_maps
 
     def _pil_to_normalized_tensor(self, image: Image.Image) -> torch.Tensor:
@@ -1055,12 +1269,47 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_image_metas"] = image_metas
         context["m2f_inference_mode"] = inference_mode
         context["m2f_decoder_head_type"] = decoder_head_type
-        context["m2f_mobile_pscore_hints"] = self._project_mobile_pscore_hints_to_sources(
+        conditional_pscore = self._uses_l1_l0_conditional_pscore(config)
+        projected_mobile_hints = self._project_mobile_pscore_hints_to_sources(
             context.get("m2f_mobile_pscore_hint_maps"),
             all_x_backbones,
             all_token_shapes,
             all_source_group_contexts,
+            normalize=not conditional_pscore,
         )
+        if conditional_pscore:
+            projected_after_l1_hints = (
+                self._project_mobile_pscore_hints_to_sources(
+                    context.get(
+                        "m2f_mobile_pscore_if_l1_corrected_hint_maps"
+                    ),
+                    all_x_backbones,
+                    all_token_shapes,
+                    all_source_group_contexts,
+                    normalize=False,
+                )
+            )
+            group_id = (
+                int(task.payload[0].group_id)
+                if task.payload
+                else 0
+            )
+            (
+                projected_mobile_hints,
+                reentry_candidate_masks,
+            ) = self._build_conditional_mobile_pscore_hints(
+                projected_mobile_hints,
+                projected_after_l1_hints,
+                context.get("m2f_l1_selected_token_masks"),
+                group_id=group_id,
+                num_pretokens=1 + vit_backbone.n_storage_tokens,
+            )
+            context[
+                "m2f_l0_reentry_candidate_masks"
+            ] = reentry_candidate_masks
+        else:
+            context.pop("m2f_l0_reentry_candidate_masks", None)
+        context["m2f_mobile_pscore_hints"] = projected_mobile_hints
         context.pop("m2f_group_maps", None)
         context.pop("m2f_group_plans", None)
         context.pop("m2f_cached_dindices", None)
@@ -1083,6 +1332,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
     @torch.inference_mode()
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         start_l, end_l = params.get("layers", (0, 40))
+        cache_mode = str(params.get("cache_mode", "correction"))
+        if cache_mode not in {"correction", "none"}:
+            raise ValueError(
+                f"Unknown approx cache_mode {cache_mode!r}; "
+                "expected 'correction' or 'none'"
+            )
 
         adapter = self.model.segmentation_model[0]
         vit_backbone = adapter.backbone
@@ -1112,8 +1367,10 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
-        self._ensure_group_maps_and_plans(context, config)
-        all_group_plans = context.get("m2f_group_plans")
+        all_group_plans = None
+        if cache_mode == "correction":
+            self._ensure_group_maps_and_plans(context, config)
+            all_group_plans = context.get("m2f_group_plans")
 
         with torch.autocast("cuda", self.autocast_dtype):
             for src_idx in range(len(all_x_backbones)):
@@ -1133,28 +1390,35 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 with torch.cuda.nvtx.range(f"m2f_vit_src{src_idx}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
                         blk = vit_backbone.blocks[lidx]
-                        x_tokens, cache = blk.approx(
-                            x_tokens, rope, cache, tag=f"src{src_idx}_layer{lidx}",
-                            appcorr_method=appcorr_method,
-                            attn_cache_candidates=attn_cache_candidates,
-                            group_plans=group_plans,
-                            server_pscore=appcorr_options["server_pscore"],
-                            server_pscore_weight=appcorr_options["server_pscore_weight"],
-                            attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
-                            debug=False,
-                        )
+                        if cache_mode == "none":
+                            x_tokens = blk(x_tokens, rope)
+                        else:
+                            x_tokens, cache = blk.approx(
+                                x_tokens, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                                appcorr_method=appcorr_method,
+                                attn_cache_candidates=attn_cache_candidates,
+                                group_plans=group_plans,
+                                server_pscore=appcorr_options["server_pscore"],
+                                server_pscore_weight=appcorr_options["server_pscore_weight"],
+                                attn_col_alive_ratio=appcorr_options["attn_col_alive_ratio"],
+                                debug=False,
+                            )
                         if lidx in interaction_indexes:
                             intermediate_raw[src_idx].append(x_tokens)
 
                 current_features[src_idx] = x_tokens
-                all_cache_features[src_idx] = cache
+                if cache_mode == "correction":
+                    all_cache_features[src_idx] = cache
 
         context["m2f_current_features"] = current_features
         context["m2f_intermediate_raw"] = intermediate_raw
         context["m2f_cache_features"] = all_cache_features
         context["m2f_current_layer"] = end_l
         context["cache_feature"] = self._aggregate_cache_features(all_cache_features)
-        return {}
+        return {
+            "cache_mode": cache_mode,
+            "layer_count": end_l - start_l,
+        }
 
     @torch.inference_mode()
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
@@ -1194,8 +1458,25 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
         token_keep_ratio = appcorr_options["token_keep_ratio"]
-        token_keep_thres = appcorr_options["token_keep_thres"]
+        l2l1l0_mode = self._uses_l2l1l0_transmission(config)
+        disjoint_l1_l0 = self._uses_l1_l0_disjoint_support(config)
+        conditional_pscore = self._uses_l1_l0_conditional_pscore(config)
+        conditional_reentry = self._uses_l1_l0_conditional_reentry(config)
+        track_l1_support = disjoint_l1_l0 or conditional_pscore
+        all_reentry_candidate_masks = context.get(
+            "m2f_l0_reentry_candidate_masks"
+        )
+        token_keep_thres = self._token_keep_threshold_for_group(
+            appcorr_options,
+            group_id=group_id,
+            l2l1l0_mode=l2l1l0_mode,
+        )
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
+        partial_token_plan_totals_before = (
+            self._partial_token_plan_totals(all_cache_features)
+            if appcorr_method == "partial_token"
+            else None
+        )
 
         if appcorr_method == "partial_token":
             if self._correct_forward_partial_token_batched(
@@ -1213,9 +1494,29 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 all_cached_dindices=all_cached_dindices,
                 all_mobile_pscore_hints=all_mobile_pscore_hints,
                 appcorr_options=appcorr_options,
+                token_keep_thres=token_keep_thres,
+                disjoint_l1_l0=disjoint_l1_l0,
+                conditional_pscore=conditional_pscore,
+                conditional_reentry=conditional_reentry,
+                all_reentry_candidate_masks=all_reentry_candidate_masks,
                 context=context,
             ):
-                return {}
+                self._accumulate_partial_token_layer_totals(
+                    all_cache_features,
+                    partial_token_plan_totals_before,
+                    layer_count=end_l - start_l,
+                    phase=(
+                        "l1"
+                        if l2l1l0_mode and group_id == 1
+                        else "l0" if l2l1l0_mode else None
+                    ),
+                )
+                context["cache_feature"] = self._aggregate_cache_features(
+                    all_cache_features
+                )
+                return {
+                    "partial_token_layer_count": end_l - start_l,
+                }
 
         new_current_features = []
         new_cache_features = []
@@ -1229,6 +1530,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             mobile_pscore_hint = None
             if isinstance(all_mobile_pscore_hints, list) and src_idx < len(all_mobile_pscore_hints):
                 mobile_pscore_hint = all_mobile_pscore_hints[src_idx]
+            reentry_candidate_mask = None
+            if (
+                conditional_reentry
+                and group_id >= 2
+                and isinstance(all_reentry_candidate_masks, list)
+                and src_idx < len(all_reentry_candidate_masks)
+            ):
+                reentry_candidate_mask = all_reentry_candidate_masks[src_idx]
             cached_dindices = (
                 all_cached_dindices[src_idx]
                 if isinstance(all_cached_dindices, list) and src_idx < len(all_cached_dindices)
@@ -1259,6 +1568,22 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 if len(all_dindices_for_src) == 1
                 else self._union_dindices(all_dindices_for_src)
             )
+            if disjoint_l1_l0 and group_id >= 2:
+                dindice, excluded_count = self._exclude_l1_selected_dindice(
+                    dindice,
+                    context.get("m2f_l1_selected_token_masks"),
+                    src_idx=src_idx,
+                    num_pretokens=1 + vit_backbone.n_storage_tokens,
+                )
+                cache[
+                    "_partial_token_l0_disjoint_excluded_patch_layer_total"
+                ] = (
+                    cache.get(
+                        "_partial_token_l0_disjoint_excluded_patch_layer_total",
+                        input_tokens.new_zeros((), dtype=torch.float32),
+                    )
+                    + excluded_count * float(end_l - start_l)
+                )
             dindice = dindice.to(device=self.device, non_blocking=True)
             plan = src_group_plans.get(target_gids[0]) if appcorr_method == "partial_channel" else None
 
@@ -1332,10 +1657,31 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                                 pscore_fusion=appcorr_options["pscore_fusion"],
                                 sdpa_query_bucket_size=sdpa_query_bucket_size,
                                 attn_col_alive_ratio=attn_col_alive_ratio,
+                                reentry_candidate_mask=reentry_candidate_mask,
+                                reentry_ratio=appcorr_options[
+                                    "l1_l0_reentry_ratio"
+                                ],
                                 debug=False,
                             )
                         if lidx in interaction_indexes:
                             corrected_intermediates.append(x_tokens)
+
+            if track_l1_support and group_id == 1:
+                self._capture_l1_selected_token_masks(
+                    [{"src_idx": src_idx, "input_tokens": input_tokens}],
+                    cache,
+                    context,
+                    num_pretokens=1 + vit_backbone.n_storage_tokens,
+                )
+            elif conditional_pscore and group_id >= 2:
+                self._accumulate_l1_l0_selected_overlap(
+                    cache,
+                    context.get("m2f_l1_selected_token_masks"),
+                    src_idx=src_idx,
+                    num_tokens=int(input_tokens.shape[1]),
+                    num_pretokens=1 + vit_backbone.n_storage_tokens,
+                    layer_count=end_l - start_l,
+                )
 
             can_merge_current = current_layer == end_l and x_feature.shape == x_tokens.shape
             if can_merge_current:
@@ -1360,8 +1706,25 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_cache_features"] = new_cache_features
         context["m2f_intermediate_raw"] = new_intermediate_raw
         context["m2f_current_layer"] = end_l
+        if appcorr_method == "partial_token":
+            self._accumulate_partial_token_layer_totals(
+                new_cache_features,
+                partial_token_plan_totals_before,
+                layer_count=end_l - start_l,
+                phase=(
+                    "l1"
+                    if l2l1l0_mode and group_id == 1
+                    else "l0" if l2l1l0_mode else None
+                ),
+            )
         context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
-        return {}
+        return {
+            "partial_token_layer_count": (
+                end_l - start_l
+                if appcorr_method == "partial_token"
+                else 0
+            ),
+        }
 
     def _correct_forward_partial_token_batched(
         self,
@@ -1380,12 +1743,17 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_cached_dindices: Any,
         all_mobile_pscore_hints: Any,
         appcorr_options: Dict[str, Any],
+        token_keep_thres: float | None,
+        disjoint_l1_l0: bool,
+        conditional_pscore: bool,
+        conditional_reentry: bool,
+        all_reentry_candidate_masks: Any,
         context: Dict[str, Any],
     ) -> bool:
         vit_backbone = self.model.segmentation_model[0].backbone
         token_keep_ratio = appcorr_options["token_keep_ratio"]
-        token_keep_thres = appcorr_options["token_keep_thres"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
+        num_pretokens = 1 + vit_backbone.n_storage_tokens
 
         new_current_features: List[torch.Tensor | None] = [None] * len(all_x_backbones)
         new_cache_features: List[Dict[str, Any] | None] = [None] * len(all_x_backbones)
@@ -1398,6 +1766,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             mobile_pscore_hint = None
             if isinstance(all_mobile_pscore_hints, list) and src_idx < len(all_mobile_pscore_hints):
                 mobile_pscore_hint = all_mobile_pscore_hints[src_idx]
+            reentry_candidate_mask = None
+            if (
+                conditional_reentry
+                and group_id >= 2
+                and isinstance(all_reentry_candidate_masks, list)
+                and src_idx < len(all_reentry_candidate_masks)
+            ):
+                reentry_candidate_mask = all_reentry_candidate_masks[src_idx]
             cached_dindices = (
                 all_cached_dindices[src_idx]
                 if isinstance(all_cached_dindices, list) and src_idx < len(all_cached_dindices)
@@ -1423,6 +1799,22 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 if len(all_dindices_for_src) == 1
                 else self._union_dindices(all_dindices_for_src)
             ).to(device=self.device, non_blocking=True)
+            if disjoint_l1_l0 and group_id >= 2:
+                dindice, excluded_count = self._exclude_l1_selected_dindice(
+                    dindice,
+                    context.get("m2f_l1_selected_token_masks"),
+                    src_idx=src_idx,
+                    num_pretokens=num_pretokens,
+                )
+                cache[
+                    "_partial_token_l0_disjoint_excluded_patch_layer_total"
+                ] = (
+                    cache.get(
+                        "_partial_token_l0_disjoint_excluded_patch_layer_total",
+                        input_tokens.new_zeros((), dtype=torch.float32),
+                    )
+                    + excluded_count * float(end_l - start_l)
+                )
 
             if dindice.ndim != 2 or dindice.shape[0] != input_tokens.shape[0]:
                 return False
@@ -1435,6 +1827,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 str(x_feature.dtype),
                 self._m2f_rope_batch_key(rope),
                 self._m2f_mobile_hint_batch_key(mobile_pscore_hint),
+                self._m2f_mobile_hint_batch_key(reentry_candidate_mask),
             )
             buckets.setdefault(key, []).append({
                 "src_idx": src_idx,
@@ -1444,6 +1837,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 "cache": cache,
                 "dindice": dindice,
                 "mobile_pscore_hint": mobile_pscore_hint,
+                "reentry_candidate_mask": reentry_candidate_mask,
             })
 
         bucket_records = []
@@ -1465,6 +1859,9 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
             rope = items[0]["rope"]
             batch_mobile_pscore_hint = self._cat_mobile_pscore_hints(items)
+            batch_reentry_candidate_mask = (
+                self._cat_reentry_candidate_masks(items)
+            )
             corrected_intermediates = []
 
             with torch.autocast("cuda", self.autocast_dtype):
@@ -1489,10 +1886,32 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                             pscore_fusion=appcorr_options["pscore_fusion"],
                             sdpa_query_bucket_size=sdpa_query_bucket_size,
                             attn_col_alive_ratio=1.0,
+                            reentry_candidate_mask=(
+                                batch_reentry_candidate_mask
+                            ),
+                            reentry_ratio=appcorr_options[
+                                "l1_l0_reentry_ratio"
+                            ],
                             debug=False,
                         )
                         if lidx in interaction_indexes:
                             corrected_intermediates.append(x_tokens)
+
+            if (disjoint_l1_l0 or conditional_pscore) and group_id == 1:
+                self._capture_l1_selected_token_masks(
+                    items,
+                    batch_cache,
+                    context,
+                    num_pretokens=num_pretokens,
+                )
+            elif conditional_pscore and group_id >= 2:
+                self._accumulate_batched_l1_l0_selected_overlap(
+                    items,
+                    batch_cache,
+                    context.get("m2f_l1_selected_token_masks"),
+                    num_pretokens=num_pretokens,
+                    layer_count=end_l - start_l,
+                )
 
             self._scatter_m2f_correct_batch_cache(items, batch_cache, start_l, end_l)
             self._add_m2f_batch_total_stats(items[0]["cache"], batch_cache)
@@ -1578,6 +1997,27 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         ):
             return None
         return torch.cat(hints, dim=0)
+
+    @staticmethod
+    def _cat_reentry_candidate_masks(
+        items: List[Dict[str, Any]],
+    ) -> torch.Tensor | None:
+        masks = [item.get("reentry_candidate_mask") for item in items]
+        if not masks or any(mask is None for mask in masks):
+            return None
+        if not all(torch.is_tensor(mask) for mask in masks):
+            return None
+        base_shape = tuple(masks[0].shape[1:])
+        if any(
+            tuple(mask.shape[1:]) != base_shape
+            or mask.device != masks[0].device
+            for mask in masks
+        ):
+            return None
+        return torch.cat(
+            [mask.to(dtype=torch.bool) for mask in masks],
+            dim=0,
+        )
 
     @staticmethod
     def _cat_cache_tensors(tensors: List[torch.Tensor]) -> torch.Tensor | None:
@@ -1728,6 +2168,307 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         return torch.stack(rows, dim=0)
 
     @staticmethod
+    def _selected_token_mask_from_plan_cache(
+        cache_feature: Dict[str, Any],
+        *,
+        num_tokens: int,
+        num_pretokens: int,
+    ) -> torch.Tensor:
+        plan_cache = cache_feature.get("_partial_token_query_plan_cache")
+        if not isinstance(plan_cache, dict) or not plan_cache:
+            raise RuntimeError(
+                "L1 disjoint support requires a cached partial-token query plan"
+            )
+        plans = list(plan_cache.values())
+        if len(plans) != 1:
+            raise RuntimeError(
+                "Expected one shared L1 partial-token plan, got "
+                f"{len(plans)}"
+            )
+
+        query_state = plans[0].fixed_query_state
+        active_batch_idx = query_state.active_batch_idx
+        active_token_idx = query_state.active_token_idx
+        batch_size = int(query_state.query_valid_mask.shape[0])
+        selected_mask = torch.zeros(
+            (batch_size, num_tokens),
+            device=active_token_idx.device,
+            dtype=torch.bool,
+        )
+        selected_patch = active_token_idx >= num_pretokens
+        selected_mask[
+            active_batch_idx[selected_patch],
+            active_token_idx[selected_patch],
+        ] = True
+        return selected_mask
+
+    @classmethod
+    def _capture_l1_selected_token_masks(
+        cls,
+        items: List[Dict[str, Any]],
+        plan_cache: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        num_pretokens: int,
+    ) -> None:
+        if not items:
+            return
+        num_tokens = int(items[0]["input_tokens"].shape[1])
+        if any(
+            int(item["input_tokens"].shape[1]) != num_tokens
+            for item in items
+        ):
+            raise RuntimeError(
+                "Cannot capture a shared L1 support mask for unlike token shapes"
+            )
+
+        selected_mask = cls._selected_token_mask_from_plan_cache(
+            plan_cache,
+            num_tokens=num_tokens,
+            num_pretokens=num_pretokens,
+        )
+        batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
+        if sum(batch_sizes) != int(selected_mask.shape[0]):
+            raise RuntimeError(
+                "L1 support-mask batch mismatch: "
+                f"{sum(batch_sizes)} vs {selected_mask.shape[0]}"
+            )
+
+        all_masks = context.get("m2f_l1_selected_token_masks")
+        max_src_idx = max(int(item["src_idx"]) for item in items)
+        if not isinstance(all_masks, list):
+            all_masks = []
+        if len(all_masks) <= max_src_idx:
+            all_masks.extend([None] * (max_src_idx + 1 - len(all_masks)))
+
+        offset = 0
+        for item, batch_size in zip(items, batch_sizes):
+            src_idx = int(item["src_idx"])
+            all_masks[src_idx] = selected_mask[
+                offset:offset + batch_size
+            ].detach().clone()
+            offset += batch_size
+        context["m2f_l1_selected_token_masks"] = all_masks
+
+    @staticmethod
+    def _l1_selected_mask_for_source(
+        all_selected_masks: Any,
+        *,
+        src_idx: int,
+        ref_tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        if (
+            not isinstance(all_selected_masks, list)
+            or src_idx >= len(all_selected_masks)
+            or not torch.is_tensor(all_selected_masks[src_idx])
+        ):
+            raise RuntimeError(
+                f"Missing captured L1 support mask for source {src_idx}"
+            )
+        return all_selected_masks[src_idx].to(
+            device=ref_tensor.device,
+            dtype=torch.bool,
+            non_blocking=True,
+        )
+
+    @classmethod
+    def _accumulate_l1_l0_selected_overlap(
+        cls,
+        cache_feature: Dict[str, Any],
+        all_selected_masks: Any,
+        *,
+        src_idx: int,
+        num_tokens: int,
+        num_pretokens: int,
+        layer_count: int,
+    ) -> None:
+        selected_l0 = cls._selected_token_mask_from_plan_cache(
+            cache_feature,
+            num_tokens=num_tokens,
+            num_pretokens=num_pretokens,
+        )
+        selected_l1 = cls._l1_selected_mask_for_source(
+            all_selected_masks,
+            src_idx=src_idx,
+            ref_tensor=selected_l0,
+        )
+        if selected_l1.shape != selected_l0.shape:
+            raise RuntimeError(
+                "L1/L0 selected-mask shape mismatch: "
+                f"{tuple(selected_l1.shape)} vs {tuple(selected_l0.shape)}"
+            )
+        overlap = (selected_l1 & selected_l0).sum(dtype=torch.float32)
+        cache_feature["_partial_token_l1_l0_overlap_total"] = (
+            cache_feature.get(
+                "_partial_token_l1_l0_overlap_total",
+                overlap.new_zeros(()),
+            )
+            + overlap * float(layer_count)
+        )
+
+    @classmethod
+    def _accumulate_batched_l1_l0_selected_overlap(
+        cls,
+        items: List[Dict[str, Any]],
+        batch_cache: Dict[str, Any],
+        all_selected_masks: Any,
+        *,
+        num_pretokens: int,
+        layer_count: int,
+    ) -> None:
+        if not items:
+            return
+        num_tokens = int(items[0]["input_tokens"].shape[1])
+        selected_l0 = cls._selected_token_mask_from_plan_cache(
+            batch_cache,
+            num_tokens=num_tokens,
+            num_pretokens=num_pretokens,
+        )
+        selected_l1_parts = [
+            cls._l1_selected_mask_for_source(
+                all_selected_masks,
+                src_idx=int(item["src_idx"]),
+                ref_tensor=selected_l0,
+            )
+            for item in items
+        ]
+        selected_l1 = torch.cat(selected_l1_parts, dim=0)
+        if selected_l1.shape != selected_l0.shape:
+            raise RuntimeError(
+                "Batched L1/L0 selected-mask shape mismatch: "
+                f"{tuple(selected_l1.shape)} vs {tuple(selected_l0.shape)}"
+            )
+        overlap = (selected_l1 & selected_l0).sum(dtype=torch.float32)
+        batch_cache["_partial_token_l1_l0_overlap_total"] = (
+            batch_cache.get(
+                "_partial_token_l1_l0_overlap_total",
+                overlap.new_zeros(()),
+            )
+            + overlap * float(layer_count)
+        )
+
+    @staticmethod
+    def _exclude_l1_selected_dindice(
+        dindice: torch.Tensor,
+        all_selected_masks: Any,
+        *,
+        src_idx: int,
+        num_pretokens: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if (
+            not isinstance(all_selected_masks, list)
+            or src_idx >= len(all_selected_masks)
+            or not torch.is_tensor(all_selected_masks[src_idx])
+        ):
+            raise RuntimeError(
+                f"Missing captured L1 support mask for source {src_idx}"
+            )
+
+        selected_mask = all_selected_masks[src_idx].to(
+            device=dindice.device,
+            dtype=torch.bool,
+            non_blocking=True,
+        )
+        if (
+            dindice.ndim != 2
+            or selected_mask.ndim != 2
+            or dindice.shape[0] != selected_mask.shape[0]
+        ):
+            raise RuntimeError(
+                "L1 support/dindice batch mismatch: "
+                f"{tuple(selected_mask.shape)} vs {tuple(dindice.shape)}"
+            )
+
+        prefix = dindice[:, :num_pretokens]
+        patch_candidates = dindice[:, num_pretokens:]
+        if patch_candidates.numel() == 0:
+            return dindice, dindice.new_zeros((), dtype=torch.float32)
+        if int(patch_candidates.max().item()) >= selected_mask.shape[1]:
+            raise RuntimeError(
+                "L1 support mask is smaller than the L0 token candidate set"
+            )
+
+        excluded_mask = selected_mask.gather(1, patch_candidates)
+        kept_rows = [
+            row_candidates[~row_excluded]
+            for row_candidates, row_excluded in zip(
+                patch_candidates,
+                excluded_mask,
+            )
+        ]
+        if any(row.numel() != kept_rows[0].numel() for row in kept_rows):
+            raise RuntimeError(
+                "Disjoint L1/L0 support currently requires equal per-batch "
+                "candidate counts"
+            )
+        kept_patches = torch.stack(kept_rows, dim=0)
+        filtered = torch.cat([prefix, kept_patches], dim=1)
+        overlap = selected_mask.gather(
+            1,
+            filtered[:, num_pretokens:],
+        )
+        if bool(overlap.any().item()):
+            raise RuntimeError("L1/L0 disjoint support invariant was violated")
+        return filtered, excluded_mask.sum(dtype=torch.float32)
+
+    @classmethod
+    def _partial_token_plan_totals(
+        cls,
+        all_cache_features: List[Dict[str, Any]] | None,
+    ) -> Dict[str, Any]:
+        totals: Dict[str, Any] = {}
+        for src_cache in all_cache_features or []:
+            for key in cls._PARTIAL_TOKEN_PLAN_TOTAL_KEYS:
+                value = src_cache.get(key)
+                if value is None:
+                    continue
+                totals[key] = totals.get(key, 0.0) + value
+        return totals
+
+    @classmethod
+    def _accumulate_partial_token_layer_totals(
+        cls,
+        all_cache_features: List[Dict[str, Any]] | None,
+        before: Dict[str, Any] | None,
+        *,
+        layer_count: int,
+        phase: str | None = None,
+    ) -> None:
+        """Weight one correction round's selected-token plan by its depth.
+
+        Layer-mean pscore modes intentionally share one selection plan across
+        all corrected blocks, so the legacy plan counters increase once per
+        round rather than once per layer.  This converts the per-round delta
+        into patch-token-layer work without changing the legacy counters.
+        """
+        if not all_cache_features or before is None or layer_count <= 0:
+            return
+
+        after = cls._partial_token_plan_totals(all_cache_features)
+        dst_cache = all_cache_features[0]
+        for plan_key, layer_key in zip(
+            cls._PARTIAL_TOKEN_PLAN_TOTAL_KEYS,
+            cls._PARTIAL_TOKEN_LAYER_TOTAL_KEYS,
+        ):
+            after_value = after.get(plan_key, 0.0)
+            before_value = before.get(plan_key, 0.0)
+            delta = after_value - before_value
+            dst_cache[layer_key] = (
+                dst_cache.get(layer_key, 0.0)
+                + delta * float(layer_count)
+            )
+            if phase in {"l1", "l0"} and "sample" not in plan_key:
+                phase_layer_key = (
+                    f"_partial_token_{phase}_"
+                    f"{'kept' if 'kept' in plan_key else 'full'}"
+                    "_patch_layer_total"
+                )
+                dst_cache[phase_layer_key] = (
+                    dst_cache.get(phase_layer_key, 0.0)
+                    + delta * float(layer_count)
+                )
+
+    @staticmethod
     def _aggregate_cache_features(all_cache_features: List[Dict[str, Any]] | None) -> Dict[str, Any]:
         if not all_cache_features:
             return {}
@@ -1802,10 +2543,11 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         )
         if grouping_strategy == "uniform_diff":
             grouping_strategy = "grid"
+        l2l1l0_mode = self._uses_l2l1l0_transmission(config)
         all_group_maps = []
         for input_tokens, (tok_h, tok_w), group_context in zip(all_input_tokens, token_shapes, source_group_contexts):
             num_tokens = tok_h * tok_w
-            if num_groups == 1:
+            if num_groups == 1 and not l2l1l0_mode:
                 group_map = torch.zeros(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
             elif grouping_strategy == "grid":
                 group_map = self._build_crop_grid_group_map(
@@ -1843,12 +2585,93 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             all_group_maps.append(group_map)
         return all_group_maps
 
+    @classmethod
+    def _build_conditional_mobile_pscore_hints(
+        cls,
+        primary_hints: List[torch.Tensor | None] | None,
+        after_l1_hints: List[torch.Tensor | None] | None,
+        all_l1_selected_masks: Any,
+        *,
+        group_id: int,
+        num_pretokens: int,
+    ) -> tuple[
+        List[torch.Tensor | None] | None,
+        List[torch.Tensor | None] | None,
+    ]:
+        """Choose the exact L0 residual branch with a common denominator.
+
+        Inputs are deliberately left unnormalized until after the branch is
+        chosen. For L1-selected tokens the score is energy(I0-I1); every
+        other token uses energy(I0-I2).
+        """
+        if not isinstance(primary_hints, list):
+            return None, None
+
+        effective_hints: List[torch.Tensor | None] = []
+        reentry_masks: List[torch.Tensor | None] = []
+        for src_idx, primary_hint in enumerate(primary_hints):
+            if primary_hint is None:
+                effective_hints.append(None)
+                reentry_masks.append(None)
+                continue
+
+            effective_hint = primary_hint
+            selected_patch_mask = None
+            if group_id >= 2:
+                if (
+                    not isinstance(after_l1_hints, list)
+                    or src_idx >= len(after_l1_hints)
+                    or not torch.is_tensor(after_l1_hints[src_idx])
+                    or not isinstance(all_l1_selected_masks, list)
+                    or src_idx >= len(all_l1_selected_masks)
+                    or not torch.is_tensor(all_l1_selected_masks[src_idx])
+                ):
+                    raise RuntimeError(
+                        "Conditional L0 re-entry requires both residual "
+                        f"branches and the captured L1 mask for source {src_idx}"
+                    )
+                after_l1_hint = after_l1_hints[src_idx]
+                selected_mask = all_l1_selected_masks[src_idx].to(
+                    device=primary_hint.device,
+                    dtype=torch.bool,
+                    non_blocking=True,
+                )
+                selected_patch_mask = selected_mask[:, num_pretokens:]
+                if (
+                    after_l1_hint.shape != primary_hint.shape
+                    or selected_patch_mask.shape != primary_hint.shape
+                ):
+                    raise RuntimeError(
+                        "Conditional L0 pscore shape mismatch: "
+                        f"primary={tuple(primary_hint.shape)}, "
+                        f"after_l1={tuple(after_l1_hint.shape)}, "
+                        f"mask={tuple(selected_patch_mask.shape)}"
+                    )
+                effective_hint = torch.where(
+                    selected_patch_mask,
+                    after_l1_hint.to(
+                        device=primary_hint.device,
+                        dtype=primary_hint.dtype,
+                        non_blocking=True,
+                    ),
+                    primary_hint,
+                )
+
+            effective_hints.append(
+                cls._normalize_patch_score_map(effective_hint)
+            )
+            reentry_masks.append(selected_patch_mask)
+
+        return effective_hints, reentry_masks
+
     def _project_mobile_pscore_hints_to_sources(
         self,
         hint_entries: List[tuple[torch.Tensor, tuple[int, int]] | None] | None,
         all_input_tokens: List[torch.Tensor],
         token_shapes: List[tuple[int, int]],
         source_group_contexts: List[Dict[str, Any] | None],
+        *,
+        normalize: bool = True,
     ) -> List[torch.Tensor | None] | None:
         if not isinstance(hint_entries, list):
             return None
@@ -1864,6 +2687,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 group_context,
                 batch_size=int(input_tokens.shape[0]),
                 ref_tensor=input_tokens,
+                normalize=normalize,
             )
             any_hint = any_hint or source_hint is not None
             projected_hints.append(source_hint)
@@ -1877,6 +2701,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         *,
         batch_size: int,
         ref_tensor: torch.Tensor,
+        normalize: bool = True,
     ) -> torch.Tensor | None:
         if group_context is None or batch_size <= 0:
             return None
@@ -1912,7 +2737,8 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         hint_2d = hint_map.to(device=self.device, dtype=torch.float32, non_blocking=True).view(1, hint_h, hint_w)
         source_hint = hint_2d[:, y_idx.unsqueeze(1), x_idx.unsqueeze(0)].reshape(1, tok_h * tok_w).contiguous()
-        source_hint = self._normalize_patch_score_map(source_hint)
+        if normalize:
+            source_hint = self._normalize_patch_score_map(source_hint)
         if batch_size != 1:
             source_hint = source_hint.expand(batch_size, -1).contiguous()
         return source_hint.to(device=ref_tensor.device, dtype=torch.float32, non_blocking=True)
@@ -2069,6 +2895,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         token_prune_enabled = appcorr_options["token_prune_enabled"]
         token_prune_threshold = appcorr_options["token_prune_threshold"]
         token_prune_min_keep = appcorr_options["token_prune_min_keep"]
+        l2l1l0_mode = self._uses_l2l1l0_transmission(config)
 
         all_cached_dindices = []
         all_group_plans = []
@@ -2084,21 +2911,42 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
             src_cached_dindices = {}
             src_group_plans = {}
+            batch_size = input_tokens.shape[0]
+
+            group_specs: list[tuple[int, torch.Tensor]] = []
+            if l2l1l0_mode:
+                full_spatial_indices = torch.arange(
+                    expected_tokens,
+                    device=input_tokens.device,
+                    dtype=torch.long,
+                ).unsqueeze(0).expand(batch_size, -1)
+                # Group 1 is the complete L1 residual. Existing crop-cover
+                # groups are the L0 residual groups and move to 2..N+1.
+                group_specs.append((1, full_spatial_indices))
+
             group_ids = torch.unique(group_map)
             group_ids = group_ids[group_ids >= 0]
-
             for gid_tensor in group_ids:
-                gid = int(gid_tensor.item())
-                nonzero_indices = torch.nonzero(group_map == gid, as_tuple=False)
+                source_gid = int(gid_tensor.item())
+                if l2l1l0_mode and source_gid < 1:
+                    continue
+                nonzero_indices = torch.nonzero(
+                    group_map == source_gid,
+                    as_tuple=False,
+                )
                 if nonzero_indices.numel() == 0:
                     continue
-
-                batch_size = input_tokens.shape[0]
                 try:
-                    spatial_indices = nonzero_indices[:, 1].view(batch_size, -1)
+                    spatial_indices = nonzero_indices[:, 1].view(
+                        batch_size,
+                        -1,
+                    )
                 except RuntimeError:
                     return
+                output_gid = source_gid + 1 if l2l1l0_mode else source_gid
+                group_specs.append((output_gid, spatial_indices))
 
+            for gid, spatial_indices in group_specs:
                 patch_indices = spatial_indices + num_pretokens
                 pre_indices = torch.arange(
                     num_pretokens,

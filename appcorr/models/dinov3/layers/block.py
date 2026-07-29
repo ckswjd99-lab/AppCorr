@@ -485,6 +485,108 @@ class SelfAttentionBlock(nn.Module):
         )
 
     @staticmethod
+    def _resolve_reentry_candidate_mask(
+        reentry_candidate_mask: torch.Tensor | None,
+        dindice_patches: torch.Tensor,
+        *,
+        num_pretokens: int,
+        num_tokens: int,
+    ) -> torch.Tensor | None:
+        if reentry_candidate_mask is None:
+            return None
+        if reentry_candidate_mask.shape[0] != dindice_patches.shape[0]:
+            raise RuntimeError(
+                "Re-entry mask batch mismatch: "
+                f"mask={tuple(reentry_candidate_mask.shape)} "
+                f"candidates={tuple(dindice_patches.shape)}"
+            )
+        reentry_candidate_mask = reentry_candidate_mask.to(
+            device=dindice_patches.device,
+            dtype=torch.bool,
+            non_blocking=True,
+        )
+        if reentry_candidate_mask.shape[1] == (
+            num_tokens - num_pretokens
+        ):
+            gather_idx = dindice_patches - num_pretokens
+            return reentry_candidate_mask.gather(1, gather_idx)
+        if reentry_candidate_mask.shape[1] == num_tokens:
+            return reentry_candidate_mask.gather(1, dindice_patches)
+        raise RuntimeError(
+            "Unsupported re-entry mask shape "
+            f"{tuple(reentry_candidate_mask.shape)} for "
+            f"num_tokens={num_tokens}, num_pretokens={num_pretokens}"
+        )
+
+    @staticmethod
+    @nvtx.annotate("select_reentry_eligibility")
+    def _select_reentry_eligibility(
+        combined_patch_scores: torch.Tensor,
+        reentry_candidate_mask: torch.Tensor | None,
+        reentry_ratio: float,
+    ) -> torch.Tensor | None:
+        """Allow the highest-risk fraction of L1-selected L0 candidates."""
+        if reentry_candidate_mask is None:
+            return None
+        if reentry_candidate_mask.shape != combined_patch_scores.shape:
+            raise RuntimeError(
+                "Re-entry candidate/score shape mismatch: "
+                f"{tuple(reentry_candidate_mask.shape)} vs "
+                f"{tuple(combined_patch_scores.shape)}"
+            )
+        if reentry_ratio >= 1.0:
+            return torch.ones_like(reentry_candidate_mask)
+        if reentry_ratio <= 0.0:
+            return ~reentry_candidate_mask
+
+        candidate_count = reentry_candidate_mask.sum(
+            dim=1,
+            dtype=torch.float32,
+        )
+        keep_count = torch.ceil(candidate_count * reentry_ratio).to(
+            dtype=torch.long
+        )
+        masked_scores = combined_patch_scores.masked_fill(
+            ~reentry_candidate_mask,
+            -torch.inf,
+        )
+        order = torch.argsort(masked_scores, dim=1, descending=True)
+        rank = torch.empty_like(order)
+        rank.scatter_(
+            1,
+            order,
+            torch.arange(
+                order.shape[1],
+                device=order.device,
+                dtype=order.dtype,
+            ).unsqueeze(0).expand_as(order),
+        )
+        allowed_reentry = (
+            reentry_candidate_mask
+            & (rank < keep_count.unsqueeze(1))
+        )
+        return ~reentry_candidate_mask | allowed_reentry
+
+    @staticmethod
+    @nvtx.annotate("apply_reentry_budget")
+    def _apply_reentry_budget(
+        threshold_keep_mask: torch.Tensor,
+        reentry_candidate_mask: torch.Tensor | None,
+        reentry_eligibility: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if (
+            reentry_candidate_mask is None
+            or reentry_eligibility is None
+        ):
+            return threshold_keep_mask
+        forced_reentry = (
+            reentry_candidate_mask & reentry_eligibility
+        )
+        return (
+            threshold_keep_mask & ~reentry_candidate_mask
+        ) | forced_reentry
+
+    @staticmethod
     @nvtx.annotate("combine_patch_scores")
     def _combine_patch_scores(
         server_patch_scores: torch.Tensor,
@@ -531,6 +633,8 @@ class SelfAttentionBlock(nn.Module):
         *,
         dindice: torch.Tensor,
         mobile_pscore_hint: torch.Tensor | None,
+        reentry_candidate_mask: torch.Tensor | None,
+        reentry_ratio: float,
         num_pretokens: int,
         num_tokens: int,
         token_keep_ratio: float,
@@ -548,6 +652,8 @@ class SelfAttentionBlock(nn.Module):
             "partial_token",
             cls._tensor_cache_signature(dindice),
             cls._tensor_cache_signature(mobile_pscore_hint),
+            cls._tensor_cache_signature(reentry_candidate_mask),
+            float(reentry_ratio),
             num_pretokens,
             num_tokens,
             float(token_keep_ratio),
@@ -735,6 +841,12 @@ class SelfAttentionBlock(nn.Module):
         mobile_pscore = str(kwargs.get("mobile_pscore", "none"))
         mobile_pscore_weight = float(kwargs.get("mobile_pscore_weight", 0.0))
         mobile_pscore_hint = kwargs.get("mobile_pscore_hint")
+        reentry_candidate_mask = kwargs.get("reentry_candidate_mask")
+        reentry_ratio = float(kwargs.get("reentry_ratio", 1.0))
+        if not 0.0 <= reentry_ratio <= 1.0:
+            raise ValueError(
+                f"reentry_ratio must be in [0, 1], got {reentry_ratio}"
+            )
         pscore_fusion = str(kwargs.get("pscore_fusion", "add")).lower()
         if pscore_fusion not in {"add", "multiply", "geo_mean"}:
             pscore_fusion = "add"
@@ -753,6 +865,8 @@ class SelfAttentionBlock(nn.Module):
         plan_cache_key = self._shared_partial_token_plan_key(
             dindice=dindice,
             mobile_pscore_hint=mobile_pscore_hint if mobile_pscore_weight != 0.0 else None,
+            reentry_candidate_mask=reentry_candidate_mask,
+            reentry_ratio=reentry_ratio,
             num_pretokens=num_pretokens,
             num_tokens=N,
             token_keep_ratio=token_keep_ratio,
@@ -803,6 +917,22 @@ class SelfAttentionBlock(nn.Module):
                 combined_patch_scores,
                 token_keep_ratio,
                 token_keep_thres,
+            )
+            candidate_reentry_mask = self._resolve_reentry_candidate_mask(
+                reentry_candidate_mask,
+                dindice_patches,
+                num_pretokens=num_pretokens,
+                num_tokens=N,
+            )
+            reentry_eligibility = self._select_reentry_eligibility(
+                combined_patch_scores,
+                candidate_reentry_mask,
+                reentry_ratio,
+            )
+            keep_patch_mask = self._apply_reentry_budget(
+                keep_patch_mask,
+                candidate_reentry_mask,
+                reentry_eligibility,
             )
             (
                 kept_pscore_mass,
