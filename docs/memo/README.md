@@ -20,6 +20,10 @@ produced them.
   5-point sweep (8–67% recompute): crop_cover dominates the frontier — +1.56 mIoU over grid at matched
   ~42%, matches block_grid's best (61.3) at less compute. Recompute plateaus ~67% (zero-residual
   patches never corrected); avg-attention is per-crop.
+- [dinov3_approx_low_precision_status.md](dinov3_approx_low_precision_status.md) — DINOv3 ViT-7B
+  approx-only FP8/auto/NVFP4 implementation and full ImageNet-1k/COCO measurements. Large-row
+  ImageNet B32 gains 1.97x/2.85x approx speedups with FP8/FP4, while small-row COCO B1 is slower;
+  includes the 3x3-window row-count explanation and remaining interleaved work.
 
 ## Related work elsewhere in the repo (not in this folder)
 
