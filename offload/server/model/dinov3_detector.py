@@ -645,6 +645,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
             raise e
 
         self.model.eval()
+        self.configure_dinov3_approx_precision(self._get_vit_backbone(), config)
 
     def _get_vit_backbone(self):
         inner = self.model.detector.backbone[0]
@@ -1026,6 +1027,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if all_outputs is None:
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
+        self.begin_dinov3_approx_event()
         if start_l == 0 and not global_only:
             reset_current_features = []
             reset_outputs = []
@@ -1108,14 +1110,14 @@ class DINOv3DetectorExecutor(ModelExecutor):
             )
 
             for lidx in range(start_l, end_l):
-                blk = blocks[lidx]
-
                 with torch.no_grad():
-                    x_feature, cache = blk.approx(
+                    x_feature, cache = self.run_dinov3_approx_block(
+                        lidx,
                         x_feature,
                         rope_sincos,
                         cache,
                         tag=f"src{src_idx}_layer{lidx}",
+                        source_key=f"src{src_idx}",
                         appcorr_method=appcorr_method,
                         attn_cache_candidates=attn_cache_candidates,
                         group_plans=group_plans,
@@ -1136,6 +1138,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         context['all_cache_features'] = new_cache_features
         context['all_outputs'] = new_all_outputs
         context['cache_feature'] = self._aggregate_cache_features(new_cache_features)
+        return self.dinov3_approx_event_metadata()
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get('layers', (0, 40))
