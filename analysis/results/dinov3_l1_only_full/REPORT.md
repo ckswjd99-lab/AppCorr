@@ -1,6 +1,6 @@
 # DINOv3 L1-only multi-task benchmark
 
-Date: 2026-07-29
+Date: 2026-07-30
 
 ## Semantics
 
@@ -19,15 +19,16 @@ interleaved experiments.
 | Task | Validation size | L1 config | Result log |
 |---|---:|---|---|
 | ImageNet-1K | 50,000 | `offload/config/imnet_approx_only_l1.json`, batch 32 | `logs/offload/imnet_approx_only_l1_20260729_143223` |
-| ADE20K | 100-image paired calibration subset | `offload/config/ade20k_m2f_approx_only_l1.json`, batch 1 | `logs/offload/ade20k_m2f_approx_only_l1_decomposed_nr100_20260729_011017` |
+| ADE20K | 2,000 | `offload/config/ade20k_m2f_approx_only_l1.json`, batch 1 | `logs/offload/ade20k_m2f_approx_only_l1_decomposed_full2000_20260730_005917` |
+| ADE20K calibration | 100-image paired subset | same | `logs/offload/ade20k_m2f_approx_only_l1_decomposed_nr100_20260729_011017` |
 | COCO val2017 | 5,000 | `offload/config/coco_approx_only_l1.json`, batch 1 | `logs/offload/coco_approx_only_l1_20260729_143225` |
 | NYUv2 | 654 | `offload/config/nyu_approx_only_l1.json`, batch 1, TTA enabled | `logs/offload/nyu_approx_only_l1_20260729_144456` |
 
 All runs used DINOv3 ViT-7B and the released task head. COCO ran in the
 `appcorr` environment because its dataset loader depends on FiftyOne. The
-ADE20K numbers are paired results on the first 100 validation images in the
-same order; unlike the other rows, they are calibration results and must not
-be presented as full 2,000-image validation scores.
+ADE20K progressive ablations below remain paired 100-image calibration
+results, while the L1-only endpoint now also has a complete 2,000-image
+validation result.
 
 ## Results
 
@@ -42,6 +43,28 @@ It uses the same 256x256 input and checkpoint.
 |---|---:|---:|---:|---:|
 | Full resolution | 88.104% | 98.438% | - | - |
 | L1 only | 87.754% | 98.358% | -0.350 pp | -0.080 pp |
+
+### ADE20K full validation
+
+The complete 2,000-image L1-only run and the existing exact sequential
+baseline use the same DINOv3 ViT-7B + Mask2Former checkpoint, official
+896-short-side single-evaluation profile, and full validation order.
+
+| Input | mIoU | aAcc | Delta mIoU | Delta aAcc | Bytes/image |
+|---|---:|---:|---:|---:|---:|
+| Full resolution | 62.2358 | 87.4542 | - | - | 3,180,075 |
+| L1 only | 61.3669 | 87.1351 | -0.8688 pp | -0.3191 pp | 494,816 |
+
+L1-only reduces transmitted bytes by 84.44% while losing 0.869 mIoU. This is
+a larger accuracy gap than the first-100 result below, but remains below one
+mIoU point. As before, the L1 image is reconstructed at the normal input size
+and executes the complete backbone, so this result does not reduce backbone
+FLOPs.
+
+The L1-only run averaged 425.5 ms end-to-end, 162.8 ms for the backbone, and
+173.6 ms for the head. The exact baseline log was collected on an earlier
+date with different warm-up and host conditions, so its latency is not used
+for a controlled speedup claim.
 
 ### ADE20K (100-image paired calibration)
 
@@ -120,11 +143,12 @@ the fixed 1024x1024 AppCorr runtime, so the L1-only difference to that number
 
 ## Interpretation
 
-- ImageNet classification, ADE20K segmentation, and NYUv2 depth are already
-  nearly saturated by an L1 image. On ADE20K, L1-only was also more accurate
-  than every tested L2-based correction policy on the paired 100-image subset.
-  A strong L1 baseline therefore leaves little task-metric headroom for
-  correction unless its full-resolution compute can also be reduced.
+- ImageNet classification, ADE20K segmentation, and NYUv2 depth retain most
+  full-resolution accuracy from an L1 image. The full ADE20K validation gap is
+  0.869 mIoU, larger than the 0.269-point first-100 estimate but still modest.
+  On the paired 100-image subset, L1-only was more accurate than every tested
+  L2-based correction policy. A strong L1 baseline therefore leaves limited
+  task-metric headroom unless its full-resolution compute can also be reduced.
 - COCO detection is different: L1-only loses 3.514 AP even against the
   thresholded full-arrival local reference. Fine spatial detail matters for
   localization, so COCO retains a meaningful reason to transmit and correct
@@ -143,7 +167,8 @@ CUDA_VISIBLE_DEVICES=1 conda run --no-capture-output -n appcorr \
 
 CUDA_VISIBLE_DEVICES=1 conda run --no-capture-output -n appcorr \
   offload/run_local.sh offload/config/ade20k_m2f_approx_only_l1.json \
-  -nr 100 -nw 1 --set device=cuda:0
+  -nr 2000 -nw 1 --set device=cuda:0 \
+  --set exp_id=ade20k_m2f_approx_only_l1_decomposed_full2000
 
 CUDA_VISIBLE_DEVICES=0 conda run --no-capture-output -n appcorr \
   offload/run_local.sh offload/config/coco_approx_only_l1.json -nw 1

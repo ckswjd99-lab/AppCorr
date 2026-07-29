@@ -1,5 +1,5 @@
 {
-  "date": "2026-07-29",
+  "date": "2026-07-30",
   "semantics": {
     "input": "L1 only",
     "l0_residual_transmitted": false,
@@ -30,6 +30,30 @@
       "model": "DINOv3 ViT-7B + Mask2Former",
       "preprocessing": "896-short-side single evaluation",
       "paired_order_and_label_hashes": true
+    },
+    "full_validation_2000": {
+      "images": 2000,
+      "full_resolution": {
+        "miou": 62.23576397452049,
+        "aacc": 87.45421274501977,
+        "bytes_per_image": 3180074.528,
+        "log": "logs/offload/ade20k_m2f_sequential_20260722_012034"
+      },
+      "l1_only": {
+        "miou": 61.36692406105527,
+        "aacc": 87.13511065157094,
+        "bytes_per_image": 494815.6055,
+        "end_to_end_ms_per_image": 425.52861297130584,
+        "backbone_ms_per_image": 162.83979952335358,
+        "head_ms_per_image": 173.59352886676788,
+        "log": "logs/offload/ade20k_m2f_approx_only_l1_decomposed_full2000_20260730_005917"
+      },
+      "l1_delta_to_full": {
+        "miou_percentage_points": -0.868839913465216,
+        "aacc_percentage_points": -0.319102093448834,
+        "bytes_percent": -84.440125502
+      },
+      "latency_comparison_controlled": false
     },
     "full_resolution": {
       "miou": 52.92288696479569,
