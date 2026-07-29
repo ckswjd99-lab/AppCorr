@@ -183,12 +183,18 @@ class SelfAttention(nn.Module):
         tag: str,
         *,
         server_pscore: str = "cls_attn_prob",
+        cache_pre_rope_k: bool = False,
     ) -> Tensor:
         B, N, _ = qkv.shape
         C = self.qkv.in_features
 
         qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
         cache_feature[f"{tag}_kv"] = qkv[:, :, 1:].detach().clone()  # Only k, v, [B, N, 2, H, D//H]
+        if cache_pre_rope_k:
+            # Experimental cache-lifting path: spatial interpolation must happen
+            # before position-dependent RoPE is applied. Normal partial-token
+            # execution leaves this disabled and pays no additional cache cost.
+            cache_feature[f"{tag}_pre_rope_k"] = qkv[:, :, 1].detach().clone()
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]    # [B, H, N, D//H]
 
@@ -244,6 +250,7 @@ class SelfAttention(nn.Module):
                 cache_feature,
                 tag,
                 server_pscore=kwargs.get("server_pscore", "cls_attn_prob"),
+                cache_pre_rope_k=bool(kwargs.get("cache_pre_rope_k", False)),
             )
         if appcorr_method == "partial_channel":
             return self.approx_partial_channel(
@@ -333,6 +340,7 @@ class SelfAttention(nn.Module):
         tag: str,
         *,
         server_pscore: str = "cls_attn_prob",
+        cache_pre_rope_k: bool = False,
     ) -> Tuple[Tensor, dict]:
         qkv = self.qkv(x)   # [B, N, 3*D]
 
@@ -342,6 +350,7 @@ class SelfAttention(nn.Module):
             cache_feature=cache_feature,
             tag=tag,
             server_pscore=server_pscore,
+            cache_pre_rope_k=cache_pre_rope_k,
         )
         x = self.proj(attn_v)
         x = self.proj_drop(x)
