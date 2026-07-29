@@ -5,7 +5,11 @@ from .laplacian import LaplacianPyramidPolicy
 from .progressive import ProgressiveLPyramidPolicy
 from .l2l1l0_progressive import L2L1L0ProgressiveLPyramidPolicy
 from .coco_window_progressive import COCOWindowProgressiveLaplacianPolicy
-from .ade20k_window_progressive import ADE20KWindowProgressiveLaplacianPolicy
+from .ade20k_window_progressive import (
+    ADE20KL2L1ProgressiveLaplacianPolicy,
+    ADE20KWindowL2L1L0ProgressiveLaplacianPolicy,
+    ADE20KWindowProgressiveLaplacianPolicy,
+)
 from .nyu_appcorr_progressive import (
     NYUAppCorrLaplacianPolicy,
     NYUAppCorrProgressiveLaplacianPolicy,

@@ -331,6 +331,15 @@ class WorkerModule(multiprocessing.Process):
         partial_token_kept_patch = 0.0
         partial_token_full_patch = 0.0
         partial_token_sample_count = 0.0
+        partial_token_kept_patch_layers = 0.0
+        partial_token_full_patch_layers = 0.0
+        partial_token_sample_layers = 0.0
+        partial_token_l1_kept_patch_layers = 0.0
+        partial_token_l1_full_patch_layers = 0.0
+        partial_token_l0_kept_patch_layers = 0.0
+        partial_token_l0_full_patch_layers = 0.0
+        partial_token_l0_excluded_patch_layers = 0.0
+        partial_token_l1_l0_overlap = 0.0
         if isinstance(cache_feature, dict):
             attn_prob_mass_used = self._as_float(cache_feature.get('_attn_prob_mass_used_total', 0.0))
             attn_prob_mass_full = self._as_float(cache_feature.get('_attn_prob_mass_full_total', 0.0))
@@ -343,6 +352,60 @@ class WorkerModule(multiprocessing.Process):
             partial_token_kept_patch = self._as_float(cache_feature.get('_partial_token_kept_patch_total', 0.0))
             partial_token_full_patch = self._as_float(cache_feature.get('_partial_token_full_patch_total', 0.0))
             partial_token_sample_count = self._as_float(cache_feature.get('_partial_token_sample_total', 0.0))
+            partial_token_kept_patch_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_kept_patch_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_full_patch_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_full_patch_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_sample_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_sample_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_l1_kept_patch_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_l1_kept_patch_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_l1_full_patch_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_l1_full_patch_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_l0_kept_patch_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_l0_kept_patch_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_l0_full_patch_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_l0_full_patch_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_l0_excluded_patch_layers = self._as_float(
+                cache_feature.get(
+                    '_partial_token_l0_disjoint_excluded_patch_layer_total',
+                    0.0,
+                )
+            )
+            partial_token_l1_l0_overlap = self._as_float(
+                cache_feature.get(
+                    '_partial_token_l1_l0_overlap_total',
+                    0.0,
+                )
+            )
         result = InferenceResult(
             task.task_id,
             time.time(),
@@ -361,6 +424,25 @@ class WorkerModule(multiprocessing.Process):
             partial_token_kept_patch=partial_token_kept_patch,
             partial_token_full_patch=partial_token_full_patch,
             partial_token_sample_count=partial_token_sample_count,
+            partial_token_kept_patch_layers=partial_token_kept_patch_layers,
+            partial_token_full_patch_layers=partial_token_full_patch_layers,
+            partial_token_sample_layers=partial_token_sample_layers,
+            partial_token_l1_kept_patch_layers=(
+                partial_token_l1_kept_patch_layers
+            ),
+            partial_token_l1_full_patch_layers=(
+                partial_token_l1_full_patch_layers
+            ),
+            partial_token_l0_kept_patch_layers=(
+                partial_token_l0_kept_patch_layers
+            ),
+            partial_token_l0_full_patch_layers=(
+                partial_token_l0_full_patch_layers
+            ),
+            partial_token_l0_excluded_patch_layers=(
+                partial_token_l0_excluded_patch_layers
+            ),
+            partial_token_l1_l0_overlap=partial_token_l1_l0_overlap,
         )
         self.output_queue.put(result)
 

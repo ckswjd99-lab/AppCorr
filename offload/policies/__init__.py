@@ -18,6 +18,8 @@ from .transmission import (
     RawTransmissionPolicy, 
     ZlibTransmissionPolicy, 
     COCOWindowProgressiveLaplacianPolicy,
+    ADE20KL2L1ProgressiveLaplacianPolicy,
+    ADE20KWindowL2L1L0ProgressiveLaplacianPolicy,
     ADE20KWindowProgressiveLaplacianPolicy,
     LaplacianPyramidPolicy, 
     L2L1L0ProgressiveLPyramidPolicy,
@@ -52,7 +54,13 @@ TRANSMISSION_REGISTRY = {
     "L2L1L0ProgressiveLaplacian": L2L1L0ProgressiveLPyramidPolicy,
     "NYUAppCorrProgressiveLaplacian": NYUAppCorrProgressiveLaplacianPolicy,
     "COCOWindowProgressiveLaplacian": COCOWindowProgressiveLaplacianPolicy,
+    "ADE20KL2L1ProgressiveLaplacian": (
+        ADE20KL2L1ProgressiveLaplacianPolicy
+    ),
     "ADE20KWindowProgressiveLaplacian": ADE20KWindowProgressiveLaplacianPolicy,
+    "ADE20KWindowL2L1L0ProgressiveLaplacian": (
+        ADE20KWindowL2L1L0ProgressiveLaplacianPolicy
+    ),
     "FullImageCompression": FullImageCompressionPolicy,
 }
 

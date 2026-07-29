@@ -1,0 +1,63 @@
+{
+    "date": "2026-07-29",
+    "branch": "develop/dinov3-l2l1l0-tail-full",
+    "task": "ADE20K DINOv3 ViT-7B Mask2Former",
+    "num_images": 100,
+    "labels_order_matched": true,
+    "flops_per_recomputed_query_layer": 387006464,
+    "baseline": {
+        "method": "L2-L0 partial-token",
+        "mIoU": 52.08121264440151,
+        "aAcc": 83.5255553211721,
+        "bytes_per_image": 2385393.74,
+        "patch_token_layers_per_image": 118979.08,
+        "query_token_layers_per_image": 119531.68,
+        "correction_tflops_per_image": 46.259532812779526,
+        "correction_ms": 134.78619575500488,
+        "end_to_end_ms": 1165.8335399627686
+    },
+    "conditional_reentry": {
+        "l1_remaining_energy_ratio_max": 0.5,
+        "l1_l0_reentry_ratio": 0.5,
+        "l0_token_keep_thres": 0.00012,
+        "mIoU": 50.51169532022687,
+        "aAcc": 82.66568160649976,
+        "bytes_per_image": 2601548.7,
+        "patch_token_layers_per_image": 120360.96,
+        "query_token_layers_per_image": 121106.76,
+        "l1_patch_token_layers_per_image": 9803.2,
+        "l0_patch_token_layers_per_image": 110557.76,
+        "l1_l0_overlap_token_layers_total": 1690063,
+        "correction_tflops_per_image": 46.86909895409664,
+        "correction_ms": 179.57651138305664,
+        "end_to_end_ms": 1246.9997596740723
+    },
+    "candidate_minus_baseline": {
+        "mIoU_points": -1.569517324174639,
+        "aAcc_points": -0.8598737146723408,
+        "bytes_percent": 9.061605066507795,
+        "patch_token_layers_percent": 1.161447878063937,
+        "correction_tflops_percent": 1.3177092466198026,
+        "correction_ms_percent": 33.23064010906962,
+        "end_to_end_ms_percent": 6.962076225212721
+    },
+    "paired_bootstrap_95ci": {
+        "per_image_mIoU_delta": [
+            -1.493761,
+            0.566723
+        ],
+        "bytes_delta": [
+            200435.43,
+            233287.23
+        ],
+        "correction_ms_delta": [
+            26.994371,
+            63.133123
+        ],
+        "end_to_end_ms_delta": [
+            17.171288,
+            144.645448
+        ]
+    },
+    "conclusion": "Conditional re-entry does not beat the L2-L0 baseline in accuracy, correction work, transmission, or measured latency at this operating point."
+}

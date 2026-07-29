@@ -102,7 +102,9 @@ class SourceModule(multiprocessing.Process):
             "ProgressiveLaplacian",
             "L2L1L0ProgressiveLaplacian",
             "COCOWindowProgressiveLaplacian",
+            "ADE20KL2L1ProgressiveLaplacian",
             "ADE20KWindowProgressiveLaplacian",
+            "ADE20KWindowL2L1L0ProgressiveLaplacian",
             "NYUAppCorrLaplacian",
             "NYUAppCorrProgressiveLaplacian",
             "NYUAppCorrRaw",
@@ -414,6 +416,15 @@ class SourceModule(multiprocessing.Process):
         total_partial_token_kept_patch = 0.0
         total_partial_token_full_patch = 0.0
         total_partial_token_sample_count = 0.0
+        total_partial_token_kept_patch_layers = 0.0
+        total_partial_token_full_patch_layers = 0.0
+        total_partial_token_sample_layers = 0.0
+        total_partial_token_l1_kept_patch_layers = 0.0
+        total_partial_token_l1_full_patch_layers = 0.0
+        total_partial_token_l0_kept_patch_layers = 0.0
+        total_partial_token_l0_full_patch_layers = 0.0
+        total_partial_token_l0_excluded_patch_layers = 0.0
+        total_partial_token_l1_l0_overlap = 0.0
         cache_breakdown_accumulator = {}
         
         # Track event statistics
@@ -474,6 +485,51 @@ class SourceModule(multiprocessing.Process):
             partial_token_kept_patch = getattr(result, 'partial_token_kept_patch', 0.0)
             partial_token_full_patch = getattr(result, 'partial_token_full_patch', 0.0)
             partial_token_sample_count = getattr(result, 'partial_token_sample_count', 0.0)
+            partial_token_kept_patch_layers = getattr(
+                result,
+                'partial_token_kept_patch_layers',
+                0.0,
+            )
+            partial_token_full_patch_layers = getattr(
+                result,
+                'partial_token_full_patch_layers',
+                0.0,
+            )
+            partial_token_sample_layers = getattr(
+                result,
+                'partial_token_sample_layers',
+                0.0,
+            )
+            partial_token_l1_kept_patch_layers = getattr(
+                result,
+                'partial_token_l1_kept_patch_layers',
+                0.0,
+            )
+            partial_token_l1_full_patch_layers = getattr(
+                result,
+                'partial_token_l1_full_patch_layers',
+                0.0,
+            )
+            partial_token_l0_kept_patch_layers = getattr(
+                result,
+                'partial_token_l0_kept_patch_layers',
+                0.0,
+            )
+            partial_token_l0_full_patch_layers = getattr(
+                result,
+                'partial_token_l0_full_patch_layers',
+                0.0,
+            )
+            partial_token_l0_excluded_patch_layers = getattr(
+                result,
+                'partial_token_l0_excluded_patch_layers',
+                0.0,
+            )
+            partial_token_l1_l0_overlap = getattr(
+                result,
+                'partial_token_l1_l0_overlap',
+                0.0,
+            )
             total_cache_size_bytes += cache_size_bytes
             max_cache_size_bytes = max(max_cache_size_bytes, cache_size_bytes)
             total_attn_prob_mass_used += attn_prob_mass_used
@@ -487,6 +543,31 @@ class SourceModule(multiprocessing.Process):
             total_partial_token_kept_patch += partial_token_kept_patch
             total_partial_token_full_patch += partial_token_full_patch
             total_partial_token_sample_count += partial_token_sample_count
+            total_partial_token_kept_patch_layers += (
+                partial_token_kept_patch_layers
+            )
+            total_partial_token_full_patch_layers += (
+                partial_token_full_patch_layers
+            )
+            total_partial_token_sample_layers += partial_token_sample_layers
+            total_partial_token_l1_kept_patch_layers += (
+                partial_token_l1_kept_patch_layers
+            )
+            total_partial_token_l1_full_patch_layers += (
+                partial_token_l1_full_patch_layers
+            )
+            total_partial_token_l0_kept_patch_layers += (
+                partial_token_l0_kept_patch_layers
+            )
+            total_partial_token_l0_full_patch_layers += (
+                partial_token_l0_full_patch_layers
+            )
+            total_partial_token_l0_excluded_patch_layers += (
+                partial_token_l0_excluded_patch_layers
+            )
+            total_partial_token_l1_l0_overlap += (
+                partial_token_l1_l0_overlap
+            )
             for key, value in cache_breakdown_bytes.items():
                 stats = cache_breakdown_accumulator.setdefault(key, {'sum': 0, 'max': 0})
                 stats['sum'] += value
@@ -512,6 +593,31 @@ class SourceModule(multiprocessing.Process):
                 'partial_token_kept_patch': partial_token_kept_patch,
                 'partial_token_full_patch': partial_token_full_patch,
                 'partial_token_sample_count': partial_token_sample_count,
+                'partial_token_kept_patch_layers': (
+                    partial_token_kept_patch_layers
+                ),
+                'partial_token_full_patch_layers': (
+                    partial_token_full_patch_layers
+                ),
+                'partial_token_sample_layers': partial_token_sample_layers,
+                'partial_token_l1_kept_patch_layers': (
+                    partial_token_l1_kept_patch_layers
+                ),
+                'partial_token_l1_full_patch_layers': (
+                    partial_token_l1_full_patch_layers
+                ),
+                'partial_token_l0_kept_patch_layers': (
+                    partial_token_l0_kept_patch_layers
+                ),
+                'partial_token_l0_full_patch_layers': (
+                    partial_token_l0_full_patch_layers
+                ),
+                'partial_token_l0_excluded_patch_layers': (
+                    partial_token_l0_excluded_patch_layers
+                ),
+                'partial_token_l1_l0_overlap': (
+                    partial_token_l1_l0_overlap
+                ),
                 'group_stats': group_stats,
                 'events': all_events,
                 'labels': self._json_safe_value(valid_labels)
@@ -589,6 +695,19 @@ class SourceModule(multiprocessing.Process):
             total_partial_token_full_patch / total_partial_token_sample_count
             if total_partial_token_sample_count > 0 else 0.0
         )
+        avg_partial_token_layer_keep_pct = (
+            100.0
+            * total_partial_token_kept_patch_layers
+            / total_partial_token_full_patch_layers
+            if total_partial_token_full_patch_layers > 0
+            else 100.0
+        )
+        avg_partial_token_kept_patch_layers_per_request = (
+            total_partial_token_kept_patch_layers / request_count
+        )
+        avg_partial_token_full_patch_layers_per_request = (
+            total_partial_token_full_patch_layers / request_count
+        )
         appcorr_options = normalize_appcorr_kwargs(
             self.config.appcorr_kwargs,
             self.config.transmission_kwargs,
@@ -647,6 +766,29 @@ class SourceModule(multiprocessing.Process):
                 f"Avg recomputed patch queries per active sample: "
                 f"{avg_partial_token_kept_patch_count:.2f} / {avg_partial_token_full_patch_count:.2f}"
             )
+            if total_partial_token_full_patch_layers > 0:
+                print(
+                    "Avg recomputed patch token-layers per request: "
+                    f"{avg_partial_token_kept_patch_layers_per_request:.2f} / "
+                    f"{avg_partial_token_full_patch_layers_per_request:.2f}"
+                )
+            if (
+                total_partial_token_l1_full_patch_layers > 0
+                or total_partial_token_l0_full_patch_layers > 0
+            ):
+                print(
+                    "L1/L0 recomputed patch token-layers per request: "
+                    f"{total_partial_token_l1_kept_patch_layers / request_count:.2f} / "
+                    f"{total_partial_token_l0_kept_patch_layers / request_count:.2f}"
+                )
+                print(
+                    "L0 patch token-layers excluded by L1 disjoint support: "
+                    f"{total_partial_token_l0_excluded_patch_layers / request_count:.2f}"
+                )
+                print(
+                    "Observed L1/L0 selected-support overlap: "
+                    f"{total_partial_token_l1_l0_overlap:.0f}"
+                )
         print("")
         print("=== Token Prune Stats ===")
         if appcorr_method == 'partial_channel':
@@ -685,6 +827,34 @@ class SourceModule(multiprocessing.Process):
             'avg_partial_token_keep_pct': avg_partial_token_keep_pct,
             'avg_partial_token_kept_patch_count': avg_partial_token_kept_patch_count,
             'avg_partial_token_full_patch_count': avg_partial_token_full_patch_count,
+            'avg_partial_token_layer_keep_pct': avg_partial_token_layer_keep_pct,
+            'avg_partial_token_kept_patch_layers_per_request': (
+                avg_partial_token_kept_patch_layers_per_request
+            ),
+            'avg_partial_token_full_patch_layers_per_request': (
+                avg_partial_token_full_patch_layers_per_request
+            ),
+            'avg_partial_token_sample_layers_per_request': (
+                total_partial_token_sample_layers / request_count
+            ),
+            'avg_partial_token_l1_kept_patch_layers_per_request': (
+                total_partial_token_l1_kept_patch_layers / request_count
+            ),
+            'avg_partial_token_l1_full_patch_layers_per_request': (
+                total_partial_token_l1_full_patch_layers / request_count
+            ),
+            'avg_partial_token_l0_kept_patch_layers_per_request': (
+                total_partial_token_l0_kept_patch_layers / request_count
+            ),
+            'avg_partial_token_l0_full_patch_layers_per_request': (
+                total_partial_token_l0_full_patch_layers / request_count
+            ),
+            'avg_partial_token_l0_excluded_patch_layers_per_request': (
+                total_partial_token_l0_excluded_patch_layers / request_count
+            ),
+            'partial_token_l1_l0_overlap_total': (
+                total_partial_token_l1_l0_overlap
+            ),
             'appcorr_method': appcorr_method,
             'cache_breakdown_bytes_per_offload': cache_breakdown_summary,
             'time_offset_ms': time_offset * 1000,

@@ -1,0 +1,58 @@
+{
+    "date": "2026-07-29",
+    "branch": "develop/dinov3-l2l1l0-tail-full",
+    "task": "ADE20K DINOv3 ViT-7B Mask2Former",
+    "num_images": 100,
+    "labels_order_matched": true,
+    "threshold": 0.00004,
+    "flops_per_recomputed_query_layer": 387006464,
+    "full_sequential": {
+        "mIoU": 52.92288696479569,
+        "aAcc": 84.08007692187066,
+        "bytes_per_image": 3164118.56,
+        "backbone_tflops_per_image": 90.43969537474561,
+        "end_to_end_ms": 404.68968391418457
+    },
+    "l2_l0": {
+        "mIoU": 52.08121264440151,
+        "aAcc": 83.5255553211721,
+        "bytes_per_image": 2385393.74,
+        "patch_token_layers_per_image": 118979.08,
+        "query_token_layers_per_image": 119531.68,
+        "correction_tflops_per_image": 46.259532812779526,
+        "total_backbone_tflops_per_image": 136.69922818752514,
+        "correction_ms": 126.29992008209229,
+        "end_to_end_ms": 1145.1199197769165
+    },
+    "l2_l1_l0_conditional_threshold": {
+        "mIoU": 52.187244963725,
+        "aAcc": 83.86754596782559,
+        "bytes_per_image": 2601548.7,
+        "patch_token_layers_per_image": 218370.58,
+        "query_token_layers_per_image": 219116.38,
+        "l1_patch_token_layers_per_image": 68029.76,
+        "l0_patch_token_layers_per_image": 150340.82,
+        "l1_l0_overlap_token_layers_per_image": 133932.11,
+        "l1_l0_overlap_share_of_l0_percent": 89.08565883836471,
+        "correction_tflops_per_image": 84.79945542828031,
+        "total_backbone_tflops_per_image": 175.23915080302592,
+        "correction_ms": 240.04975080490112,
+        "end_to_end_ms": 1210.7886219024658
+    },
+    "conditional_threshold_minus_l2_l0": {
+        "mIoU_points": 0.10603231932348933,
+        "aAcc_points": 0.34199064665348544,
+        "bytes_percent": 9.061605066507795,
+        "patch_token_layers_percent": 83.53695456377707,
+        "correction_ms_percent": 90.06326421178561,
+        "end_to_end_ms_percent": 5.734657217240824
+    },
+    "conditional_threshold_minus_full": {
+        "mIoU_points": -0.735642001070687,
+        "aAcc_points": -0.2125309540450644,
+        "bytes_percent": -17.779670683389305,
+        "total_backbone_flops_percent": 93.76353500186569
+    },
+    "full_mIoU_gap_recovered_vs_l2_l0_percent": 12.597784767133188,
+    "conclusion": "Unrestricted equal-threshold correction recovers only 0.106 mIoU points over L2-L0 while nearly doubling correction work; it is not an efficient operating point."
+}

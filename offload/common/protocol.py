@@ -16,6 +16,14 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'group_strategy': 'uniform',
         'token_keep_ratio': 0.2,
         'token_keep_thres': None,
+        'l1_token_keep_thres': None,
+        'l0_token_keep_thres': None,
+        'l1_pscore_mode': 'residual_energy',
+        'l0_pscore_mode': 'incremental_residual_energy',
+        'l1_l0_support_mode': 'independent',
+        'l1_l0_disjoint_support': False,
+        'l1_l0_reentry_ratio': 1.0,
+        'l1_remaining_energy_ratio_max': None,
         'attn_col_alive_ratio': 1.0,
         'mobile_pscore': 'none',
         'mobile_pscore_weight': 0.0,
@@ -89,6 +97,77 @@ def normalize_appcorr_kwargs(
     if token_keep_thres in {'', 'null', 'None'}:
         token_keep_thres = None
     options['token_keep_thres'] = None if token_keep_thres is None else float(token_keep_thres)
+    for level_key in ('l1_token_keep_thres', 'l0_token_keep_thres'):
+        level_threshold = options.get(level_key, defaults[level_key])
+        if level_threshold in {'', 'null', 'None'}:
+            level_threshold = None
+        options[level_key] = (
+            None
+            if level_threshold is None
+            else float(level_threshold)
+        )
+    options['l1_pscore_mode'] = str(
+        options.get('l1_pscore_mode', defaults['l1_pscore_mode'])
+    ).lower()
+    options['l0_pscore_mode'] = str(
+        options.get('l0_pscore_mode', defaults['l0_pscore_mode'])
+    ).lower()
+    legacy_disjoint = bool(
+        options.get(
+            'l1_l0_disjoint_support',
+            defaults['l1_l0_disjoint_support'],
+        )
+    )
+    if 'l1_l0_support_mode' in raw:
+        support_mode = str(options['l1_l0_support_mode']).lower()
+        if legacy_disjoint and support_mode != 'disjoint':
+            raise ValueError(
+                "l1_l0_disjoint_support=true conflicts with "
+                f"l1_l0_support_mode={support_mode!r}"
+            )
+    else:
+        support_mode = 'disjoint' if legacy_disjoint else 'independent'
+    valid_support_modes = {
+        'independent',
+        'disjoint',
+        'conditional_threshold',
+        'conditional_reentry',
+    }
+    if support_mode not in valid_support_modes:
+        raise ValueError(
+            f"Unknown l1_l0_support_mode {support_mode!r}. "
+            f"Available values: {sorted(valid_support_modes)}"
+        )
+    options['l1_l0_support_mode'] = support_mode
+    options['l1_l0_disjoint_support'] = support_mode == 'disjoint'
+
+    reentry_ratio = float(
+        options.get(
+            'l1_l0_reentry_ratio',
+            defaults['l1_l0_reentry_ratio'],
+        )
+    )
+    if not 0.0 <= reentry_ratio <= 1.0:
+        raise ValueError(
+            "l1_l0_reentry_ratio must be in [0, 1], "
+            f"got {reentry_ratio}"
+        )
+    options['l1_l0_reentry_ratio'] = reentry_ratio
+
+    remaining_ratio_max = options.get(
+        'l1_remaining_energy_ratio_max',
+        defaults['l1_remaining_energy_ratio_max'],
+    )
+    if remaining_ratio_max in {'', 'null', 'None'}:
+        remaining_ratio_max = None
+    if remaining_ratio_max is not None:
+        remaining_ratio_max = float(remaining_ratio_max)
+        if remaining_ratio_max < 0.0:
+            raise ValueError(
+                "l1_remaining_energy_ratio_max must be non-negative, "
+                f"got {remaining_ratio_max}"
+            )
+    options['l1_remaining_energy_ratio_max'] = remaining_ratio_max
     options['attn_col_alive_ratio'] = float(options.get('attn_col_alive_ratio', defaults['attn_col_alive_ratio']))
     mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
     if mobile_pscore in {'', 'null', 'None'}:
@@ -280,6 +359,9 @@ class Patch:
     batch_group_total: int = 0
     arrival_time: float = 0.0
     pscore_hint: float = 0.0
+    # Alternative L0 score for a token already corrected at L1. Both scores
+    # retain a common normalization denominator on the server.
+    pscore_hint_if_l1_corrected: float = 0.0
     target_shape: tuple = ()
     # Number of correction groups for this image (crop-cover policy: = sliding-crop count,
     # which varies per image). 0 = unset / not applicable.
@@ -333,3 +415,12 @@ class InferenceResult:
     partial_token_kept_patch: float = 0.0
     partial_token_full_patch: float = 0.0
     partial_token_sample_count: float = 0.0
+    partial_token_kept_patch_layers: float = 0.0
+    partial_token_full_patch_layers: float = 0.0
+    partial_token_sample_layers: float = 0.0
+    partial_token_l1_kept_patch_layers: float = 0.0
+    partial_token_l1_full_patch_layers: float = 0.0
+    partial_token_l0_kept_patch_layers: float = 0.0
+    partial_token_l0_full_patch_layers: float = 0.0
+    partial_token_l0_excluded_patch_layers: float = 0.0
+    partial_token_l1_l0_overlap: float = 0.0
