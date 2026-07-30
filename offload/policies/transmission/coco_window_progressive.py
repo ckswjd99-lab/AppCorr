@@ -79,6 +79,25 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
         return cls._resize_to_hw(image, (base_h, base_w), np.uint8)
 
     @classmethod
+    def _build_native_base(cls, image: np.ndarray, config: ExperimentConfig) -> np.ndarray:
+        """Reduce content resolution before projecting onto the detector base grid."""
+        model_h, model_w = config.image_shape[:2]
+        base_h, base_w = cls._base_hw(config)
+        native_h, native_w = image.shape[:2]
+        content_h = max(1, int(round(native_h * base_h / model_h)))
+        content_w = max(1, int(round(native_w * base_w / model_w)))
+        content_base = cls._resize_to_hw(
+            image,
+            (content_h, content_w),
+            np.uint8,
+        )
+        return cls._resize_to_hw(
+            content_base,
+            (base_h, base_w),
+            np.uint8,
+        )
+
+    @classmethod
     def _upsample_base(cls, base: np.ndarray, config: ExperimentConfig) -> np.ndarray:
         h, w = config.image_shape[:2]
         return cls._resize_to_hw(base, (h, w), np.uint8)
@@ -111,19 +130,19 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
             self._project_to_model_grid(image, config)
             for image in image_list
         ]
+        bases = [
+            self._build_native_base(image, config)
+            for image in image_list
+        ]
 
         base_patches: List[Patch] = []
-        bases: List[np.ndarray] = []
 
         ph, pw = self._patch_hw(config)
         h, w, c = config.image_shape
         full_grid_w = w // pw
         all_h, all_w, h_cum, w_cum = self._window_slices(config)
 
-        for b_idx, image in enumerate(projected_images):
-            base = self._downsample_base(image, config)
-            bases.append(base)
-
+        for b_idx, base in enumerate(bases):
             base_h, base_w = base.shape[:2]
             base_grid_h, base_grid_w = base_h // ph, base_w // pw
             base_crops = (

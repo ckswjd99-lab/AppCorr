@@ -4,13 +4,16 @@
     "dataset_kwargs": {
         "num_workers": 0
     },
-    "exp_id": "coco_sequential",
+    "exp_id": "coco_approx_only_l1",
     "batch_size": 1,
     "image_shape": [1024, 1024, 3],
     "patch_size": [16, 16],
-    "transmission_policy_name": "Raw",
-    "transmission_kwargs": {},
     "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "Laplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [1],
+        "compression_level": 1
+    },
     "appcorr_kwargs": {
         "enabled": false
     },

@@ -57,8 +57,34 @@ class RawTransmissionPolicy(ITransmissionPolicy):
             yield patches
             return
 
+        if isinstance(images, np.ndarray):
+            image_list = [images[b] for b in range(images.shape[0])]
+        else:
+            image_list = list(images)
+        target_h, target_w, target_c = config.image_shape
+        projected = []
+        for image in image_list:
+            if image.ndim != 3 or image.shape[2] != target_c:
+                raise RuntimeError(
+                    f"Expected HWC image with {target_c} channels, got {image.shape}"
+                )
+            if image.shape[:2] != (target_h, target_w):
+                interpolation = (
+                    cv2.INTER_AREA
+                    if target_h <= image.shape[0] and target_w <= image.shape[1]
+                    else cv2.INTER_LINEAR
+                )
+                image = cv2.resize(
+                    image,
+                    (target_w, target_h),
+                    interpolation=interpolation,
+                )
+            projected.append(np.ascontiguousarray(image.astype(np.uint8, copy=False)))
+        images = np.stack(projected, axis=0)
+
         B, H, W, C = images.shape
         ph, pw = config.patch_size
+        patches = []
         
         # Grid dimensions
         gh, gw = H // ph, W // pw
