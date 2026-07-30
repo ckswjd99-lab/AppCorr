@@ -258,6 +258,92 @@ packing, and scatter overhead. The corresponding rough totals are 14.50 TFLOPs
 for direct full and 18.21 TFLOPs for expand-once when a multiply-add is counted
 as two FLOPs.
 
+## Offload runtime integration and full ADE20K evaluation
+
+The block-grid expand-once schedule was integrated into the existing offload
+system as `appcorr_kwargs.method="lowres_expand_once"`. The implementation:
+
+- runs the base pass on a true half-resolution token grid;
+- keeps low-resolution per-layer state until a fine group arrives;
+- resolves unarrived K/V positions through their low-resolution parents;
+- corrects only the newly arrived spatial block from layer zero to the current
+  10-layer frontier;
+- advances previously arrived fine tokens together with later approximate
+  chunks;
+- assembles the normal high-resolution interaction features before the
+  pre-head sliding-window merge.
+
+It uses the existing `ADE20KWindowInterleaved` scheduler and four
+`block_grid` transmission groups. The runnable configuration is:
+
+```bash
+offload/run_local.sh \
+  offload/config/ade20k_m2f_lowres_expand_once_block_grid.json \
+  -nr 2000 -nw 0
+```
+
+The local launcher now discovers the versioned CUDA `ptxas` binary and exports
+it for Triton. This avoids the recurring failure caused by a CUDA installation
+whose unversioned `ptxas` is absent from `PATH`.
+
+The first integration incorrectly produced the low ViT input by downsampling
+the L0-sized canvas reconstructed from L1. The corrected implementation
+preserves the separately decoded L1 image that was constructed from the
+original image before model-grid resizing. Low ViT crops now come directly
+from that native-pyramid L1 image. The L0 canvas is used only for cumulative
+residual reconstruction and high-resolution correction.
+
+The full 2,000-image ADE20K validation completed without pipeline errors:
+
+| Method | Images | mIoU | Difference vs full |
+|---|---:|---:|---:|
+| Direct full-resolution baseline | 2,000 | 62.236 | 0.000 |
+| Native-pyramid L1, ordinary full-token inference | 2,000 | 61.329 | -0.907 |
+| Existing L2 block-grid partial-token AppCorr | 2,000 | 61.311 | -0.925 |
+| Superseded L1→L0→L1 expand-once | 2,000 | 61.563 | -0.672 |
+| **Native-pyramid L1 expand-once, block-grid G=4** | **2,000** | **61.837** | **-0.399** |
+
+The corrected path gains 0.508 mIoU over the native-pyramid L1-only baseline
+and is only 0.399 point below direct full inference. It also gains 0.274 point
+over the incorrect L1→L0→L1 implementation. The comparison with the older
+partial-token result is not method-only because that experiment starts from an
+L2 rather than L1 base.
+
+Runtime summaries from the same machine are:
+
+| Method | Prepare | Approx | Correct | ViT subtotal | Request latency |
+|---|---:|---:|---:|---:|---:|
+| Direct full | 10.03 ms | 164.57 ms | - | 164.57 ms | 402.13 ms |
+| L1 ordinary inference | 9.08 ms | 162.84 ms | - | 162.84 ms | 425.53 ms |
+| Existing L2 block-grid partial-token | 63.19 ms | 185.36 ms | 143.36 ms | 328.72 ms | 676.54 ms |
+| **Native-pyramid expand-once** | **65.31 ms** | **134.92 ms** | **255.01 ms** | **389.93 ms** | **772.37 ms** |
+
+Event values are per-request duration sums from the runtime logger, not
+critical-path contributions. The low-grid approximate component is 17% faster
+than the direct full ViT event, but correction makes the ViT subtotal 2.39x
+the direct full event. Mean and peak measured cache sizes were 5.78 and
+12.49 GiB. Average transmitted payload was 2,365 KiB per image. The corrected
+full evaluations were initially run concurrently on isolated GPUs. The timing
+row above uses requests 1,100–1,999 of the expand run, after the concurrent L1
+job had exited; the full-run mixed-contention latency was 1,253.79 ms and is
+not used for method comparison.
+
+### System interpretation
+
+Every high-resolution patch still traverses all 40 layers exactly once after
+it arrives, and the low-resolution base adds about 26% ideal transformer
+FLOPs. Therefore this design does not reduce aggregate model compute. Its only
+plausible benefit is to execute useful provisional work while fine residuals
+are in flight. It may reduce an arrival-dependent critical path if that work
+overlaps sufficiently with transmission, but it is strictly worse for local
+compute-only or final-result-only inference in the present implementation.
+
+The accuracy result validates the interleaved semantics, not a speedup claim.
+A performance follow-up would need fused parent-K/V lookup, RoPE, and
+attention; removal of unused low-cache fields; and an explicit network trace
+showing that overlap recovers more than the added correction and packing
+costs.
+
 This is fundamentally different from the measured 4.29x runtime. The prototype
 serializes many small active-token calls and repeatedly gathers and constructs
 logical high-resolution K/V tensors in eager PyTorch. Those operations add

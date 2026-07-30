@@ -170,7 +170,11 @@ class WorkerModule(multiprocessing.Process):
                                 )
                                 if group_id == 0 and (
                                     self.config.lowres_sr_enabled()
-                                    or self.config.transmission_policy_name == 'COCOWindowProgressiveLaplacian'
+                                    or self.config.transmission_policy_name
+                                    in {
+                                        'COCOWindowProgressiveLaplacian',
+                                        'ADE20KWindowProgressiveLaplacian',
+                                    }
                                 ):
                                     context['input_lr_native_np'] = self.policy.decode_lowres(task.payload, self.config)
                                     if self.config.lowres_sr_enabled():

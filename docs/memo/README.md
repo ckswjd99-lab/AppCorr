@@ -8,6 +8,9 @@ produced them.
 
 ## Index
 
+- [dinov3_performance_reference.md](dinov3_performance_reference.md) — durable full-validation
+  accuracy anchors for DINOv3 tasks. Currently records COCO val2017 L2-only, L1-only, and
+  L0/Full native-pyramid baselines, including input semantics and latency caveats.
 - [ade20k_sr_residual_pruning_sweep.md](ade20k_sr_residual_pruning_sweep.md) — ADE20K m2f (ViT-7B):
   full-val threshold sweep of appcorr / appcorr+SR / appcorr+SR+SR-residual-pruning. Finding:
   SR-residual pruning only beats plain appcorr in a narrow ~30% recompute band; SR base alone ≈ a wash.

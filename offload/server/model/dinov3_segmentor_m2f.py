@@ -16,6 +16,13 @@ from offload.common import Task
 from offload.common.protocol import normalize_appcorr_kwargs
 from appcorr.models.dinov3.models.vision_transformer import create_group_index
 from .base import ModelExecutor
+from .dinov3_lowres_expand_once import (
+    advance_frontier as lowres_expand_advance_frontier,
+    correct_new_group as lowres_expand_correct_new_group,
+    finalize_high_output as lowres_expand_finalize_high_output,
+    initialize_state as initialize_lowres_expand_state,
+    state_cache_nbytes as lowres_expand_state_cache_nbytes,
+)
 from .dinov3_segmentor_linhead import GroupCorrectionPlan, QueryState
 from .utils import load_weight_mmap
 
@@ -862,7 +869,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         return outputs
 
-    def _prepare_single_source(self, input_tensor: torch.Tensor, adapter, vit_backbone) -> Dict[str, Any]:
+    def _prepare_single_source(
+        self,
+        input_tensor: torch.Tensor,
+        adapter,
+        vit_backbone,
+        *,
+        lowres_scale: float | None = None,
+        lowres_input_tensor: torch.Tensor | None = None,
+    ) -> Dict[str, Any]:
         """Compute SPM features, deform inputs, and prepare ViT tokens for one input."""
         from dinov3.eval.segmentation.models.backbone.dinov3_adapter import deform_inputs
 
@@ -881,7 +896,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         H_toks = input_tensor.shape[2] // adapter.patch_size
         W_toks = input_tensor.shape[3] // adapter.patch_size
 
-        return {
+        result = {
             "x_backbone": x_backbone,
             "rope_sincos": rope,
             "deform_in1": d_in1,
@@ -894,6 +909,46 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             "token_shape": (H_toks, W_toks),
             "crop_hw": (input_tensor.shape[2], input_tensor.shape[3]),
         }
+        if lowres_scale is not None:
+            low_h = int(round(input_tensor.shape[2] * lowres_scale))
+            low_w = int(round(input_tensor.shape[3] * lowres_scale))
+            patch_size = int(adapter.patch_size)
+            low_h = max((low_h // patch_size) * patch_size, patch_size)
+            low_w = max((low_w // patch_size) * patch_size, patch_size)
+            if input_tensor.shape[2] % low_h != 0 or input_tensor.shape[3] % low_w != 0:
+                raise ValueError(
+                    "lowres_expand_once requires integer high/low grid ratios, got "
+                    f"high={tuple(input_tensor.shape[2:])}, low={(low_h, low_w)}"
+                )
+            if lowres_input_tensor is None:
+                raise RuntimeError(
+                    "lowres_expand_once requires the original-image-derived "
+                    "native pyramid level; downsampling the reconstructed L0 "
+                    "canvas is intentionally unsupported"
+                )
+            low_input = lowres_input_tensor
+            if low_input.shape[2:] != (low_h, low_w):
+                low_input = F.interpolate(
+                    low_input,
+                    size=(low_h, low_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            with torch.autocast("cuda", self.autocast_dtype):
+                low_tokens, low_hw = vit_backbone.prepare_tokens_with_masks(low_input)
+                low_rope = (
+                    vit_backbone.rope_embed(H=low_hw[0], W=low_hw[1])
+                    if vit_backbone.rope_embed
+                    else None
+                )
+            result.update(
+                {
+                    "lowres_x_backbone": low_tokens,
+                    "lowres_rope_sincos": low_rope,
+                    "lowres_token_shape": tuple(low_hw),
+                }
+            )
+        return result
 
     @torch.inference_mode()
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
@@ -913,9 +968,35 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         adapter = self.model.segmentation_model[0]
         vit_backbone = adapter.backbone
+        appcorr_options = normalize_appcorr_kwargs(
+            config.appcorr_kwargs,
+            config.transmission_kwargs,
+        )
+        lowres_expand_enabled = appcorr_options["method"] == "lowres_expand_once"
+        lowres_scale = (
+            float(appcorr_options.get("lowres_scale", 0.5))
+            if lowres_expand_enabled
+            else None
+        )
+        if lowres_scale is not None and not 0.0 < lowres_scale < 1.0:
+            raise ValueError(f"lowres_scale must be in (0,1), got {lowres_scale}")
+        lowres_native_images = context.get("input_lr_native_np")
+        if lowres_expand_enabled:
+            if not isinstance(lowres_native_images, (list, tuple, np.ndarray)):
+                raise RuntimeError(
+                    "lowres_expand_once requires context['input_lr_native_np'] "
+                    "decoded directly from the transmitted native pyramid base"
+                )
+            if len(lowres_native_images) != len(images):
+                raise RuntimeError(
+                    "Low-resolution native image count does not match the high-resolution batch"
+                )
 
         all_x_backbones = []
         all_rope_sincos = []
+        all_lowres_x_backbones = []
+        all_lowres_rope_sincos = []
+        all_lowres_token_shapes = []
         all_deform_in1 = []
         all_deform_in2 = []
         all_spm_c1_raw = []
@@ -932,6 +1013,25 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         for image_idx, image_np in enumerate(images):
             with torch.cuda.nvtx.range(f"m2f_prepare_tta_img{image_idx}"):
                 tta_tensors, flip_flags, rescale_to = self._build_tta_inputs(image_np, profile_config)
+            lowres_tta_tensors = None
+            if lowres_expand_enabled:
+                lowres_image_np = np.ascontiguousarray(lowres_native_images[image_idx])
+                lowres_base = self._pil_to_normalized_tensor(Image.fromarray(lowres_image_np))
+                lowres_tta_tensors = []
+                for img_tensor, apply_flip in zip(tta_tensors, flip_flags):
+                    target_low_hw = (
+                        int(round(img_tensor.shape[2] * lowres_scale)),
+                        int(round(img_tensor.shape[3] * lowres_scale)),
+                    )
+                    low_tensor = F.interpolate(
+                        lowres_base,
+                        size=target_low_hw,
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    if apply_flip:
+                        low_tensor = torch.flip(low_tensor, dims=(-1,))
+                    lowres_tta_tensors.append(low_tensor)
             if rescale_mode == "original" and image_idx < len(target_shapes) and target_shapes[image_idx] is not None:
                 rescale_to = target_shapes[image_idx]
 
@@ -939,6 +1039,11 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
             for tta_idx, (img_tensor, _apply_flip) in enumerate(zip(tta_tensors, flip_flags)):
                 src_start = len(all_x_backbones)
+                lowres_img_tensor = (
+                    lowres_tta_tensors[tta_idx]
+                    if lowres_tta_tensors is not None
+                    else None
+                )
 
                 if inference_mode == "slide":
                     h_stride = w_stride = stride
@@ -959,11 +1064,34 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                             y1 = max(y2 - h_crop, 0)
                             x1 = max(x2 - w_crop, 0)
                             crop_img = img_tensor[:, :, y1:y2, x1:x2]
+                            lowres_crop_img = None
+                            if lowres_img_tensor is not None:
+                                low_h_img, low_w_img = lowres_img_tensor.shape[2:]
+                                low_y1 = int(round(y1 * low_h_img / h_img))
+                                low_y2 = int(round(y2 * low_h_img / h_img))
+                                low_x1 = int(round(x1 * low_w_img / w_img))
+                                low_x2 = int(round(x2 * low_w_img / w_img))
+                                lowres_crop_img = lowres_img_tensor[
+                                    :,
+                                    :,
+                                    low_y1:low_y2,
+                                    low_x1:low_x2,
+                                ]
 
                             with torch.cuda.nvtx.range(f"m2f_prepare_src{len(all_x_backbones)}"):
-                                src = self._prepare_single_source(crop_img, adapter, vit_backbone)
+                                src = self._prepare_single_source(
+                                    crop_img,
+                                    adapter,
+                                    vit_backbone,
+                                    lowres_scale=lowres_scale,
+                                    lowres_input_tensor=lowres_crop_img,
+                                )
                             all_x_backbones.append(src["x_backbone"])
                             all_rope_sincos.append(src["rope_sincos"])
+                            if lowres_expand_enabled:
+                                all_lowres_x_backbones.append(src["lowres_x_backbone"])
+                                all_lowres_rope_sincos.append(src["lowres_rope_sincos"])
+                                all_lowres_token_shapes.append(src["lowres_token_shape"])
                             all_deform_in1.append(src["deform_in1"])
                             all_deform_in2.append(src["deform_in2"])
                             all_spm_c1_raw.append(src["spm_c1_raw"])
@@ -994,9 +1122,19 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                     resized = F.interpolate(img_tensor, size=(512, 512), mode="bilinear", align_corners=False)
 
                     with torch.cuda.nvtx.range(f"m2f_prepare_src{len(all_x_backbones)}"):
-                        src = self._prepare_single_source(resized, adapter, vit_backbone)
+                        src = self._prepare_single_source(
+                            resized,
+                            adapter,
+                            vit_backbone,
+                            lowres_scale=lowres_scale,
+                            lowres_input_tensor=lowres_img_tensor,
+                        )
                     all_x_backbones.append(src["x_backbone"])
                     all_rope_sincos.append(src["rope_sincos"])
+                    if lowres_expand_enabled:
+                        all_lowres_x_backbones.append(src["lowres_x_backbone"])
+                        all_lowres_rope_sincos.append(src["lowres_rope_sincos"])
+                        all_lowres_token_shapes.append(src["lowres_token_shape"])
                     all_deform_in1.append(src["deform_in1"])
                     all_deform_in2.append(src["deform_in2"])
                     all_spm_c1_raw.append(src["spm_c1_raw"])
@@ -1042,6 +1180,17 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         context["m2f_x_backbones"] = all_x_backbones
         context["m2f_rope_sincos"] = all_rope_sincos
+        if lowres_expand_enabled:
+            context["m2f_lowres_x_backbones"] = all_lowres_x_backbones
+            context["m2f_lowres_rope_sincos"] = all_lowres_rope_sincos
+            context["m2f_lowres_token_shapes"] = all_lowres_token_shapes
+            if task.payload and int(task.payload[0].group_id) == 0:
+                context.pop("m2f_lowres_expand_states", None)
+        else:
+            context.pop("m2f_lowres_x_backbones", None)
+            context.pop("m2f_lowres_rope_sincos", None)
+            context.pop("m2f_lowres_token_shapes", None)
+            context.pop("m2f_lowres_expand_states", None)
         context["m2f_deform_in1"] = all_deform_in1
         context["m2f_deform_in2"] = all_deform_in2
         context["m2f_spm_c1_raw"] = all_spm_c1_raw
@@ -1080,9 +1229,178 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         self._maybe_warmup_correct_buckets(config, context)
         return {}
 
+    @staticmethod
+    def _uses_lowres_expand_once(config: Any) -> bool:
+        options = normalize_appcorr_kwargs(
+            config.appcorr_kwargs,
+            config.transmission_kwargs,
+        )
+        return options["method"] == "lowres_expand_once"
+
+    def _publish_lowres_expand_state(
+        self,
+        context: Dict[str, Any],
+        interaction_indexes: set[int],
+    ) -> None:
+        states = context["m2f_lowres_expand_states"]
+        ordered_interactions = sorted(interaction_indexes)
+        context["m2f_current_features"] = [
+            lowres_expand_finalize_high_output(state) for state in states
+        ]
+        context["m2f_intermediate_raw"] = [
+            [
+                state["high_intermediates"][layer_idx]
+                for layer_idx in ordered_interactions
+                if layer_idx in state["high_intermediates"]
+            ]
+            for state in states
+        ]
+
+        # Expose tensor references to the worker's existing recursive cache-size
+        # accounting without materializing another cache copy.
+        cache_feature: Dict[str, torch.Tensor] = {}
+        for src_idx, state in enumerate(states):
+            for key, value in state["low_cache"].items():
+                if torch.is_tensor(value):
+                    cache_feature[f"expand_src{src_idx}_low_{key}"] = value
+            for tag, override in state["overrides"].items():
+                cache_feature[f"expand_src{src_idx}_{tag}_indices"] = override["indices"]
+                cache_feature[f"expand_src{src_idx}_{tag}_kv"] = override["kv"]
+        context["cache_feature"] = cache_feature
+        context["m2f_lowres_expand_cache_bytes"] = sum(
+            lowres_expand_state_cache_nbytes(state) for state in states
+        )
+
+    def _approx_forward_lowres_expand_once(
+        self,
+        start_l: int,
+        end_l: int,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        adapter = self.model.segmentation_model[0]
+        backbone = adapter.backbone
+        interaction_indexes = set(adapter.interaction_indexes)
+
+        low_tokens = context.get("m2f_lowres_x_backbones")
+        low_ropes = context.get("m2f_lowres_rope_sincos")
+        low_shapes = context.get("m2f_lowres_token_shapes")
+        high_ropes = context.get("m2f_rope_sincos")
+        high_shapes = context.get("m2f_token_shapes")
+        if not all(
+            isinstance(values, list)
+            for values in (low_tokens, low_ropes, low_shapes, high_ropes, high_shapes)
+        ):
+            raise RuntimeError("Missing low/high token state for lowres_expand_once")
+        source_count = len(high_shapes)
+        if not all(
+            len(values) == source_count
+            for values in (low_tokens, low_ropes, low_shapes, high_ropes)
+        ):
+            raise RuntimeError("Mismatched source counts in lowres_expand_once state")
+
+        states = context.get("m2f_lowres_expand_states")
+        if states is None:
+            if start_l != 0:
+                raise RuntimeError(
+                    f"lowres_expand_once must initialize at layer 0, got {start_l}"
+                )
+            num_prefix = 1 + backbone.n_storage_tokens
+            states = [
+                initialize_lowres_expand_state(
+                    low_tokens[src_idx],
+                    low_shapes[src_idx],
+                    high_shapes[src_idx],
+                    num_prefix,
+                    len(backbone.blocks),
+                )
+                for src_idx in range(source_count)
+            ]
+            context["m2f_lowres_expand_states"] = states
+        if len(states) != source_count:
+            raise RuntimeError("Source count changed during lowres_expand_once session")
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            for src_idx, state in enumerate(states):
+                if int(state["frontier"]) != start_l:
+                    raise RuntimeError(
+                        f"Source {src_idx} frontier={state['frontier']} but approx starts at {start_l}"
+                    )
+                with torch.cuda.nvtx.range(
+                    f"m2f_lowres_expand_approx_src{src_idx}_L{start_l}-{end_l}"
+                ):
+                    lowres_expand_advance_frontier(
+                        backbone,
+                        state,
+                        low_ropes[src_idx],
+                        high_ropes[src_idx],
+                        interaction_indexes,
+                        start_l,
+                        end_l,
+                    )
+
+        context["m2f_current_layer"] = end_l
+        self._publish_lowres_expand_state(context, interaction_indexes)
+        return {}
+
+    def _correct_forward_lowres_expand_once(
+        self,
+        start_l: int,
+        end_l: int,
+        group_id: int,
+        context: Dict[str, Any],
+        config: Any,
+    ) -> Dict[str, Any]:
+        if start_l != 0:
+            raise ValueError(
+                f"lowres_expand_once corrections must start at layer 0, got {start_l}"
+            )
+        adapter = self.model.segmentation_model[0]
+        backbone = adapter.backbone
+        interaction_indexes = set(adapter.interaction_indexes)
+        states = context.get("m2f_lowres_expand_states")
+        high_tokens = context.get("m2f_x_backbones")
+        high_ropes = context.get("m2f_rope_sincos")
+        if not isinstance(states, list) or not isinstance(high_tokens, list):
+            raise RuntimeError("lowres_expand_once correction ran before base approximation")
+        if not isinstance(high_ropes, list) or len(high_ropes) != len(states):
+            raise RuntimeError("Missing high-resolution RoPE for lowres_expand_once")
+
+        self._ensure_group_maps_and_plans(context, config)
+        all_dindices = context.get("m2f_cached_dindices")
+        if not isinstance(all_dindices, list) or len(all_dindices) != len(states):
+            raise RuntimeError("Missing correction group indices for lowres_expand_once")
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            for src_idx, state in enumerate(states):
+                if int(state["frontier"]) != end_l:
+                    raise RuntimeError(
+                        f"Source {src_idx} frontier={state['frontier']} "
+                        f"but correction ends at {end_l}"
+                    )
+                group_dindex = all_dindices[src_idx].get(group_id)
+                with torch.cuda.nvtx.range(
+                    f"m2f_lowres_expand_correct_src{src_idx}_g{group_id}_L0-{end_l}"
+                ):
+                    lowres_expand_correct_new_group(
+                        backbone,
+                        state,
+                        high_tokens[src_idx],
+                        high_ropes[src_idx],
+                        group_id,
+                        group_dindex,
+                        interaction_indexes,
+                        end_l,
+                    )
+
+        context["m2f_current_layer"] = end_l
+        self._publish_lowres_expand_state(context, interaction_indexes)
+        return {}
+
     @torch.inference_mode()
     def approx_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         start_l, end_l = params.get("layers", (0, 40))
+        if self._uses_lowres_expand_once(config):
+            return self._approx_forward_lowres_expand_once(start_l, end_l, context)
 
         adapter = self.model.segmentation_model[0]
         vit_backbone = adapter.backbone
@@ -1162,6 +1480,16 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         start_l, end_l = layers[0], layers[1]
         group_id = params.get("group_id", 0)
         correct_all_groups = bool(params.get("all_groups", False))
+        if self._uses_lowres_expand_once(config):
+            if correct_all_groups:
+                raise ValueError("lowres_expand_once does not support all_groups correction")
+            return self._correct_forward_lowres_expand_once(
+                start_l,
+                end_l,
+                int(group_id),
+                context,
+                config,
+            )
 
         adapter = self.model.segmentation_model[0]
         vit_backbone = adapter.backbone

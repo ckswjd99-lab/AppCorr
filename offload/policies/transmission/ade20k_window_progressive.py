@@ -88,7 +88,12 @@ class ADE20KWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
         preserve = self._is_preserve_input_shape(config)
         # crop-cover assumes batch=1; the crop layout is taken from image 0.
         self._active_image_hw = tuple(int(v) for v in image_list[0].shape[:2]) if preserve else None
-        n = len(self._crops_for_image(config, self._active_image_hw))
+        strategy = str(config.transmission_kwargs.get("grouping_strategy", "crop_cover"))
+        n = (
+            len(self._crops_for_image(config, self._active_image_hw))
+            if strategy == "crop_cover"
+            else max(int(config.transmission_kwargs.get("num_groups", 4)), 1)
+        )
 
         for group in super().encode(images, config):
             for p in group:

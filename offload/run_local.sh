@@ -136,6 +136,34 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
   exit 1
 fi
 
+# Triton lazily compiles the partial-token RoPE kernel. Versioned CUDA
+# installations on the experiment hosts do not always expose ptxas on PATH.
+if [[ -z "${TRITON_PTXAS_PATH:-}" ]]; then
+  PTXAS_CANDIDATES=()
+  if command -v ptxas >/dev/null 2>&1; then
+    PTXAS_CANDIDATES+=("$(command -v ptxas)")
+  fi
+  if [[ -n "${CUDA_HOME:-}" ]]; then
+    PTXAS_CANDIDATES+=("${CUDA_HOME}/bin/ptxas")
+  fi
+  PTXAS_CANDIDATES+=(
+    "/usr/local/cuda/bin/ptxas"
+    "/usr/local/cuda-13.1/bin/ptxas"
+    "/usr/local/cuda-13/bin/ptxas"
+  )
+  for PTXAS_CANDIDATE in "${PTXAS_CANDIDATES[@]}"; do
+    if [[ -x "${PTXAS_CANDIDATE}" ]]; then
+      export TRITON_PTXAS_PATH
+      TRITON_PTXAS_PATH="$(readlink -f "${PTXAS_CANDIDATE}")"
+      if [[ -z "${CUDA_HOME:-}" ]]; then
+        export CUDA_HOME
+        CUDA_HOME="$(dirname "$(dirname "${TRITON_PTXAS_PATH}")")"
+      fi
+      break
+    fi
+  done
+fi
+
 SERVER_PID=""
 MOBILE_PID=""
 STARTED_PID=""

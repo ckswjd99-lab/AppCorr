@@ -285,7 +285,8 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             
             prev_lvl = lvl
         
-        if prev_lvl > 0 and 0 in levels:
+        # A base-only baseline still uses the model's fixed input contract.
+        if prev_lvl > 0:
             curr_img = self._iterative_upsample(curr_img, prev_lvl, 0, H, W)
 
         return b_idx, curr_img
@@ -336,7 +337,8 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
             prev_lvl = lvl
 
-        if prev_lvl > 0 and 0 in levels:
+        # A base-only baseline still uses the profile's target input contract.
+        if prev_lvl > 0:
             tgt_hw = self._target_hw_for_level(config, 0, target_shape)
             curr_img = self._iterative_upsample_to_hw(curr_img, prev_lvl, 0, tgt_hw)
 
