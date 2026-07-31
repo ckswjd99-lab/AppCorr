@@ -2,6 +2,10 @@ from .rope import apply_rope_active_inplace_triton, apply_rope_partial_triton
 from .attention_pscore import sdpa_with_pscore_triton
 from .jacobian_attention import packed_attention_delta_triton
 from .jacobian_attention_block import block_product_delta_triton
+from .jacobian_ffn_block import (
+    block_sparse_down_projection_triton,
+    block_sparse_ffn_delta_triton,
+)
 from .jacobian_probability import selected_softmax_jvp_triton
 from .token_prune import token_prune_select_compact_triton
 from .token_update import (
@@ -16,6 +20,8 @@ __all__ = [
     "apply_rope_active_inplace_triton",
     "apply_rope_partial_triton",
     "block_product_delta_triton",
+    "block_sparse_down_projection_triton",
+    "block_sparse_ffn_delta_triton",
     "fused_layerscale_add",
     "masked_residual_add_triton",
     "masked_token_update_triton",
