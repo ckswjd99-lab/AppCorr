@@ -62,7 +62,8 @@ def _block_product_delta_kernel(
     )
     dim_mask = dim_offsets < head_dim
     head_group = head // HEAD_GROUP_SIZE
-    accumulator = tl.zeros((BLOCK_M, BLOCK_D), dtype=tl.float32)
+    base_accumulator = tl.zeros((BLOCK_M, BLOCK_D), dtype=tl.float32)
+    corrected_accumulator = tl.zeros((BLOCK_M, BLOCK_D), dtype=tl.float32)
 
     for selected_offset in range(SELECTED_BLOCKS):
         key_block = tl.load(
@@ -75,7 +76,9 @@ def _block_product_delta_kernel(
         local_key_offsets = tl.arange(0, BLOCK_K)
         key_offsets = key_block * KEY_BLOCK_SIZE + local_key_offsets
         key_mask = (
-            (local_key_offsets < KEY_BLOCK_SIZE)
+            (key_block >= 0)
+            & (local_key_offsets < KEY_BLOCK_SIZE)
+            & (key_offsets >= 0)
             & (key_offsets < num_keys)
         )
         base_probability = tl.load(
@@ -114,8 +117,11 @@ def _block_product_delta_kernel(
             mask=key_mask[:, None] & dim_mask[None, :],
             other=0.0,
         )
-        accumulator += tl.dot(corrected_probability, corrected_value)
-        accumulator -= tl.dot(base_probability, base_value)
+        corrected_accumulator += tl.dot(
+            corrected_probability,
+            corrected_value,
+        )
+        base_accumulator += tl.dot(base_probability, base_value)
 
     tl.store(
         output_ptr
@@ -123,7 +129,7 @@ def _block_product_delta_kernel(
         + head * stride_o_h
         + query_offsets[:, None] * stride_o_q
         + dim_offsets[None, :] * stride_o_d,
-        accumulator,
+        corrected_accumulator - base_accumulator,
         mask=query_mask[:, None] & dim_mask[None, :],
     )
 

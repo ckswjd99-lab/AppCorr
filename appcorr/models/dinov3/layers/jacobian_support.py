@@ -351,7 +351,12 @@ def attention_block_index_from_mask(
     query_block_size: int,
     head_group_size: int,
 ) -> Tensor:
-    """Compress an expanded structured attention mask into block indices."""
+    """Compress an expanded structured attention mask into block indices.
+
+    Descriptors with fewer selected blocks are padded with ``-1``.  This occurs
+    when a fixed top-k support is unioned with forced key blocks that may
+    already be present in some query/head descriptors.
+    """
 
     if support_mask.ndim != 4:
         raise ValueError("support_mask must be [B,H,Q,K]")
@@ -387,16 +392,82 @@ def attention_block_index_from_mask(
         query_start,
     )
     counts = descriptor_mask.sum(dim=-1)
-    if not torch.equal(counts, counts.reshape(-1)[:1].expand_as(counts)):
-        raise ValueError("Every query/head block must select the same key-block count")
-    selected_blocks = int(counts.reshape(-1)[0].item())
+    selected_blocks = int(counts.max().item())
     if selected_blocks <= 0:
         raise ValueError("At least one key block must be selected")
-    return torch.topk(
-        descriptor_mask.to(torch.int8),
-        k=selected_blocks,
-        dim=-1,
-    ).indices.to(torch.int32)
+    block_ids = torch.arange(
+        key_blocks,
+        device=support_mask.device,
+        dtype=torch.int64,
+    ).view(1, 1, 1, -1)
+    padded_ids = torch.where(descriptor_mask, block_ids, key_blocks)
+    selected_idx = padded_ids.sort(dim=-1).values[..., :selected_blocks]
+    selected_idx = torch.where(selected_idx == key_blocks, -1, selected_idx)
+    return selected_idx.to(torch.int32)
+
+
+def ffn_block_index_from_mask(
+    channel_mask: Tensor,
+    *,
+    channel_block_size: int,
+    token_block_size: int,
+) -> Tensor:
+    """Compress a token/channel-block mask into ragged channel-block indices."""
+
+    if channel_mask.ndim != 3:
+        raise ValueError("channel_mask must be [B,T,C]")
+    if min(channel_block_size, token_block_size) <= 0:
+        raise ValueError("block sizes must be positive")
+    batch, tokens, channels = channel_mask.shape
+    token_blocks = math.ceil(tokens / token_block_size)
+    channel_blocks = math.ceil(channels / channel_block_size)
+    padded = F.pad(
+        channel_mask.to(dtype=torch.bool),
+        (
+            0,
+            channel_blocks * channel_block_size - channels,
+            0,
+            token_blocks * token_block_size - tokens,
+        ),
+    )
+    blocked = padded.reshape(
+        batch,
+        token_blocks,
+        token_block_size,
+        channel_blocks,
+        channel_block_size,
+    )
+    selected_blocks = blocked.any(dim=-1).any(dim=2)
+    reconstructed = (
+        selected_blocks[:, :, None, :, None]
+        .expand_as(blocked)
+        .reshape_as(padded)
+    )
+    if not torch.equal(
+        reconstructed[:, :tokens, :channels],
+        channel_mask.to(dtype=torch.bool),
+    ):
+        raise ValueError(
+            "channel_mask must select complete channel blocks shared within token blocks"
+        )
+
+    counts = selected_blocks.sum(dim=-1)
+    max_selected = int(counts.max().item())
+    if max_selected <= 0:
+        raise ValueError("At least one channel block must be selected")
+    block_ids = torch.arange(
+        channel_blocks,
+        device=channel_mask.device,
+        dtype=torch.int64,
+    ).view(1, 1, -1)
+    padded_ids = torch.where(selected_blocks, block_ids, channel_blocks)
+    selected_idx = padded_ids.sort(dim=-1).values[..., :max_selected]
+    selected_idx = torch.where(
+        selected_idx == channel_blocks,
+        -1,
+        selected_idx,
+    )
+    return selected_idx.to(torch.int32)
 
 
 def silu_derivative(x: Tensor) -> Tensor:
