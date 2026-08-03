@@ -9,6 +9,7 @@ class ModelExecutor(ABC):
         self.device = device
         self.model = None
         self._dinov3_approx_precision = None
+        self._dinov3_correct_precision = None
 
     def configure_dinov3_approx_precision(self, backbone: torch.nn.Module, config: Any):
         from .dinov3_precision import DINOv3ApproxPrecisionController
@@ -51,6 +52,50 @@ class ModelExecutor(ABC):
         if self._dinov3_approx_precision is None:
             return {}
         return self._dinov3_approx_precision.event_metadata()
+
+    def configure_dinov3_correct_precision(self, backbone: torch.nn.Module, config: Any):
+        from .dinov3_precision import DINOv3CorrectPrecisionController
+
+        self._dinov3_correct_precision = DINOv3CorrectPrecisionController.from_config(
+            backbone.blocks,
+            config,
+            self.device,
+        )
+
+    def begin_dinov3_correct_event(self):
+        if self._dinov3_correct_precision is None:
+            raise RuntimeError("DINOv3 correct precision is not configured")
+        self._dinov3_correct_precision.begin_event()
+
+    def run_dinov3_correct_block(
+        self,
+        layer_idx: int,
+        x: torch.Tensor,
+        dindice: torch.Tensor,
+        rope,
+        cache: Dict[str, Any],
+        tag: str,
+        *,
+        source_key: str = "default",
+        **kwargs,
+    ):
+        if self._dinov3_correct_precision is None:
+            raise RuntimeError("DINOv3 correct precision is not configured")
+        return self._dinov3_correct_precision.run_block(
+            layer_idx,
+            x,
+            dindice,
+            rope,
+            cache,
+            tag,
+            source_key=source_key,
+            **kwargs,
+        )
+
+    def dinov3_correct_event_metadata(self) -> Dict[str, Any]:
+        if self._dinov3_correct_precision is None:
+            return {}
+        return self._dinov3_correct_precision.event_metadata()
 
     @staticmethod
     def _normalize_patch_score_map(score_map: torch.Tensor | None) -> torch.Tensor | None:
