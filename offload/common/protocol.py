@@ -174,6 +174,7 @@ class ExperimentConfig:
     precision: str = "bf16"
     fp8_auto_min_rows: int = 3072
     correct_precision: str = "bf16"
+    correct_compile: bool = False
     
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
@@ -216,6 +217,7 @@ class ExperimentConfig:
                 "correct_precision must be one of 'bf16', 'fp8', or 'fp4', "
                 f"got {self.correct_precision!r}"
             )
+        self.correct_compile = bool(self.correct_compile)
 
     def get_input_profile_config(self) -> Dict[str, Any]:
         name = self.input_profile_name or "fixed_image_shape"
