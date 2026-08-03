@@ -97,16 +97,6 @@ class ModelExecutor(ABC):
             return {}
         return self._dinov3_correct_precision.event_metadata()
 
-    def configure_dinov3_full_precision(self, backbone: torch.nn.Module, config: Any):
-        from .dinov3_precision import DINOv3FullPrecisionController
-
-        controller = DINOv3FullPrecisionController.from_config(
-            backbone.blocks,
-            config,
-            self.device,
-        )
-        controller.apply_to_backbone(backbone)
-
     @staticmethod
     def _normalize_patch_score_map(score_map: torch.Tensor | None) -> torch.Tensor | None:
         if score_map is None:
