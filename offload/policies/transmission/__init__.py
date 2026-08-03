@@ -8,6 +8,7 @@ from .fourier_laplacian_hybrid import FourierLaplacianHybridPolicy
 from .fourier_laplacian_progressive import FourierLaplacianProgressivePolicy
 from .coco_window_progressive import COCOWindowProgressiveLaplacianPolicy
 from .ade20k_window_progressive import ADE20KWindowProgressiveLaplacianPolicy
+from .fourier_ade20k_window_progressive import FourierADE20KWindowHybridPolicy
 from .nyu_appcorr_progressive import (
     NYUAppCorrLaplacianPolicy,
     NYUAppCorrProgressiveLaplacianPolicy,
