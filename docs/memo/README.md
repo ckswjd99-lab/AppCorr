@@ -27,9 +27,12 @@ produced them.
 - [dinov3_correct_low_precision_status.md](dinov3_correct_low_precision_status.md) — opposite
   direction: approx stays bf16, `.correct()` quantized to FP4 instead (new `correct_precision`
   config field). ADE20K m2f N=100: fp4 correction (mIoU 52.03) is indistinguishable from bf16
-  correction (52.08), both recovering ~86% of the floor→ceiling gap. Theoretical-compute-only for
-  now (no torch.compile on the correct path, so no latency claim yet); full-dataset confirmation
-  pending.
+  correction (52.08), both recovering ~86% of the floor→ceiling gap — whereas FP4 on the *whole*
+  40-layer forward costs −0.61pp (52.92→52.31), so the near-losslessness is correction-specific,
+  not a general FP4 property. Includes the weight-level bf16→NVFP4 error table (~9.4% rel L2,
+  ~20.5 dB SQNR) and the paired-A/B protocol used to catch a plumbing bug that had faked a
+  "bit-identical" result. Theoretical-compute-only for now (no torch.compile on the correct path,
+  so no latency claim yet); full-dataset confirmation pending.
 
 ## Related work elsewhere in the repo (not in this folder)
 
