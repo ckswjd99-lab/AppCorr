@@ -42,6 +42,13 @@ produced them.
   the damage is in the base path. Includes the two telescoping controls that validate the
   implementation and the `‖d‖/‖x‖` measurement explaining COCO's larger gain.
 
+- [dinov3_nvfp4_speedup_gate.md](dinov3_nvfp4_speedup_gate.md) — **negative result**: NVFP4 is not
+  worth accelerating on this workload. With MSLK installed and torch.compile working, NVFP4 beats
+  bf16 only above M≈2300, but the measured correction-GEMM distribution has median M=1028 and only
+  15.7% of calls above the crossover. Enabling it everywhere is 0.53× (90% slower); the best hybrid
+  saves 3.9% of correction GEMM time ≈ 0.07% end-to-end. Includes the MSLK install recipe, the
+  quant-vs-GEMM cost split (the FP4 GEMM itself *is* 1.3–1.6× faster), and where to look instead.
+
 ## Related work elsewhere in the repo (not in this folder)
 
 - **DINOv3 CSR** (sparse attention + FFN + token pruning) — branch `develop/dinov3-csr`. ImageNet-1k
