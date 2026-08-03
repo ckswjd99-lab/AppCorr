@@ -350,13 +350,21 @@ class DINOv3ApproxPrecisionController:
             )
             return
 
-        # Avoid the runtime tensor-wide amax reduction and global output scale.
-        # NVFP4 still computes one E4M3 scale per 16 values, but omits the outer
-        # per-tensor scale. This is the fastest inference path in TorchAO 0.15
-        # and intentionally trades more approximation error for lower latency.
+        # This used to be use_triton_kernel=True / use_dynamic_per_tensor_scale=False: the fastest
+        # TorchAO 0.15 path, which skipped the tensor-wide amax reduction and outer per-tensor scale,
+        # trading accuracy for latency. On the currently installed TorchAO (0.17.0) that combination
+        # cannot run at all -- the Triton NVFP4 kernel asserts `per_tensor_scale is not None`, and
+        # with the scale enabled it then requires the MSLK package
+        # (https://github.com/pytorch/MSLK), which is not installed here. Switched to the eager,
+        # accurate path so `precision=fp4` runs on this machine.
+        #
+        # Consequence: FP4 approx numbers measured now are NOT directly comparable to the historical
+        # ImageNet/COCO FP4 figures in docs/memo/dinov3_approx_low_precision_status.md (those used
+        # the faster/less accurate mode on the older TorchAO snapshot), and the latency advantage
+        # that motivated the old setting is gone with the fused kernel.
         fp4_config = NVFP4DynamicActivationNVFP4WeightConfig(
-            use_triton_kernel=True,
-            use_dynamic_per_tensor_scale=False,
+            use_triton_kernel=False,
+            use_dynamic_per_tensor_scale=True,
         )
 
         fp4_blocks = nn.ModuleList()
