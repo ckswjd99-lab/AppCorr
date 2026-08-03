@@ -32,6 +32,46 @@ def _linear_rows(x: torch.Tensor) -> int:
     return x.numel() // x.shape[-1]
 
 
+def _eligible_linears(block: nn.Module) -> list[tuple[str, nn.Linear]]:
+    eligible = [
+        (name, module)
+        for name, module in block.named_modules()
+        if isinstance(module, nn.Linear)
+        and name.endswith(_LOW_PRECISION_LINEAR_SUFFIXES)
+    ]
+    if len(eligible) != len(_LOW_PRECISION_LINEAR_SUFFIXES):
+        raise RuntimeError(
+            "Expected exactly five low-precision Linear layers per DINOv3 "
+            f"block, found {[name for name, _ in eligible]}"
+        )
+    incompatible = [
+        (name, tuple(module.weight.shape))
+        for name, module in eligible
+        if module.in_features % 16 != 0 or module.out_features % 16 != 0
+    ]
+    if incompatible:
+        raise RuntimeError(
+            "Low-precision _scaled_mm requires dimensions divisible by 16: "
+            f"{incompatible}"
+        )
+    return eligible
+
+
+def _eligible_fp4_linears(block: nn.Module) -> list[tuple[str, nn.Linear]]:
+    eligible = _eligible_linears(block)
+    incompatible = [
+        (name, tuple(module.weight.shape))
+        for name, module in eligible
+        if module.in_features % 32 != 0
+    ]
+    if incompatible:
+        raise RuntimeError(
+            "Packed FP4 _scaled_mm requires in_features divisible by 32: "
+            f"{incompatible}"
+        )
+    return eligible
+
+
 def _find_loaded_libcuda() -> Path | None:
     maps_path = Path("/proc/self/maps")
     if maps_path.exists():
@@ -206,49 +246,6 @@ class DINOv3ApproxPrecisionController:
         self._fp4_unavailable_reason = reason
         raise RuntimeError(f"precision='fp4' is unavailable: {reason}")
 
-    @staticmethod
-    def _eligible_linears(block: nn.Module) -> list[tuple[str, nn.Linear]]:
-        eligible = [
-            (name, module)
-            for name, module in block.named_modules()
-            if isinstance(module, nn.Linear)
-            and name.endswith(_LOW_PRECISION_LINEAR_SUFFIXES)
-        ]
-        if len(eligible) != len(_LOW_PRECISION_LINEAR_SUFFIXES):
-            raise RuntimeError(
-                "Expected exactly five low-precision Linear layers per DINOv3 "
-                f"block, found {[name for name, _ in eligible]}"
-            )
-        incompatible = [
-            (name, tuple(module.weight.shape))
-            for name, module in eligible
-            if module.in_features % 16 != 0 or module.out_features % 16 != 0
-        ]
-        if incompatible:
-            raise RuntimeError(
-                "Low-precision _scaled_mm requires dimensions divisible by 16: "
-                f"{incompatible}"
-            )
-        return eligible
-
-    @classmethod
-    def _eligible_fp4_linears(
-        cls,
-        block: nn.Module,
-    ) -> list[tuple[str, nn.Linear]]:
-        eligible = cls._eligible_linears(block)
-        incompatible = [
-            (name, tuple(module.weight.shape))
-            for name, module in eligible
-            if module.in_features % 32 != 0
-        ]
-        if incompatible:
-            raise RuntimeError(
-                "Packed FP4 _scaled_mm requires in_features divisible by 32: "
-                f"{incompatible}"
-            )
-        return eligible
-
     def _initialize_fp8(self) -> None:
         if self.device.type != "cuda" or not torch.cuda.is_available():
             self._handle_fp8_unavailable("FP8 requires a CUDA device")
@@ -287,7 +284,7 @@ class DINOv3ApproxPrecisionController:
                     .eval()
                     .requires_grad_(False)
                 )
-                eligible = self._eligible_linears(fp8_block)
+                eligible = _eligible_linears(fp8_block)
 
                 eligible_names = {name for name, _ in eligible}
                 quantize_(
@@ -345,7 +342,7 @@ class DINOv3ApproxPrecisionController:
 
         _configure_compile_environment()
         try:
-            from torchao.prototype.mx_formats import NVFP4InferenceConfig
+            from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
             from torchao.quantization import quantize_
         except ImportError as exc:
             self._handle_fp4_unavailable(
@@ -357,7 +354,7 @@ class DINOv3ApproxPrecisionController:
         # NVFP4 still computes one E4M3 scale per 16 values, but omits the outer
         # per-tensor scale. This is the fastest inference path in TorchAO 0.15
         # and intentionally trades more approximation error for lower latency.
-        fp4_config = NVFP4InferenceConfig(
+        fp4_config = NVFP4DynamicActivationNVFP4WeightConfig(
             use_triton_kernel=True,
             use_dynamic_per_tensor_scale=False,
         )
@@ -372,7 +369,7 @@ class DINOv3ApproxPrecisionController:
                     .eval()
                     .requires_grad_(False)
                 )
-                eligible = self._eligible_fp4_linears(fp4_block)
+                eligible = _eligible_fp4_linears(fp4_block)
                 eligible_names = {name for name, _ in eligible}
                 quantize_(
                     fp4_block,
@@ -565,3 +562,315 @@ class DINOv3ApproxPrecisionController:
             if isinstance(module, nn.Linear)
             and name.endswith(_LOW_PRECISION_LINEAR_SUFFIXES)
         )
+
+
+class DINOv3CorrectPrecisionController:
+    """Select BF16, FP8, or FP4 blocks for DINOv3 CORRECT execution -- the opposite direction of
+    DINOv3ApproxPrecisionController. The coarse `.approx()` pass stays at whatever precision the
+    model already runs (bf16 via autocast, or independently controlled by
+    DINOv3ApproxPrecisionController); `.correct()` -- which only recomputes a selected subset of
+    tokens each round -- runs its 5 eligible Linear layers (qkv/proj/w1/w2/w3) in FP8 or FP4 instead.
+    Goal: reduce the (already smaller, selected-token) correction GEMM's theoretical FLOP/byte cost
+    further, without touching approx's accuracy contribution.
+
+    Unlike the approx controller, this class does NOT torch.compile the quantized `.correct()` path:
+    `.correct()`'s selected-token count varies every round (token_keep_ratio/threshold-dependent), so
+    a `dynamic=False` compile would recompile on every distinct shape. TorchAO's quantized nn.Linear
+    (tensor-subclass dispatch) is correct in eager mode -- torch.compile there is a pure speed
+    optimization on top -- and this controller only targets theoretical compute reduction / accuracy
+    right now, not wall-clock latency, so eager-mode quantized `.correct()` is used directly.
+    """
+
+    def __init__(
+        self,
+        blocks: nn.ModuleList,
+        *,
+        precision: str,
+        device: torch.device,
+    ) -> None:
+        self.blocks = blocks
+        self.precision = precision
+        self.device = device
+        self.fp8_blocks: nn.ModuleList | None = None
+        self.fp4_blocks: nn.ModuleList | None = None
+        self._fp8_unavailable_reason: str | None = None
+        self._fp4_unavailable_reason: str | None = None
+        self._event_routes: Dict[str, tuple[str, int]] = {}
+
+        if precision == "fp8":
+            self._initialize_fp8()
+        elif precision == "fp4":
+            self._initialize_fp4()
+
+    @classmethod
+    def from_config(
+        cls,
+        blocks: nn.ModuleList,
+        config: Any,
+        device: torch.device,
+    ) -> "DINOv3CorrectPrecisionController":
+        return cls(
+            blocks,
+            precision=config.correct_precision,
+            device=device,
+        )
+
+    @property
+    def fp8_available(self) -> bool:
+        return self.fp8_blocks is not None
+
+    @property
+    def fp8_unavailable_reason(self) -> str | None:
+        return self._fp8_unavailable_reason
+
+    @property
+    def fp4_available(self) -> bool:
+        return self.fp4_blocks is not None
+
+    @property
+    def fp4_unavailable_reason(self) -> str | None:
+        return self._fp4_unavailable_reason
+
+    def _handle_fp8_unavailable(self, reason: str) -> None:
+        self._fp8_unavailable_reason = reason
+        if self.precision == "fp8":
+            raise RuntimeError(f"correct_precision='fp8' is unavailable: {reason}")
+
+    def _handle_fp4_unavailable(self, reason: str) -> None:
+        self._fp4_unavailable_reason = reason
+        if self.precision == "fp4":
+            raise RuntimeError(f"correct_precision='fp4' is unavailable: {reason}")
+
+    def _initialize_fp8(self) -> None:
+        if self.device.type != "cuda" or not torch.cuda.is_available():
+            self._handle_fp8_unavailable("FP8 requires a CUDA device")
+            return
+
+        capability = torch.cuda.get_device_capability(self.device)
+        if capability < (8, 9):
+            self._handle_fp8_unavailable(
+                f"compute capability {capability[0]}.{capability[1]} is below 8.9"
+            )
+            return
+
+        try:
+            from torchao.quantization import (
+                Float8DynamicActivationFloat8WeightConfig,
+                quantize_,
+            )
+            from torchao.quantization.granularity import PerTensor
+        except ImportError as exc:
+            self._handle_fp8_unavailable(f"TorchAO 0.15+ is required ({exc})")
+            return
+
+        fp8_config = Float8DynamicActivationFloat8WeightConfig(
+            granularity=PerTensor(),
+            set_inductor_config=True,
+        )
+
+        fp8_blocks = nn.ModuleList()
+        quantized_count = 0
+        try:
+            for block in self.blocks:
+                fp8_block = (
+                    copy.deepcopy(block)
+                    .to(dtype=torch.bfloat16)
+                    .eval()
+                    .requires_grad_(False)
+                )
+                eligible = _eligible_linears(fp8_block)
+                eligible_names = {name for name, _ in eligible}
+                quantize_(
+                    fp8_block,
+                    fp8_config,
+                    filter_fn=lambda module, fqn, names=eligible_names: (
+                        isinstance(module, nn.Linear) and fqn in names
+                    ),
+                )
+                converted = [
+                    name
+                    for name, module in fp8_block.named_modules()
+                    if name in eligible_names
+                    and type(module.weight).__name__ == "Float8Tensor"
+                ]
+                if len(converted) != len(eligible_names):
+                    raise RuntimeError(
+                        "TorchAO skipped one or more requested FP8 weights: "
+                        f"converted={converted}, requested={sorted(eligible_names)}"
+                    )
+                quantized_count += len(converted)
+                fp8_blocks.append(fp8_block)
+        except Exception as exc:
+            self._handle_fp8_unavailable(str(exc))
+            return
+
+        expected_count = len(self.blocks) * len(_LOW_PRECISION_LINEAR_SUFFIXES)
+        if quantized_count != expected_count:
+            self._handle_fp8_unavailable(
+                f"quantized {quantized_count} Linear layers, expected {expected_count}"
+            )
+            return
+
+        self.fp8_blocks = fp8_blocks
+        print(
+            "[FP8-correct] Prepared "
+            f"{quantized_count} correction Linear weights across {len(fp8_blocks)} blocks."
+        )
+
+    def _initialize_fp4(self) -> None:
+        if self.device.type != "cuda" or not torch.cuda.is_available():
+            self._handle_fp4_unavailable("FP4 requires a CUDA device")
+            return
+
+        capability = torch.cuda.get_device_capability(self.device)
+        if capability < (10, 0):
+            self._handle_fp4_unavailable(
+                f"compute capability {capability[0]}.{capability[1]} is below 10.0"
+            )
+            return
+
+        try:
+            from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+            from torchao.quantization import quantize_
+        except ImportError as exc:
+            self._handle_fp4_unavailable(
+                f"TorchAO with prototype NVFP4 support is required ({exc})"
+            )
+            return
+
+        # use_triton_kernel=False: the Triton NVFP4 kernel requires the MSLK package
+        # (https://github.com/pytorch/MSLK), which is not installed here, and this controller
+        # targets a theoretical compute-reduction / accuracy measurement, not latency, so the
+        # (correctness-equivalent, just non-fused) eager dispatch path is used instead.
+        # use_dynamic_per_tensor_scale=True (the accurate mode): for the same reason there is no
+        # reason to trade the extra approximation error the disabled-scale fast path (used by the
+        # approx controller's FP4 config above) accepts for lower latency.
+        fp4_config = NVFP4DynamicActivationNVFP4WeightConfig(
+            use_triton_kernel=False,
+            use_dynamic_per_tensor_scale=True,
+        )
+
+        fp4_blocks = nn.ModuleList()
+        quantized_count = 0
+        try:
+            for block in self.blocks:
+                fp4_block = (
+                    copy.deepcopy(block)
+                    .to(dtype=torch.bfloat16)
+                    .eval()
+                    .requires_grad_(False)
+                )
+                eligible = _eligible_fp4_linears(fp4_block)
+                eligible_names = {name for name, _ in eligible}
+                quantize_(
+                    fp4_block,
+                    fp4_config,
+                    filter_fn=lambda module, fqn, names=eligible_names: (
+                        isinstance(module, nn.Linear) and fqn in names
+                    ),
+                )
+                converted = [
+                    name
+                    for name, module in fp4_block.named_modules()
+                    if name in eligible_names
+                    and type(module.weight).__name__ == "NVFP4Tensor"
+                ]
+                if len(converted) != len(eligible_names):
+                    raise RuntimeError(
+                        "TorchAO skipped one or more requested FP4 weights: "
+                        f"converted={converted}, requested={sorted(eligible_names)}"
+                    )
+                quantized_count += len(converted)
+                fp4_blocks.append(fp4_block)
+        except Exception as exc:
+            self._handle_fp4_unavailable(str(exc))
+            return
+
+        expected_count = len(self.blocks) * len(_LOW_PRECISION_LINEAR_SUFFIXES)
+        if quantized_count != expected_count:
+            self._handle_fp4_unavailable(
+                f"quantized {quantized_count} Linear layers, expected {expected_count}"
+            )
+            return
+
+        self.fp4_blocks = fp4_blocks
+        print(
+            "[FP4-correct] Prepared "
+            f"{quantized_count} correction Linear weights across {len(fp4_blocks)} blocks."
+        )
+
+    def begin_event(self) -> None:
+        self._event_routes = {}
+
+    def _effective_precision(self) -> str:
+        if self.precision == "fp8":
+            return "fp8" if self.fp8_available else "bf16"
+        if self.precision == "fp4":
+            return "fp4" if self.fp4_available else "bf16"
+        return "bf16"
+
+    def run_block(
+        self,
+        layer_idx: int,
+        x: torch.Tensor,
+        dindice: torch.Tensor,
+        rope: Any,
+        cache: Dict[str, Any],
+        tag: str,
+        *,
+        source_key: str = "default",
+        **kwargs: Any,
+    ):
+        rows = _linear_rows(x)
+        effective = self._effective_precision()
+        self._event_routes[source_key] = (effective, rows)
+
+        if effective == "fp8":
+            blk = self.fp8_blocks[layer_idx]
+        elif effective == "fp4":
+            blk = self.fp4_blocks[layer_idx]
+        else:
+            blk = self.blocks[layer_idx]
+
+        with torch.no_grad():
+            output, cache = blk.correct(x, dindice, rope, cache, tag, **kwargs)
+
+        # Keep the public approx/correct contract: activations and feature caches stay bf16
+        # regardless of the low-precision GEMM format used internally.
+        output = output.to(dtype=torch.bfloat16)
+        actual_prefix = f"{tag}_"
+        for key, value in list(cache.items()):
+            if (
+                key.startswith(actual_prefix)
+                and key.endswith("_kv")
+                and torch.is_tensor(value)
+                and torch.is_floating_point(value)
+                and value.dtype != torch.bfloat16
+            ):
+                cache[key] = value.to(dtype=torch.bfloat16)
+        return output, cache
+
+    def event_metadata(self) -> Dict[str, Any]:
+        effective_set = {precision for precision, _ in self._event_routes.values()}
+        if not effective_set:
+            effective = "none"
+        elif len(effective_set) == 1:
+            effective = next(iter(effective_set))
+        else:
+            effective = "mixed"
+        return {
+            "correct_precision_requested": self.precision,
+            "correct_precision_effective": effective,
+            "correct_precision_rows": sorted(
+                {rows for _, rows in self._event_routes.values()}
+            ),
+            "correct_fp8_sources": sum(
+                precision == "fp8" for precision, _ in self._event_routes.values()
+            ),
+            "correct_fp4_sources": sum(
+                precision == "fp4" for precision, _ in self._event_routes.values()
+            ),
+            "correct_bf16_sources": sum(
+                precision == "bf16" for precision, _ in self._event_routes.values()
+            ),
+        }
