@@ -143,12 +143,6 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             self.model.segmentation_model[0].backbone,
             config,
         )
-        # Must run last: this may in-place swap backbone.blocks for quantized clones, and the
-        # approx/correct controllers above need to clone from the ORIGINAL bf16 blocks first.
-        self.configure_dinov3_full_precision(
-            self.model.segmentation_model[0].backbone,
-            config,
-        )
         self._make_inference = make_inference
         self._correct_warmup_done = False
 
