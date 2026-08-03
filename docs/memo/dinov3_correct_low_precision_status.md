@@ -21,13 +21,56 @@ settings:**
 | floor: L2 approx-only, no correction | 46.72 | 81.36 |
 | existing: static interleaved correction, bf16 | 52.08 | 83.51 |
 | **new: static interleaved correction, correct_precision=fp4** | **52.03** | **83.53** |
-| ceiling: full baseline (stock, no approximation) | 52.92 | 84.08 |
+| ceiling: full baseline (all 40 layers), bf16 | 52.92 | 84.08 |
+| reference: full baseline (all 40 layers), **precision=fp4** | 52.31 | 83.73 |
 
 FP4 correction is statistically indistinguishable from bf16 correction on this sample (mIoU
 **−0.05pp**, aAcc **+0.02pp** vs bf16 correction) — both recover ~86% of the floor→ceiling mIoU gap
 (bf16: 86.4%, fp4: 85.7%) and ~79-80% of the aAcc gap. **No measurable accuracy cost from
 quantizing the correction path to FP4 at N=100.** Full-dataset confirmation pending (per the
 project's nr-sanity-first discipline — this is a first-pass check on 100/2000 samples).
+
+**Is FP4 broadly harmless, or specifically harmless on the correction path?** The last row answers
+this: applying FP4 to the *whole* forward pass (all 40 layers, no approximation involved) costs
+**−0.61pp mIoU / −0.35pp aAcc**, ~12x the −0.05pp that confining FP4 to the correction recompute
+costs. So the near-losslessness is **correction-specific, not a general property of FP4 on this
+model** — consistent with the intuition that correction only recomputes a selected token subset
+while the bulk of the representation still comes from the untouched bf16 approx pass. It is also
+consistent in magnitude and sign with the historical approx-side FP4 numbers
+([dinov3_approx_low_precision_status.md](dinov3_approx_low_precision_status.md): ImageNet-1k
+−0.164pp top-1, COCO −0.535 AP).
+
+Note the "full baseline in FP4" arm uses the **existing `precision` field, not a new one**:
+`ADE20KSequentialPolicy` emits `APPROX_FORWARD{layers:(0,40)} + HEAD_INFERENCE` and never
+`FULL_INFERENCE`, so its "full baseline" is literally an `.approx()` pass over all 40 layers of the
+undegraded (Raw-transmitted) image — which `precision` already controls.
+
+### Why quantization *must* show up, and how a wrong "no effect" reading was caught
+
+An earlier version of this doc claimed FP4 on the full path was **bit-identical** to bf16 and
+rationalized it as the integer per-pixel argmax metric being insensitive to float-level drift. That
+was wrong — it was a plumbing bug (see the revert commit), not a real measurement. Two checks now
+guard against repeating it:
+
+1. **Weight-level round-trip error** (`bf16 → NVFP4 → dequantize`, real DINOv3 ViT-7B block-0
+   weights, exactly the config the controller uses):
+
+   | weight | shape | max abs err | mean abs err | rel L2 err | SQNR |
+   |---|---|---:|---:|---:|---:|
+   | attn.qkv | (12288, 4096) | 0.128906 | 0.00203914 | 9.35% | 20.59 dB |
+   | attn.proj | (4096, 4096) | 0.091797 | 0.00213637 | 9.48% | 20.46 dB |
+   | mlp.w1 | (8192, 4096) | 0.068359 | 0.00178176 | 9.38% | 20.56 dB |
+   | mlp.w2 | (8192, 4096) | 0.087891 | 0.00162117 | 9.42% | 20.52 dB |
+   | mlp.w3 | (4096, 8192) | 0.074219 | 0.00181475 | 9.35% | 20.58 dB |
+
+   ~9.4% relative L2 error per tensor, across 5 Linears × 40 blocks. Any run reporting *zero*
+   end-to-end change from this is not measuring what it thinks it is.
+
+2. **Paired A/B on identical inputs.** Same config, same samples, only the precision field differs:
+   correction path N=5 bf16 mIoU 47.369 vs fp4 50.187; full path N=100 bf16 52.923 vs fp4 52.311.
+   Both differ, confirming the quantized modules are genuinely on the execution path. (The N=5
+   correction pair's *direction* is meaningless at that sample size — it is used only as an
+   executed-vs-not signal.)
 
 ## Implementation
 
@@ -82,6 +125,16 @@ the approx and correct controllers' FP4 init.
 - Model: DINOv3 ViT-7B/16, ADE20K m2f segmentor
 - New config: `ade20k_m2f_interleaved_static_correct_fp4.json`, pairs with the existing default
   `ade20k_m2f_interleaved_static.json` (only `correct_precision` differs)
+- Full-baseline FP4 arm: no new config —
+  `ade20k_m2f_sequential.json --set precision=fp4`
+
+**TorchAO 0.17.0 forced an FP4 config change on the approx side too.** The original
+`use_triton_kernel=True` / `use_dynamic_per_tensor_scale=False` (fastest, least accurate) cannot run
+on this install: the Triton NVFP4 kernel asserts `per_tensor_scale is not None`, and enabling the
+scale then requires the uninstalled MSLK package. Both the approx and correct controllers now use
+`use_triton_kernel=False` / `use_dynamic_per_tensor_scale=True` (eager, accurate). **FP4 numbers
+measured here are therefore not directly comparable to the historical ImageNet/COCO FP4 figures**,
+and the fused-kernel latency advantage is gone.
 
 ## Next steps
 
