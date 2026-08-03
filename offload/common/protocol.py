@@ -173,6 +173,7 @@ class ExperimentConfig:
     device: str = None  # User can specify "cuda:0", "cpu", etc. Default is None (auto-detect)
     precision: str = "bf16"
     fp8_auto_min_rows: int = 3072
+    correct_precision: str = "bf16"
     
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
@@ -208,6 +209,12 @@ class ExperimentConfig:
             raise ValueError(
                 "fp8_auto_min_rows must be positive, "
                 f"got {self.fp8_auto_min_rows}"
+            )
+        self.correct_precision = str(self.correct_precision).lower()
+        if self.correct_precision not in {"bf16", "fp8", "fp4"}:
+            raise ValueError(
+                "correct_precision must be one of 'bf16', 'fp8', or 'fp4', "
+                f"got {self.correct_precision!r}"
             )
 
     def get_input_profile_config(self) -> Dict[str, Any]:

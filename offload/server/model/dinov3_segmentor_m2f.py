@@ -139,6 +139,10 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             self.model.segmentation_model[0].backbone,
             config,
         )
+        self.configure_dinov3_correct_precision(
+            self.model.segmentation_model[0].backbone,
+            config,
+        )
         self._make_inference = make_inference
         self._correct_warmup_done = False
 
@@ -1164,6 +1168,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
     @torch.inference_mode()
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        self.begin_dinov3_correct_event()
         layers = params.get("layers", (0, 40))
         start_l, end_l = layers[0], layers[1]
         group_id = params.get("group_id", 0)
@@ -1388,7 +1393,6 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         appcorr_options: Dict[str, Any],
         context: Dict[str, Any],
     ) -> bool:
-        vit_backbone = self.model.segmentation_model[0].backbone
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         token_keep_thres = appcorr_options["token_keep_thres"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
@@ -1476,14 +1480,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             with torch.autocast("cuda", self.autocast_dtype):
                 with torch.cuda.nvtx.range(f"m2f_correct_batch{len(items)}_g{group_id}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
-                        blk = vit_backbone.blocks[lidx]
                         tag = f"batch_layer{lidx}"
-                        x_tokens, batch_cache = blk.correct(
+                        x_tokens, batch_cache = self.run_dinov3_correct_block(
+                            lidx,
                             x_tokens,
                             dindice,
                             rope,
                             batch_cache,
-                            tag=tag,
+                            tag,
+                            source_key=tag,
                             appcorr_method="partial_token",
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
