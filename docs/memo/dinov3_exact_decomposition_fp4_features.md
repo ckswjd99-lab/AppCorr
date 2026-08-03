@@ -91,6 +91,53 @@ growing relative to the base as it propagates through 40 blocks, which erodes th
 premise faster when it starts larger. Worth confirming with a per-layer `‖d‖/‖a‖` trace before
 leaning on it.
 
+## Follow-up A — the delta really is narrower along the channel axis
+
+NVFP4 quantizes along the reduction (channel) dimension, so what sets its relative error is the
+dynamic range the input carries on that axis. Measured at the input of every quantized Linear, all
+40 blocks pooled, 50 images each (`dinov3_exact_decomposition_stats.py`):
+
+| linear | var d/a (ImageNet) | var d/a (COCO) | amax d/a (ImageNet) | amax d/a (COCO) |
+|---|---:|---:|---:|---:|
+| attn.qkv | 0.4505 | 0.1005 | 0.4340 | 0.3451 |
+| attn.proj | 0.6262 | 0.1357 | 0.9254 | 0.7294 |
+| mlp.w1 | 0.4167 | 0.0914 | 0.3913 | 0.3012 |
+| mlp.w2 | 0.4167 | 0.0914 | 0.3913 | 0.3012 |
+| mlp.w3 | 0.4091 | 0.0640 | 0.4421 | 0.2926 |
+| **all** | **0.4334** | **0.0796** | | |
+
+The correction delta carries ~2.3x less channel-axis variance than the base on ImageNet and ~12x
+less on COCO — the same ordering as the FP4-on-delta win (29% vs 73% error reduction), which is the
+mechanism behind it.
+
+**`attn.proj` is the weak spot.** Its delta shrinks least on both datasets (amax ratio 0.93 / 0.73),
+because its input is the attention output — a convex combination of V rows — so differences there
+are not compressed the way they are at the other four. If a hybrid is ever wanted, that is the one
+Linear to consider leaving in BF16.
+
+## Follow-up B — the control error is **not** linearly subtractable
+
+The control's residual error invites subtracting it from the other arms. Measuring the FP4
+contribution directly instead (using the control itself as the reference, so no model is assumed):
+
+| | ImageNet | COCO |
+|---|---:|---:|
+| `\|e_ctrl\|` control vs bf16_full | 0.009391 | 0.005417 |
+| `\|e_fp4\|` FP4-on-delta vs bf16_full | 0.052969 | 0.014060 |
+| **`\|e_iso\|` FP4-on-delta vs control (measured)** | **0.052374** | **0.013201** |
+| linear subtraction predicts | 0.043578 (−16.8%) | 0.008643 (−34.5%) |
+| quadrature subtraction predicts | 0.052130 (−0.5%) | 0.012975 (−1.7%) |
+| cos(e_ctrl, e_fp4) | 0.150 | 0.353 |
+
+**Quadrature subtraction `sqrt(total^2 - ctrl^2)` is correct** (within 0.5–1.7% of the measured
+value); the two perturbations are close to orthogonal (cos 0.15–0.35). Linear subtraction
+underestimates by up to 35%.
+
+Concretely: the isolated FP4-on-delta error on COCO is **0.0132, not <0.01** — the sub-0.01 figure
+is an artifact of linear subtraction. The headline conclusion strengthens anyway, since against
+`fp4_full` measured on the same footing the isolated FP4-on-delta error is **4.1x lower on COCO**
+and **1.7x lower on ImageNet**.
+
 ## Why this matters for the acceleration work
 
 The accuracy sweeps could not resolve this question at all — at full-2000 ADE20K, FP4 on correction
