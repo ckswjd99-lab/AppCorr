@@ -55,7 +55,15 @@ class ImageNetLoader(DatasetLoader):
         ])
 
         val_dataset = datasets.ImageFolder(root=self.root, transform=val_transforms)
-        
+
+        # ImageFolder orders samples by class directory, so a front slice (e.g. via -nr) would only
+        # cover the first few classes. sample_stride takes an evenly-spaced subset across the whole
+        # (class-sorted) dataset instead, so a 10%-scale sanity run still spans all 1000 classes.
+        sample_stride = self.kwargs.get('sample_stride')
+        if sample_stride:
+            indices = list(range(0, len(val_dataset), int(sample_stride)))
+            val_dataset = torch.utils.data.Subset(val_dataset, indices)
+
         return torch.utils.data.DataLoader(
             val_dataset,
             batch_size=self.batch_size,
