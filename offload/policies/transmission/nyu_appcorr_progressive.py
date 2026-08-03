@@ -9,6 +9,7 @@ from offload.common.protocol import ExperimentConfig, Patch
 from .laplacian import LaplacianPyramidPolicy
 from .progressive import ProgressiveLPyramidPolicy
 from .raw import RawTransmissionPolicy
+from .fourier_laplacian_progressive import FourierLaplacianProgressivePolicy
 
 
 class _NYUAppCorrFixedGridMixin:
@@ -188,3 +189,17 @@ class NYUAppCorrProgressiveLaplacianPolicy(_NYUAppCorrFixedGridMixin, Progressiv
                 0,
                 255,
             ).astype(np.uint8)
+
+
+class NYUAppCorrFourierLaplacianHybridPolicy(_NYUAppCorrFixedGridMixin, FourierLaplacianProgressivePolicy):
+    """DCT-base + Laplacian-residual hybrid (see fourier_laplacian_progressive.py)
+    on NYU's fixed depther model grid — the mixin forces
+    _is_preserve_input_shape()=False and _target_hw_for_level() to always
+    resolve to the fixed model grid (config.image_shape), so the parent's
+    encode()/decode() already target the right resolution unmodified; only a
+    defensive final resize is added here, matching
+    NYUAppCorrProgressiveLaplacianPolicy's own pattern."""
+
+    def decode(self, patches: List[Patch], config: ExperimentConfig, canvas: np.ndarray = None) -> np.ndarray:
+        decoded = super().decode(patches, config, canvas=canvas)
+        return self._resize_decoded_to_model_grid(decoded, config)

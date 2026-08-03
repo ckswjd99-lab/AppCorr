@@ -1,0 +1,15 @@
+{
+    "model_name": "dinov3_detector",
+    "dataset_name": "coco2017",
+    "exp_id": "coco_approx_only_l2_fourier",
+    "batch_size": 1,
+    "image_shape": [1024, 1024, 3],
+    "patch_size": [16, 16],
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "FourierLaplacianHybrid",
+    "transmission_kwargs": {
+        "dct_keep": 256,
+        "compression_level": 1,
+        "base_only": true
+    }
+}
