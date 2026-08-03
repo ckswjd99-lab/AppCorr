@@ -24,6 +24,12 @@ produced them.
   approx-only FP8/auto/NVFP4 implementation and full ImageNet-1k/COCO measurements. Large-row
   ImageNet B32 gains 1.97x/2.85x approx speedups with FP8/FP4, while small-row COCO B1 is slower;
   includes the 3x3-window row-count explanation and remaining interleaved work.
+- [dinov3_correct_low_precision_status.md](dinov3_correct_low_precision_status.md) — opposite
+  direction: approx stays bf16, `.correct()` quantized to FP4 instead (new `correct_precision`
+  config field). ADE20K m2f N=100: fp4 correction (mIoU 52.03) is indistinguishable from bf16
+  correction (52.08), both recovering ~86% of the floor→ceiling gap. Theoretical-compute-only for
+  now (no torch.compile on the correct path, so no latency claim yet); full-dataset confirmation
+  pending.
 
 ## Related work elsewhere in the repo (not in this folder)
 
