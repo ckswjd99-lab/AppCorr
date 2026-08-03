@@ -29,6 +29,45 @@ FP4 correction is statistically indistinguishable from bf16 correction on this s
 quantizing the correction path to FP4 at N=100.** Full-dataset confirmation pending (per the
 project's nr-sanity-first discipline — this is a first-pass check on 100/2000 samples).
 
+## Does this generalize beyond correction, or is it correction-specific?
+
+Ran the same question the other direction: quantize the **stock full-inference path** (`.forward()`,
+no approximation/correction at all — `ade20k_m2f_sequential.json`, the ceiling arm above) to FP4
+instead, via a new sibling controller (`DINOv3FullPrecisionController`, same commit range as this
+doc), and compare against the same stock bf16 baseline, same N=100 samples:
+
+| Arm | mIoU | aAcc |
+|---|---:|---:|
+| ceiling: full baseline, bf16 | 52.92288696479569 | 84.08007692187066 |
+| **ceiling: full baseline, full_precision=fp4** | **52.92288696479569** | **84.08007692187066** |
+
+**Bit-identical to 16 significant digits.** Verified this isn't a broken no-op: a direct block-level
+comparison (block 0, real quantized weights vs. a separately-loaded bf16 reference, same random
+input, same autocast context) shows the FP4 clone's weight tensor really is `NVFP4Tensor` and its
+output really differs numerically from bf16 (max abs diff 174.85, mean abs diff 0.012 on a single
+block's raw activations) — so quantization is genuinely in effect on the compute path, not silently
+bypassed. The bit-identical final metrics are consistent with a real (if perhaps fortunate)
+outcome: because the reported mIoU/aAcc are deterministic functions of *integer* per-pixel argmax
+class labels (via `torch.bincount`), a measurable float-level activation difference at every layer
+still produces identical final numbers as long as **no single pixel's argmax class flips**, across
+the full 40-layer/(sliding-window crops) stack and all 100 images. Apparently none did, at this
+scale.
+
+**Answer to the original question, with the caveat that N=100 is small and the result could easily
+be "no flips yet" rather than "will never flip": FP4 does NOT appear to be correction-specific here
+— applying it broadly across the entire stock forward pass was, in this sample, at least as
+lossless as confining it to the correction recompute (0.00pp vs correction's −0.05pp, both within
+what's plausibly noise at N=100).** This is a more encouraging result than a naive "correction-only
+recovery" story would predict, but full-dataset confirmation is needed before trusting it —
+100 samples is not enough to rule out a low but nonzero flip rate that a larger sample would surface
+(mean abs diff 0.012 at block 0, compounding over 40 layers, is not obviously negligible; it simply
+didn't cross any argmax decision boundary in this particular sample of 100 images).
+
+*(Earlier scratch note, now corrected: an initial single-sample smoke test wrongly compared the
+full-fp4 config against the *correction*-path bf16 config — two different pipelines entirely
+(different scheduler/transmission policy) — and reported a spurious −0.47pp "gap." The properly
+paired comparison above, same `ade20k_m2f_sequential*.json` config on both sides, shows 0.00pp.)*
+
 ## Implementation
 
 `ExperimentConfig` accepts a new field, following the existing `precision` field's syntax:

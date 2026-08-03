@@ -27,8 +27,11 @@ produced them.
 - [dinov3_correct_low_precision_status.md](dinov3_correct_low_precision_status.md) — opposite
   direction: approx stays bf16, `.correct()` quantized to FP4 instead (new `correct_precision`
   config field). ADE20K m2f N=100: fp4 correction (mIoU 52.03) is indistinguishable from bf16
-  correction (52.08), both recovering ~86% of the floor→ceiling gap. Theoretical-compute-only for
-  now (no torch.compile on the correct path, so no latency claim yet); full-dataset confirmation
+  correction (52.08), both recovering ~86% of the floor→ceiling gap. Also tested FP4 on the
+  **full/stock** path (`full_precision` field, `DINOv3FullPrecisionController`) as a reference point
+  — bit-identical mIoU/aAcc to bf16 at N=100 (verified real via a block-level activation diff, not a
+  no-op), suggesting FP4 isn't correction-specific at this scale. Theoretical-compute-only for now
+  (no torch.compile on the correct path, so no latency claim yet); full-dataset confirmation
   pending.
 
 ## Related work elsewhere in the repo (not in this folder)
