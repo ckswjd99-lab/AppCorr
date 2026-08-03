@@ -34,6 +34,14 @@ produced them.
   full-2000 figures, and the bucketing/padding/dynamo-limit design notes for the actual NVFP4
   speedup work. No latency claim yet.
 
+- [dinov3_exact_decomposition_fp4_features.md](dinov3_exact_decomposition_fp4_features.md) —
+  rebuilds approx/correct as an **exact** `(a, d)` decomposition (linear: `d' = W d`, bias cancels;
+  nonlinear: `g(a+d) - g(a)`, no Taylor truncation) and measures feature fidelity with NVFP4 placed
+  per path. FP4 on the correction delta cuts feature error 29% (ImageNet) / 73% (COCO) vs
+  quantizing the whole forward, while FP4 on the base costs the same as quantizing everything — all
+  the damage is in the base path. Includes the two telescoping controls that validate the
+  implementation and the `‖d‖/‖x‖` measurement explaining COCO's larger gain.
+
 ## Related work elsewhere in the repo (not in this folder)
 
 - **DINOv3 CSR** (sparse attention + FFN + token pruning) — branch `develop/dinov3-csr`. ImageNet-1k
