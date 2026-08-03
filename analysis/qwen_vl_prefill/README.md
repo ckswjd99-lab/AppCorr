@@ -276,6 +276,57 @@ groups `G` is configurable via `--num-groups`.
   text reading is insensitive to the cross-band staleness. Places TextVQA near general VQA (~0) and
   far from grounding (−3.12pp): the base→full gap is huge but almost fully recovered by progressive.
 - [ ] Phase 7 — benchmarks + timeline plots across all modes (deferred).
+- [x] **Phase D — reverse-order (bottom-up) depth-staggered LLM prefill correction**
+  (`reverse_order_correct.py`, `reverse_order_parity.py`, `reverse_order_sanity_sweep.py`). Every
+  scheme so far (Phase 5/5b/C) keeps the LLM prefill EXACT and top-down (raster g1→g4, free via
+  causality) and puts all the approximation in the vision tower. This experiment ALSO makes the LLM
+  prefill approximate-then-correct, in REVERSE spatial order (g4→g1): base pass through the first
+  L/G decoder layers, then each arriving group vision-corrects exactly and LLM-corrects layers
+  `[0, k·L/G)`, advancing the whole sequence to `(k+1)·L/G`; the last group's correction folds in
+  post_text's own refresh. Goal: enable transmission/prefill overlap on the LLM side too, mirroring
+  DINOv3's L2-L1-L0 tail-interleaving pattern. **Not exactness-preserving** by construction (a group
+  corrected while spatially-earlier groups are still base bakes that staleness permanently into its
+  own residual stream) — g1 never sees anything ahead in either scheme, only WHICH group pays the
+  staleness cost changes. `num_groups=1` is the one case that must degenerate to exact monolithic
+  prefill, and is the shipped sanity gate: **PASS** (Qwen2.5-VL-3B, bf16, max abs logit diff 0.22,
+  well within `equivalence_test.py`'s established tolerance; next-token argmax identical).
+
+  Every pyramid base in this experiment is built via `reverse_order_correct.native_pyramid`, which
+  fixes an AGENTS.md violation found in the OLD `progressive.make_base` (it blurred AFTER
+  `smart_resize`, i.e. at model-canvas resolution, not the image's own native resolution, before
+  scaling both arms). All four arms below (including `l2_approx_only`/`l0_full`, re-derived not
+  reused) share the SAME native-first pyramid, so the table is internally consistent — but **not
+  bit-comparable to the Phase 5/5b/C numbers above**, which used the old canvas-resolution base.
+
+  **Full-dataset 4-arm sweep (3B, G=4, native-first Laplacian base factor=4), all 9 previously-covered
+  tasks re-run.** `l2_approx_only` = floor (coarse base, no correction anywhere); `l2l0_causal` =
+  today's shipped scheme (vision progressive + exact top-down causal LLM prefill); `l2l0_reverse` =
+  this experiment; `l0_full` = ceiling (stock full-resolution, no approximation). Recovery % = `(arm
+  − floor) / (ceiling − floor) × 100`, per the standing floor/ceiling methodology.
+
+  | Task | N | floor | causal | reverse | ceiling | causal recovers | reverse recovers |
+  |---|---|---|---|---|---|---|---|
+  | RealWorldQA | 765 | 56.21% | **61.57%** | 59.87% | 60.13% | 136.7% | 93.3% |
+  | MMMU (single-img) | 857 | 44.92% | 47.02% | **47.49%** | 47.84% | 72.0% | **88.0%** |
+  | ChartQA | 2500 | 29.48% | **83.12%** | 81.40% | 84.64% | 97.2% | 94.1% |
+  | TextVQA | 5000 | 61.32% | **79.50%** | 78.94% | 80.30% | 95.8% | 92.8% |
+  | InfoVQA | 2801 | 59.55% | **75.76%** | 74.87% | 76.26% | 97.0% | 91.7% |
+  | DocVQA | 5349 | 89.27% | **93.06%** | 92.84% | 93.42% | 91.4% | 86.0% |
+  | POPE | 9000 | 82.59% | **87.70%** | 87.03% | 87.42% | 105.7% | 92.0% |
+  | GQA | 12578 | 55.98% | 60.34% | **60.50%** | 61.18% | 83.9% | **87.0%** |
+  | RefCOCO (grounding) | 8811 | 78.05% | 82.36% | **83.17%** | 85.05% | 61.6% | **73.1%** |
+
+  **Reverse wins where precise localization/reasoning matters (RefCOCO, MMMU, GQA — 3/9), causal wins
+  on the rest (6/9, all "read fine local detail" VQA-style tasks: ChartQA/TextVQA/InfoVQA/DocVQA/
+  POPE/RealWorldQA), consistent with the Phase 5b/C finding that grounding is the staleness-sensitive
+  outlier.** The RefCOCO win is the headline result: reverse recovers 73.1% of the floor→ceiling gap
+  vs causal's 61.6% — i.e. paying the LLM's staleness cost bottom-up, instead of leaving it entirely
+  on the vision side top-down, measurably helps the one task that's actually sensitive to it. Margins
+  are small everywhere (≤1.7pp between causal/reverse on 8/9 tasks) except RefCOCO's 0.8pp swing,
+  which is large relative to that task's ~7pp floor→ceiling gap. This is the first of a planned
+  series of LLM-side correction-schedule experiments (per-task recovery numbers are the metric to
+  beat going forward); no latency measurement yet (`Phase 1+3`'s timeline-simulation approach should
+  be extended here next).
 
 ## Notes on exactness
 
