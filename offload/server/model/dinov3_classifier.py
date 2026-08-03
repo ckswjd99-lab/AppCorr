@@ -325,6 +325,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
 
         self.model.eval()
         self.configure_dinov3_approx_precision(self.model.backbone, config)
+        self.configure_dinov3_correct_precision(self.model.backbone, config)
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         if isinstance(batch_data, torch.Tensor):
@@ -636,10 +637,11 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         if 'dindice' not in locals(): 
              return 
 
+        self.begin_dinov3_correct_event()
         for lidx in range(start_l, end_l):
-            blk = self.model.backbone.blocks[lidx]
-            x_temp, cache = blk.correct(
-                x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
+            x_temp, cache = self.run_dinov3_correct_block(
+                lidx, x_temp, dindice, rope_sincos, cache, f"layer{lidx}",
+                source_key=f"layer{lidx}",
                 appcorr_method=appcorr_options["method"],
                 token_keep_ratio=token_keep_ratio,
                 token_keep_thres=token_keep_thres,

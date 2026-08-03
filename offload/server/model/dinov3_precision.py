@@ -581,12 +581,13 @@ class DINOv3CorrectPrecisionController:
     Goal: reduce the (already smaller, selected-token) correction GEMM's theoretical FLOP/byte cost
     further, without touching approx's accuracy contribution.
 
-    Unlike the approx controller, this class does NOT torch.compile the quantized `.correct()` path:
-    `.correct()`'s selected-token count varies every round (token_keep_ratio/threshold-dependent), so
-    a `dynamic=False` compile would recompile on every distinct shape. TorchAO's quantized nn.Linear
-    (tensor-subclass dispatch) is correct in eager mode -- torch.compile there is a pure speed
-    optimization on top -- and this controller only targets theoretical compute reduction / accuracy
-    right now, not wall-clock latency, so eager-mode quantized `.correct()` is used directly.
+    Compilation is **opt-in** via `correct_compile`, because whether it pays depends entirely on the
+    workload's selected-token count M. Measured on this stack (MSLK installed,
+    docs/memo/dinov3_nvfp4_speedup_gate.md): compiled NVFP4 carries a ~0.54 ms/block fixed cost that
+    is flat in M, so it only beats BF16 above M ~= 2300, and it recompiles per distinct shape.
+      - ADE20K m2f: M varies per round (median 1028) -> leave compile off; FP4 loses there anyway.
+      - ImageNet grid grouping: M is *constant* (69 tokens/image x batch; 2208 @ bs=32, 4416 @ bs=64)
+        so exactly one shape is ever compiled and `dynamic=False` is free of recompiles.
     """
 
     def __init__(
@@ -595,15 +596,23 @@ class DINOv3CorrectPrecisionController:
         *,
         precision: str,
         device: torch.device,
+        compile_enabled: bool = False,
     ) -> None:
         self.blocks = blocks
         self.precision = precision
         self.device = device
+        self.compile_enabled = bool(compile_enabled)
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
+        self._compiled_correct: dict[int, Any] = {}
         self._fp8_unavailable_reason: str | None = None
         self._fp4_unavailable_reason: str | None = None
         self._event_routes: Dict[str, tuple[str, int]] = {}
+
+        # torch.compile of the NVFP4 path dies with a Triton subprocess error on the amax
+        # reduction unless these compiler paths are set up first.
+        if self.compile_enabled and self.device.type == "cuda" and torch.cuda.is_available():
+            _configure_compile_environment()
 
         if precision == "fp8":
             self._initialize_fp8()
@@ -621,6 +630,7 @@ class DINOv3CorrectPrecisionController:
             blocks,
             precision=config.correct_precision,
             device=device,
+            compile_enabled=bool(getattr(config, "correct_compile", False)),
         )
 
     @property
@@ -746,15 +756,16 @@ class DINOv3CorrectPrecisionController:
             )
             return
 
-        # use_triton_kernel=False: the Triton NVFP4 kernel requires the MSLK package
-        # (https://github.com/pytorch/MSLK), which is not installed here, and this controller
-        # targets a theoretical compute-reduction / accuracy measurement, not latency, so the
-        # (correctness-equivalent, just non-fused) eager dispatch path is used instead.
-        # use_dynamic_per_tensor_scale=True (the accurate mode): for the same reason there is no
-        # reason to trade the extra approximation error the disabled-scale fast path (used by the
-        # approx controller's FP4 config above) accepts for lower latency.
+        # use_triton_kernel is tied to whether MSLK is importable: the fused NVFP4 activation-
+        # quantization kernel needs it, and without it torchao raises. MSLK (meta-pytorch/MSLK,
+        # `pip install mslk --index-url https://download.pytorch.org/whl/cu130`) is what makes the
+        # quantization step cheap -- it cuts the eager NVFP4 Linear from ~2.20ms to ~0.59ms per
+        # block. Falling back to eager keeps this correct, just slow.
+        # use_dynamic_per_tensor_scale=True is the accurate mode; the disabled-scale fast path used
+        # by the approx controller trades accuracy for latency, which is the wrong trade here.
+        from torchao.prototype.mx_formats.kernels import _mslk_available
         fp4_config = NVFP4DynamicActivationNVFP4WeightConfig(
-            use_triton_kernel=False,
+            use_triton_kernel=bool(_mslk_available),
             use_dynamic_per_tensor_scale=True,
         )
 
@@ -841,7 +852,14 @@ class DINOv3CorrectPrecisionController:
             blk = self.blocks[layer_idx]
 
         with torch.no_grad():
-            output, cache = blk.correct(x, dindice, rope, cache, tag, **kwargs)
+            fn = blk.correct
+            if self.compile_enabled and effective in {"fp8", "fp4"}:
+                compiled = self._compiled_correct.get(layer_idx)
+                if compiled is None:
+                    compiled = torch.compile(blk.correct, fullgraph=False, dynamic=False)
+                    self._compiled_correct[layer_idx] = compiled
+                fn = compiled
+            output, cache = fn(x, dindice, rope, cache, tag, **kwargs)
 
         # Keep the public approx/correct contract: activations and feature caches stay bf16
         # regardless of the low-precision GEMM format used internally.
