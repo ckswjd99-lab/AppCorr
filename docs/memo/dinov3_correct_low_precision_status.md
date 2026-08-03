@@ -13,32 +13,60 @@ per-round recomputation of a small selected-token subset — runs its 5 eligible
 further without touching approx's accuracy contribution. Only a theoretical-compute /
 accuracy measurement right now — no latency claim (see Implementation notes for why).
 
-**ADE20K m2f, N=100 (first 100 samples, not full-dataset), `ade20k_m2f_interleaved_static.json`
-settings:**
+**ADE20K m2f, FULL 2000-image validation set, `ade20k_m2f_interleaved_static.json` settings.**
+All five arms measured on the same commit, same machine:
 
 | Arm | mIoU | aAcc |
 |---|---:|---:|
-| floor: L2 approx-only, no correction | 46.72 | 81.36 |
-| existing: static interleaved correction, bf16 | 52.08 | 83.51 |
-| **new: static interleaved correction, correct_precision=fp4** | **52.03** | **83.53** |
-| ceiling: full baseline (all 40 layers), bf16 | 52.92 | 84.08 |
-| reference: full baseline (all 40 layers), **precision=fp4** | 52.31 | 83.73 |
+| floor: L2 approx-only, no correction | 56.013 | 84.856 |
+| existing: static interleaved correction, bf16 | 61.012 | 86.930 |
+| **new: static interleaved correction, correct_precision=fp4** | **61.191** | **87.034** |
+| ceiling: full forward (all 40 layers), bf16 | 62.236 | 87.454 |
+| reference: full forward (all 40 layers), **precision=fp4** | 62.167 | 87.404 |
 
-FP4 correction is statistically indistinguishable from bf16 correction on this sample (mIoU
-**−0.05pp**, aAcc **+0.02pp** vs bf16 correction) — both recover ~86% of the floor→ceiling mIoU gap
-(bf16: 86.4%, fp4: 85.7%) and ~79-80% of the aAcc gap. **No measurable accuracy cost from
-quantizing the correction path to FP4 at N=100.** Full-dataset confirmation pending (per the
-project's nr-sanity-first discipline — this is a first-pass check on 100/2000 samples).
+floor→ceiling gap (bf16): **+6.223 mIoU / +2.599 aAcc**. Correction recovers **80.3%** of the mIoU
+gap in bf16 and **83.2%** in fp4.
 
-**Is FP4 broadly harmless, or specifically harmless on the correction path?** The last row answers
-this: applying FP4 to the *whole* forward pass (all 40 layers, no approximation involved) costs
-**−0.61pp mIoU / −0.35pp aAcc**, ~12x the −0.05pp that confining FP4 to the correction recompute
-costs. So the near-losslessness is **correction-specific, not a general property of FP4 on this
-model** — consistent with the intuition that correction only recomputes a selected token subset
-while the bulk of the representation still comes from the untouched bf16 approx pass. It is also
-consistent in magnitude and sign with the historical approx-side FP4 numbers
+**FP4 effect at matched placement (fp4 − bf16):**
+
+| placement | Δ mIoU | Δ aAcc |
+|---|---:|---:|
+| correction only | **+0.179** | **+0.103** |
+| whole forward pass | **−0.069** | **−0.051** |
+
+**FP4 is near-lossless in *both* placements at full scale.** Note the correction arm comes out
+*better* in FP4 than in bf16 — which cannot be a genuine benefit of quantization, so ~0.2pp is
+simply the noise floor of this measurement. The whole-forward penalty (−0.069) sits well inside
+that band. Quantizing the entire 40-layer forward pass to NVFP4 costs essentially nothing here.
+
+> ⚠️ **This overturns the earlier N=100 conclusion.** At N=100 the whole-forward arm looked like
+> −0.61pp vs correction's −0.05pp, and this doc previously concluded the near-losslessness was
+> "correction-specific ... ~12x". **That did not survive the full dataset** — it was small-sample
+> noise (mIoU averages over 150 classes, and 100 images leave many of them barely represented).
+> A textbook instance of the repo's standing nr-is-a-sanity-check-only rule.
+
+The full-scale result is also *milder* than the historical approx-side FP4 numbers
 ([dinov3_approx_low_precision_status.md](dinov3_approx_low_precision_status.md): ImageNet-1k
-−0.164pp top-1, COCO −0.535 AP).
+−0.164pp top-1, COCO −0.535 AP) — but those were measured in the faster/less-accurate FP4 mode
+(`use_triton_kernel=True`, `use_dynamic_per_tensor_scale=False`) that cannot run on this install, so
+the comparison is not apples-to-apples (see Environment).
+
+**Reuse validation.** Two of these arms had prior full-2000 numbers measured on older commits, and
+re-running them reproduced those numbers almost exactly — so the earlier figures were in fact
+reusable, and the re-runs additionally supplied the aAcc column those docs never reported:
+
+| arm | prior published | re-run here | Δ |
+|---|---:|---:|---:|
+| ceiling bf16 | 62.24 ([SR sweep memo](ade20k_sr_residual_pruning_sweep.md)) | 62.236 | −0.004 |
+| correction bf16 | 61.03 ([crop_cover memo](ade20k_cropcover_grouping_sweep.md), thres 4e-5) | 61.012 | −0.018 |
+| floor | 55.97 ([SR sweep memo](ade20k_sr_residual_pruning_sweep.md)) | 56.013 | +0.043 |
+
+The floor was the one arm re-run out of genuine necessity: `a49aa7f` changed base-only decode in
+`laplacian.py` (`if prev_lvl > 0 and 0 in levels:` → `if prev_lvl > 0:`) *after* 55.97 was
+published, and the floor config (`pyramid_levels: [2]`, no level 0) is exactly the case that flips.
+Measured impact turned out to be only +0.04 — because the executor re-resizes the decoded image to
+the model canvas anyway (`_build_tta_inputs` → `_resize_short_side`), so the change amounts to one
+interpolation instead of two.
 
 Note the "full baseline in FP4" arm uses the **existing `precision` field, not a new one**:
 `ADE20KSequentialPolicy` emits `APPROX_FORWARD{layers:(0,40)} + HEAD_INFERENCE` and never
@@ -138,8 +166,35 @@ and the fused-kernel latency advantage is gone.
 
 ## Next steps
 
-- Full-dataset (2000-sample) ADE20K confirmation.
-- Real latency measurement, which requires solving the eager-mode-dispatch-overhead problem above
-  (either a dynamic-shape-tolerant compile strategy, or bucketing `.correct()`'s token count the
-  way `sdpa_query_bucket_size` already buckets attention).
+- ~~Full-dataset (2000-sample) ADE20K confirmation.~~ **Done** — see the table above; it reversed
+  the N=100 conclusion.
+- **Actually implement NVFP4 acceleration** (accuracy is now shown to be a non-issue, so the
+  remaining work is purely making it fast). Design notes agreed for that effort:
+  - **Bucketize the correction query count and pad**, then discard the pad rows. No attention
+    masking needed: in `.correct()` only the *query* count varies (K/V is always the full fixed
+    cache) and queries attend independently, so padded queries just produce rows that get sliced
+    away. The repo already does this for SDPA (`sdpa_query_bucket_size`,
+    `appcorr/models/dinov3/layers/attention.py`); extending it to the FP4 **Linear** layers is the
+    new work.
+  - **Pad with zeros, not `torch.empty`.** The existing SDPA bucketing uses uninitialized memory
+    (fine there, pads are discarded), but NVFP4 with `use_dynamic_per_tensor_scale=True` derives
+    the per-tensor scale from the activation **amax** — garbage pads would inflate the scale and
+    degrade the *real* rows' quantization. Zeros leave amax untouched.
+  - **Guard the K/V scatter-back** so padded rows never enter the shared cache.
+  - **Prefer bucket size 128 over 64**: TorchAO's Triton NVFP4 kernel requires
+    `M % 128 == 0 and K % 64 == 0` and silently falls back otherwise, so bucketing is a
+    *requirement* for the fused kernel, not just compile hygiene. Waste is ≤8% at ~1500 corrected
+    tokens. (That kernel also needs the uninstalled MSLK package — see Environment.)
+  - **Raise `torch._dynamo.cache_size_limit`** (default **8**, verified on torch 2.12.1;
+    `accumulated_cache_size_limit` default 256). More than 8 bucket variants per code object makes
+    Dynamo silently fall back to eager with only a warning — the easiest gotcha to miss here.
+  - Remaining per-variant costs: one Inductor/Triton compile per bucket (40 blocks × B buckets,
+    amortized by the `TORCHINDUCTOR_CACHE_DIR` the controller already sets up and the existing
+    correct-bucket warmup), extra kernel memory, and guard-evaluation cost growing with variant
+    count. Alternative is `dynamic=True` (single graph, no recompiles) at the cost of shape
+    specialization — and it cannot satisfy FP4's static `M % 128` constraint.
+- **Caveat to clean up before quoting any FP4-vs-bf16 delta as pure quantization effect:** the
+  approx controller compiles the FP4 path but calls bf16 uncompiled (`_compiled_fp4_approx` vs
+  `self.blocks[layer_idx].approx(...)` in `dinov3_precision.py`), so the whole-forward comparison
+  conflates quantization with compilation. Isolating the former needs a compiled-bf16 arm.
 - Extend to the other 4 executors / the `partial_channel` correction path if useful elsewhere.

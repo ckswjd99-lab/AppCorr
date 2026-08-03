@@ -26,13 +26,13 @@ produced them.
   includes the 3x3-window row-count explanation and remaining interleaved work.
 - [dinov3_correct_low_precision_status.md](dinov3_correct_low_precision_status.md) — opposite
   direction: approx stays bf16, `.correct()` quantized to FP4 instead (new `correct_precision`
-  config field). ADE20K m2f N=100: fp4 correction (mIoU 52.03) is indistinguishable from bf16
-  correction (52.08), both recovering ~86% of the floor→ceiling gap — whereas FP4 on the *whole*
-  40-layer forward costs −0.61pp (52.92→52.31), so the near-losslessness is correction-specific,
-  not a general FP4 property. Includes the weight-level bf16→NVFP4 error table (~9.4% rel L2,
-  ~20.5 dB SQNR) and the paired-A/B protocol used to catch a plumbing bug that had faked a
-  "bit-identical" result. Theoretical-compute-only for now (no torch.compile on the correct path,
-  so no latency claim yet); full-dataset confirmation pending.
+  config field). **Full 2000**, 5 arms on one commit: FP4 is near-lossless *both* on correction
+  (+0.18 mIoU vs bf16) and on the whole 40-layer forward (−0.07) — ~0.2pp is just the noise floor.
+  This **reversed the N=100 read** that FP4 was "correction-specific (−0.61 vs −0.05)". Includes
+  the weight-level bf16→NVFP4 error table (~9.4% rel L2, ~20.5 dB SQNR), the paired-A/B protocol
+  that caught a plumbing bug faking a "bit-identical" result, reuse-validation of three prior
+  full-2000 figures, and the bucketing/padding/dynamo-limit design notes for the actual NVFP4
+  speedup work. No latency claim yet.
 
 ## Related work elsewhere in the repo (not in this folder)
 
