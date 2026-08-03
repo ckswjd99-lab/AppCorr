@@ -8,7 +8,7 @@
     "scheduler_policy_name": "BatchCountBased",
     "transmission_policy_name": "FourierLaplacianHybrid",
     "transmission_kwargs": {
-        "pyramid_levels": [2],
+        "dct_keep": 256,
         "compression_level": 1,
         "base_only": true
     }

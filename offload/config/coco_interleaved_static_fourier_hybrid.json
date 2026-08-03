@@ -16,8 +16,7 @@
     },
     "transmission_policy_name": "FourierLaplacianHybrid",
     "transmission_kwargs": {
-        "compression_level": 1,
-        "pyramid_levels": [1, 0]
+        "compression_level": 1
     },
     "appcorr_kwargs": {
         "generated_from_client": true,
