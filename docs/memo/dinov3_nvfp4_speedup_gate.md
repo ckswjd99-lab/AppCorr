@@ -2,8 +2,10 @@
 
 **Status date:** 2026-08-04
 **Branch:** `develop/dinov3-approx-fp4`
-**Verdict:** do not implement the delta-decomposition acceleration. NVFP4 loses on the shapes this
-workload actually produces, and the best achievable win is ~0.07% end-to-end.
+**Verdict:** do not implement the delta-decomposition acceleration *for ADE20K*. NVFP4 loses on the
+shapes that workload produces (~0.07% end-to-end ceiling). A follow-up found one regime where it
+does pay -- large-batch constant-M ImageNet, 1.13x on CORRECT_FORWARD at bs=128 -- see the batching
+section below.
 
 ## Why the gate existed
 
@@ -81,6 +83,50 @@ new a-path cache, a delta rewrite of `correct_partial_token` + `SelfAttention.co
 and a resolution of the `blocks_out_sum` semantics problem.
 
 **Phases 1–3 of the plan are therefore not started.**
+
+## Follow-up: raising M by batching — it works, but only at large batch
+
+The gate's own diagnosis was that NVFP4 needs M ≳ 2300 and ADE20K only reaches a median of 1028.
+ImageNet is the natural counter-test: `imnet_interleaved_g4.json` uses grid grouping with
+`token_keep_ratio=1.0`, so **M is exactly constant** — 69 tokens/image (64 patches + 5 pretokens)
+times the batch — measured at 2208 @ bs=32 and 4416 @ bs=64 across all 496 correction GEMM calls.
+Constant M also means `torch.compile(dynamic=False)` sees exactly one shape, so none of the
+bucketing machinery from the original plan is needed here.
+
+Measured `CORRECT_FORWARD` (10 warmup / 30 measured at bs=64; 8 / 20 at bs=128):
+
+| batch | M | bf16 | NVFP4 + compile | speedup | top-1 bf16 → fp4 |
+|---:|---:|---:|---:|---:|---|
+| 64 | 4416 | 389.04 ms | 387.18 ms | 1.00× | 91.25 → 91.30 |
+| **128** | **8832** | **761.21 ms** | **675.62 ms** | **1.13×** | 90.66 → 90.82 |
+
+(min-of-run at bs=128: 585.06 → 438.16 ms, 1.34×.)
+
+So **batching does deliver** — but note bs=64 is already well past the microbenchmark crossover
+(where the isolated GEMMs are ~1.5× faster) and still shows nothing at the stage level. Only at
+bs=128 does it surface. Back-solving the observed 1.13× against the measured 1.67× GEMM speedup puts
+the GEMM share of `CORRECT_FORWARD` at **~28%** — consistent with the gate's estimate and confirming
+that ~70% of the stage is non-GEMM work that no amount of quantization touches.
+
+Accuracy is unaffected (top-1 within noise, top-5 identical), consistent with the correction path
+being the benign place to put FP4.
+
+**Practical reading:** NVFP4 on the correction path is worth enabling for large-batch,
+constant-M workloads (ImageNet-style classification at bs≥128), and is not worth it for
+ADE20K-style sliding-window segmentation where M is small and variable. The ~70% non-GEMM remainder
+of `CORRECT_FORWARD` is still the bigger prize in both cases.
+
+### What was wired to make this measurable
+
+- `offload/server/model/dinov3_classifier.py` — the classifier executor now configures the correct-
+  precision controller and routes its correction loop through `run_dinov3_correct_block`
+  (previously only the m2f segmentor was wired, so `correct_precision` was a no-op on ImageNet).
+- `offload/server/model/dinov3_precision.py` — `DINOv3CorrectPrecisionController` picks
+  `use_triton_kernel` from whether MSLK is importable, and gained an opt-in `compile_enabled` path
+  (with `_configure_compile_environment()` first, without which the NVFP4 compile dies on a Triton
+  subprocess error).
+- `offload/common/protocol.py` — new `correct_compile` flag. Opt-in on purpose: it only pays where M
+  is constant and large, and would thrash recompiles on variable-M workloads like ADE20K.
 
 ## What is worth doing instead
 
