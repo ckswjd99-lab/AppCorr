@@ -1,4 +1,3 @@
-import math
 import struct
 import zlib
 from typing import Dict, Generator, List
@@ -69,28 +68,25 @@ class FourierLaplacianHybridPolicy(COCOWindowProgressiveLaplacianPolicy):
     groups the way pixel residuals or per-patch DCT residuals can; the DCT
     trick is only used for the single global group 0 approximation.
 
-    keep_h/keep_w (the retained low-frequency square) are derived from
-    transmission_kwargs.pyramid_levels exactly like FourierProgressive's
-    per-patch low_h/low_w, just applied to the full image_shape instead of a
-    single patch: keep = ceil(image_dim / 2**base_level). For byte-budget
-    comparisons against a specific existing base resolution (e.g. matching
-    COCOWindowProgressiveLaplacian's actual 352x352 window-sized base),
-    transmission_kwargs.dct_keep overrides this with an exact value instead.
+    keep_h/keep_w (the retained low-frequency square) default to the SAME size
+    as the parent class's group-0 base (`_base_hw`: one 3x3-window cell, i.e.
+    ~1/3 of each image dimension, patch-aligned) rather than a pyramid_levels
+    power-of-2 fraction — the DCT base is meant to arrive as/before the global
+    window does and be immediately followed by per-window correction, so its
+    resolution should match that window's own scale, not an independent
+    setting. transmission_kwargs.dct_keep still overrides this with an exact
+    (h, w) or scalar value for byte-budget experiments that intentionally want
+    a different base resolution than the window scale.
     """
 
-    @staticmethod
-    def _keep_hw(config: ExperimentConfig) -> tuple[int, int]:
+    @classmethod
+    def _keep_hw(cls, config: ExperimentConfig) -> tuple[int, int]:
         explicit = config.transmission_kwargs.get('dct_keep')
         if explicit:
             if isinstance(explicit, (list, tuple)):
                 return int(explicit[0]), int(explicit[1])
             return int(explicit), int(explicit)
-        H, W = config.image_shape[:2]
-        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
-        base_level = levels[0]
-        keep_h = min(max(math.ceil(H / (2 ** base_level)), 1), H)
-        keep_w = min(max(math.ceil(W / (2 ** base_level)), 1), W)
-        return keep_h, keep_w
+        return cls._base_hw(config)
 
     @staticmethod
     def _dct_base_encode(image: np.ndarray, keep_h: int, keep_w: int) -> tuple[np.ndarray, np.ndarray]:
