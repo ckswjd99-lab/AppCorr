@@ -465,3 +465,94 @@ def gather_rows_triton(src, batch_idx, token_idx, block_c: int = 1024):
         n, dim_c, BLOCK_C=block_c,
     )
     return out.reshape(n, *src.shape[2:])
+
+
+@triton.jit
+def _scatter_heads_kernel(
+    dst_ptr, batch_idx_ptr, pos_idx_ptr, src_ptr,
+    stride_db, stride_dh, stride_dt,
+    stride_sm, stride_sh,
+    num_active, head_dim,
+    BLOCK_D: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_h = tl.program_id(1)
+    if pid_m >= num_active:
+        return
+    b = tl.load(batch_idx_ptr + pid_m)
+    t = tl.load(pos_idx_ptr + pid_m)
+    offs = tl.arange(0, BLOCK_D)
+    d_mask = offs < head_dim
+    v = tl.load(src_ptr + pid_m * stride_sm + pid_h * stride_sh + offs, mask=d_mask)
+    tl.store(dst_ptr + b * stride_db + pid_h * stride_dh + t * stride_dt + offs, v, mask=d_mask)
+
+
+@triton.jit
+def _gather_heads_kernel(
+    out_ptr, batch_idx_ptr, pos_idx_ptr, src_ptr,
+    stride_sb, stride_sh, stride_st,
+    stride_om, stride_oh,
+    num_active, head_dim,
+    BLOCK_D: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_h = tl.program_id(1)
+    if pid_m >= num_active:
+        return
+    b = tl.load(batch_idx_ptr + pid_m)
+    t = tl.load(pos_idx_ptr + pid_m)
+    offs = tl.arange(0, BLOCK_D)
+    d_mask = offs < head_dim
+    v = tl.load(src_ptr + b * stride_sb + pid_h * stride_sh + t * stride_st + offs, mask=d_mask)
+    tl.store(out_ptr + pid_m * stride_om + pid_h * stride_oh + offs, v, mask=d_mask)
+
+
+def _heads_ok(t: torch.Tensor) -> bool:
+    """The head-axis kernels index dims 0 and 2 and stream dim 3, so only dim 3 must be packed."""
+    return t.dim() == 4 and t.stride(3) == 1
+
+
+def scatter_heads_triton(dst, batch_idx, pos_idx, src) -> bool:
+    """`dst[batch_idx, :, pos_idx] = src` for dst [B, H, T, Dh] and src [M, H, Dh].
+
+    The head axis is a full slice, so each (batch, pos) pair touches H separate Dh-long runs rather
+    than one contiguous row -- which is why `scatter_rows_triton` does not apply here. Regular
+    enough to address directly: the grid is (M, H) and each program streams one head's Dh values.
+
+    Same uniqueness assumption as `scatter_rows_triton`. Returns False when unsupported.
+    """
+    if not _heads_ok(dst) or src.dim() != 3 or src.stride(2) != 1:
+        return False
+    n, H, Dh = src.shape
+    if n == 0:
+        return True
+    if dst.shape[1] != H or dst.shape[3] != Dh:
+        return False
+    _scatter_heads_kernel[(n, H)](
+        dst, batch_idx, pos_idx, src,
+        dst.stride(0), dst.stride(1), dst.stride(2),
+        src.stride(0), src.stride(1),
+        n, Dh, BLOCK_D=triton.next_power_of_2(Dh),
+    )
+    return True
+
+
+def gather_heads_triton(src, batch_idx, pos_idx):
+    """`src[batch_idx, :, pos_idx]` -> contiguous [M, H, Dh], for src [B, H, T, Dh].
+
+    Mirror of `scatter_heads_triton`. Returns None when unsupported.
+    """
+    if not _heads_ok(src):
+        return None
+    n = batch_idx.numel()
+    H, Dh = src.shape[1], src.shape[3]
+    out = torch.empty((n, H, Dh), device=src.device, dtype=src.dtype)
+    if n == 0:
+        return out
+    _gather_heads_kernel[(n, H)](
+        out, batch_idx, pos_idx, src,
+        src.stride(0), src.stride(1), src.stride(2),
+        out.stride(0), out.stride(1),
+        n, Dh, BLOCK_D=triton.next_power_of_2(Dh),
+    )
+    return out
