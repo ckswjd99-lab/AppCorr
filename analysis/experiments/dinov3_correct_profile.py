@@ -124,6 +124,11 @@ def main():
     # _build_packed_query_state_fixed_k, and anything else (i.e. a threshold) takes the general
     # builder with its .item()/nonzero() host round-trips. Defaulting to the all-keep path means
     # this script does NOT profile what ade20k_m2f_interleaved_static_correct_fp4.json actually runs.
+    ap.add_argument("--alternate", type=int, default=0, metavar="N",
+                    help="interleave BF16 and the --correct-precision path N times in ONE process. "
+                         "Separate runs drift ~20%% between them (APPROX moved 184 -> 205 ms across "
+                         "two runs of identical code), which swamps a 4-9 ms effect; alternating "
+                         "inside one process pairs the samples and removes that.")
     ap.add_argument("--correct-precision", default="bf16", choices=("bf16", "fp8", "fp4"),
                     help="route blocks through DINOv3CorrectPrecisionController at this precision")
     ap.add_argument("--token-keep-thres", type=float, default=None,
@@ -171,6 +176,36 @@ def main():
     # ---- total wall time ----
     ev0, ev1 = torch.cuda.Event(True), torch.cuda.Event(True)
     ev0.record()
+    if args.alternate:
+        import statistics as _st
+
+        def _timed(ctl):
+            a, b = torch.cuda.Event(True), torch.cuda.Event(True)
+            c = fresh()
+            torch.cuda.synchronize()
+            a.record()
+            run_correct(backbone, x, rope, c, dindice, ctl)
+            b.record()
+            torch.cuda.synchronize()
+            return a.elapsed_time(b)
+
+        for _ in range(3):          # warm both paths before any sample is kept
+            _timed(None)
+            _timed(controller)
+        base, alt = [], []
+        for _ in range(args.alternate):
+            base.append(_timed(None))          # BF16 and the low-precision path back to back,
+            alt.append(_timed(controller))     # so any drift hits both samples of a pair alike
+        diff = [x2 - x1 for x1, x2 in zip(base, alt)]
+        md, sd = _st.mean(diff), (_st.stdev(diff) if len(diff) > 1 else 0.0)
+        se = sd / len(diff) ** 0.5 if sd else float("inf")
+        print(f"\n===== paired, {args.alternate} rounds in one process =====")
+        print(f"  bf16                {_st.mean(base):7.2f} +-{_st.stdev(base):5.2f} ms")
+        print(f"  {args.correct_precision:<18}{_st.mean(alt):7.2f} +-{_st.stdev(alt):5.2f} ms")
+        print(f"  paired delta        {md:+7.2f} +-{se:5.2f} ms   (t={md / se:+.2f})")
+        print(f"  speedup             {_st.mean(base) / _st.mean(alt):.3f}x")
+        return
+
     for _ in range(3):
         run_correct(backbone, x, rope, fresh(), dindice, controller)
     ev1.record()
@@ -215,6 +250,10 @@ def main():
                                        "scaled_mm", "tensorop", "s16816", "gett"),
         "elementwise / residual / norm": ("elementwise", "layer_norm", "silu", "reduce_kernel",
                                           "fused_layerscale", "residual_add"),
+        # Quantization gets its own bucket: _quantize_nvfp4_kernel and the compiled FP8 quantizer
+        # matched nothing before and fell into "other", which is why "other" jumped 1.94 -> 4.37 ms
+        # between the BF16 and FP4 profiles with no explanation.
+        "quantization (fp4 / fp8)": ("quantize_nvfp4", "to_copy_clamp_mul", "mslk_quantize"),
         "gather / scatter / index": ("index", "gather", "scatter", "take", "copy", "clone",
                                      "token_update", "masked"),
         "triton (appcorr kernels)": ("triton",),
