@@ -10,8 +10,14 @@ of the shape sweep: 6.4x the data for 30% more time (0.148 -> 0.193 ms from M=12
 folding the quantization into the kernel that already produces its input -- LayerNorm for
 `attn.qkv` and `mlp.w1`/`w2`, SwiGLU for `mlp.w3` -- should reclaim most of it.
 
-This module is **Phase 1**: the quantizer alone, no fusion, existing only so that the output format
-can be proven byte-identical to TorchAO's before any producer logic is layered on top. The format is
+**Producer fusion was tried and abandoned** -- see docs/memo/dinov3_nvfp4_speedup_gate.md. Folding
+the LayerNorm in forces one program per 128 rows (the reduction needs the whole row), which collapses
+the grid from (K/64, M/128) to (M/128,): 10 programs at M=1280 against 148 SMs. It measured 0.06-0.27x
+of the unfused pair. What actually paid was calling this kernel directly instead of through
+`NVFP4Tensor.to_nvfp4`, whose wrapper costs more than the kernel itself.
+
+This module is therefore the quantizer alone, and the byte-equality gate exists so that the output
+format stays provably correct. The format is
 unforgiving -- a wrong scale swizzle produces no error, just wrong numbers -- so
 `tests/test_nvfp4_fused_quantize.py` gates on exact equality of both `qdata` and `scale`.
 

@@ -371,3 +371,58 @@ measured above: raw `_scaled_mm`, a static activation scale, and a compiled quan
 FP4 has not been re-measured through an equivalent hand-rolled path — its torchao Triton kernel
 already does the fused quantization, so the headroom there is smaller, but the comparison above is
 not yet apples-to-apples.
+
+---
+
+# Producer fusion for NVFP4: tried, and it does not work (2026-08-04)
+
+The plan was to fold the NVFP4 activation quantization into its producer (LayerNorm for `attn.qkv`
+and `mlp.w1`/`w2`, SwiGLU for `mlp.w3`), on the reasoning that quantization is nearly all overhead:
+at M=1280 a call moves ~13.1 MB, which is ~4.3 us at HBM bandwidth, against ~30 us measured, and
+6.4x the data costs only 30% more time.
+
+**The premise was right; the fix was the wrong one.**
+
+## What actually paid: skip the TorchAO wrapper
+
+`NVFP4Tensor.to_nvfp4` costs **29.6 us** at M=1280/K=4096. The Triton kernel it wraps costs
+**14.3 us**. The tensor-subclass construction is more expensive than the quantization — the same
+shape as the FP8 finding (`Float8DynamicActivationFloat8WeightConfig` at 5.6x its own GEMM).
+
+Calling the kernel directly (`quantize_nvfp4_swizzled`, in
+`appcorr/models/dinov3/layers/triton_kernels/nvfp4_fused.py`) took `FastFP4Linear` from **0.96x to
+1.19x** of BF16 at M=1280, with rel-L2 unchanged at 0.133 and byte-identical output (gated by
+`tests/test_nvfp4_fused_quantize.py`). Across a block's three FP4 quantizations that is ~46 us,
+against the ~25 us fusion was worth.
+
+## Why fusion loses: occupancy, not SRAM
+
+The planned obstacle was SRAM — 128 rows x 4096 in fp32 is 2 MB, so the LayerNorm reduction has to
+be two passes over x. That part works. What the plan missed is the other side of the same decision:
+**moving the K loop inside the program collapses the grid.**
+
+| | grid at M=1280, K=4096 | programs |
+|---|---|---:|
+| standalone quantizer | (K/64, M/128) = (64, 10) | 640 |
+| fused LayerNorm+quantize | (M/128,) | **10** |
+
+Ten programs against ~148 SMs. Measured against the unfused pair:
+
+| M | K | LN + quantize | fused | |
+|---|---|---:|---:|---:|
+| 1280 | 4096 | 22.2 us | 198.7 us | **0.11x** |
+| 2068 | 4096 | 32.9 us | 578.2 us | **0.06x** |
+| 5120 | 4096 | 54.2 us | 198.9 us | 0.27x |
+
+It also drifted ~1% of bytes from the reference, because a two-pass `E[x²] − E[x]²` variance is less
+stable than aten's Welford and the difference lands on block-scale boundaries.
+
+## If it is ever revisited
+
+Split it in two: one cheap fully-parallel kernel for the per-row mean/rstd (output is `[M]` scalars),
+then the existing quantizer with the normalisation applied inline, keeping its 2-D grid. That
+preserves occupancy and still skips the BF16 intermediate. But the ceiling is small — sequential
+LN+quantize is 20.6 us against 12.3 us for LayerNorm alone, so ~8.3 us per call at best, less than
+the ~15 us per call the wrapper removal already got, and it adds a launch back.
+
+The fused kernel itself was deleted rather than left in place; this memo is the record.
