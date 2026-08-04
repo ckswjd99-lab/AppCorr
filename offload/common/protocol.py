@@ -179,6 +179,10 @@ class ExperimentConfig:
     # (numerically exact BF16, recording activation amax) and then bakes a static per-tensor scale,
     # removing the per-call amax scan. 0 keeps the dynamic per-call scale.
     correct_fp4_calib_events: int = 1
+    # correct_precision=fp4 only. attn.proj is the worst FP4 candidate of the five correction
+    # Linears -- its input is the attention-core output (least-compressible delta) and it is the one
+    # input no producer fusion can reach -- so it runs FP8 by default. Set "fp4" to force it.
+    correct_fp4_proj_precision: str = "fp8"
 
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
@@ -223,6 +227,11 @@ class ExperimentConfig:
             )
         self.correct_compile = bool(self.correct_compile)
         self.correct_fp4_calib_events = max(0, int(self.correct_fp4_calib_events))
+        if self.correct_fp4_proj_precision not in {"fp4", "fp8"}:
+            raise ValueError(
+                "correct_fp4_proj_precision must be 'fp4' or 'fp8', "
+                f"got {self.correct_fp4_proj_precision!r}"
+            )
 
     def get_input_profile_config(self) -> Dict[str, Any]:
         name = self.input_profile_name or "fixed_image_shape"
