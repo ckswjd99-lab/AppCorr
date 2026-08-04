@@ -49,6 +49,14 @@ produced them.
   saves 3.9% of correction GEMM time ≈ 0.07% end-to-end. Includes the MSLK install recipe, the
   quant-vs-GEMM cost split (the FP4 GEMM itself *is* 1.3–1.6× faster), and where to look instead.
 
+- [dinov3_correct_forward_profile.md](dinov3_correct_forward_profile.md) — profiles what the
+  non-GEMM ~70% of CORRECT_FORWARD is. GPU: index/gather/scatter is the biggest non-GEMM cost (24%
+  of wall, more than attention + LayerNorm combined) from packing selected tokens and scattering K/V
+  back. CPU: the stage is **launch-bound** — 200 `.item()` calls stall the host ~145 ms against a
+  183.8 ms GPU wall. Root cause: the query-plan cache is silently disabled whenever the pscore is not
+  a `*_layermean` variant, which is exactly ImageNet's config; enabling it removes 195 of 200 syncs
+  and is worth ~10% of the stage — comparable to the whole NVFP4 win, for a config change.
+
 ## Related work elsewhere in the repo (not in this folder)
 
 - **DINOv3 CSR** (sparse attention + FFN + token pruning) — branch `develop/dinov3-csr`. ImageNet-1k
