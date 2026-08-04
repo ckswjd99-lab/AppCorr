@@ -620,7 +620,9 @@ class DINOv3CorrectPrecisionController:
         self._event_routes: Dict[str, tuple[str, int]] = {}
         # None once conversion has been attempted (or when the static path is off entirely).
         self._fp4_calib_remaining: int | None = None
+        self._fp8_calib_remaining: int | None = None
         self._fp4_eligible_names: set[str] = set()
+        self._fp8_eligible_names: set[str] = set()
         self._fp4_config_factory: Any = None
 
         # torch.compile of the NVFP4 path dies with a Triton subprocess error on the amax
@@ -686,20 +688,19 @@ class DINOv3CorrectPrecisionController:
             )
             return
 
-        try:
-            from torchao.quantization import (
-                Float8DynamicActivationFloat8WeightConfig,
-                quantize_,
-            )
-            from torchao.quantization.granularity import PerTensor
-        except ImportError as exc:
-            self._handle_fp8_unavailable(f"TorchAO 0.15+ is required ({exc})")
-            return
+        _configure_compile_environment()
 
-        fp8_config = Float8DynamicActivationFloat8WeightConfig(
-            granularity=PerTensor(),
-            set_inductor_config=True,
-        )
+        # TorchAO's Float8DynamicActivationFloat8WeightConfig is ~5.6x slower than the FP8 GEMM it
+        # wraps -- 0.907 ms/block against raw torch._scaled_mm's 0.161 ms at M=1280, where BF16 is
+        # 0.324 ms. Measured through that wrapper, FP8 loses to BF16 at every M (0.36-0.65x), which
+        # is what made FP8 look like a dead end. FastFP8Linear calls _scaled_mm directly with a
+        # compiled, static-scale quantizer and lands at 1.47-1.57x instead. See
+        # docs/memo/dinov3_nvfp4_speedup_gate.md and fp8_fast_linear.py.
+        try:
+            from .fp8_fast_linear import convert_linears_to_fast_fp8
+        except ImportError as exc:
+            self._handle_fp8_unavailable(f"FastFP8Linear unavailable ({exc})")
+            return
 
         fp8_blocks = nn.ModuleList()
         quantized_count = 0
@@ -713,25 +714,8 @@ class DINOv3CorrectPrecisionController:
                 )
                 eligible = _eligible_linears(fp8_block)
                 eligible_names = {name for name, _ in eligible}
-                quantize_(
-                    fp8_block,
-                    fp8_config,
-                    filter_fn=lambda module, fqn, names=eligible_names: (
-                        isinstance(module, nn.Linear) and fqn in names
-                    ),
-                )
-                converted = [
-                    name
-                    for name, module in fp8_block.named_modules()
-                    if name in eligible_names
-                    and type(module.weight).__name__ == "Float8Tensor"
-                ]
-                if len(converted) != len(eligible_names):
-                    raise RuntimeError(
-                        "TorchAO skipped one or more requested FP8 weights: "
-                        f"converted={converted}, requested={sorted(eligible_names)}"
-                    )
-                quantized_count += len(converted)
+                self._fp8_eligible_names = eligible_names
+                quantized_count += convert_linears_to_fast_fp8(fp8_block, eligible_names)
                 fp8_blocks.append(fp8_block)
         except Exception as exc:
             self._handle_fp8_unavailable(str(exc))
@@ -745,9 +729,40 @@ class DINOv3CorrectPrecisionController:
             return
 
         self.fp8_blocks = fp8_blocks
+        self._fp8_calib_remaining = max(1, int(self.fp4_calib_events))
         print(
             "[FP8-correct] Prepared "
-            f"{quantized_count} correction Linear weights across {len(fp8_blocks)} blocks."
+            f"{quantized_count} correction Linear weights across {len(fp8_blocks)} blocks "
+            f"(raw _scaled_mm, calibrating the activation scale for "
+            f"{self._fp8_calib_remaining} event(s))."
+        )
+
+    def _maybe_freeze_fp8_scales(self) -> None:
+        """Bake the observed activation amax into every FastFP8Linear."""
+        if self._fp8_calib_remaining is None or self._fp8_calib_remaining > 0:
+            return
+        try:
+            frozen = pending = 0
+            for fp8_block in self.fp8_blocks:
+                for module in fp8_block.modules():
+                    if hasattr(module, "freeze_activation_scale"):
+                        if module.freeze_activation_scale():
+                            frozen += 1
+                        else:
+                            pending += 1
+        except Exception as exc:
+            self._fp8_calib_remaining = None
+            self._handle_fp8_unavailable(f"activation-scale calibration failed: {exc}")
+            return
+        if pending:
+            # Some Linear was not exercised this event. Keep observing rather than baking amax=0;
+            # it stays on the exact BF16 path meanwhile.
+            self._fp8_calib_remaining = 0
+            return
+        self._fp8_calib_remaining = None
+        print(
+            f"[FP8-correct] Froze {frozen} activation scales; the correction path is now on "
+            "torch._scaled_mm."
         )
 
     def _initialize_fp4(self) -> None:
@@ -952,6 +967,11 @@ class DINOv3CorrectPrecisionController:
                 self._fp4_calib_remaining -= 1
             else:
                 self._maybe_convert_fp4_static()
+        if self._fp8_calib_remaining is not None:
+            if self._fp8_calib_remaining > 0:
+                self._fp8_calib_remaining -= 1
+            else:
+                self._maybe_freeze_fp8_scales()
 
     def _effective_precision(self) -> str:
         if self.precision == "fp8":
