@@ -166,9 +166,21 @@ class FastFP4Linear(nn.Module):
             cached = self._share.get(x2d)
             if cached is not None:
                 return cached
-        from appcorr.models.dinov3.layers.triton_kernels.nvfp4_fused import (
-            quantize_nvfp4_swizzled,
-        )
+        try:
+            from appcorr.models.dinov3.layers.triton_kernels.nvfp4_fused import (
+                quantize_nvfp4_swizzled,
+            )
+        except ImportError:
+            # TorchAO 0.17 dropped convert_fp32_to_fp4_packed. Correct, just ~2x slower.
+            NVFP4Tensor, _ = _nvfp4_helpers()
+            t = NVFP4Tensor.to_nvfp4(
+                x2d, block_size=16, per_tensor_scale=self.act_scale,
+                is_swizzled_scales=True, use_triton_kernel=True,
+            )
+            x_q = (t.qdata, t.scale)
+            if self._share is not None:
+                self._share.put(x2d, x_q)
+            return x_q
 
         x_q = quantize_nvfp4_swizzled(x2d, self.act_scale)
         if self._share is not None:
