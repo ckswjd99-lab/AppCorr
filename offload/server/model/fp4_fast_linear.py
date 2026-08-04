@@ -154,18 +154,23 @@ class FastFP4Linear(nn.Module):
         return True
 
     def _quantize(self, x2d: torch.Tensor):
+        """Returns (qdata, scale) ready for _scaled_mm.
+
+        Calls the Triton quantizer directly rather than through `NVFP4Tensor.to_nvfp4`. Same kernel,
+        but the wrapper's tensor-subclass construction costs more than the kernel does: 29.6 us
+        against 14.3 us at M=1280, K=4096. Across a block's three FP4 quantizations (qkv, the shared
+        w1/w2, and w3) that is ~46 us, which is what takes FastFP4Linear from 0.96x to ~1.11x of
+        BF16 -- more than folding the quantization into its producer would save (~25 us).
+        """
         if self._share is not None:
             cached = self._share.get(x2d)
             if cached is not None:
                 return cached
-        NVFP4Tensor, _ = _nvfp4_helpers()
-        x_q = NVFP4Tensor.to_nvfp4(
-            x2d,
-            block_size=16,
-            per_tensor_scale=self.act_scale,
-            is_swizzled_scales=True,
-            use_triton_kernel=True,
+        from appcorr.models.dinov3.layers.triton_kernels.nvfp4_fused import (
+            quantize_nvfp4_swizzled,
         )
+
+        x_q = quantize_nvfp4_swizzled(x2d, self.act_scale)
         if self._share is not None:
             self._share.put(x2d, x_q)
         return x_q
@@ -179,12 +184,12 @@ class FastFP4Linear(nn.Module):
         orig_shape = x.shape
         x2d = x.reshape(-1, orig_shape[-1])
         x2d, rows = pad_rows_to_bucket(x2d, self.bucket_rows)
-        x_q = self._quantize(x2d)
+        x_qdata, x_scale = self._quantize(x2d)
         w_t = self._weight_q_t
         out = torch._scaled_mm(
-            x_q.qdata.view(_FP4X2),
+            x_qdata.view(_FP4X2),
             w_t.qdata.view(_FP4X2),
-            x_q.scale.view(_E4M3),
+            x_scale.view(_E4M3),
             w_t.scale.t().view(_E4M3),
             bias=None,  # cannot ride along while a per-tensor output scale is still pending
             out_dtype=self.orig_dtype,
