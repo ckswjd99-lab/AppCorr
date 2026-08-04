@@ -20,6 +20,42 @@ from .dinov3_segmentor_linhead import GroupCorrectionPlan, QueryState
 from .utils import load_weight_mmap
 
 
+
+# --- correction-stage timing breakdown -------------------------------------------------------
+# CORRECT_FORWARD is a single stage event, so nothing said how its time splits between the 40-block
+# loop and the bookkeeping around it (batching, the K/V scatter-back, splitting the batch apart).
+# That mattered once FP4 cut the block loop's kernel time by 1.23x but the stage as a whole moved
+# only 1.07x. These accumulate CUDA-event time per phase and print every _CB_REPORT_EVERY calls.
+_CB_ACC = {}
+_CB_N = 0
+_CB_REPORT_EVERY = 200
+
+
+def _cb_add(name, start_ev, end_ev):
+    _CB_ACC.setdefault(name, []).append((start_ev, end_ev))
+
+
+def _cb_flush(force=False):
+    global _CB_N
+    _CB_N += 1
+    if not force and _CB_N % _CB_REPORT_EVERY:
+        return
+    torch.cuda.synchronize()
+    tot = {}
+    for name, pairs in _CB_ACC.items():
+        tot[name] = (sum(a.elapsed_time(b) for a, b in pairs), len(pairs))
+    _CB_ACC.clear()
+    if not tot:
+        return
+    grand = sum(v[0] for v in tot.values())
+    parts = " | ".join(
+        f"{k} {v[0] / _CB_N:.2f}ms({100 * v[0] / grand:.0f}%,{v[1] / _CB_N:.1f}x)"
+        for k, v in sorted(tot.items(), key=lambda kv: -kv[1][0])
+    )
+    print(f"[CORRECT-BREAKDOWN] over {_CB_N} calls: {parts}", flush=True)
+    _CB_N = 0
+
+
 class DINOv3SegmentorM2FExecutor(ModelExecutor):
     """ADE20K segmentation executor using the M2F adapter + Mask2Former head."""
 
@@ -1512,6 +1548,8 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             batch_mobile_pscore_hint = self._cat_mobile_pscore_hints(items)
             corrected_intermediates = []
 
+            _ev_a, _ev_b, _ev_c = (torch.cuda.Event(True), torch.cuda.Event(True), torch.cuda.Event(True))
+            _ev_a.record()
             with torch.autocast("cuda", self.autocast_dtype):
                 with torch.cuda.nvtx.range(f"m2f_correct_batch{len(items)}_g{group_id}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
@@ -1541,8 +1579,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                         if lidx in interaction_indexes:
                             corrected_intermediates.append(x_tokens)
 
+            _ev_b.record()
             self._scatter_m2f_correct_batch_cache(items, batch_cache, start_l, end_l)
             self._add_m2f_batch_total_stats(items[0]["cache"], batch_cache)
+            _ev_c.record()
+            _cb_add("block_loop", _ev_a, _ev_b)
+            _cb_add("cache_scatter", _ev_b, _ev_c)
 
             x_splits = torch.split(x_tokens, batch_sizes, dim=0)
             intermediate_splits = [
@@ -1591,6 +1633,8 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_intermediate_raw"] = new_intermediate_raw
         context["m2f_current_layer"] = end_l
         context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
+        _cb_flush()
+
         return True
 
     @staticmethod
