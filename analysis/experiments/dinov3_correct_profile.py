@@ -95,6 +95,10 @@ def run_correct(backbone, x, rope, cache, dindice):
 
 
 def main():
+    # DINOv3's correction path uses local Triton kernels; without this they fail with
+    # "Cannot find ptxas". Same setup the serving controllers do.
+    from offload.server.model.dinov3_precision import _configure_compile_environment
+    _configure_compile_environment()
     ap = argparse.ArgumentParser()
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--image-size", type=int, default=256)
