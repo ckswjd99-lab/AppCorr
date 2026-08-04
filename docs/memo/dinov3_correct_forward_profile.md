@@ -69,13 +69,49 @@ A/B on the same shapes, changing only the pscore:
 **Enabling the plan cache removes 195 of 200 host syncs and is worth ~10% of the correction stage**
 — comparable to the entire 1.13× NVFP4 win, for a one-line config change.
 
+## Fix shipped: sync-free query plan when every candidate is kept — **1.56×**
+
+The `.item()` exists because `max_keep` **sizes a tensor** (`update_indice = zeros(B, max_active)`),
+and shapes must be host ints; the two `nonzero()` calls stall for the same structural reason (their
+output length is data-dependent). None of that is avoidable in general.
+
+But the builder is data-dependent *only* through `keep_patch_mask`. When that mask is all-True —
+exactly `token_keep_thres is None and token_keep_ratio >= 1.0` — everything becomes static:
+`max_keep` is just `dindice_patches.shape[1]`, the packed layout is `[dindice_pre | dindice_patches]`
+in order, and `nonzero()` on an all-True mask is plain row-major order reproducible with
+`arange`/`repeat_interleave`. `_build_packed_query_state_all_keep` builds the whole plan that way,
+with no host round-trip. Verified to produce **bit-identical** `PackedQueryState` output to the
+general builder across B∈{1,3,4,128}.
+
+Measured on `imnet_interleaved_g4.json`, bs=64, 10 warmup / 30 measured:
+
+| | baseline | sync-free | |
+|---|---:|---:|---|
+| `CORRECT_FORWARD` avg | 389.04 ms | **248.78 ms** | **1.56×** |
+| min | 277.69 | 234.14 | |
+| max | 507.39 | 332.37 | |
+| top-1 / top-5 | 91.25 / 99.375 | 91.25 / 99.375 | **identical** |
+
+The isolated profiler showed only 1.06× (183.8 → 173.0 ms) because there the GPU had enough queued
+work to partly hide the stalls; in the real pipeline the host block genuinely prevents the GPU worker
+from running ahead, so the win is far larger. All `aten::item` / `nonzero` / `cudaStreamSynchronize`
+calls disappear from the profile.
+
+**This is worth more than the entire NVFP4 effort** (1.56× vs 1.13×), costs no accuracy at all
+(identical, not "within noise"), and is ~50 lines. It confirms the profiling-first ordering: the
+correction stage was launch-bound, not compute-bound.
+
+**Coverage:** the fast path triggers on ImageNet-style configs (`token_keep_ratio: 1.0`). ADE20K
+uses threshold selection so it takes the general builder — but it already has the layermean plan
+cache, which reduces the same syncs to once per round. The two workloads are covered by different
+mechanisms, and notably ImageNet no longer needs to be switched to a layermean pscore (which would
+have changed token selection and required accuracy re-validation).
+
 ## What to do
 
-1. **Switch ImageNet to a layermean pscore.** `cls_attn_prob_layermean` is already in
-   `_VALID_SERVER_PSCORES` and `_LAYERMEAN_SERVER_PSCORES`, so it is a drop-in for
-   `imnet_interleaved_g4.json`. ⚠️ It changes *which* tokens get selected (mean-over-layers vs
-   per-layer score), so re-measure top-1 before adopting — this is a selection change, not just a
-   caching change.
+1. ~~Switch ImageNet to a layermean pscore.~~ **Superseded** by the sync-free builder above, which
+   gets a larger win (1.56× vs the ~1.10× the plan cache was worth here) without changing token
+   selection at all.
 2. **Attack the 24% index/gather/scatter.** The packed-sparse layout pays a gather to build
    `x_active` and two scatters to write results back. Options worth measuring: fusing the gather into
    the first LayerNorm, keeping K/V updates in the packed layout until the end of the round instead
