@@ -606,12 +606,14 @@ class DINOv3CorrectPrecisionController:
         device: torch.device,
         compile_enabled: bool = False,
         fp4_calib_events: int = 1,
+        fp4_proj_precision: str = "fp8",
     ) -> None:
         self.blocks = blocks
         self.precision = precision
         self.device = device
         self.compile_enabled = bool(compile_enabled)
         self.fp4_calib_events = max(0, int(fp4_calib_events))
+        self.fp4_proj_precision = str(fp4_proj_precision)
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
         self._compiled_correct: dict[int, Any] = {}
@@ -648,6 +650,7 @@ class DINOv3CorrectPrecisionController:
             device=device,
             compile_enabled=bool(getattr(config, "correct_compile", False)),
             fp4_calib_events=int(getattr(config, "correct_fp4_calib_events", 1)),
+            fp4_proj_precision=str(getattr(config, "correct_fp4_proj_precision", "fp8")),
         )
 
     @property
@@ -777,74 +780,18 @@ class DINOv3CorrectPrecisionController:
             )
             return
 
-        try:
-            # TorchAO renamed this class in 0.17.0. The serving stack (system python) still
-            # ships 0.15.0+git, where it is NVFP4InferenceConfig with the same fields, so
-            # importing only the new name breaks FP4 on the machine that actually runs evals.
-            try:
-                from torchao.prototype.mx_formats import (
-                    NVFP4DynamicActivationNVFP4WeightConfig as NVFP4Config,
-                )
-            except ImportError:
-                from torchao.prototype.mx_formats import NVFP4InferenceConfig as NVFP4Config
-            from torchao.quantization import quantize_
-        except ImportError as exc:
-            self._handle_fp4_unavailable(
-                f"TorchAO with prototype NVFP4 support is required ({exc})"
-            )
-            return
-
-        # The Triton NVFP4 activation-quantization kernel is what makes FP4 viable at all -- eager
-        # costs ~2.03 ms/block against BF16's 0.32 ms (0.16x) on the serving stack. It needs
-        # ptxas/libcuda on the search path, which is what _configure_compile_environment() sets up;
-        # without that call the kernel dies with "Cannot find ptxas" and FP4 falls back to eager.
-        #
-        # TorchAO 0.17 additionally routes this kernel through MSLK (meta-pytorch/MSLK) and exposes
-        # `_mslk_available`; 0.15 -- which is what the serving stack runs -- has neither the symbol
-        # nor the dependency, and its Triton path works on its own. Treat a missing symbol as
-        # "available" rather than silently dropping to the 6x-slower eager path.
+        # The Triton NVFP4 quantization kernel needs ptxas/libcuda on the search path; without this
+        # it dies with "Cannot find ptxas" and the eager fallback costs 2.03 ms/block against BF16's
+        # 0.32 ms. See docs/memo/dinov3_nvfp4_speedup_gate.md.
         _configure_compile_environment()
         try:
-            from torchao.prototype.mx_formats.kernels import _mslk_available
-
-            use_triton = bool(_mslk_available)
-        except ImportError:
-            use_triton = True
-        calib_events = int(self.fp4_calib_events)
-
-        # Per-tensor scale: `use_dynamic_per_tensor_scale=True` recomputes torch.max(abs(x)) over the
-        # whole activation on every call. That scan is memory-bound and grows with M -- 42% of the
-        # quantization cost at M=1280, 73% at M=20480 (docs/memo/dinov3_nvfp4_speedup_gate.md). The
-        # observer flow replaces it with a scale calibrated once from real correction activations.
-        # Calibration is unavoidable at runtime: correction inputs are selected-token activations
-        # that do not exist at load time. TorchAO 0.15 has no observer flow, so this is opt-out
-        # there rather than a hard failure.
-        try:
-            from torchao.prototype.mx_formats import NVFP4ObservedLinear
-        except ImportError:
-            NVFP4ObservedLinear = None
-            if calib_events > 0:
-                print(
-                    "[FP4-correct] TorchAO lacks the NVFP4 observer flow; falling back to a "
-                    "dynamic per-tensor scale (correct_fp4_calib_events ignored)."
-                )
-                calib_events = 0
-
-        def _fp4_config(step: str | None = None):
-            if step is None:
-                return NVFP4Config(
-                    use_triton_kernel=use_triton, use_dynamic_per_tensor_scale=True
-                )
-            # `step` implies use_dynamic_per_tensor_scale=False (torchao sets it in __post_init__).
-            return NVFP4Config(
-                use_triton_kernel=use_triton, step=step
-            )
-
-        self._fp4_config_factory = _fp4_config
-        static = calib_events > 0
+            from .fp4_fast_linear import convert_linears_to_fast_fp4
+        except ImportError as exc:
+            self._handle_fp4_unavailable(f"FastFP4Linear unavailable ({exc})")
+            return
 
         fp4_blocks = nn.ModuleList()
-        quantized_count = 0
+        fp4_count = fp8_count = 0
         try:
             for block in self.blocks:
                 fp4_block = (
@@ -856,106 +803,58 @@ class DINOv3CorrectPrecisionController:
                 eligible = _eligible_fp4_linears(fp4_block)
                 eligible_names = {name for name, _ in eligible}
                 self._fp4_eligible_names = eligible_names
-                quantize_(
-                    fp4_block,
-                    _fp4_config("prepare" if static else None),
-                    filter_fn=lambda module, fqn, names=eligible_names: (
-                        isinstance(module, nn.Linear) and fqn in names
-                    ),
+                a, b = convert_linears_to_fast_fp4(
+                    fp4_block, eligible_names, proj_precision=self.fp4_proj_precision
                 )
-                # Verify the swap actually happened. torchao's handlers *return* a replacement
-                # module, which quantize_ can only install by assigning into a parent -- on a root
-                # Linear the replacement is silently dropped and convert then no-ops, yielding a
-                # path that looks quantized in the logs but runs plain BF16.
-                if static:
-                    converted = [
-                        name
-                        for name, module in fp4_block.named_modules()
-                        if name in eligible_names
-                        and isinstance(module, NVFP4ObservedLinear)
-                    ]
-                else:
-                    converted = [
-                        name
-                        for name, module in fp4_block.named_modules()
-                        if name in eligible_names
-                        and type(module.weight).__name__ == "NVFP4Tensor"
-                    ]
-                if len(converted) != len(eligible_names):
-                    raise RuntimeError(
-                        "TorchAO skipped one or more requested FP4 weights: "
-                        f"converted={converted}, requested={sorted(eligible_names)}"
-                    )
-                quantized_count += len(converted)
+                fp4_count += a
+                fp8_count += b
                 fp4_blocks.append(fp4_block)
         except Exception as exc:
             self._handle_fp4_unavailable(str(exc))
             return
 
         expected_count = len(self.blocks) * len(_LOW_PRECISION_LINEAR_SUFFIXES)
-        if quantized_count != expected_count:
+        if fp4_count + fp8_count != expected_count:
             self._handle_fp4_unavailable(
-                f"quantized {quantized_count} Linear layers, expected {expected_count}"
+                f"converted {fp4_count + fp8_count} Linear layers, expected {expected_count}"
             )
             return
 
         self.fp4_blocks = fp4_blocks
-        self._fp4_calib_remaining = calib_events
-        mode = (
-            f"static per-tensor scale, calibrating for {calib_events} event(s)"
-            if static
-            else "dynamic per-tensor scale"
-        )
+        self._fp4_calib_remaining = max(1, int(self.fp4_calib_events))
         print(
-            "[FP4-correct] Prepared "
-            f"{quantized_count} correction Linear weights across {len(fp4_blocks)} blocks "
-            f"({mode}, triton={use_triton})."
+            f"[FP4-correct] Prepared {fp4_count} FP4 + {fp8_count} FP8 correction Linear weights "
+            f"across {len(fp4_blocks)} blocks (raw _scaled_mm, mlp.w1/w2 share one quantized "
+            f"activation, attn.proj={self.fp4_proj_precision}); calibrating for "
+            f"{self._fp4_calib_remaining} event(s)."
         )
 
     def _maybe_convert_fp4_static(self) -> None:
-        """Bake the observed activation amax into a static per-tensor scale.
-
-        Until this runs the blocks hold `NVFP4ObservedLinear`, which computes an ordinary BF16
-        `F.linear` while recording amax -- so calibration events are numerically exact, just not
-        accelerated. After conversion the amax scan is gone from the hot path.
-        """
+        """Bake the observed activation amax into every Fast{FP4,FP8}Linear of the FP4 blocks."""
         if self._fp4_calib_remaining is None or self._fp4_calib_remaining > 0:
             return
-        self._fp4_calib_remaining = None  # one-shot, even if conversion fails
         try:
-            from torchao.quantization import quantize_
-
-            names = self._fp4_eligible_names
+            frozen = pending = 0
             for fp4_block in self.fp4_blocks:
-                quantize_(
-                    fp4_block,
-                    self._fp4_config_factory("convert"),
-                    filter_fn=lambda module, fqn, names=names: (
-                        isinstance(module, nn.Linear) and fqn in names
-                    ),
-                )
-            bad = [
-                f"{idx}.{name}"
-                for idx, fp4_block in enumerate(self.fp4_blocks)
-                for name, module in fp4_block.named_modules()
-                if name in names
-                and (
-                    type(module.weight).__name__ != "NVFP4Tensor"
-                    or getattr(module.weight, "act_per_tensor_scale", None) is None
-                )
-            ]
-            if bad:
-                raise RuntimeError(
-                    f"convert left {len(bad)} Linear(s) unquantized or without a static "
-                    f"activation scale: {bad[:5]}"
-                )
+                for module in fp4_block.modules():
+                    if hasattr(module, "freeze_activation_scale"):
+                        if module.freeze_activation_scale():
+                            frozen += 1
+                        else:
+                            pending += 1
         except Exception as exc:
-            # Fall back rather than silently serve a half-converted model.
-            self._handle_fp4_unavailable(f"static per-tensor scale conversion failed: {exc}")
+            self._fp4_calib_remaining = None
+            self._handle_fp4_unavailable(f"activation-scale calibration failed: {exc}")
             return
+        if pending:
+            # Some Linear was not exercised this event. Keep observing rather than baking amax=0;
+            # it stays on the exact BF16 path meanwhile.
+            self._fp4_calib_remaining = 0
+            return
+        self._fp4_calib_remaining = None
         print(
-            f"[FP4-correct] Converted {len(self.fp4_blocks)} blocks to a static per-tensor "
-            "activation scale; the per-call amax scan is now gone."
+            f"[FP4-correct] Froze {frozen} activation scales; the correction path is now on "
+            "torch._scaled_mm."
         )
 
     def begin_event(self) -> None:
