@@ -50,7 +50,7 @@ def get_dataset_loader_factory():
         module = importlib.import_module("offload.mobile.dataset")
         return module.get_dataset_loader
 
-DEFAULT_CONFIG = "offload/config/imnet_interleaved_g4.json"
+DEFAULT_CONFIG = "offload/config/imnet/imnet_interleaved_g4.json"
 DEFAULT_PYRAMID_LEVELS = [2, 1, 0]
 RATIO_THRESHOLDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
 
