@@ -312,3 +312,62 @@ region. Accuracy is unchanged (the arithmetic is identical up to bf16 rounding o
 
 Per-GEMM FP4 error on **real** DINOv3 block-0 weights with a delta-scale input: **13.4% rel-L2**
 output error, averaged over the five correction Linears.
+
+---
+
+# FP8 was measured through a broken wrapper — the kernel is fine (2026-08-04)
+
+The earlier conclusion "FP8 is slower than BF16 at every M (0.36-0.65x)" was an artefact of
+benchmarking `Float8DynamicActivationFloat8WeightConfig` rather than the FP8 GEMM. Separating the
+two, on the serving stack (system python, torchao 0.15), bias-free correction shapes:
+
+| M | bf16 | torchao fp8 | **raw `torch._scaled_mm`** | GEMM vs bf16 |
+|---|---:|---:|---:|---:|
+| 1280 | 0.324 | 0.907 | **0.161** | **2.01x** |
+| 2560 | 0.595 | 0.982 | **0.308** | 1.93x |
+| 5120 | 1.129 | 1.751 | **0.584** | 1.93x |
+| 8192 | 1.754 | 2.957 | **0.898** | 1.95x |
+
+The FP8 GEMM hits **exactly the theoretical 2x**. torchao's wrapper adds 5.6x on top of it at
+M=1280. The hardware was never the problem.
+
+## Activation quantization is the whole cost, and it is fixable
+
+Quantization dominated even the hand-rolled path. Cost of producing the FP8 activation, 5 shapes
+summed (ms):
+
+| M | GEMM | naive (fp32 upcast) | dynamic scale | **+ torch.compile** | **static scale + compile** |
+|---|---:|---:|---:|---:|---:|
+| 1280 | 0.163 | 0.379 | 0.282 | 0.138 | **0.073** |
+| 2560 | 0.308 | 0.638 | 0.341 | 0.137 | **0.074** |
+| 5120 | 0.588 | 1.355 | 0.712 | 0.201 | **0.096** |
+| 8192 | 0.919 | 2.196 | 1.143 | 0.347 | **0.143** |
+
+`.float()` upcasts allocate an fp32 `[M,K]` and cost more than the GEMM. Compiling fuses
+amax/scale/clamp/cast into one pass; a static scale removes the amax reduction too, leaving a single
+multiply-and-cast. **5x cheaper than the naive version.**
+
+## FP8 vs FP4, corrected
+
+Speed = raw `_scaled_mm` + static-scale compiled quantization. Error = rel-L2 on **real DINOv3
+block-0 weights** with a delta-scale input.
+
+| | M=1280 | M=2560 | M=5120 | M=8192 | rel-L2 |
+|---|---:|---:|---:|---:|---:|
+| **FP8 (custom path)** | **1.38x** | **1.56x** | 1.65x | 1.67x | **0.0379** |
+| FP4 per-tensor ON (torchao) | 0.64x | 0.93x | 1.00x | 1.03x | 0.1394 |
+| FP4 per-tensor OFF (torchao) | 1.16x | 2.04x | **2.59x** | **2.73x** | 0.2841 |
+
+**At ADE20K's actual M≈1280, FP8 dominates both FP4 configurations on both axes** — faster than
+per-tensor-OFF (1.38x vs 1.16x) with **7.5x less error**. FP4 only wins on speed from M≈2560 up, and
+pays 3.7-7.5x the error to do it.
+
+Per-row weight scaling is not worth it: 0.0378 vs 0.0379. The error is dominated by *activation*
+quantization, not weight quantization, so finer weight granularity buys nothing here.
+
+**Implication for the correction path.** `correct_precision=fp8` currently routes through torchao
+the same way FP4 does, so it inherits the 5.6x wrapper overhead. The fix is the same three pieces
+measured above: raw `_scaled_mm`, a static activation scale, and a compiled quantization step.
+FP4 has not been re-measured through an equivalent hand-rolled path — its torchao Triton kernel
+already does the fused quantization, so the headroom there is smaller, but the comparison above is
+not yet apples-to-apples.
