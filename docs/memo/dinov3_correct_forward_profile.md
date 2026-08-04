@@ -131,3 +131,29 @@ PYTHONPATH="$PWD/appcorr/models:$PWD" python analysis/experiments/dinov3_correct
 PYTHONPATH="$PWD/appcorr/models:$PWD" python analysis/experiments/dinov3_correct_profile.py \
     --batch-size 128 --num-groups 4 --server-pscore patch_attn_prob_layermean   # cache ON
 ```
+
+---
+
+## 2026-08-04: aten gather/scatter replaced with row kernels
+
+Re-profiled at ADE20K-like shapes (B=4, N=1029, M=2068, `patch_attn_prob_layermean`, so the plan
+cache is on) before and after `scatter_rows_triton` / `gather_rows_triton`:
+
+| | before | after |
+|---|---:|---:|
+| **one 40-block correction pass (wall)** | **38.9 ms** | **35.8 ms** (−8.0%) |
+| `aten::_index_put_impl_` | 5.70 ms / 80 calls | 2.25 ms / 40 calls |
+| `aten::index` | 3.87 ms / 80 calls | 2.12 ms / 40 calls |
+
+**The gain is smaller than the microbenchmark implies (−3.1 ms, not the ~7.6 ms projected).** Two
+reasons, both visible in the call counts: only *half* of each aten op's calls were the sites that
+were converted (40 of 80 each), and the replacement kernels are not free -- ~12-17 us x 80 calls
+adds back ~1.3 ms. Net ≈ 3.9 ms of aten time removed, 3.1 ms of it showing up in wall.
+
+**Remaining, and worth the next look:** 40 calls of `_index_put_impl_` (2.25 ms) and 40 of
+`aten::index` (2.12 ms) are still on aten at other sites -- the `q_padded` scatter and the `dv_cache`
+write in `attention.py`, plus the group-slice gathers in `block.py`. Same fix should apply, for
+roughly another 3 ms.
+
+Also note the coarse-attribution block in the script remains unreliable (it buckets `aten::addmm`
+under elementwise); read the raw kernel rows.
