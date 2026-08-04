@@ -38,7 +38,11 @@ import torch
 import triton
 import triton.language as tl
 
+# Only TorchAO 0.15 exposes this; 0.17 dropped it in favour of MSLK. Import failure is handled by
+# callers, which fall back to NVFP4Tensor.to_nvfp4 -- correct everywhere, just ~2x slower.
 from torchao.prototype.mx_formats.kernels import convert_fp32_to_fp4_packed
+
+NVFP4_FUSED_AVAILABLE = True
 
 
 F4_E2M1_MAX = 6.0
