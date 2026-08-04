@@ -187,6 +187,32 @@ class FastFP4Linear(nn.Module):
             self._share.put(x2d, x_q)
         return x_q
 
+    def forward_raw(self, x: torch.Tensor):
+        """GEMM output with the scale-and-bias epilogue left undone, plus what it needs.
+
+        Returns (raw_2d, scale, bias, orig_shape), or None while calibrating -- there is no epilogue
+        to defer then, since the module is running an ordinary BF16 F.linear. Lets a consumer that
+        immediately combines two of these (SwiGLU) fold both epilogues into its own kernel.
+        """
+        if self.calibrating:
+            return None
+        orig_shape = x.shape
+        x2d = x.reshape(-1, orig_shape[-1])
+        x2d, rows = pad_rows_to_bucket(x2d, self.bucket_rows)
+        x_qdata, x_scale = self._quantize(x2d)
+        w_t = self._weight_q_t
+        out = torch._scaled_mm(
+            x_qdata.view(_FP4X2),
+            w_t.qdata.view(_FP4X2),
+            x_scale.view(_E4M3),
+            w_t.scale.t().view(_E4M3),
+            bias=None,
+            out_dtype=self.orig_dtype,
+        )
+        if out.shape[0] != rows:
+            out = out[:rows].contiguous()
+        return out, self.out_scale, self.bias, orig_shape
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.calibrating:
             with torch.no_grad():

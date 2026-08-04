@@ -78,7 +78,32 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         self.w2 = nn.Linear(in_features, swiglu_hidden_features, bias=bias, device=device)
         self.w3 = nn.Linear(swiglu_hidden_features, out_features, bias=bias, device=device)
 
+    def _fused_swiglu_hidden(self, x: Tensor):
+        """silu(w1(x)) * w2(x) with both FP4 epilogues folded in, or None if not applicable.
+
+        w1 and w2 are the one pair in the block that share an output shape and are combined
+        immediately, so their `out * scale + bias` epilogues can ride along with the SiLU and the
+        multiply -- four kernels per block collapsing into one. FP4's per-kernel fixed cost is what
+        makes that worth doing; see fused_swiglu_epilogue_triton.
+        """
+        raw1 = getattr(self.w1, "forward_raw", None)
+        raw2 = getattr(self.w2, "forward_raw", None)
+        if raw1 is None or raw2 is None:
+            return None
+        r1, r2 = raw1(x), raw2(x)
+        if r1 is None or r2 is None:
+            return None
+        from .triton_kernels import fused_swiglu_epilogue_triton
+
+        o1, s1, b1, shape = r1
+        o2, s2, b2, _ = r2
+        out = fused_swiglu_epilogue_triton(o1, s1, b1, o2, s2, b2)
+        return None if out is None else out.reshape(*shape[:-1], out.shape[-1])
+
     def forward(self, x: Tensor) -> Tensor:
+        hidden = self._fused_swiglu_hidden(x)
+        if hidden is not None:
+            return self.w3(hidden)
         x1 = self.w1(x)
         x2 = self.w2(x)
         hidden = F.silu(x1) * x2
