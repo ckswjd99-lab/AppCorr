@@ -105,9 +105,20 @@ def main():
     ap.add_argument("--num-groups", type=int, default=4)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--rows", type=int, default=28, help="profiler rows to print")
+    # Selection mode decides which query-plan builder runs, and they differ in whether they sync:
+    # ratio>=1.0 with no threshold takes _build_packed_query_state_all_keep, top-k takes
+    # _build_packed_query_state_fixed_k, and anything else (i.e. a threshold) takes the general
+    # builder with its .item()/nonzero() host round-trips. Defaulting to the all-keep path means
+    # this script does NOT profile what ade20k_m2f_interleaved_static_correct_fp4.json actually runs.
+    ap.add_argument("--token-keep-thres", type=float, default=None,
+                    help="threshold selection; forces the syncing general builder")
+    ap.add_argument("--token-keep-ratio", type=float, default=1.0,
+                    help="<1.0 selects top-k, which uses the sync-free fixed-k builder")
     ap.add_argument("--server-pscore", default="cls_attn_prob",
                     help="cls_attn_prob = plan cache OFF (imnet); patch_attn_prob_layermean = plan cache ON (ade20k)")
     args = ap.parse_args()
+    CORRECT_KWARGS["token_keep_thres"] = args.token_keep_thres
+    CORRECT_KWARGS["token_keep_ratio"] = args.token_keep_ratio
     device = torch.device(args.device)
     APPROX_KWARGS["server_pscore"] = args.server_pscore
     CORRECT_KWARGS["server_pscore"] = args.server_pscore
