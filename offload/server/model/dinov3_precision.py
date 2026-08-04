@@ -342,7 +342,15 @@ class DINOv3ApproxPrecisionController:
 
         _configure_compile_environment()
         try:
-            from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+            # TorchAO renamed this class in 0.17.0. The serving stack (system python) still
+            # ships 0.15.0+git, where it is NVFP4InferenceConfig with the same fields, so
+            # importing only the new name breaks FP4 on the machine that actually runs evals.
+            try:
+                from torchao.prototype.mx_formats import (
+                    NVFP4DynamicActivationNVFP4WeightConfig as NVFP4Config,
+                )
+            except ImportError:
+                from torchao.prototype.mx_formats import NVFP4InferenceConfig as NVFP4Config
             from torchao.quantization import quantize_
         except ImportError as exc:
             self._handle_fp4_unavailable(
@@ -362,7 +370,7 @@ class DINOv3ApproxPrecisionController:
         # ImageNet/COCO FP4 figures in docs/memo/dinov3_approx_low_precision_status.md (those used
         # the faster/less accurate mode on the older TorchAO snapshot), and the latency advantage
         # that motivated the old setting is gone with the fused kernel.
-        fp4_config = NVFP4DynamicActivationNVFP4WeightConfig(
+        fp4_config = NVFP4Config(
             use_triton_kernel=False,
             use_dynamic_per_tensor_scale=True,
         )
@@ -755,7 +763,15 @@ class DINOv3CorrectPrecisionController:
             return
 
         try:
-            from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+            # TorchAO renamed this class in 0.17.0. The serving stack (system python) still
+            # ships 0.15.0+git, where it is NVFP4InferenceConfig with the same fields, so
+            # importing only the new name breaks FP4 on the machine that actually runs evals.
+            try:
+                from torchao.prototype.mx_formats import (
+                    NVFP4DynamicActivationNVFP4WeightConfig as NVFP4Config,
+                )
+            except ImportError:
+                from torchao.prototype.mx_formats import NVFP4InferenceConfig as NVFP4Config
             from torchao.quantization import quantize_
         except ImportError as exc:
             self._handle_fp4_unavailable(
@@ -763,29 +779,49 @@ class DINOv3CorrectPrecisionController:
             )
             return
 
-        # use_triton_kernel is tied to whether MSLK is importable: the fused NVFP4 activation-
-        # quantization kernel needs it, and without it torchao raises. MSLK (meta-pytorch/MSLK,
-        # `pip install mslk --index-url https://download.pytorch.org/whl/cu130`) is what makes the
-        # quantization step cheap -- it cuts the eager NVFP4 Linear from ~2.20ms to ~0.59ms per
-        # block. Falling back to eager keeps this correct, just slow.
+        # The Triton NVFP4 activation-quantization kernel is what makes FP4 viable at all -- eager
+        # costs ~2.03 ms/block against BF16's 0.32 ms (0.16x) on the serving stack. It needs
+        # ptxas/libcuda on the search path, which is what _configure_compile_environment() sets up;
+        # without that call the kernel dies with "Cannot find ptxas" and FP4 falls back to eager.
         #
+        # TorchAO 0.17 additionally routes this kernel through MSLK (meta-pytorch/MSLK) and exposes
+        # `_mslk_available`; 0.15 -- which is what the serving stack runs -- has neither the symbol
+        # nor the dependency, and its Triton path works on its own. Treat a missing symbol as
+        # "available" rather than silently dropping to the 6x-slower eager path.
+        _configure_compile_environment()
+        try:
+            from torchao.prototype.mx_formats.kernels import _mslk_available
+
+            use_triton = bool(_mslk_available)
+        except ImportError:
+            use_triton = True
+        calib_events = int(self.fp4_calib_events)
+
         # Per-tensor scale: `use_dynamic_per_tensor_scale=True` recomputes torch.max(abs(x)) over the
         # whole activation on every call. That scan is memory-bound and grows with M -- 42% of the
         # quantization cost at M=1280, 73% at M=20480 (docs/memo/dinov3_nvfp4_speedup_gate.md). The
-        # observer flow replaces it with a scale calibrated once from real correction activations,
-        # taking the FP4 Linear from 0.569 -> 0.415 ms/block at M=1280. Calibration is unavoidable at
-        # runtime: correction inputs are selected-token activations that do not exist at load time.
-        from torchao.prototype.mx_formats.kernels import _mslk_available
-        use_triton = bool(_mslk_available)
-        calib_events = int(self.fp4_calib_events)
+        # observer flow replaces it with a scale calibrated once from real correction activations.
+        # Calibration is unavoidable at runtime: correction inputs are selected-token activations
+        # that do not exist at load time. TorchAO 0.15 has no observer flow, so this is opt-out
+        # there rather than a hard failure.
+        try:
+            from torchao.prototype.mx_formats import NVFP4ObservedLinear
+        except ImportError:
+            NVFP4ObservedLinear = None
+            if calib_events > 0:
+                print(
+                    "[FP4-correct] TorchAO lacks the NVFP4 observer flow; falling back to a "
+                    "dynamic per-tensor scale (correct_fp4_calib_events ignored)."
+                )
+                calib_events = 0
 
         def _fp4_config(step: str | None = None):
             if step is None:
-                return NVFP4DynamicActivationNVFP4WeightConfig(
+                return NVFP4Config(
                     use_triton_kernel=use_triton, use_dynamic_per_tensor_scale=True
                 )
             # `step` implies use_dynamic_per_tensor_scale=False (torchao sets it in __post_init__).
-            return NVFP4DynamicActivationNVFP4WeightConfig(
+            return NVFP4Config(
                 use_triton_kernel=use_triton, step=step
             )
 
@@ -795,8 +831,6 @@ class DINOv3CorrectPrecisionController:
         fp4_blocks = nn.ModuleList()
         quantized_count = 0
         try:
-            from torchao.prototype.mx_formats import NVFP4ObservedLinear
-
             for block in self.blocks:
                 fp4_block = (
                     copy.deepcopy(block)
