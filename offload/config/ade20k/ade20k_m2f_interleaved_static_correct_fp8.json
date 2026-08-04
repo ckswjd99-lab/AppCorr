@@ -4,7 +4,7 @@
   "dataset_kwargs": {
     "emit_original_image": true
   },
-  "exp_id": "ade20k_m2f_interleaved_static_correct_fp4",
+  "exp_id": "ade20k_m2f_interleaved_static_correct_fp8",
   "batch_size": 1,
   "image_shape": [
     896,
