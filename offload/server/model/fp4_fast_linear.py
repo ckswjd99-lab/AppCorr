@@ -131,6 +131,7 @@ class FastFP4Linear(nn.Module):
         self.register_buffer("amax", torch.zeros((), device=weight.device), persistent=False)
         self.register_buffer("act_scale", torch.zeros((), device=weight.device), persistent=False)
         self.register_buffer("out_scale", torch.zeros((), device=weight.device), persistent=False)
+        self.out_scale_f = 0.0
         self.calibrating = True
 
     @torch.no_grad()
@@ -149,6 +150,9 @@ class FastFP4Linear(nn.Module):
         # The product both operands were divided by. Folded into the epilogue, not applied as its
         # own [M,N] kernel the way torchao does it.
         self.out_scale = (self.act_scale * self.weight_scale).to(self.orig_dtype)
+        # Materialise the scalar on the host ONCE. Reading it per call would be an .item() on a
+        # CUDA tensor, i.e. a sync in the middle of every FP4 Linear.
+        self.out_scale_f = float(self.out_scale)
         self.weight_hp = None
         self.calibrating = False
         return True
@@ -211,7 +215,7 @@ class FastFP4Linear(nn.Module):
         )
         if out.shape[0] != rows:
             out = out[:rows].contiguous()
-        return out, self.out_scale, self.bias, orig_shape
+        return out, self.out_scale_f, self.bias, orig_shape
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.calibrating:
@@ -236,9 +240,13 @@ class FastFP4Linear(nn.Module):
         # non-vectorised elementwise kernel. At the real correction shape this epilogue is what
         # returns half of FP4's GEMM win (elementwise 14.96 -> 33.39 ms against -36.07 ms of GEMM),
         # so it is worth a dedicated kernel that reads and writes the same buffer once.
+        import os
+
         from appcorr.models.dinov3.layers.triton_kernels import scale_bias_inplace_triton
 
-        if not scale_bias_inplace_triton(out, self.out_scale, self.bias):
+        if os.environ.get("APPCORR_ATEN_EPILOGUE") or not scale_bias_inplace_triton(
+            out, self.out_scale_f, self.bias
+        ):
             if self.bias is not None:
                 out = torch.addcmul(self.bias, out, self.out_scale)
             else:
