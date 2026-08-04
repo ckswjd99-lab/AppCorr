@@ -87,10 +87,24 @@ def build_state(backbone, B, image_size, num_groups, device):
 
 
 @torch.inference_mode()
-def run_correct(backbone, x, rope, cache, dindice):
+def run_correct(backbone, x, rope, cache, dindice, controller=None):
+    """One 40-block correction pass.
+
+    With `controller`, blocks are dispatched through DINOv3CorrectPrecisionController exactly as the
+    server does, so the profile reflects the configured precision. Calling `blk.correct` directly --
+    which this script did unconditionally until now -- always measures BF16, whatever the config
+    says, and that silently mischaracterised every FP4 profile taken with it.
+    """
     xc = x
+    if controller is not None:
+        controller.begin_event()
     for i, blk in enumerate(backbone.blocks):
-        xc, cache = blk.correct(xc, dindice, rope, cache, f"L{i}", **CORRECT_KWARGS)
+        if controller is None:
+            xc, cache = blk.correct(xc, dindice, rope, cache, f"L{i}", **CORRECT_KWARGS)
+        else:
+            xc, cache = controller.run_block(
+                i, xc, dindice, rope, cache, f"L{i}", **CORRECT_KWARGS
+            )
     return xc
 
 
@@ -110,6 +124,8 @@ def main():
     # _build_packed_query_state_fixed_k, and anything else (i.e. a threshold) takes the general
     # builder with its .item()/nonzero() host round-trips. Defaulting to the all-keep path means
     # this script does NOT profile what ade20k_m2f_interleaved_static_correct_fp4.json actually runs.
+    ap.add_argument("--correct-precision", default="bf16", choices=("bf16", "fp8", "fp4"),
+                    help="route blocks through DINOv3CorrectPrecisionController at this precision")
     ap.add_argument("--token-keep-thres", type=float, default=None,
                     help="threshold selection; forces the syncing general builder")
     ap.add_argument("--token-keep-ratio", type=float, default=1.0,
@@ -119,11 +135,25 @@ def main():
     args = ap.parse_args()
     CORRECT_KWARGS["token_keep_thres"] = args.token_keep_thres
     CORRECT_KWARGS["token_keep_ratio"] = args.token_keep_ratio
+
     device = torch.device(args.device)
     APPROX_KWARGS["server_pscore"] = args.server_pscore
     CORRECT_KWARGS["server_pscore"] = args.server_pscore
 
     backbone = load_backbone(device)
+
+    controller = None
+    if args.correct_precision != "bf16":
+        from offload.server.model.dinov3_precision import DINOv3CorrectPrecisionController
+
+        controller = DINOv3CorrectPrecisionController(
+            backbone.blocks, precision=args.correct_precision, device=device
+        )
+        if args.correct_precision == "fp4" and not controller.fp4_available:
+            raise SystemExit(f"fp4 unavailable: {controller.fp4_unavailable_reason}")
+        if args.correct_precision == "fp8" and not controller.fp8_available:
+            raise SystemExit(f"fp8 unavailable: {controller.fp8_unavailable_reason}")
+
     x, rope, cache0, dindice = build_state(
         backbone, args.batch_size, args.image_size, args.num_groups, device
     )
@@ -135,14 +165,14 @@ def main():
 
     # ---- warm up ----
     for _ in range(2):
-        run_correct(backbone, x, rope, fresh(), dindice)
+        run_correct(backbone, x, rope, fresh(), dindice, controller)
     torch.cuda.synchronize()
 
     # ---- total wall time ----
     ev0, ev1 = torch.cuda.Event(True), torch.cuda.Event(True)
     ev0.record()
     for _ in range(3):
-        run_correct(backbone, x, rope, fresh(), dindice)
+        run_correct(backbone, x, rope, fresh(), dindice, controller)
     ev1.record()
     torch.cuda.synchronize()
     total_ms = ev0.elapsed_time(ev1) / 3
@@ -152,7 +182,7 @@ def main():
     from torch.profiler import ProfilerActivity, profile
 
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False) as prof:
-        run_correct(backbone, x, rope, fresh(), dindice)
+        run_correct(backbone, x, rope, fresh(), dindice, controller)
         torch.cuda.synchronize()
 
     evts = [e for e in prof.key_averages() if e.self_device_time_total > 0]
