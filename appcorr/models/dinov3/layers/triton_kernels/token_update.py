@@ -570,9 +570,14 @@ def _scale_bias_inplace_kernel(out_ptr, bias_ptr, scale, n_elem, N, HAS_BIAS: tl
     tl.store(out_ptr + offs, v.to(out_ptr.dtype.element_ty), mask=m)
 
 
-def scale_bias_inplace_triton(out: torch.Tensor, scale, bias: torch.Tensor | None,
+def scale_bias_inplace_triton(out: torch.Tensor, scale: float, bias: torch.Tensor | None,
                               block: int = 4096) -> bool:
     """`out = out * scale + bias`, in place and in one pass.
+
+    `scale` must be a **Python float**, not a CUDA scalar. Calling `float()` on a device tensor is
+    an `.item()`, i.e. a host sync, and this runs once per FP4 Linear -- 160 times per correction
+    pass. Doing that cost ~26 ms end to end and made FP4 *slower* than BF16, the same failure the
+    `.item()` in `_build_packed_query_state` caused earlier.
 
     NVFP4 keeps a per-tensor scale that `torch._scaled_mm` will not apply, so every FP4 Linear has
     to touch its whole `[M, N]` output again afterwards. At the real ADE20K correction shape that
@@ -593,7 +598,7 @@ def scale_bias_inplace_triton(out: torch.Tensor, scale, bias: torch.Tensor | Non
     if n_elem == 0:
         return True
     _scale_bias_inplace_kernel[(triton.cdiv(n_elem, block),)](
-        out, bias if bias is not None else out, float(scale), n_elem, out.shape[1],
+        out, bias if bias is not None else out, scale, n_elem, out.shape[1],
         HAS_BIAS=bias is not None, BLOCK=block,
     )
     return True
@@ -614,8 +619,11 @@ def _fused_swiglu_epilogue_kernel(x1_ptr, x2_ptr, b1_ptr, b2_ptr, out_ptr,
     tl.store(out_ptr + offs, (a * b).to(out_ptr.dtype.element_ty), mask=m)
 
 
-def fused_swiglu_epilogue_triton(x1, s1, b1, x2, s2, b2, block: int = 4096):
+def fused_swiglu_epilogue_triton(x1, s1: float, b1, x2, s2: float, b2, block: int = 4096):
     """`silu(x1 * s1 + b1) * (x2 * s2 + b2)` in a single kernel, written into `x1`.
+
+    `s1`/`s2` must be Python floats -- see scale_bias_inplace_triton on why a device scalar here
+    silently costs a host sync per call.
 
     SwiGLU's two projections are the one place in the block where two FP4 Linears produce the same
     shape and are immediately combined, so their epilogues can be folded into the combination. That
@@ -643,6 +651,6 @@ def fused_swiglu_epilogue_triton(x1, s1, b1, x2, s2, b2, block: int = 4096):
         return x1
     _fused_swiglu_epilogue_kernel[(triton.cdiv(n_elem, block),)](
         x1, x2, b1 if has_bias else x1, b2 if has_bias else x1, x1,
-        float(s1), float(s2), n_elem, x1.shape[1], HAS_BIAS=has_bias, BLOCK=block,
+        s1, s2, n_elem, x1.shape[1], HAS_BIAS=has_bias, BLOCK=block,
     )
     return x1
