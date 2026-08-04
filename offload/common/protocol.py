@@ -175,7 +175,11 @@ class ExperimentConfig:
     fp8_auto_min_rows: int = 3072
     correct_precision: str = "bf16"
     correct_compile: bool = False
-    
+    # correct_precision=fp4 only. >0 runs that many correction events through torchao's observer
+    # (numerically exact BF16, recording activation amax) and then bakes a static per-tensor scale,
+    # removing the per-call amax scan. 0 keeps the dynamic per-call scale.
+    correct_fp4_calib_events: int = 1
+
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
     dataset_kwargs: Dict[str, Any] = field(default_factory=dict)
@@ -218,6 +222,7 @@ class ExperimentConfig:
                 f"got {self.correct_precision!r}"
             )
         self.correct_compile = bool(self.correct_compile)
+        self.correct_fp4_calib_events = max(0, int(self.correct_fp4_calib_events))
 
     def get_input_profile_config(self) -> Dict[str, Any]:
         name = self.input_profile_name or "fixed_image_shape"
