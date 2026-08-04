@@ -597,3 +597,52 @@ def scale_bias_inplace_triton(out: torch.Tensor, scale, bias: torch.Tensor | Non
         HAS_BIAS=bias is not None, BLOCK=block,
     )
     return True
+
+
+@triton.jit
+def _fused_swiglu_epilogue_kernel(x1_ptr, x2_ptr, b1_ptr, b2_ptr, out_ptr,
+                                  s1, s2, n_elem, N, HAS_BIAS: tl.constexpr, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    m = offs < n_elem
+    a = tl.load(x1_ptr + offs, mask=m).to(tl.float32) * s1
+    b = tl.load(x2_ptr + offs, mask=m).to(tl.float32) * s2
+    if HAS_BIAS:
+        a = a + tl.load(b1_ptr + (offs % N), mask=m).to(tl.float32)
+        b = b + tl.load(b2_ptr + (offs % N), mask=m).to(tl.float32)
+    a = a * tl.sigmoid(a)          # SiLU
+    tl.store(out_ptr + offs, (a * b).to(out_ptr.dtype.element_ty), mask=m)
+
+
+def fused_swiglu_epilogue_triton(x1, s1, b1, x2, s2, b2, block: int = 4096):
+    """`silu(x1 * s1 + b1) * (x2 * s2 + b2)` in a single kernel, written into `x1`.
+
+    SwiGLU's two projections are the one place in the block where two FP4 Linears produce the same
+    shape and are immediately combined, so their epilogues can be folded into the combination. That
+    turns four kernels per block -- two `out = out * scale + bias`, a SiLU and a multiply -- into
+    one, removing 120 launches across 40 blocks.
+
+    That matters because FP4's extra kernels are *fixed* cost, not proportional work: fitting
+    `time(B) = a + b*B` over B = 1, 2, 4 gives a = 11.78 ms for FP4 against 0.90 ms for BF16, i.e.
+    ~10.9 ms that batching never dilutes. Spread over the 280 kernels FP4 adds (120 quantize + 160
+    epilogue) that is ~39 us each -- far more than launch submission, so it is the kernels' own
+    start-up cost, and the way to remove it is to have fewer of them.
+
+    Returns None when the layout is unsupported so callers can fall back.
+    """
+    if not (x1.is_contiguous() and x2.is_contiguous()) or x1.shape != x2.shape or x1.dim() != 2:
+        return None
+    has_bias = b1 is not None and b2 is not None
+    if has_bias and not (b1.is_contiguous() and b2.is_contiguous()
+                         and b1.numel() == x1.shape[1] and b2.numel() == x1.shape[1]):
+        return None
+    if (b1 is None) != (b2 is None):
+        return None
+    n_elem = x1.numel()
+    if n_elem == 0:
+        return x1
+    _fused_swiglu_epilogue_kernel[(triton.cdiv(n_elem, block),)](
+        x1, x2, b1 if has_bias else x1, b2 if has_bias else x1, x1,
+        float(s1), float(s2), n_elem, x1.shape[1], HAS_BIAS=has_bias, BLOCK=block,
+    )
+    return x1
