@@ -196,7 +196,7 @@ ImageNet approx-only:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 offload/run_local.sh \
-  offload/config/imnet_approx_only_l2.json \
+  offload/config/imnet/imnet_approx_only_l2.json \
   -d <IMAGENET_ROOT> -nw 2 \
   --set precision=<bf16|fp8|fp4> \
   --set exp_id=<EXP_ID>
@@ -206,7 +206,7 @@ COCO approx-only:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 offload/run_local.sh \
-  offload/config/coco_approx_only_l2.json \
+  offload/config/coco/coco_approx_only_l2.json \
   -d <COCO_ROOT> -nw 2 \
   --set precision=<bf16|fp8|fp4> \
   --set scheduler_kwargs.approx_only=true \
