@@ -152,3 +152,93 @@ MSLK 1.2.0 is now installed in the `appcorr` conda env. Two consequences:
   [dinov3_exact_decomposition_fp4_features.md](dinov3_exact_decomposition_fp4_features.md) were all
   measured with the eager/accurate path, so switching would invalidate the comparison unless re-run.
 - Anything that compiles the NVFP4 path must call `_configure_compile_environment()` first.
+
+---
+
+# Gate re-opened — 2026-08-04: NVFP4 now beats BF16
+
+The "NVFP4 is 6–9x slower" verdict above was measured against **stock torchao defaults**. Two
+fixable overheads, neither intrinsic to FP4, accounted for essentially all of it. With both removed
+the gate **passes**.
+
+## The two overheads
+
+### 1. Dynamic per-tensor scale forces a full amax scan every call
+
+`use_dynamic_per_tensor_scale=True` runs `torch.max(torch.abs(input_tensor))` over the whole
+activation on every forward (`nvfp4_tensor.py:581`). The earlier breakdown showed this at 42% of
+quantization cost at M=1280, rising to **73% at M=20480** — it is memory-bound and scales with M.
+
+TorchAO's observer flow replaces it with a calibrated static scale:
+
+```python
+quantize_(parent, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel=True, step="prepare"))
+#   ... run calibration batches ...
+quantize_(parent, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel=True, step="convert"))
+```
+
+**Trap — the flow silently no-ops on a root module.** `step="prepare"` *returns* a new
+`NVFP4ObservedLinear`, and `quantize_` can only install that by assigning into a parent. Call it on a
+bare `nn.Linear` and the replacement is discarded, leaving a plain `Linear`; `step="convert"` then
+hits `if not isinstance(module, NVFP4ObservedLinear): return module` and returns it **unquantized**.
+The result is a benchmark that appears to show a large speedup but is timing plain BF16 — it matched
+BF16 to 1.00x at every M, which is what gave it away. The real serving path is safe (Linears are
+children of a block), but always assert `type(mod.weight).__name__ == "NVFP4Tensor"` after convert.
+
+After conversion, `weight.act_quant_kwargs.use_dynamic_per_tensor_scale` is `False` and
+`weight.act_per_tensor_scale` holds the baked scalar.
+
+### 2. The addmm epilogue costs two full [M, N] passes
+
+Kernel profile of one `qkv`-shaped call at M=8192 (`torch.addmm(b, xq, wq.t())`):
+
+| kernel | time |
+|---|---:|
+| `cutlass3x_sm100_..._block_scaled_ue4m3xf4_ue4m3xf4_f32` (the FP4 GEMM) | **95.9 us** |
+| `elementwise_kernel` (per-tensor scale multiply) | 160.6 us |
+| `elementwise_kernel` (bias add) | 146.4 us |
+| *(bf16 reference: `nvjet_sm100_..._bias_TNT`, bias fused into the GEMM)* | *350.5 us* |
+
+**The FP4 GEMM is 3.65x faster than BF16.** The 307 us of epilogue is what erased it.
+`nvfp4_tensor.py:516-523` is explicit about why — `_scaled_mm` does not yet accept `scale_result`,
+so the per-tensor scale becomes a separate kernel, and that in turn forces bias out of the GEMM:
+
+```python
+if scale_result is not None:
+    result = result * scale_result.to(a.orig_dtype)   # full [M,N] pass
+if should_add_bias_separately:
+    result = result + bias.to(a.orig_dtype)           # another full [M,N] pass
+```
+
+Both are memory-bound over a 134 MB bf16 output. They fuse into one `torch.addcmul(bias, r, sr)`
+(= `bias + r*scale`), halving the traffic. Deviation is `2.89e-3` rel-L2, pure bf16 rounding order.
+
+## Measured, 5 correction GEMMs (qkv/proj/w1/w2/w3, C=4096, H=8192), ms/block
+
+| M | bf16 | fp4 stock | + static scale | + static & fused | quant | gemm+epilogue | vs bf16 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1280 | 0.325 | 0.571 | 0.440 | **0.337** | 0.179 | 0.222 | 0.96x |
+| 2560 | 0.596 | 0.836 | 0.670 | **0.484** | 0.180 | 0.394 | **1.23x** |
+| 5120 | 1.128 | 1.619 | 1.400 | **0.922** | 0.176 | 0.816 | **1.22x** |
+| 8192 | 1.762 | 2.733 | 2.258 | **1.389** | 0.193 | 1.273 | **1.27x** |
+
+Net: **0.55x → 0.96x at M=1280, and a genuine 1.2–1.3x win from M≈2560 up.** Crossover ≈ **2400**.
+
+## The one remaining fixed cost
+
+The `quant` column is **flat at ~0.18 ms across a 6.4x range of M**. Without the amax scan the MSLK
+kernel is launch-bound, not memory-bound. That flat 0.18 ms is the entire reason M=1280 still loses:
+it is 53% of the FP4 total there but only 14% at M=8192.
+
+So the crossover is now purely a batching question, and ADE20K's natural M≈1259 (bs=1) sits just
+below it. Crop-level batching at bs=4 puts M≈5000 — comfortably in the 1.22x region. This is the
+same conclusion the original gate reached ("raise M"), but the target has moved from an unreachable
+~2300-at-6x-deficit to a crossover the existing batching work already clears.
+
+## Reproduce
+
+Both fixes are benchmark-local so far; **neither is in the serving path yet**. `use_triton_kernel`
+is still `False` in `offload/server/model/dinov3_precision.py`, and the fused epilogue requires
+either a torchao patch or a local dispatch. Wiring them up is the next step, and the accuracy tables
+in [dinov3_correct_low_precision_status.md](dinov3_correct_low_precision_status.md) must be re-run
+afterwards — they were all measured on the eager/accurate path.
