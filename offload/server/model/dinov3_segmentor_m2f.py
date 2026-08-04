@@ -29,6 +29,10 @@ from .utils import load_weight_mmap
 _CB_ACC = {}
 _CB_N = 0
 _CB_REPORT_EVERY = 200
+# Off unless asked for. Recording three timing events per bucket costs nothing measurable on the
+# BF16 path but showed up on FP4, whose launch pipeline is already the binding constraint --
+# instrumentation must not be part of the configuration being measured.
+_CB_ENABLED = bool(os.environ.get("APPCORR_CORRECT_BREAKDOWN"))
 
 
 def _cb_add(name, start_ev, end_ev):
@@ -37,6 +41,8 @@ def _cb_add(name, start_ev, end_ev):
 
 def _cb_flush(force=False):
     global _CB_N
+    if not _CB_ENABLED:
+        return
     _CB_N += 1
     if not force and _CB_N % _CB_REPORT_EVERY:
         return
@@ -1548,8 +1554,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             batch_mobile_pscore_hint = self._cat_mobile_pscore_hints(items)
             corrected_intermediates = []
 
-            _ev_a, _ev_b, _ev_c = (torch.cuda.Event(True), torch.cuda.Event(True), torch.cuda.Event(True))
-            _ev_a.record()
+            _cb_on = _CB_ENABLED
+            if _cb_on:
+                _ev_a, _ev_b, _ev_c = (
+                    torch.cuda.Event(True), torch.cuda.Event(True), torch.cuda.Event(True)
+                )
+                _ev_a.record()
             with torch.autocast("cuda", self.autocast_dtype):
                 with torch.cuda.nvtx.range(f"m2f_correct_batch{len(items)}_g{group_id}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
@@ -1579,12 +1589,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                         if lidx in interaction_indexes:
                             corrected_intermediates.append(x_tokens)
 
-            _ev_b.record()
+            if _cb_on:
+                _ev_b.record()
             self._scatter_m2f_correct_batch_cache(items, batch_cache, start_l, end_l)
             self._add_m2f_batch_total_stats(items[0]["cache"], batch_cache)
-            _ev_c.record()
-            _cb_add("block_loop", _ev_a, _ev_b)
-            _cb_add("cache_scatter", _ev_b, _ev_c)
+            if _cb_on:
+                _ev_c.record()
+                _cb_add("block_loop", _ev_a, _ev_b)
+                _cb_add("cache_scatter", _ev_b, _ev_c)
 
             x_splits = torch.split(x_tokens, batch_sizes, dim=0)
             intermediate_splits = [

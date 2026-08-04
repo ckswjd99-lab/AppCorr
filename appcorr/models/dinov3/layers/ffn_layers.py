@@ -86,6 +86,9 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         multiply -- four kernels per block collapsing into one. FP4's per-kernel fixed cost is what
         makes that worth doing; see fused_swiglu_epilogue_triton.
         """
+        import os
+        if os.environ.get("APPCORR_NO_SWIGLU_FUSION"):
+            return None
         raw1 = getattr(self.w1, "forward_raw", None)
         raw2 = getattr(self.w2, "forward_raw", None)
         if raw1 is None or raw2 is None:
