@@ -154,12 +154,26 @@ def main():
         print(f"{e.key[:60]:<62}{ms:>10.2f}{100*ms*1e3/tot:>7.1f}%{e.count:>8}")
 
     # ---- coarse attribution ----
+    # Two things this must not do, both of which it used to.
+    #
+    # 1. Count `aten::*` rows. Those are op wrappers whose self_device_time already covers the raw
+    #    CUDA kernels listed separately, so including them roughly doubles the total.
+    # 2. Match "add" as an elementwise pattern -- `aten::addmm` contains it, so every correction
+    #    GEMM landed in the elementwise bucket. That is what inflated "elementwise / residual /
+    #    norm" to 42.9% while GEMM read 31.8%.
+    #
+    # Buckets below therefore run over raw kernel names only.
+    # Order matters: the first bucket whose pattern matches wins. Attention must be tested before
+    # GEMM, because cuDNN's SDPA kernel is named
+    # `cudnn_generated_fort_native_sdpa_sm100_flash_fprop_...` -- it carries the architecture token
+    # `sm100`, so a GEMM-first order silently books all of SDPA as GEMM (and prints no attention row
+    # at all, which is the tell).
     BUCKETS = {
+        "attention / SDPA": ("attention", "sdpa", "flash", "fmha", "softmax"),
         "GEMM (Linear / _scaled_mm)": ("gemm", "sm90", "sm100", "cutlass", "ampere", "nvjet",
                                        "scaled_mm", "tensorop", "s16816", "gett"),
-        "attention / SDPA": ("attention", "sdpa", "flash", "fmha", "softmax"),
-        "elementwise / residual / norm": ("elementwise", "vectorized_elementwise", "add", "mul",
-                                          "layer_norm", "native_layer_norm", "silu", "reduce_kernel"),
+        "elementwise / residual / norm": ("elementwise", "layer_norm", "silu", "reduce_kernel",
+                                          "fused_layerscale", "residual_add"),
         "gather / scatter / index": ("index", "gather", "scatter", "take", "copy", "clone",
                                      "token_update", "masked"),
         "triton (appcorr kernels)": ("triton",),
@@ -167,15 +181,18 @@ def main():
     agg = defaultdict(float)
     for e in evts:
         k = e.key.lower()
+        if k.startswith("aten::") or k.startswith("cuda"):
+            continue
         for label, pats in BUCKETS.items():
             if any(p in k for p in pats):
                 agg[label] += e.self_device_time_total / 1e3
                 break
         else:
             agg["other"] += e.self_device_time_total / 1e3
-    print(f"\n===== coarse attribution =====")
+    raw_total = sum(agg.values())
+    print(f"\n===== coarse attribution (raw CUDA kernels only, total {raw_total:.2f} ms) =====")
     for label, ms in sorted(agg.items(), key=lambda kv: -kv[1]):
-        print(f"  {label:<34}{ms:>9.2f} ms{100*ms/(tot/1e3):>8.1f}%")
+        print(f"  {label:<34}{ms:>9.2f} ms{100*ms/max(raw_total, 1e-9):>8.1f}%")
 
     # ---- host syncs ----
     cpu = [e for e in prof.key_averages()
