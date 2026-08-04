@@ -13,7 +13,11 @@ import torch.nn.functional as F
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 from .triton_kernels import apply_rope_active_inplace_triton, sdpa_with_pscore_triton
-from .triton_kernels.token_update import scatter_rows_triton
+from .triton_kernels.token_update import (
+    gather_heads_triton,
+    scatter_heads_triton,
+    scatter_rows_triton,
+)
 
 
 # RoPE-related functions:
@@ -423,11 +427,19 @@ class SelfAttention(nn.Module):
             ):
                 q_padded = torch.empty(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
                 self._partial_token_q_padded = q_padded
-        q_padded[
+        # Head axis is a full slice, so this touches H separate Dh runs per (batch, pos) rather than
+        # one row -- hence the head-axis kernel rather than scatter_rows_triton.
+        if not scatter_heads_triton(
+            q_padded,
             fixed_query_state.active_batch_idx,
-            :,
             fixed_query_state.active_pos_idx,
-        ] = q_new
+            q_new,
+        ):
+            q_padded[
+                fixed_query_state.active_batch_idx,
+                :,
+                fixed_query_state.active_pos_idx,
+            ] = q_new
 
         q = q_padded
         k, v = torch.unbind(kv, 2)
@@ -437,11 +449,18 @@ class SelfAttention(nn.Module):
         attn_out_padded = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         if t_attn != t_max:
             attn_out_padded = attn_out_padded[:, :, :t_max, :]
-        attn_out_active = attn_out_padded[
+        attn_out_active = gather_heads_triton(
+            attn_out_padded,
             fixed_query_state.active_batch_idx,
-            :,
             fixed_query_state.active_pos_idx,
-        ].reshape(num_active, self.qkv.in_features)
+        )
+        if attn_out_active is None:
+            attn_out_active = attn_out_padded[
+                fixed_query_state.active_batch_idx,
+                :,
+                fixed_query_state.active_pos_idx,
+            ]
+        attn_out_active = attn_out_active.reshape(num_active, self.qkv.in_features)
 
         x_sel = self.proj(attn_out_active)
         x_sel = self.proj_drop(x_sel)
