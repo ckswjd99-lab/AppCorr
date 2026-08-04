@@ -242,3 +242,73 @@ is still `False` in `offload/server/model/dinov3_precision.py`, and the fused ep
 either a torchao patch or a local dispatch. Wiring them up is the next step, and the accuracy tables
 in [dinov3_correct_low_precision_status.md](dinov3_correct_low_precision_status.md) must be re-run
 afterwards — they were all measured on the eager/accurate path.
+
+---
+
+# Correction — the delta path has no bias, which changes the epilogue story
+
+The table above was measured with `bias=True`. **That is wrong for this workload.** In the exact
+`(a, d)` decomposition every correction Linear is `d' = W d` with the bias deliberately excluded
+(it cancels in the differential) — see `_lin_delta` in
+`analysis/experiments/dinov3_fp4_feature_fidelity.py:148` and the shipped
+`correct_partial_channel` path (`attention.py:508,551`), both `F.linear(..., bias=None)`.
+
+Including bias distorted the comparison in both directions: BF16 fuses bias into its GEMM for free
+(`nvjet_..._bias_TNT`), while FP4 pays a full extra `[M,N]` pass for it. And the `addcmul(bias, r, s)`
+fusion has nothing to fuse with when there is no bias.
+
+## What is actually left with bias=None
+
+Only **one** epilogue pass survives: the per-tensor scale multiply. It is not small —
+at M≥5120 **it costs more than the FP4 GEMM itself**:
+
+| M | bf16 | fp4 static | quant | gemm | scale epilogue | vs bf16 | if epilogue were free |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1280 | 0.324 | 0.415 | 0.185 | 0.144 | 0.047 | 0.78x | 0.98x |
+| 2560 | 0.595 | 0.483 | 0.183 | 0.180 | 0.167 | 1.23x | 1.64x |
+| 5120 | 1.128 | 0.902 | 0.183 | 0.330 | **0.406** | 1.25x | 2.20x |
+| 8192 | 1.758 | 1.541 | 0.200 | 0.538 | **0.706** | 1.14x | 2.38x |
+
+## Two dead ends, ruled out by measurement
+
+- **`_scaled_mm(..., scale_result=s)`** — the arg exists in the aten schema on torch 2.12.1 but is
+  **silently ignored** on this path: output rel-L2 vs reference was `8.299e7`, exactly `1/s`, i.e.
+  unscaled. The torchao comment (`nvfp4_tensor.py:485`) is still accurate.
+- **Folding the scalar into the weight's e4m3 block scales** — impossible. Measured scales:
+  act `2.07e-3`, weight `5.81e-6`, product **`1.20e-8`**. e4m3's smallest normal is `2^-6 ≈ 1.6e-2`;
+  the product underflows by six orders of magnitude. Representing that range is *why* the per-tensor
+  scale exists.
+- **Dropping the per-tensor scale entirely** (`use_dynamic_per_tensor_scale=False`, which makes
+  torchao skip the epilogue) — blocked: the MSLK kernel asserts
+  `"Triton kernel requires per_tensor_scale"`. The alternative eager quantizer costs ~1.7 ms, far
+  more than the 0.18 ms it would save.
+
+## What works: fold the scale into the consumer, not the bias
+
+In the delta path a GEMM result is **never** the final value — it is immediately consumed by an
+elementwise op that has to run regardless (`core(a_qkv + d_qkv)`, the residual/LayerScale add, the
+SwiGLU recombination). Folding the scale into *that* add makes it free:
+
+```python
+d_next = torch.addcmul(a, gemm_out, scale)     # a + gemm_out * scale, one kernel
+```
+
+Measured with the consumer add included on both sides (bias-free, real correction shapes):
+
+| M | bf16 + consumer | fp4, scale separate | fp4, scale folded | vs bf16 |
+|---|---:|---:|---:|---:|
+| 1280 | 0.362 | 0.346 | **0.323** | **1.12x** |
+| 2560 | 0.669 | 0.527 | **0.499** | **1.34x** |
+| 5120 | 1.263 | 1.039 | **0.953** | **1.33x** |
+| 8192 | 1.975 | 1.713 | **1.671** | **1.18x** |
+
+**FP4 now wins at every M, including ADE20K's natural M≈1280.** The crossover concern from the
+previous section disappears once the comparison is bias-free and the scale is fused downstream.
+
+Caveat: this requires the correction blocks to expose the GEMM output *before* the consumer op, so
+the scale can ride along. A drop-in `nn.Linear` replacement cannot do it — the delta-mode block
+(Phase 2) has to call the quantized GEMM and its consumer together, or be `torch.compile`d as one
+region. Accuracy is unchanged (the arithmetic is identical up to bf16 rounding order, 2.89e-3).
+
+Per-GEMM FP4 error on **real** DINOv3 block-0 weights with a delta-scale input: **13.4% rel-L2**
+output error, averaged over the five correction Linears.
