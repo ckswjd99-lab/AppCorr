@@ -380,6 +380,54 @@ class SelfAttentionBlock(nn.Module):
         return keep_patch_mask
 
     @staticmethod
+    def _build_packed_query_state_all_keep(
+        dindice_pre: torch.Tensor,
+        dindice_patches: torch.Tensor,
+    ) -> tuple[torch.Tensor, PackedQueryState]:
+        """Sync-free equivalent of `_build_packed_query_state` when every candidate is kept.
+
+        The general builder is data-dependent in four places that each stall the launch pipeline:
+        `kept_patch_count.max().item()` (it sizes a tensor, so it must be a host int),
+        two `nonzero()` calls (variable-length outputs), and `torch.all(...).item()` for `all_valid`.
+        Profiling put those at 200 `aten::item` calls / ~145 ms of host stall against a 183.8 ms GPU
+        pass (docs/memo/dinov3_correct_forward_profile.md).
+
+        When the keep mask is all-True none of that is data-dependent: `max_keep` is exactly
+        `dindice_patches.shape[1]`, which is already a static shape, and the packed layout is just
+        `[dindice_pre | dindice_patches]` in order. Everything below is built from `arange`/`expand`,
+        so the whole plan is constructed without a single host round-trip. Outputs are identical to
+        the general path for this case.
+        """
+        B, num_pretokens = dindice_pre.shape
+        n_cand = dindice_patches.shape[1]
+        max_active = num_pretokens + n_cand
+        device = dindice_pre.device
+
+        update_indice = torch.cat([dindice_pre, dindice_patches], dim=1)
+
+        active_query_pos_padded = torch.arange(
+            max_active, device=device, dtype=torch.long
+        ).unsqueeze(0).expand(B, -1)
+        query_valid_mask = torch.ones((B, max_active), device=device, dtype=torch.bool)
+
+        # `query_valid_mask.nonzero()` on an all-True mask is row-major, i.e. exactly this:
+        active_batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(max_active)
+        active_pos_idx = torch.arange(max_active, device=device, dtype=torch.long).repeat(B)
+        active_token_idx = update_indice.reshape(-1)
+
+        return update_indice, PackedQueryState(
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            query_valid_mask=query_valid_mask,
+            active_query_pos_padded=active_query_pos_padded,
+            active_query_mask=query_valid_mask,
+            all_valid=True,
+            active_patch_mask=active_token_idx >= num_pretokens,
+            active_rope_idx=(active_token_idx - num_pretokens).clamp_min(0),
+        )
+
+    @staticmethod
     @nvtx.annotate("build_packed_query_state")
     def _build_packed_query_state(
         dindice_pre: torch.Tensor,
@@ -814,11 +862,20 @@ class SelfAttentionBlock(nn.Module):
                 full_patch_total,
                 sample_total,
             ) = self._compute_partial_token_plan_stats(combined_patch_scores, keep_patch_mask)
-            update_indice, fixed_query_state = self._build_packed_query_state(
-                dindice_pre,
-                dindice_patches,
-                keep_patch_mask,
-            )
+            # When every candidate is kept the plan is fully determined by static shapes, so take
+            # the sync-free builder. `_select_patch_keep_mask` returns an all-True mask exactly when
+            # no threshold is set and the ratio saturates, which is the condition checked here.
+            if token_keep_thres is None and token_keep_ratio >= 1.0:
+                update_indice, fixed_query_state = self._build_packed_query_state_all_keep(
+                    dindice_pre,
+                    dindice_patches,
+                )
+            else:
+                update_indice, fixed_query_state = self._build_packed_query_state(
+                    dindice_pre,
+                    dindice_patches,
+                    keep_patch_mask,
+                )
             query_plan = PartialTokenQueryPlan(
                 update_indice=update_indice,
                 fixed_query_state=fixed_query_state,
