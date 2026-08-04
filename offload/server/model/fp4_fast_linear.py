@@ -206,10 +206,17 @@ class FastFP4Linear(nn.Module):
             bias=None,  # cannot ride along while a per-tensor output scale is still pending
             out_dtype=self.orig_dtype,
         )
-        if self.bias is not None:
-            out = torch.addcmul(self.bias, out, self.out_scale)  # bias + out*scale, one kernel
-        else:
-            out = out * self.out_scale
+        # In-place epilogue: torch.addcmul allocates a second [M, N] and dispatches to the
+        # non-vectorised elementwise kernel. At the real correction shape this epilogue is what
+        # returns half of FP4's GEMM win (elementwise 14.96 -> 33.39 ms against -36.07 ms of GEMM),
+        # so it is worth a dedicated kernel that reads and writes the same buffer once.
+        from appcorr.models.dinov3.layers.triton_kernels import scale_bias_inplace_triton
+
+        if not scale_bias_inplace_triton(out, self.out_scale, self.bias):
+            if self.bias is not None:
+                out = torch.addcmul(self.bias, out, self.out_scale)
+            else:
+                out = out * self.out_scale
         if out.shape[0] != rows:
             out = out[:rows]
         return out.reshape(*orig_shape[:-1], self.out_features)

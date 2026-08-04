@@ -556,3 +556,44 @@ def gather_heads_triton(src, batch_idx, pos_idx):
         n, Dh, BLOCK_D=triton.next_power_of_2(Dh),
     )
     return out
+
+
+@triton.jit
+def _scale_bias_inplace_kernel(out_ptr, bias_ptr, scale, n_elem, N, HAS_BIAS: tl.constexpr,
+                               BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    m = offs < n_elem
+    v = tl.load(out_ptr + offs, mask=m).to(tl.float32) * scale
+    if HAS_BIAS:
+        v = v + tl.load(bias_ptr + (offs % N), mask=m).to(tl.float32)
+    tl.store(out_ptr + offs, v.to(out_ptr.dtype.element_ty), mask=m)
+
+
+def scale_bias_inplace_triton(out: torch.Tensor, scale, bias: torch.Tensor | None,
+                              block: int = 4096) -> bool:
+    """`out = out * scale + bias`, in place and in one pass.
+
+    NVFP4 keeps a per-tensor scale that `torch._scaled_mm` will not apply, so every FP4 Linear has
+    to touch its whole `[M, N]` output again afterwards. At the real ADE20K correction shape that
+    epilogue is the single largest cost FP4 adds back: the elementwise bucket goes 14.96 -> 33.39 ms
+    against a 36.07 ms GEMM saving, i.e. it returns half the win.
+
+    `torch.addcmul(bias, out, scale)` allocates a fresh `[M, N]`, so it reads the GEMM output and
+    writes somewhere new; PyTorch also dispatches it to the non-vectorised `elementwise_kernel`.
+    Writing back into `out` reads and writes the same buffer once, with no allocation.
+
+    Returns False when the layout is unsupported so callers can fall back.
+    """
+    if not out.is_contiguous() or out.dim() != 2:
+        return False
+    if bias is not None and (not bias.is_contiguous() or bias.numel() != out.shape[1]):
+        return False
+    n_elem = out.numel()
+    if n_elem == 0:
+        return True
+    _scale_bias_inplace_kernel[(triton.cdiv(n_elem, block),)](
+        out, bias if bias is not None else out, float(scale), n_elem, out.shape[1],
+        HAS_BIAS=bias is not None, BLOCK=block,
+    )
+    return True
