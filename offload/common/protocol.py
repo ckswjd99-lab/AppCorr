@@ -183,6 +183,12 @@ class ExperimentConfig:
     # Linears -- its input is the attention-core output (least-compressible delta) and it is the one
     # input no producer fusion can reach -- so it runs FP8 by default. Set "fp4" to force it.
     correct_fp4_proj_precision: str = "fp8"
+    # Round the correction GEMMs' row count M up to a multiple of this, zero-padding. M changes every
+    # correction round, so without it every shape-specialised consumer -- torch.compile graphs, and
+    # CUDA graph capture in particular -- sees an unbounded set of shapes. Bucketing is a *cost* on
+    # its own (~19% more rows at M=1027, bucket 256); it only pays once something consumes the fixed
+    # shapes. 0 disables.
+    correct_bucket_rows: int = 0
 
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
@@ -227,6 +233,7 @@ class ExperimentConfig:
             )
         self.correct_compile = bool(self.correct_compile)
         self.correct_fp4_calib_events = max(0, int(self.correct_fp4_calib_events))
+        self.correct_bucket_rows = max(0, int(self.correct_bucket_rows))
         if self.correct_fp4_proj_precision not in {"fp4", "fp8"}:
             raise ValueError(
                 "correct_fp4_proj_precision must be 'fp4' or 'fp8', "

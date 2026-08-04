@@ -607,6 +607,7 @@ class DINOv3CorrectPrecisionController:
         compile_enabled: bool = False,
         fp4_calib_events: int = 1,
         fp4_proj_precision: str = "fp8",
+        bucket_rows: int = 0,
     ) -> None:
         self.blocks = blocks
         self.precision = precision
@@ -614,6 +615,7 @@ class DINOv3CorrectPrecisionController:
         self.compile_enabled = bool(compile_enabled)
         self.fp4_calib_events = max(0, int(fp4_calib_events))
         self.fp4_proj_precision = str(fp4_proj_precision)
+        self.bucket_rows = max(0, int(bucket_rows))
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
         self._compiled_correct: dict[int, Any] = {}
@@ -651,6 +653,7 @@ class DINOv3CorrectPrecisionController:
             compile_enabled=bool(getattr(config, "correct_compile", False)),
             fp4_calib_events=int(getattr(config, "correct_fp4_calib_events", 1)),
             fp4_proj_precision=str(getattr(config, "correct_fp4_proj_precision", "fp8")),
+            bucket_rows=int(getattr(config, "correct_bucket_rows", 0)),
         )
 
     @property
@@ -718,7 +721,9 @@ class DINOv3CorrectPrecisionController:
                 eligible = _eligible_linears(fp8_block)
                 eligible_names = {name for name, _ in eligible}
                 self._fp8_eligible_names = eligible_names
-                quantized_count += convert_linears_to_fast_fp8(fp8_block, eligible_names)
+                quantized_count += convert_linears_to_fast_fp8(
+                    fp8_block, eligible_names, bucket_rows=self.bucket_rows
+                )
                 fp8_blocks.append(fp8_block)
         except Exception as exc:
             self._handle_fp8_unavailable(str(exc))
@@ -804,7 +809,10 @@ class DINOv3CorrectPrecisionController:
                 eligible_names = {name for name, _ in eligible}
                 self._fp4_eligible_names = eligible_names
                 a, b = convert_linears_to_fast_fp4(
-                    fp4_block, eligible_names, proj_precision=self.fp4_proj_precision
+                    fp4_block,
+                    eligible_names,
+                    proj_precision=self.fp4_proj_precision,
+                    bucket_rows=self.bucket_rows,
                 )
                 fp4_count += a
                 fp8_count += b

@@ -40,6 +40,24 @@ E4M3_MAX = 448.0
 _FP8_DTYPE = torch.float8_e4m3fn
 
 
+def pad_rows_to_bucket(x2d: torch.Tensor, bucket: int) -> tuple[torch.Tensor, int]:
+    """Zero-pad `x2d` up to a multiple of `bucket` rows. Returns (padded, original_rows).
+
+    Why: the correction path's selected-token count M changes every round, so every shape-specialised
+    consumer downstream -- torch.compile graphs, and CUDA graph capture in particular -- sees an
+    unbounded set of shapes. Rounding M up to a handful of buckets makes those shapes finite.
+
+    Zeros, not `torch.empty`: an uninitialised pad would feed garbage into the activation amax and
+    (for NVFP4) into a block scale, corrupting real rows. Zeros are exactly representable in both
+    FP8 and FP4 and contribute nothing to either scale.
+    """
+    rows = x2d.shape[0]
+    if bucket <= 0 or rows % bucket == 0:
+        return x2d, rows
+    pad = bucket - rows % bucket
+    return torch.nn.functional.pad(x2d, (0, 0, 0, pad)), rows
+
+
 def _quantize_static(x: torch.Tensor, inv_scale: torch.Tensor) -> torch.Tensor:
     """One fused pass: scale into FP8 range and cast. Compiled by FastFP8Linear."""
     return (x * inv_scale).clamp(-E4M3_MAX, E4M3_MAX).to(_FP8_DTYPE)
@@ -59,8 +77,9 @@ class FastFP8Linear(nn.Module):
     `freeze_activation_scale()` bakes the static scale and switches to the FP8 path.
     """
 
-    def __init__(self, linear: nn.Linear) -> None:
+    def __init__(self, linear: nn.Linear, bucket_rows: int = 0) -> None:
         super().__init__()
+        self.bucket_rows = max(0, int(bucket_rows))
         if linear.in_features % 16 or linear.out_features % 16:
             raise ValueError(
                 "FP8 _scaled_mm requires both dimensions divisible by 16, got "
@@ -121,6 +140,7 @@ class FastFP8Linear(nn.Module):
 
         orig_shape = x.shape
         x2d = x.reshape(-1, orig_shape[-1])
+        x2d, rows = pad_rows_to_bucket(x2d, self.bucket_rows)
         x_q = _quantize_static_compiled(x2d, self.act_inv_scale)
         out = torch._scaled_mm(
             x_q,
@@ -130,6 +150,8 @@ class FastFP8Linear(nn.Module):
             bias=self.bias,  # fused into the GEMM epilogue -- no extra [M,N] pass
             out_dtype=self.orig_dtype,
         )
+        if out.shape[0] != rows:
+            out = out[:rows]
         return out.reshape(*orig_shape[:-1], self.out_features)
 
     def extra_repr(self) -> str:
@@ -137,7 +159,7 @@ class FastFP8Linear(nn.Module):
         return f"in={self.in_features}, out={self.out_features}, state={state}"
 
 
-def convert_linears_to_fast_fp8(block: nn.Module, names: set[str]) -> int:
+def convert_linears_to_fast_fp8(block: nn.Module, names: set[str], bucket_rows: int = 0) -> int:
     """Swap the named `nn.Linear` children of `block` for `FastFP8Linear`. Returns the count."""
     converted = 0
     for name in sorted(names):
@@ -146,6 +168,6 @@ def convert_linears_to_fast_fp8(block: nn.Module, names: set[str]) -> int:
         child = getattr(parent, attr)
         if not isinstance(child, nn.Linear):
             raise RuntimeError(f"{name} is {type(child).__name__}, expected nn.Linear")
-        setattr(parent, attr, FastFP8Linear(child))
+        setattr(parent, attr, FastFP8Linear(child, bucket_rows=bucket_rows))
         converted += 1
     return converted

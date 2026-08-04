@@ -43,7 +43,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .fp8_fast_linear import FastFP8Linear
+from .fp8_fast_linear import FastFP8Linear, pad_rows_to_bucket
 
 
 _E4M3 = torch.float8_e4m3fn
@@ -94,8 +94,14 @@ class SharedFP4Activation:
 class FastFP4Linear(nn.Module):
     """`nn.Linear` in NVFP4: torch._scaled_mm plus a single fused scale-and-bias epilogue."""
 
-    def __init__(self, linear: nn.Linear, share: SharedFP4Activation | None = None) -> None:
+    def __init__(
+        self,
+        linear: nn.Linear,
+        share: SharedFP4Activation | None = None,
+        bucket_rows: int = 0,
+    ) -> None:
         super().__init__()
+        self.bucket_rows = max(0, int(bucket_rows))
         if linear.in_features % 32 or linear.out_features % 16:
             raise ValueError(
                 "Packed FP4 _scaled_mm needs in_features % 32 == 0 and out_features % 16 == 0, "
@@ -172,6 +178,7 @@ class FastFP4Linear(nn.Module):
 
         orig_shape = x.shape
         x2d = x.reshape(-1, orig_shape[-1])
+        x2d, rows = pad_rows_to_bucket(x2d, self.bucket_rows)
         x_q = self._quantize(x2d)
         w_t = self._weight_q_t
         out = torch._scaled_mm(
@@ -186,6 +193,8 @@ class FastFP4Linear(nn.Module):
             out = torch.addcmul(self.bias, out, self.out_scale)  # bias + out*scale, one kernel
         else:
             out = out * self.out_scale
+        if out.shape[0] != rows:
+            out = out[:rows]
         return out.reshape(*orig_shape[:-1], self.out_features)
 
     def extra_repr(self) -> str:
@@ -194,7 +203,11 @@ class FastFP4Linear(nn.Module):
 
 
 def convert_linears_to_fast_fp4(
-    block: nn.Module, names: set[str], *, proj_precision: str = "fp8"
+    block: nn.Module,
+    names: set[str],
+    *,
+    proj_precision: str = "fp8",
+    bucket_rows: int = 0,
 ) -> tuple[int, int]:
     """Swap named Linears for FastFP4Linear, routing `attn.proj` to FP8 by default.
 
@@ -209,10 +222,10 @@ def convert_linears_to_fast_fp4(
         if not isinstance(child, nn.Linear):
             raise RuntimeError(f"{name} is {type(child).__name__}, expected nn.Linear")
         if name.endswith("attn.proj") and proj_precision == "fp8":
-            setattr(parent, attr, FastFP8Linear(child))
+            setattr(parent, attr, FastFP8Linear(child, bucket_rows=bucket_rows))
             fp8_count += 1
         else:
             share = shared if name.endswith(("mlp.w1", "mlp.w2")) else None
-            setattr(parent, attr, FastFP4Linear(child, share=share))
+            setattr(parent, attr, FastFP4Linear(child, share=share, bucket_rows=bucket_rows))
             fp4_count += 1
     return fp4_count, fp8_count
