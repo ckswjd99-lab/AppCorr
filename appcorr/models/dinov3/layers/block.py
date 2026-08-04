@@ -377,7 +377,57 @@ class SelfAttentionBlock(nn.Module):
             largest=True,
         ).indices
         keep_patch_mask.scatter_(1, topk_local_idx, True)
+        # Stash the indices: every row keeps exactly k_refined, so the packed plan can be built
+        # without any host round-trip (see _build_packed_query_state_fixed_k).
+        keep_patch_mask._appcorr_topk_idx = topk_local_idx
         return keep_patch_mask
+
+    @staticmethod
+    def _build_packed_query_state_fixed_k(
+        dindice_pre: torch.Tensor,
+        dindice_patches: torch.Tensor,
+        topk_local_idx: torch.Tensor,
+    ) -> tuple[torch.Tensor, PackedQueryState]:
+        """Sync-free builder for top-k selection, where every row keeps exactly `k` candidates.
+
+        Threshold selection cannot avoid the host round-trips: the number of kept tokens varies per
+        image, so `max_keep` (which sizes tensors) and `nonzero()` (whose output length is
+        data-dependent) both have to stall. Top-k does not have that problem -- `k` comes from
+        `int(num_candidates * token_keep_ratio)`, a Python int derived from a static shape, and every
+        row keeps exactly `k`. That makes the whole plan statically shaped.
+
+        `topk_local_idx` is already computed inside `_select_patch_keep_mask`; it is sorted ascending
+        here so the packed order matches the general builder's (`nonzero()` yields ascending indices).
+        """
+        B, num_pretokens = dindice_pre.shape
+        k = topk_local_idx.shape[1]
+        max_active = num_pretokens + k
+        device = dindice_pre.device
+
+        kept_sorted = topk_local_idx.sort(dim=1).values
+        update_indice = torch.cat(
+            [dindice_pre, dindice_patches.gather(1, kept_sorted)], dim=1
+        )
+
+        active_query_pos_padded = torch.arange(
+            max_active, device=device, dtype=torch.long
+        ).unsqueeze(0).expand(B, -1)
+        query_valid_mask = torch.ones((B, max_active), device=device, dtype=torch.bool)
+        active_batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(max_active)
+        active_pos_idx = torch.arange(max_active, device=device, dtype=torch.long).repeat(B)
+        active_token_idx = update_indice.reshape(-1)
+
+        return update_indice, PackedQueryState(
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            query_valid_mask=query_valid_mask,
+            active_query_pos_padded=active_query_pos_padded,
+            active_query_mask=query_valid_mask,
+            all_valid=True,
+            active_patch_mask=active_token_idx >= num_pretokens,
+            active_rope_idx=(active_token_idx - num_pretokens).clamp_min(0),
+        )
 
     @staticmethod
     def _build_packed_query_state_all_keep(
@@ -850,6 +900,13 @@ class SelfAttentionBlock(nn.Module):
                 mobile_pscore_weight,
                 pscore_fusion,
             )
+            # Padded candidate slots (added so crops of one image share a GEMM) must never be
+            # selected: force their score to -inf so both top-k and the threshold compare skip them.
+            candidate_valid_mask = kwargs.get("candidate_valid_mask")
+            if candidate_valid_mask is not None:
+                combined_patch_scores = combined_patch_scores.masked_fill(
+                    ~candidate_valid_mask.to(combined_patch_scores.device), float("-inf")
+                )
             keep_patch_mask = self._select_patch_keep_mask(
                 combined_patch_scores,
                 token_keep_ratio,
@@ -869,6 +926,13 @@ class SelfAttentionBlock(nn.Module):
                 update_indice, fixed_query_state = self._build_packed_query_state_all_keep(
                     dindice_pre,
                     dindice_patches,
+                )
+            elif getattr(keep_patch_mask, "_appcorr_topk_idx", None) is not None:
+                # top-k selection: every row keeps exactly k, so the plan is statically shaped.
+                update_indice, fixed_query_state = self._build_packed_query_state_fixed_k(
+                    dindice_pre,
+                    dindice_patches,
+                    keep_patch_mask._appcorr_topk_idx,
                 )
             else:
                 update_indice, fixed_query_state = self._build_packed_query_state(

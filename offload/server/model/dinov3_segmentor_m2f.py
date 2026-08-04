@@ -1401,6 +1401,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         new_cache_features: List[Dict[str, Any] | None] = [None] * len(all_x_backbones)
         new_intermediate_raw: List[List[torch.Tensor] | None] = [None] * len(all_x_backbones)
         buckets: Dict[Any, List[Dict[str, Any]]] = {}
+        pending: List[Dict[str, Any]] = []
 
         for src_idx, (x_feature, input_tokens, rope, cache) in enumerate(
             zip(current_features, all_x_backbones, all_rope_sincos, all_cache_features)
@@ -1437,16 +1438,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             if dindice.ndim != 2 or dindice.shape[0] != input_tokens.shape[0]:
                 return False
 
-            key = (
-                tuple(input_tokens.shape[1:]),
-                tuple(x_feature.shape[1:]),
-                int(dindice.shape[1]),
-                str(input_tokens.dtype),
-                str(x_feature.dtype),
-                self._m2f_rope_batch_key(rope),
-                self._m2f_mobile_hint_batch_key(mobile_pscore_hint),
-            )
-            buckets.setdefault(key, []).append({
+            pending.append({
                 "src_idx": src_idx,
                 "x_feature": x_feature,
                 "input_tokens": input_tokens,
@@ -1454,7 +1446,43 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 "cache": cache,
                 "dindice": dindice,
                 "mobile_pscore_hint": mobile_pscore_hint,
+                "num_pre": int(input_tokens.shape[1] - rope[0].shape[0]) if rope is not None else 0,
             })
+
+        # --- pad candidate lists to a common length so crops can share one GEMM ---
+        # crop_cover assigns each patch to the FIRST crop covering its centre, so crops of the same
+        # image carry different candidate counts. Because the bucket key includes dindice.shape[1],
+        # they could never batch together: measured 2 crops/request always landing in 2 buckets of
+        # size 1, so every correction GEMM only ever saw one crop's tokens (M median 1028).
+        # Padding by repeating the last real candidate makes the keys match; the padded slots are
+        # flagged invalid so token selection ignores them, leaving the correction unchanged.
+        if pending:
+            max_cand = max(int(it["dindice"].shape[1]) - it["num_pre"] for it in pending)
+            for it in pending:
+                d, npre = it["dindice"], it["num_pre"]
+                n_cand = int(d.shape[1]) - npre
+                valid = torch.ones((d.shape[0], n_cand), dtype=torch.bool, device=d.device)
+                if 0 < n_cand < max_cand:
+                    pad = max_cand - n_cand
+                    d = torch.cat([d, d[:, -1:].expand(-1, pad)], dim=1)
+                    valid = torch.cat(
+                        [valid, torch.zeros((d.shape[0], pad), dtype=torch.bool, device=d.device)],
+                        dim=1,
+                    )
+                    it["dindice"] = d
+                it["cand_valid"] = valid
+
+        for it in pending:
+            key = (
+                tuple(it["input_tokens"].shape[1:]),
+                tuple(it["x_feature"].shape[1:]),
+                int(it["dindice"].shape[1]),
+                str(it["input_tokens"].dtype),
+                str(it["x_feature"].dtype),
+                self._m2f_rope_batch_key(it["rope"]),
+                self._m2f_mobile_hint_batch_key(it["mobile_pscore_hint"]),
+            )
+            buckets.setdefault(key, []).append(it)
 
         bucket_records = []
         for items in buckets.values():
@@ -1472,6 +1500,13 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         for items, batch_cache in bucket_records:
             x_tokens = torch.cat([item["input_tokens"] for item in items], dim=0)
             dindice = torch.cat([item["dindice"] for item in items], dim=0)
+            cand_valid = (
+                torch.cat([item["cand_valid"] for item in items], dim=0)
+                if all(item.get("cand_valid") is not None for item in items)
+                else None
+            )
+            if cand_valid is not None and bool(cand_valid.all()):
+                cand_valid = None   # nothing padded -> skip the masking work entirely
             batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
             rope = items[0]["rope"]
             batch_mobile_pscore_hint = self._cat_mobile_pscore_hints(items)
@@ -1500,6 +1535,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                             pscore_fusion=appcorr_options["pscore_fusion"],
                             sdpa_query_bucket_size=sdpa_query_bucket_size,
                             attn_col_alive_ratio=1.0,
+                            candidate_valid_mask=cand_valid,
                             debug=False,
                         )
                         if lidx in interaction_indexes:
