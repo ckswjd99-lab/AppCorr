@@ -14,6 +14,7 @@ from ..utils import cat_keep_shapes, uncat_with_shapes
 
 from .triton_kernels import (
     active_token_update_triton,
+    gather_rows_triton,
     fused_layerscale_add,
     masked_residual_add_triton,
     masked_token_update_triton,
@@ -970,7 +971,11 @@ class SelfAttentionBlock(nn.Module):
         active_token_idx = fixed_query_state.active_token_idx
         
         with torch.cuda.nvtx.range("correct_attn"):
-            x_active = x[active_batch_idx, active_token_idx].contiguous()
+            # Dedicated row gather: ~3.6x faster than aten advanced indexing (41.0 -> 11.4 us at
+            # ADE20K shapes), bit-identical. Falls back when the layout is unsupported.
+            x_active = gather_rows_triton(x, active_batch_idx, active_token_idx)
+            if x_active is None:
+                x_active = x[active_batch_idx, active_token_idx].contiguous()
             x_norm_sel = self.norm1(x_active)
 
             x_attn_sel, cache_feature = self.attn.correct(

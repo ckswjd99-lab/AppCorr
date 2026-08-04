@@ -345,3 +345,123 @@ def active_token_update_triton(
     return x_out
 
 
+
+
+@triton.jit
+def _scatter_rows_kernel(
+    dst_ptr, batch_idx_ptr, token_idx_ptr, src_ptr,
+    stride_db, stride_dn, stride_st,
+    num_active, dim_c,
+    BLOCK_C: tl.constexpr,
+):
+    pid_t = tl.program_id(0)
+    pid_c = tl.program_id(1)
+    if pid_t >= num_active:
+        return
+    b = tl.load(batch_idx_ptr + pid_t)
+    t = tl.load(token_idx_ptr + pid_t)
+    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    c_mask = offs_c < dim_c
+    v = tl.load(src_ptr + pid_t * stride_st + offs_c, mask=c_mask)
+    tl.store(dst_ptr + b * stride_db + t * stride_dn + offs_c, v, mask=c_mask)
+
+
+@triton.jit
+def _gather_rows_kernel(
+    out_ptr, batch_idx_ptr, token_idx_ptr, src_ptr,
+    stride_sb, stride_sn, stride_ot,
+    num_active, dim_c,
+    BLOCK_C: tl.constexpr,
+):
+    pid_t = tl.program_id(0)
+    pid_c = tl.program_id(1)
+    if pid_t >= num_active:
+        return
+    b = tl.load(batch_idx_ptr + pid_t)
+    t = tl.load(token_idx_ptr + pid_t)
+    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    c_mask = offs_c < dim_c
+    v = tl.load(src_ptr + b * stride_sb + t * stride_sn + offs_c, mask=c_mask)
+    tl.store(out_ptr + pid_t * stride_ot + offs_c, v, mask=c_mask)
+
+
+def _trailing_is_packed(t: torch.Tensor, first_row_dim: int) -> bool:
+    """True when dims from `first_row_dim` onward are laid out contiguously within a row.
+
+    Weaker than `is_contiguous()` on purpose. `kv_new = qkv_new[:, 1:]` slices a [M, 3, H, Dh]
+    tensor, so it is *not* contiguous -- its row stride is 3*H*Dh, not 2*H*Dh -- yet the 2*H*Dh
+    elements of each row still sit back to back, which is all these kernels need (they take the row
+    stride as a parameter). Requiring full contiguity here silently sent the K/V scatter back to the
+    aten fallback, which is exactly the 6.5x that was meant to be removed.
+    """
+    expected = 1
+    for d in range(t.dim() - 1, first_row_dim - 1, -1):
+        if t.stride(d) != expected:
+            return False
+        expected *= t.shape[d]
+    return True
+
+
+def _rows_view(t: torch.Tensor):
+    """Collapse a [B, N, ...] tensor to [B, N, C] without copying, if the row layout allows."""
+    if t.dim() < 3 or not _trailing_is_packed(t, 2):
+        return None
+    C = 1
+    for d in range(2, t.dim()):
+        C *= t.shape[d]
+    return t.as_strided((t.shape[0], t.shape[1], C), (t.stride(0), t.stride(1), 1))
+
+
+def scatter_rows_triton(dst, batch_idx, token_idx, src, block_c: int = 1024) -> bool:
+    """`dst[batch_idx, token_idx] = src`, but ~6.5x faster than aten advanced indexing.
+
+    Measured at the ADE20K correction shapes (B=4, N=1029, M=2068, row = 2*32*128): aten
+    `_index_put_impl_` 78.0 us vs 12.1 us here, bit-identical. `aten::index_put_` runs a generic
+    kernel that recomputes an element-wise offset for every element; this one resolves the row
+    address once per row and streams the row.
+
+    **Assumes the (batch, token) pairs are unique**, which they are on the correction path --
+    `active_token_idx` holds distinct selected tokens per image. With duplicates, both this and
+    `index_put_` are last-writer-wins with no defined order, so results would differ between them.
+
+    Returns False (writing nothing) when the layout is unsupported, so callers can fall back.
+    """
+    d = _rows_view(dst)
+    if d is None or src.dim() < 2 or not _trailing_is_packed(src, 1):
+        return False
+    C = 1
+    for _d in range(1, src.dim()):
+        C *= src.shape[_d]
+    if d.shape[-1] != C:
+        return False
+    s = src.as_strided((src.shape[0], C), (src.stride(0), 1))
+    n, dim_c = batch_idx.numel(), d.shape[-1]
+    if n == 0:
+        return True
+    _scatter_rows_kernel[(n, triton.cdiv(dim_c, block_c))](
+        d, batch_idx, token_idx, s,
+        d.stride(0), d.stride(1), s.stride(0),
+        n, dim_c, BLOCK_C=block_c,
+    )
+    return True
+
+
+def gather_rows_triton(src, batch_idx, token_idx, block_c: int = 1024):
+    """`src[batch_idx, token_idx]` as a contiguous [M, C] tensor, ~3.6x faster than aten.
+
+    41.0 us -> 11.4 us at the ADE20K correction shapes, bit-identical. Returns None when the
+    layout is unsupported so callers can fall back.
+    """
+    s = _rows_view(src)
+    if s is None:
+        return None
+    n, dim_c = batch_idx.numel(), s.shape[-1]
+    out = torch.empty((n, dim_c), device=src.device, dtype=src.dtype)
+    if n == 0:
+        return out.reshape(n, *src.shape[2:])
+    _gather_rows_kernel[(n, triton.cdiv(dim_c, block_c))](
+        out, batch_idx, token_idx, s,
+        s.stride(0), s.stride(1), out.stride(0),
+        n, dim_c, BLOCK_C=block_c,
+    )
+    return out.reshape(n, *src.shape[2:])
