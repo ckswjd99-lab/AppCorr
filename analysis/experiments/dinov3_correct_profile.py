@@ -270,6 +270,14 @@ def main():
         else:
             agg["other"] += e.self_device_time_total / 1e3
     raw_total = sum(agg.values())
+    # Wall vs the sum of kernel times, on the SAME pass. The gap is GPU idle between kernels, and it
+    # is the reason several kernel-level wins on this branch did not move end-to-end latency: FP4
+    # issues ~280 more kernels than BF16, and batch-scaling put its batch-independent cost at
+    # 11.78 ms against BF16's 0.90 ms.
+    print(
+        f"\n===== launch gap ===== wall {total_ms:.1f} ms | kernels {raw_total:.2f} ms | "
+        f"idle {total_ms - raw_total:.2f} ms ({100 * (total_ms - raw_total) / total_ms:.1f}% of wall)"
+    )
     print(f"\n===== coarse attribution (raw CUDA kernels only, total {raw_total:.2f} ms) =====")
     for label, ms in sorted(agg.items(), key=lambda kv: -kv[1]):
         print(f"  {label:<34}{ms:>9.2f} ms{100*ms/max(raw_total, 1e-9):>8.1f}%")
