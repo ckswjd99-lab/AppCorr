@@ -204,3 +204,59 @@ the threshold's content adaptivity. The syncs are avoidable: `max_keep` only siz
 can be replaced by a fixed upper bound (the candidate count, or a bucketed one) with the surplus
 rows masked out -- the same shape as `_build_packed_query_state_all_keep`, which already builds its
 plan from static shapes. `nonzero()` likewise has a masked equivalent.
+
+---
+
+## 2026-08-05 (later): top-k beats the dynamic threshold, and it changes what to optimise next
+
+Earlier on this page the threshold path's `.item()`/`nonzero()` were blamed for 17.84 ms of GPU
+idle. **That comparison was invalid** -- it put threshold and top-k side by side at different M
+(threshold passed ~3141 candidates/sample in the synthetic setup against top-k's 1281), so the gap
+mostly measured how much work each did. Removing the syncs at matched M (a static-width builder)
+made things *slower*, not faster.
+
+The right comparison matches **compute**, not the average kept count. Threshold pads every batch to
+its own maximum, and per-sample kept spans 697-3136, so its padded width sits far above its mean --
+it was quietly doing more work than `M/sample` suggested. End to end, 200 requests each:
+
+| config | CORRECT_FORWARD | mIoU | aAcc | M/sample |
+|---|---:|---:|---:|---:|
+| bf16 | 93.87 ms | 74.83 | 91.91 | 1278.9 |
+| fp4, threshold 4e-5 | 75.76 ms | 74.94 | 91.96 | 1278.9 |
+| fp4, top-k 0.408 | 65.33 ms | 67.84 | 91.75 | 1279.0 |
+| **fp4, top-k 0.55** | **74.63 ms** | **75.32** | **92.18** | 1724.0 |
+| fp4, top-k 0.70 | 83.47 ms | 75.17 | 92.08 | 2195.0 |
+
+**top-k 0.55 is faster *and* more accurate than the threshold** (-1.13 ms, +0.38 mIoU), and beats
+BF16 on accuracy too. 0.70 is past the knee. top-k 0.408 looked terrible only because it was given
+1279 tokens while the threshold was effectively computing many more.
+
+### The launch gap is a property of the threshold path, not of FP4
+
+| config | wall | kernels | idle |
+|---|---:|---:|---:|
+| fp4, threshold | 77.5 ms | 59.62 ms | 17.84 ms (23.0%) |
+| **fp4, top-k 0.55** | **35.4 ms** | **36.00 ms** | **-0.64 ms (0%)** |
+
+On top-k the GPU is saturated, so **kernel-time savings now convert to latency** -- the condition
+that made the epilogue, SwiGLU and BTHD wins invisible end-to-end no longer holds.
+
+### Remaining candidates, re-ranked on the top-k profile (kernels 36.00 ms)
+
+GEMM 9.68 (26.9%) | SDPA 6.63 (18.4%) | other 6.27 | elementwise 4.61 | quantization 4.40 |
+gather/scatter 4.40.
+
+1. **`_quantize_nvfp4_kernel`, 3.25 ms over 120 calls.** Three per block. The single-kernel producer
+   fusion failed on occupancy; the two-kernel split (a cheap fully-parallel mean/rstd pass, then the
+   existing quantizer with normalisation applied inline) preserves the 2-D grid. Ceiling is modest
+   -- sequential LN+quantize measured 20.6 us against 12.3 us for LayerNorm alone, so ~8 us per
+   call, ~1 ms over the pass.
+2. **`aten::item`, 40 calls (one per block), 0.08 ms CPU.** Harmless while idle is zero, but it is
+   what blocks CUDA graph capture. Not in the query-plan builder -- the top-k path does not use the
+   syncing one -- so the source still needs a stack trace. Capture is verified to work on top-k.
+3. **Not viable: fusing `_rope_active_inplace` with `_active_token_update`.** They have the same
+   call count (40 each, 2.39 + 2.37 ms) but sit at opposite ends of the block -- RoPE inside
+   attention, the token update after the MLP -- with the whole attention core and MLP between them.
+
+SDPA at 18.4% is the second-largest bucket but runs at 587 TFLOPS, ~27% of peak, which is normal for
+a query-light shape; splitting the batch measured 0.79-0.98x.
