@@ -21,7 +21,7 @@ SWEEP_CSV="${SWEEP_CSV:-logs/offload/ade20k_interleaved_static_${GROUPING_LABEL}
 read -r -a THRESHOLDS <<< "${THRESHOLDS_STR}"
 
 CONFIGS=(
-  "offload/config/ade20k_m2f_interleaved_static.json"
+  "offload/config/ade20k/ade20k_m2f_interleaved_static.json"
 )
 
 run_one() {

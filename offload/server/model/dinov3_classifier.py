@@ -324,6 +324,8 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             raise e
 
         self.model.eval()
+        self.configure_dinov3_approx_precision(self.model.backbone, config)
+        self.configure_dinov3_correct_precision(self.model.backbone, config)
 
     def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
         if isinstance(batch_data, torch.Tensor):
@@ -569,10 +571,10 @@ class DINOv3ClassifierExecutor(ModelExecutor):
             for gid, plan in group_plans.items()
         } if appcorr_method == 'partial_channel' else None
 
+        self.begin_dinov3_approx_event()
         for lidx in range(start_l, end_l):
-            blk = self.model.backbone.blocks[lidx]
-            x_feature, cache = blk.approx(
-                x_feature, rope_sincos, cache, tag=f"layer{lidx}",
+            x_feature, cache = self.run_dinov3_approx_block(
+                lidx, x_feature, rope_sincos, cache, tag=f"layer{lidx}",
                 appcorr_method=appcorr_method,
                 attn_cache_candidates=attn_cache_candidates,
                 group_plans=group_plans if appcorr_method == 'partial_channel' else None,
@@ -584,6 +586,7 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         
         context['current_feature'] = x_feature
         context['cache_feature'] = cache
+        return self.dinov3_approx_event_metadata()
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get('layers', range(0, 40))
@@ -634,10 +637,11 @@ class DINOv3ClassifierExecutor(ModelExecutor):
         if 'dindice' not in locals(): 
              return 
 
+        self.begin_dinov3_correct_event()
         for lidx in range(start_l, end_l):
-            blk = self.model.backbone.blocks[lidx]
-            x_temp, cache = blk.correct(
-                x_temp, dindice, rope_sincos, cache, tag=f"layer{lidx}",
+            x_temp, cache = self.run_dinov3_correct_block(
+                lidx, x_temp, dindice, rope_sincos, cache, f"layer{lidx}",
+                source_key=f"layer{lidx}",
                 appcorr_method=appcorr_options["method"],
                 token_keep_ratio=token_keep_ratio,
                 token_keep_thres=token_keep_thres,

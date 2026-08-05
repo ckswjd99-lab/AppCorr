@@ -13,6 +13,12 @@ import torch.nn.functional as F
 
 from ..utils import cat_keep_shapes, uncat_with_shapes
 from .triton_kernels import apply_rope_active_inplace_triton, sdpa_with_pscore_triton
+from .triton_kernels.token_update import (
+    gather_heads_triton,
+    gather_rows_triton,
+    scatter_heads_triton,
+    scatter_rows_triton,
+)
 
 
 # RoPE-related functions:
@@ -386,10 +392,21 @@ class SelfAttention(nn.Module):
                 rope_idx=getattr(fixed_query_state, "active_rope_idx", None),
             )
 
-        kv[
+        # aten advanced indexing runs a generic per-element kernel here; the dedicated row scatter
+        # is ~6.5x faster (78.0 -> 12.1 us at ADE20K shapes) and bit-identical. The (batch, token)
+        # pairs are unique -- distinct selected tokens per image -- which is what makes them
+        # interchangeable; with duplicates both are last-writer-wins with no defined order.
+        _kv_src = kv_new.to(dtype=kv.dtype)
+        if not scatter_rows_triton(
+            kv,
             fixed_query_state.active_batch_idx,
             fixed_query_state.active_token_idx,
-        ] = kv_new.to(dtype=kv.dtype)
+            _kv_src,
+        ):
+            kv[
+                fixed_query_state.active_batch_idx,
+                fixed_query_state.active_token_idx,
+            ] = _kv_src
 
         bucket_size = max(int(sdpa_query_bucket_size or 0), 0)
         t_attn = (
@@ -398,7 +415,17 @@ class SelfAttention(nn.Module):
             else t_max
         )
 
-        q_padded_shape = (B, self.num_heads, t_attn, head_dim)
+        # Store queries as [B, T, H, Dh] and hand SDPA a transposed view, the same way k and v are
+        # already handled. SDPA is indifferent -- 133.4 us against 133.2 us for a contiguous BHTD q
+        # at these shapes -- but the layout decides how expensive the surrounding scatter/gather is:
+        # in BHTD one (batch, pos) touches H separate 256 B runs a stride of T*Dh apart, while in
+        # BTHD its H*Dh values are one contiguous row. That is 1.70x on the scatter and 1.68x on the
+        # gather, bit-identical.
+        #
+        # It also propagates: SDPA gives the output q's strides, so with a view-q the result comes
+        # back with BTHD strides and `attn_out.transpose(1, 2)` is contiguous -- which is what lets
+        # the gather use the row kernel too.
+        q_padded_shape = (B, t_attn, self.num_heads, head_dim)
         if torch.is_grad_enabled():
             q_padded = torch.zeros(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
         else:
@@ -411,25 +438,51 @@ class SelfAttention(nn.Module):
             ):
                 q_padded = torch.empty(q_padded_shape, device=x_sel.device, dtype=q_new.dtype)
                 self._partial_token_q_padded = q_padded
-        q_padded[
+        if not scatter_rows_triton(
+            q_padded,
             fixed_query_state.active_batch_idx,
-            :,
             fixed_query_state.active_pos_idx,
-        ] = q_new
+            q_new,
+        ):
+            q_padded[
+                fixed_query_state.active_batch_idx,
+                fixed_query_state.active_pos_idx,
+            ] = q_new
 
-        q = q_padded
+        q = q_padded.transpose(1, 2)
         k, v = torch.unbind(kv, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
         attn_out_padded = torch.nn.functional.scaled_dot_product_attention(q, k, v)
-        if t_attn != t_max:
-            attn_out_padded = attn_out_padded[:, :, :t_max, :]
-        attn_out_active = attn_out_padded[
-            fixed_query_state.active_batch_idx,
-            :,
-            fixed_query_state.active_pos_idx,
-        ].reshape(num_active, self.qkv.in_features)
+        # No slice back to t_max: every gathered position is < t_max by construction, so the bucket
+        # padding is simply never read. Slicing would leave the transposed view non-contiguous and
+        # push the gather onto the slower head-axis kernel for exactly the shapes bucketing creates.
+        # attn_out_padded carries q's BTHD strides, so this view is contiguous and the row kernel
+        # applies; falls back to the head-axis path if that ever stops holding.
+        attn_out_bthd = attn_out_padded.transpose(1, 2)
+        attn_out_active = (
+            gather_rows_triton(
+                attn_out_bthd,
+                fixed_query_state.active_batch_idx,
+                fixed_query_state.active_pos_idx,
+            )
+            if attn_out_bthd.is_contiguous()
+            else None
+        )
+        if attn_out_active is None:
+            attn_out_active = gather_heads_triton(
+                attn_out_padded,
+                fixed_query_state.active_batch_idx,
+                fixed_query_state.active_pos_idx,
+            )
+        if attn_out_active is None:
+            attn_out_active = attn_out_padded[
+                fixed_query_state.active_batch_idx,
+                :,
+                fixed_query_state.active_pos_idx,
+            ]
+        attn_out_active = attn_out_active.reshape(num_active, self.qkv.in_features)
 
         x_sel = self.proj(attn_out_active)
         x_sel = self.proj_drop(x_sel)
