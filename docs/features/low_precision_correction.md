@@ -4,8 +4,8 @@ Runs the correction pass's five Linears (`attn.qkv`, `attn.proj`, `mlp.w1/w2/w3`
 while the approximate pass stays BF16. Correction computes a *delta* over a subset of tokens, so it
 tolerates lower precision than approx does.
 
-Measured on ADE20K (`ade20k_m2f_interleaved_static*`), 200 requests each, sequential runs on one
-GPU, torchao 0.15:
+Measured on ADE20K (`ade20k_m2f_interleaved_static*`), 200 requests each, sequential runs on a
+single **NVIDIA B200** (compute capability 10.0), torchao 0.15:
 
 | config | CORRECT_FORWARD | vs bf16 | mIoU | aAcc |
 |---|---:|---:|---:|---:|
@@ -107,6 +107,88 @@ becomes necessary without it.
 `attn.proj` runs FP8 inside the FP4 path by default — its input is the attention-core output, whose
 delta compresses least of the five (amax ratio 0.93 ImageNet / 0.73 COCO). Override with
 `correct_fp4_proj_precision: "fp4"`.
+
+## Latency breakdown
+
+All figures below are one **NVIDIA B200**, the recommended setting (fp4 + top-k 0.55).
+
+### Per request, across stages
+
+Correction is ~10% of the request; the two BF16 stages around it are each ~2.5x larger.
+
+| stage | ms/req | share |
+|---|---:|---:|
+| APPROX_FORWARD | 184.60 | 25.2% |
+| HEAD_INFERENCE | 171.77 | 23.5% |
+| MOBILE_ENCODE_G1 | 107.00 | 14.6% |
+| **CORRECT_FORWARD** | **74.63** | **10.2%** |
+| Decode | 67.22 | 9.2% |
+| MOBILE_ENCODE_G2 | 47.40 | 6.5% |
+| PREPARE_TOKENS | 34.74 | 4.7% |
+| EXIT_ALL | 17.83 | 2.4% |
+
+End-to-end latency 610.6 ms/req. Both APPROX and CORRECT run 1.9 times per request.
+
+### Inside CORRECT_FORWARD
+
+The 40-block loop is 97–98% of the stage; everything else (the K/V scatter-back into the cache,
+batch assembly and splitting) is the remaining 1.23 ms and does not vary with precision.
+
+| | ms | share |
+|---|---:|---:|
+| block loop | 39.33 | 97% |
+| cache scatter | 1.23 | 3% |
+
+### Inside the 40-block loop
+
+Kernel time from `dinov3_correct_profile.py` at the real correction shape (B=2, N=3141), summing to
+36.00 ms against a 35.4 ms wall — i.e. the GPU is saturated, so kernel savings here convert to
+latency.
+
+| bucket | ms | share |
+|---|---:|---:|
+| GEMM (`_scaled_mm`) | 9.68 | 26.9% |
+| attention / SDPA | 6.63 | 18.4% |
+| other (RoPE, epilogues) | 6.27 | 17.4% |
+| elementwise / residual / norm | 4.61 | 12.8% |
+| quantization (fp4/fp8) | 4.40 | 12.2% |
+| gather / scatter / index | 4.40 | 12.2% |
+
+Largest individual kernels:
+
+| kernel | ms | calls | per block |
+|---|---:|---:|---:|
+| cuDNN flash SDPA | 6.63 | 40 | 1 |
+| NVFP4 GEMM (`nvjet ... Avec16UE4M3`) | 3.64 | 80 | 2 |
+| `_quantize_nvfp4_kernel` | 3.25 | 120 | 3 |
+| NVFP4 GEMM (cutlass block-scaled) | 2.56 | 40 | 1 |
+| `_rope_active_inplace_kernel` | 2.39 | 40 | 1 |
+| `_active_token_update_kernel` | 2.37 | 40 | 1 |
+| LayerNorm | 1.87 | 80 | 2 |
+| FP8 GEMM (`attn.proj`) | 1.47 | 40 | 1 |
+| `_fused_swiglu_epilogue_kernel` | 1.46 | 40 | 1 |
+
+No bucket dominates: the largest is 27%, so further work here has a low ceiling. Making the GEMMs
+free would leave 26.32 ms, a 1.37x bound on the loop and ~4% of the request.
+
+## Attention precision
+
+**SDPA runs in BF16** and there is no switch for it — `correct_precision` covers the five Linears
+only. The Q/K/V it consumes are BF16: the K/V cache is stored BF16 and Q comes back from the NVFP4
+`attn.qkv` GEMM already dequantized to BF16.
+
+PyTorch's `scaled_dot_product_attention` does not accept FP8 tensors:
+
+```
+torch.float8_e4m3fn -> NotImplementedError: "mul_cuda" not implemented for 'Float8_e4m3fn'
+```
+
+FP8 attention on Blackwell exists at the cuDNN level but is not reachable through the PyTorch op, so
+it would mean calling cuDNN directly or pulling in TransformerEngine. The payoff is bounded: SDPA is
+18.4% of the loop and already runs at 587 TFLOPS, ~27% of B200's BF16 peak, which is normal for a
+query-light shape (1464 queries against 3141 keys). Even a full 2x would be ~9% of the loop and ~1%
+of the request, against an accuracy cost on the one part of the block that is a genuine
+non-linearity.
 
 ## Implementation
 
