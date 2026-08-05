@@ -988,7 +988,15 @@ class SelfAttentionBlock(nn.Module):
                 fixed_query_state=fixed_query_state,
                 sdpa_query_bucket_size=sdpa_query_bucket_size,
             )
-            x_attn_active = x_active + self.ls1(x_attn_sel).to(dtype=x_active.dtype)
+            # x + gamma * x_attn as one kernel. As two ops PyTorch dispatches the multiply and the
+            # add to its non-vectorised elementwise path -- 4.40 ms over 80 calls in the correction
+            # profile, ~30 us each against ~12 us for a vectorised kernel of the same size.
+            _g1 = getattr(self.ls1, "gamma", None)
+            x_attn_active = None
+            if _g1 is not None and x_active.is_contiguous() and x_attn_sel.is_contiguous()                     and x_attn_sel.dtype == x_active.dtype:
+                x_attn_active = fused_layerscale_add(x_active, x_attn_sel, _g1.to(x_active.dtype))
+            if x_attn_active is None:
+                x_attn_active = x_active + self.ls1(x_attn_sel).to(dtype=x_active.dtype)
             
             if debug:
                 torch.cuda.synchronize()
