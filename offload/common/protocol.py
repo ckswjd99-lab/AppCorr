@@ -16,6 +16,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'group_strategy': 'uniform',
         'token_keep_ratio': 0.2,
         'token_keep_thres': None,
+        'token_keep_cap': 0,
         'attn_col_alive_ratio': 1.0,
         'mobile_pscore': 'none',
         'mobile_pscore_weight': 0.0,
@@ -89,6 +90,10 @@ def normalize_appcorr_kwargs(
     if token_keep_thres in {'', 'null', 'None'}:
         token_keep_thres = None
     options['token_keep_thres'] = None if token_keep_thres is None else float(token_keep_thres)
+    # >0 routes threshold selection through the sync-free fixed-width builder. The .item()/nonzero()
+    # in the general builder stall the launch pipeline: 17.84 ms of a 77.5 ms FP4 correction pass is
+    # GPU idle on that path (23%), against ~0% on the sync-free builders.
+    options['token_keep_cap'] = max(0, int(options.get('token_keep_cap', 0) or 0))
     options['attn_col_alive_ratio'] = float(options.get('attn_col_alive_ratio', defaults['attn_col_alive_ratio']))
     mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
     if mobile_pscore in {'', 'null', 'None'}:
