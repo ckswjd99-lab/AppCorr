@@ -46,6 +46,15 @@ from torch import nn
 from .fp8_fast_linear import FastFP8Linear, pad_rows_to_bucket
 
 
+def _torchao_version() -> str:
+    try:
+        import torchao
+
+        return getattr(torchao, "__version__", "?")
+    except Exception:
+        return "?"
+
+
 _E4M3 = torch.float8_e4m3fn
 _FP4X2 = torch.float4_e2m1fn_x2
 
@@ -93,6 +102,8 @@ class SharedFP4Activation:
 
 class FastFP4Linear(nn.Module):
     """`nn.Linear` in NVFP4: torch._scaled_mm plus a single fused scale-and-bias epilogue."""
+
+    _warned_slow_quantizer = False
 
     def __init__(
         self,
@@ -175,7 +186,23 @@ class FastFP4Linear(nn.Module):
                 quantize_nvfp4_swizzled,
             )
         except ImportError:
-            # TorchAO 0.17 dropped convert_fp32_to_fp4_packed. Correct, just ~2x slower.
+            # TorchAO 0.17 dropped convert_fp32_to_fp4_packed, so the direct kernel is unavailable
+            # and this falls back to NVFP4Tensor.to_nvfp4 -- correct, but ~2x slower (29.6 vs
+            # 14.3 us at M=1280), which is exactly the wrapper overhead the direct call was added to
+            # remove. Say so loudly: five consecutive end-to-end runs silently took this path
+            # because the shell had conda activated, and the resulting 18ms regression was chased
+            # through the fusion, the epilogue and the instrumentation before the interpreter was
+            # checked.
+            if not FastFP4Linear._warned_slow_quantizer:
+                FastFP4Linear._warned_slow_quantizer = True
+                import sys as _sys
+
+                print(
+                    "[FP4-correct] WARNING: convert_fp32_to_fp4_packed missing (torchao "
+                    f"{_torchao_version()}, {_sys.executable}); using the ~2x slower "
+                    "NVFP4Tensor.to_nvfp4 path. Latency numbers are not comparable to torchao 0.15.",
+                    flush=True,
+                )
             NVFP4Tensor, _ = _nvfp4_helpers()
             t = NVFP4Tensor.to_nvfp4(
                 x2d, block_size=16, per_tensor_scale=self.act_scale,
