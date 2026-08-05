@@ -3,12 +3,14 @@ torch
 #   - 0.15 exposes NVFP4InferenceConfig and lets `use_dynamic_per_tensor_scale=False` run on the
 #     Triton kernel. That is the only NVFP4 configuration measured faster than BF16 on this stack
 #     (2.0-2.7x from M=2560 up); see docs/memo/dinov3_nvfp4_speedup_gate.md.
-#   - 0.17 renames the class to NVFP4DynamicActivationNVFP4WeightConfig *and* makes the Triton path
-#     assert `per_tensor_scale is not None` while requiring MSLK, so the fast configuration cannot
-#     be expressed at all. Upgrading silently costs the speedup.
+#   - 0.16 also works: the class is renamed but convert_fp32_to_fp4_packed is still there, which is
+#     what the fast quantizer needs. Verified against the byte-equality gate.
+#   - 0.17 drops convert_fp32_to_fp4_packed entirely, so the FP4 path falls back to
+#     NVFP4Tensor.to_nvfp4 -- ~2x slower on quantization. It warns once at startup rather than
+#     failing, so an upgrade silently costs the speedup.
 # offload/server/model/dinov3_precision.py imports either class name, so it still runs on 0.17 --
 # just slower. Re-measure before lifting this cap.
-torchao>=0.15,<0.16
+torchao>=0.15,<0.17
 torchvision
 numpy
 tqdm
