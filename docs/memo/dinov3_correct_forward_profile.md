@@ -157,3 +157,50 @@ roughly another 3 ms.
 
 Also note the coarse-attribution block in the script remains unreliable (it buckets `aten::addmm`
 under elementwise); read the raw kernel rows.
+
+---
+
+## 2026-08-05: the threshold path's syncs cost 23% of the pass in GPU idle
+
+The profiler now prints wall against the sum of kernel times for the same pass (`launch gap`).
+At the real correction shape (B=2, N=3141), FP4:
+
+| selection | wall | kernels | idle |
+|---|---:|---:|---:|
+| `token_keep_thres=4e-5` (what ADE20K runs) | 77.5 ms | 59.62 ms | **17.84 ms (23.0%)** |
+| `token_keep_ratio=0.408` (top-k) | 28.1 ms | 28.31 ms | **-0.22 ms (0%)** |
+| BF16, threshold | 94.8 ms | 90.97 ms | 3.86 ms (4.1%) |
+
+**Same FP4 code, same kernel count -- only the selection path differs, and the idle goes from 23% to
+zero.** The cause is `_build_packed_query_state`: threshold selection needs `.item()` for `max_keep`
+and `nonzero()` for the active index, and those host round-trips stall the launch pipeline. Top-k
+takes `_build_packed_query_state_fixed_k`, which is sync-free, and the GPU stays saturated.
+
+This corrects two earlier conclusions on this branch:
+
+* **"FP4's extra kernels cause the idle."** They do not. FP4 issues ~280 more kernels than BF16, and
+  batch-scaling put its batch-independent cost at 11.78 ms against BF16's 0.90 ms, which looked like
+  per-kernel overhead. But holding the kernel count fixed and changing only the selection path
+  removes the idle entirely.
+* **"Top-k is not worth it -- the syncs only cost 0.2 ms."** That 0.2 ms was *CPU* time in the
+  profiler's sync counters. It never measured the GPU bubble those syncs open, which is ~90x larger.
+
+Caveat: the two configurations have different M (top-k keeps 40.8% of candidates; the threshold
+passes far more in this synthetic setup, 28 vs 77.5 ms eager). So the attribution is strongly
+suggested, not proven. A controlled comparison at matched M is the first thing to run.
+
+### CUDA graphs are not the answer
+
+Capture of the 40-block loop **fails** on the threshold path -- `cudaErrorStreamCaptureInvalidated`,
+because capture forbids any sync. It **succeeds** on top-k, and replays at 1.058x -- which is
+nothing, because that configuration already has zero idle to recover. Graphs were being considered
+as a way to reclaim the 17.84 ms; the sync removal reclaims it directly and graphs then have no
+work left to do.
+
+### What to do
+
+Make the threshold path sync-free rather than switching to top-k. Top-k gets there but trades away
+the threshold's content adaptivity. The syncs are avoidable: `max_keep` only sizes a tensor, so it
+can be replaced by a fixed upper bound (the candidate count, or a bucketed one) with the surplus
+rows masked out -- the same shape as `_build_packed_query_state_all_keep`, which already builds its
+plan from static shapes. `nonzero()` likewise has a masked equivalent.
