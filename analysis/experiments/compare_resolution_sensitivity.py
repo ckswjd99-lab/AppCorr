@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from analysis.shared.dinov3_probe import Dinov3ResolutionProbe
 from offload.common import ExperimentConfig
 
-DEFAULT_CONFIG = "offload/config/imnet_interleaved_g4.json"
+DEFAULT_CONFIG = "offload/config/imnet/imnet_interleaved_g4.json"
 VARIANT_ORDER = [("L0", 0), ("L1", 1), ("L2", 2)]
 COMPARISON_ORDER = [("L0", "L1"), ("L1", "L2"), ("L0", "L2")]
 PROBE_SUPPORTED_MODEL_NAMES = {"dinov3_classifier", "dinov3_detector"}

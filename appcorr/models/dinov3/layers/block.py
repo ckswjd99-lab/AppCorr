@@ -14,6 +14,7 @@ from ..utils import cat_keep_shapes, uncat_with_shapes
 
 from .triton_kernels import (
     active_token_update_triton,
+    gather_rows_triton,
     fused_layerscale_add,
     masked_residual_add_triton,
     masked_token_update_triton,
@@ -366,6 +367,9 @@ class SelfAttentionBlock(nn.Module):
         k_refined = min(int(num_patch_candidates * token_keep_ratio), num_patch_candidates)
         if k_refined <= 0:
             return keep_patch_mask
+        if k_refined == num_patch_candidates:
+            keep_patch_mask.fill_(True)
+            return keep_patch_mask
 
         topk_local_idx = torch.topk(
             combined_patch_scores,
@@ -374,10 +378,177 @@ class SelfAttentionBlock(nn.Module):
             largest=True,
         ).indices
         keep_patch_mask.scatter_(1, topk_local_idx, True)
+        # Stash the indices: every row keeps exactly k_refined, so the packed plan can be built
+        # without any host round-trip (see _build_packed_query_state_fixed_k).
+        keep_patch_mask._appcorr_topk_idx = topk_local_idx
         return keep_patch_mask
 
     @staticmethod
+    def _build_packed_query_state_fixed_k(
+        dindice_pre: torch.Tensor,
+        dindice_patches: torch.Tensor,
+        topk_local_idx: torch.Tensor,
+    ) -> tuple[torch.Tensor, PackedQueryState]:
+        """Sync-free builder for top-k selection, where every row keeps exactly `k` candidates.
+
+        Threshold selection cannot avoid the host round-trips: the number of kept tokens varies per
+        image, so `max_keep` (which sizes tensors) and `nonzero()` (whose output length is
+        data-dependent) both have to stall. Top-k does not have that problem -- `k` comes from
+        `int(num_candidates * token_keep_ratio)`, a Python int derived from a static shape, and every
+        row keeps exactly `k`. That makes the whole plan statically shaped.
+
+        `topk_local_idx` is already computed inside `_select_patch_keep_mask`; it is sorted ascending
+        here so the packed order matches the general builder's (`nonzero()` yields ascending indices).
+        """
+        B, num_pretokens = dindice_pre.shape
+        k = topk_local_idx.shape[1]
+        max_active = num_pretokens + k
+        device = dindice_pre.device
+
+        kept_sorted = topk_local_idx.sort(dim=1).values
+        update_indice = torch.cat(
+            [dindice_pre, dindice_patches.gather(1, kept_sorted)], dim=1
+        )
+
+        active_query_pos_padded = torch.arange(
+            max_active, device=device, dtype=torch.long
+        ).unsqueeze(0).expand(B, -1)
+        query_valid_mask = torch.ones((B, max_active), device=device, dtype=torch.bool)
+        active_batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(max_active)
+        active_pos_idx = torch.arange(max_active, device=device, dtype=torch.long).repeat(B)
+        active_token_idx = update_indice.reshape(-1)
+
+        return update_indice, PackedQueryState(
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            query_valid_mask=query_valid_mask,
+            active_query_pos_padded=active_query_pos_padded,
+            active_query_mask=query_valid_mask,
+            all_valid=True,
+            active_patch_mask=active_token_idx >= num_pretokens,
+            active_rope_idx=(active_token_idx - num_pretokens).clamp_min(0),
+        )
+
+    @staticmethod
+    def _build_packed_query_state_all_keep(
+        dindice_pre: torch.Tensor,
+        dindice_patches: torch.Tensor,
+    ) -> tuple[torch.Tensor, PackedQueryState]:
+        """Sync-free equivalent of `_build_packed_query_state` when every candidate is kept.
+
+        The general builder is data-dependent in four places that each stall the launch pipeline:
+        `kept_patch_count.max().item()` (it sizes a tensor, so it must be a host int),
+        two `nonzero()` calls (variable-length outputs), and `torch.all(...).item()` for `all_valid`.
+        Profiling put those at 200 `aten::item` calls / ~145 ms of host stall against a 183.8 ms GPU
+        pass (docs/memo/dinov3_correct_forward_profile.md).
+
+        When the keep mask is all-True none of that is data-dependent: `max_keep` is exactly
+        `dindice_patches.shape[1]`, which is already a static shape, and the packed layout is just
+        `[dindice_pre | dindice_patches]` in order. Everything below is built from `arange`/`expand`,
+        so the whole plan is constructed without a single host round-trip. Outputs are identical to
+        the general path for this case.
+        """
+        B, num_pretokens = dindice_pre.shape
+        n_cand = dindice_patches.shape[1]
+        max_active = num_pretokens + n_cand
+        device = dindice_pre.device
+
+        update_indice = torch.cat([dindice_pre, dindice_patches], dim=1)
+
+        active_query_pos_padded = torch.arange(
+            max_active, device=device, dtype=torch.long
+        ).unsqueeze(0).expand(B, -1)
+        query_valid_mask = torch.ones((B, max_active), device=device, dtype=torch.bool)
+
+        # `query_valid_mask.nonzero()` on an all-True mask is row-major, i.e. exactly this:
+        active_batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(max_active)
+        active_pos_idx = torch.arange(max_active, device=device, dtype=torch.long).repeat(B)
+        active_token_idx = update_indice.reshape(-1)
+
+        return update_indice, PackedQueryState(
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            query_valid_mask=query_valid_mask,
+            active_query_pos_padded=active_query_pos_padded,
+            active_query_mask=query_valid_mask,
+            all_valid=True,
+            active_patch_mask=active_token_idx >= num_pretokens,
+            active_rope_idx=(active_token_idx - num_pretokens).clamp_min(0),
+        )
+
+    @staticmethod
     @nvtx.annotate("build_packed_query_state")
+    @staticmethod
+    def _build_packed_query_state_thres_static(
+        dindice_pre: torch.Tensor,
+        dindice_patches: torch.Tensor,
+        keep_patch_mask: torch.Tensor,
+        keep_cap: int,
+    ) -> tuple[torch.Tensor, PackedQueryState]:
+        """Threshold selection without a host round-trip, at a fixed width of `keep_cap`.
+
+        `_build_packed_query_state` needs `.item()` to size its tensors and `nonzero()` for the
+        active index. Both stall the launch pipeline, and that shows up as GPU idle rather than CPU
+        time: at the real correction shape FP4 leaves 17.84 ms of a 77.5 ms pass idle (23%) on this
+        path, against ~0% on the sync-free top-k builder with the same kernel count.
+
+        Sync-free because nothing here reads a device value:
+
+        * A stable descending argsort of the mask brings the kept candidates to the front, which is
+          what `nonzero()` was for -- and `nonzero()`'s row-major order is exactly this order.
+        * Slots past a row's kept count are filled with that row's **last kept candidate** rather
+          than left undefined. The block then corrects a real token twice and scatters the same
+          value twice, which is idempotent; a garbage index would not be.
+        * `keep_cap` replaces `max_keep`, so every shape is static and `all_valid` is trivially
+          true. Rows keeping more than `keep_cap` lose their lowest-scoring candidates -- the cap is
+          a deliberate ceiling on correction work, not an approximation of the threshold.
+        """
+        B, P = dindice_patches.shape
+        num_pretokens = dindice_pre.shape[1]
+        K = max(0, min(int(keep_cap), P))
+        device = dindice_pre.device
+
+        kept_patch_count = keep_patch_mask.sum(dim=1, dtype=torch.long)
+        # Kept first, original order preserved among them -- matching nonzero()'s row-major output.
+        order = torch.argsort(
+            keep_patch_mask.to(torch.uint8), dim=1, descending=True, stable=True
+        )
+        pos = torch.arange(K, device=device, dtype=torch.long).unsqueeze(0)
+        # clamp to count-1 duplicates the last kept candidate into the unused tail.
+        pos = torch.minimum(pos, (kept_patch_count - 1).clamp_min(0).unsqueeze(1))
+        sel = order.gather(1, pos) if K > 0 else order[:, :0]
+
+        update_indice = torch.cat(
+            [dindice_pre, dindice_patches.gather(1, sel)], dim=1
+        ) if K > 0 else dindice_pre.clone()
+        max_active = update_indice.shape[1]
+
+        active_batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(
+            max_active
+        )
+        active_pos_idx = torch.arange(max_active, device=device, dtype=torch.long).repeat(B)
+        active_token_idx = update_indice.reshape(-1)
+        query_valid_mask = torch.ones((B, max_active), device=device, dtype=torch.bool)
+        active_patch_mask = active_token_idx >= num_pretokens
+        active_rope_idx = (active_token_idx - num_pretokens).clamp_min(0)
+        query_state = PackedQueryState(
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            query_valid_mask=query_valid_mask,
+            active_query_pos_padded=torch.arange(
+                max_active, device=device, dtype=torch.long
+            ).unsqueeze(0).expand(B, -1),
+            active_query_mask=query_valid_mask,
+            all_valid=True,
+            active_patch_mask=active_patch_mask,
+            active_rope_idx=active_rope_idx,
+        )
+        return update_indice, query_state
+
+    @staticmethod
     def _build_packed_query_state(
         dindice_pre: torch.Tensor,
         dindice_patches: torch.Tensor,
@@ -729,6 +900,9 @@ class SelfAttentionBlock(nn.Module):
         debug = kwargs.get("debug", False)
         token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
         token_keep_thres = self._resolve_token_keep_threshold(kwargs)
+        # Fixed width for threshold selection. >0 swaps in the sync-free builder; rows keeping more
+        # than this lose their lowest-scoring candidates, so it is a ceiling on correction work.
+        token_keep_cap = int(kwargs.get("token_keep_cap", 0) or 0)
         sdpa_query_bucket_size = int(kwargs.get("sdpa_query_bucket_size", 0) or 0)
         server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
         server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
@@ -799,6 +973,13 @@ class SelfAttentionBlock(nn.Module):
                 mobile_pscore_weight,
                 pscore_fusion,
             )
+            # Padded candidate slots (added so crops of one image share a GEMM) must never be
+            # selected: force their score to -inf so both top-k and the threshold compare skip them.
+            candidate_valid_mask = kwargs.get("candidate_valid_mask")
+            if candidate_valid_mask is not None:
+                combined_patch_scores = combined_patch_scores.masked_fill(
+                    ~candidate_valid_mask.to(combined_patch_scores.device), float("-inf")
+                )
             keep_patch_mask = self._select_patch_keep_mask(
                 combined_patch_scores,
                 token_keep_ratio,
@@ -811,11 +992,35 @@ class SelfAttentionBlock(nn.Module):
                 full_patch_total,
                 sample_total,
             ) = self._compute_partial_token_plan_stats(combined_patch_scores, keep_patch_mask)
-            update_indice, fixed_query_state = self._build_packed_query_state(
-                dindice_pre,
-                dindice_patches,
-                keep_patch_mask,
-            )
+            # When every candidate is kept the plan is fully determined by static shapes, so take
+            # the sync-free builder. `_select_patch_keep_mask` returns an all-True mask exactly when
+            # no threshold is set and the ratio saturates, which is the condition checked here.
+            if token_keep_thres is None and token_keep_ratio >= 1.0:
+                update_indice, fixed_query_state = self._build_packed_query_state_all_keep(
+                    dindice_pre,
+                    dindice_patches,
+                )
+            elif token_keep_cap > 0 and token_keep_thres is not None:
+                # Threshold selection at a fixed width: same selected set, no host round-trip.
+                update_indice, fixed_query_state = self._build_packed_query_state_thres_static(
+                    dindice_pre,
+                    dindice_patches,
+                    keep_patch_mask,
+                    token_keep_cap,
+                )
+            elif getattr(keep_patch_mask, "_appcorr_topk_idx", None) is not None:
+                # top-k selection: every row keeps exactly k, so the plan is statically shaped.
+                update_indice, fixed_query_state = self._build_packed_query_state_fixed_k(
+                    dindice_pre,
+                    dindice_patches,
+                    keep_patch_mask._appcorr_topk_idx,
+                )
+            else:
+                update_indice, fixed_query_state = self._build_packed_query_state(
+                    dindice_pre,
+                    dindice_patches,
+                    keep_patch_mask,
+                )
             query_plan = PartialTokenQueryPlan(
                 update_indice=update_indice,
                 fixed_query_state=fixed_query_state,
@@ -846,7 +1051,11 @@ class SelfAttentionBlock(nn.Module):
         active_token_idx = fixed_query_state.active_token_idx
         
         with torch.cuda.nvtx.range("correct_attn"):
-            x_active = x[active_batch_idx, active_token_idx].contiguous()
+            # Dedicated row gather: ~3.6x faster than aten advanced indexing (41.0 -> 11.4 us at
+            # ADE20K shapes), bit-identical. Falls back when the layout is unsupported.
+            x_active = gather_rows_triton(x, active_batch_idx, active_token_idx)
+            if x_active is None:
+                x_active = x[active_batch_idx, active_token_idx].contiguous()
             x_norm_sel = self.norm1(x_active)
 
             x_attn_sel, cache_feature = self.attn.correct(
@@ -859,7 +1068,15 @@ class SelfAttentionBlock(nn.Module):
                 fixed_query_state=fixed_query_state,
                 sdpa_query_bucket_size=sdpa_query_bucket_size,
             )
-            x_attn_active = x_active + self.ls1(x_attn_sel).to(dtype=x_active.dtype)
+            # x + gamma * x_attn as one kernel. As two ops PyTorch dispatches the multiply and the
+            # add to its non-vectorised elementwise path -- 4.40 ms over 80 calls in the correction
+            # profile, ~30 us each against ~12 us for a vectorised kernel of the same size.
+            _g1 = getattr(self.ls1, "gamma", None)
+            x_attn_active = None
+            if _g1 is not None and x_active.is_contiguous() and x_attn_sel.is_contiguous()                     and x_attn_sel.dtype == x_active.dtype:
+                x_attn_active = fused_layerscale_add(x_active, x_attn_sel, _g1.to(x_active.dtype))
+            if x_attn_active is None:
+                x_attn_active = x_active + self.ls1(x_attn_sel).to(dtype=x_active.dtype)
             
             if debug:
                 torch.cuda.synchronize()
@@ -1042,6 +1259,22 @@ class SelfAttentionBlock(nn.Module):
             attn_col_alive_ratio: float = 1.0,
             attn_cache_key=None,
     ) -> List[Tensor]:
+        sparse_cache_key = f"{tag}_attn_sparse_cache_g{attn_cache_key}"
+        pending_sparse_caches = [
+            key
+            for key in cache_feature
+            if key.startswith(f"{tag}_attn_sparse_cache_g")
+        ]
+        if pending_sparse_caches == [sparse_cache_key]:
+            # The last spatial group completes the full token set. Recompute the
+            # block with the canonical BF16 weights so an FP8 approximate pass
+            # cannot leak quantization error into the 100%-correction tier.
+            x = self.forward(x, rope)
+            for key in list(cache_feature):
+                if key.startswith(f"{tag}_"):
+                    del cache_feature[key]
+            return x, cache_feature
+
         with torch.cuda.nvtx.range("correct_attn"):
             blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
             x_base = x + blocks_out_sum.to(x.dtype)
