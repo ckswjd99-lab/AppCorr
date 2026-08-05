@@ -480,6 +480,75 @@ class SelfAttentionBlock(nn.Module):
 
     @staticmethod
     @nvtx.annotate("build_packed_query_state")
+    @staticmethod
+    def _build_packed_query_state_thres_static(
+        dindice_pre: torch.Tensor,
+        dindice_patches: torch.Tensor,
+        keep_patch_mask: torch.Tensor,
+        keep_cap: int,
+    ) -> tuple[torch.Tensor, PackedQueryState]:
+        """Threshold selection without a host round-trip, at a fixed width of `keep_cap`.
+
+        `_build_packed_query_state` needs `.item()` to size its tensors and `nonzero()` for the
+        active index. Both stall the launch pipeline, and that shows up as GPU idle rather than CPU
+        time: at the real correction shape FP4 leaves 17.84 ms of a 77.5 ms pass idle (23%) on this
+        path, against ~0% on the sync-free top-k builder with the same kernel count.
+
+        Sync-free because nothing here reads a device value:
+
+        * A stable descending argsort of the mask brings the kept candidates to the front, which is
+          what `nonzero()` was for -- and `nonzero()`'s row-major order is exactly this order.
+        * Slots past a row's kept count are filled with that row's **last kept candidate** rather
+          than left undefined. The block then corrects a real token twice and scatters the same
+          value twice, which is idempotent; a garbage index would not be.
+        * `keep_cap` replaces `max_keep`, so every shape is static and `all_valid` is trivially
+          true. Rows keeping more than `keep_cap` lose their lowest-scoring candidates -- the cap is
+          a deliberate ceiling on correction work, not an approximation of the threshold.
+        """
+        B, P = dindice_patches.shape
+        num_pretokens = dindice_pre.shape[1]
+        K = max(0, min(int(keep_cap), P))
+        device = dindice_pre.device
+
+        kept_patch_count = keep_patch_mask.sum(dim=1, dtype=torch.long)
+        # Kept first, original order preserved among them -- matching nonzero()'s row-major output.
+        order = torch.argsort(
+            keep_patch_mask.to(torch.uint8), dim=1, descending=True, stable=True
+        )
+        pos = torch.arange(K, device=device, dtype=torch.long).unsqueeze(0)
+        # clamp to count-1 duplicates the last kept candidate into the unused tail.
+        pos = torch.minimum(pos, (kept_patch_count - 1).clamp_min(0).unsqueeze(1))
+        sel = order.gather(1, pos) if K > 0 else order[:, :0]
+
+        update_indice = torch.cat(
+            [dindice_pre, dindice_patches.gather(1, sel)], dim=1
+        ) if K > 0 else dindice_pre.clone()
+        max_active = update_indice.shape[1]
+
+        active_batch_idx = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(
+            max_active
+        )
+        active_pos_idx = torch.arange(max_active, device=device, dtype=torch.long).repeat(B)
+        active_token_idx = update_indice.reshape(-1)
+        query_valid_mask = torch.ones((B, max_active), device=device, dtype=torch.bool)
+        active_patch_mask = active_token_idx >= num_pretokens
+        active_rope_idx = (active_token_idx - num_pretokens).clamp_min(0)
+        query_state = PackedQueryState(
+            active_batch_idx=active_batch_idx,
+            active_pos_idx=active_pos_idx,
+            active_token_idx=active_token_idx,
+            query_valid_mask=query_valid_mask,
+            active_query_pos_padded=torch.arange(
+                max_active, device=device, dtype=torch.long
+            ).unsqueeze(0).expand(B, -1),
+            active_query_mask=query_valid_mask,
+            all_valid=True,
+            active_patch_mask=active_patch_mask,
+            active_rope_idx=active_rope_idx,
+        )
+        return update_indice, query_state
+
+    @staticmethod
     def _build_packed_query_state(
         dindice_pre: torch.Tensor,
         dindice_patches: torch.Tensor,
@@ -831,6 +900,9 @@ class SelfAttentionBlock(nn.Module):
         debug = kwargs.get("debug", False)
         token_keep_ratio = kwargs.get("token_keep_ratio", 0.2)
         token_keep_thres = self._resolve_token_keep_threshold(kwargs)
+        # Fixed width for threshold selection. >0 swaps in the sync-free builder; rows keeping more
+        # than this lose their lowest-scoring candidates, so it is a ceiling on correction work.
+        token_keep_cap = int(kwargs.get("token_keep_cap", 0) or 0)
         sdpa_query_bucket_size = int(kwargs.get("sdpa_query_bucket_size", 0) or 0)
         server_pscore_weight = float(kwargs.get("server_pscore_weight", 1.0))
         server_pscore = str(kwargs.get("server_pscore", "cls_attn_prob"))
@@ -927,6 +999,14 @@ class SelfAttentionBlock(nn.Module):
                 update_indice, fixed_query_state = self._build_packed_query_state_all_keep(
                     dindice_pre,
                     dindice_patches,
+                )
+            elif token_keep_cap > 0 and token_keep_thres is not None:
+                # Threshold selection at a fixed width: same selected set, no host round-trip.
+                update_indice, fixed_query_state = self._build_packed_query_state_thres_static(
+                    dindice_pre,
+                    dindice_patches,
+                    keep_patch_mask,
+                    token_keep_cap,
                 )
             elif getattr(keep_patch_mask, "_appcorr_topk_idx", None) is not None:
                 # top-k selection: every row keeps exactly k, so the plan is statically shaped.
