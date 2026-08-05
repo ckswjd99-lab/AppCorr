@@ -124,6 +124,9 @@ def main():
     # _build_packed_query_state_fixed_k, and anything else (i.e. a threshold) takes the general
     # builder with its .item()/nonzero() host round-trips. Defaulting to the all-keep path means
     # this script does NOT profile what ade20k_m2f_interleaved_static_correct_fp4.json actually runs.
+    ap.add_argument("--cuda-graph", action="store_true",
+                    help="capture the 40-block correction loop and replay it, to see whether the "
+                         "GPU idle between kernels is recoverable")
     ap.add_argument("--alternate", type=int, default=0, metavar="N",
                     help="interleave BF16 and the --correct-precision path N times in ONE process. "
                          "Separate runs drift ~20%% between them (APPROX moved 184 -> 205 ms across "
@@ -176,6 +179,44 @@ def main():
     # ---- total wall time ----
     ev0, ev1 = torch.cuda.Event(True), torch.cuda.Event(True)
     ev0.record()
+    if args.cuda_graph:
+        # Does capture even work here, and does it recover the idle? FP4 leaves 23% of wall as GPU
+        # idle (17.84 ms) against BF16's 4.1%, because it issues ~280 more kernels; a captured graph
+        # replays the whole sequence as one submission, so in principle that idle goes away.
+        c = fresh()
+        run_correct(backbone, x, rope, c, dindice, controller)   # warm + let caches populate
+        s_ = torch.cuda.Stream()
+        s_.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s_):
+            for _ in range(3):
+                run_correct(backbone, x, rope, fresh(), dindice, controller)
+        torch.cuda.current_stream().wait_stream(s_)
+
+        def timed(fn, it=10):
+            for _ in range(3):
+                fn()
+            torch.cuda.synchronize()
+            import time as _t
+            t0 = _t.perf_counter()
+            for _ in range(it):
+                fn()
+            torch.cuda.synchronize()
+            return (_t.perf_counter() - t0) / it * 1e3
+
+        eager = timed(lambda: run_correct(backbone, x, rope, fresh(), dindice, controller))
+        try:
+            g = torch.cuda.CUDAGraph()
+            static_cache = fresh()
+            with torch.cuda.graph(g):
+                run_correct(backbone, x, rope, static_cache, dindice, controller)
+        except Exception as exc:
+            print(f"\n===== cuda graph ===== CAPTURE FAILED: {type(exc).__name__}: {exc}")
+            return
+        graphed = timed(lambda: g.replay())
+        print(f"\n===== cuda graph ===== eager {eager:.2f} ms | replay {graphed:.2f} ms "
+              f"({eager / graphed:.3f}x)")
+        return
+
     if args.alternate:
         import statistics as _st
 
