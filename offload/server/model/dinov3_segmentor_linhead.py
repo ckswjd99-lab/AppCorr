@@ -241,6 +241,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
         self.vit_backbone = backbone
         self.linear_head = linear_head
         self.configure_dinov3_approx_precision(self.vit_backbone, config)
+        self.configure_dinov3_correct_precision(self.vit_backbone, config)
 
     # ── Preprocess / output ────────────────────────────────────────────
 
@@ -695,11 +696,13 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
             x_temp = input_tokens
 
             with torch.autocast("cuda", self.autocast_dtype):
+                self.begin_dinov3_correct_event()
                 for lidx in range(start_l, end_l):
                     blk = vit_backbone.blocks[lidx]
                     if appcorr_method == "partial_channel":
-                        x_temp, cache = blk.correct(
-                            x_temp, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx, x_temp, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
@@ -717,8 +720,9 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
                             debug=False,
                         )
                     else:
-                        x_temp, cache = blk.correct(
-                            x_temp, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx, x_temp, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,

@@ -662,6 +662,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         self.model.eval()
         self.configure_dinov3_approx_precision(self._get_vit_backbone(), config)
+        self.configure_dinov3_correct_precision(self._get_vit_backbone(), config)
 
     def _get_vit_backbone(self):
         inner = self.model.detector.backbone[0]
@@ -1282,16 +1283,19 @@ class DINOv3DetectorExecutor(ModelExecutor):
                 attn_col_alive_ratio = 1.0
 
             x_temp = input_tokens
+            self.begin_dinov3_correct_event()
             for lidx in range(start_l, end_l):
                 blk = blocks[lidx]
                 with torch.no_grad():
                     if appcorr_method == 'partial_channel':
-                        x_temp, cache = blk.correct(
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx,
                             x_temp,
                             dindice,
                             rope_sincos,
                             cache,
-                            tag=f"src{src_idx}_layer{lidx}",
+                            f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
@@ -1309,12 +1313,14 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             debug=False,
                         )
                     else:
-                        x_temp, cache = blk.correct(
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx,
                             x_temp,
                             dindice,
                             rope_sincos,
                             cache,
-                            tag=f"src{src_idx}_layer{lidx}",
+                            f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
