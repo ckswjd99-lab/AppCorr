@@ -90,6 +90,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
         self.model.eval()
         self.configure_dinov3_approx_precision(self.model.encoder.backbone, config)
+        self.configure_dinov3_correct_precision(self.model.encoder.backbone, config)
         self._sdpa_warmup_done = False
 
     def _maybe_warmup_sdpa_buckets(self, config: Any):
@@ -959,12 +960,14 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
             with torch.autocast("cuda", self.autocast_dtype):
                 with torch.cuda.nvtx.range(f"depther_correct_src{src_idx}_g{group_id}_L{start_l}-{end_l}"):
+                    self.begin_dinov3_correct_event()
                     for lidx in range(start_l, end_l):
                         blk = vit_backbone.blocks[lidx]
 
                         if appcorr_method == "partial_channel":
-                            x_feature, cache = blk.correct(
-                                x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                            x_feature, cache = self.run_dinov3_correct_block(
+                                lidx, x_feature, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                                source_key=f"src{src_idx}_layer{lidx}",
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
                                 token_keep_thres=token_keep_thres,
@@ -983,8 +986,9 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 debug=False,
                             )
                         else:
-                            x_feature, cache = blk.correct(
-                                x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                            x_feature, cache = self.run_dinov3_correct_block(
+                                lidx, x_feature, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                                source_key=f"src{src_idx}_layer{lidx}",
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
                                 token_keep_thres=token_keep_thres,
