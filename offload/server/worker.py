@@ -624,6 +624,10 @@ class WorkerModule(multiprocessing.Process):
         # Computation Ops
         elif op == OpType.FULL_INFERENCE:
             self.executor.full_inference(task, context, self.config)
+            # Record which precision the stock forward actually ran at. Without this the only way
+            # to tell FP4 from BF16 here is to diff the accuracy against a BF16 twin -- which is
+            # how a silently-BF16 `precision=fp4` went unnoticed across three executors.
+            return self.executor.dinov3_approx_event_metadata()
 
         elif op == OpType.APPROX_FORWARD:
             return self.executor.approx_forward(instr.params, context, self.config)

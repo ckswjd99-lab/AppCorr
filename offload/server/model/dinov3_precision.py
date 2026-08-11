@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import os
 import shutil
@@ -190,6 +191,7 @@ class DINOv3ApproxPrecisionController:
         self._fp8_unavailable_reason: str | None = None
         self._fp4_unavailable_reason: str | None = None
         self._event_routes: Dict[str, tuple[str, int]] = {}
+        self._full_inference_precision = "none"
 
         # DINOv3's BF16 correction path also uses local Triton kernels. Keep
         # their compiler discovery symmetric with the FP8 path so the default
@@ -430,6 +432,49 @@ class DINOv3ApproxPrecisionController:
 
     def begin_event(self) -> None:
         self._event_routes = {}
+        self._full_inference_precision = "none"
+
+    @contextlib.contextmanager
+    def full_inference_blocks(self):
+        """Run a stock backbone forward on the quantized blocks, then put the originals back.
+
+        The approximate path dispatches per block through `run_block`, but `FULL_INFERENCE` does
+        not: the m2f and detector executors inline their own `for blk in vit_backbone.blocks` loops,
+        and the depther calls `self.model(input_batch)` as one opaque unit. None of those consult
+        this controller, so `precision=fp4` used to quantize 200 Linears at load time and then never
+        execute a single one -- an approx-only L0 run returned results *bit-identical* to BF16, which
+        is exactly what a config built to measure FP4 accuracy must not do.
+
+        Swapping into the live `nn.ModuleList` fixes all three at once, without touching the loops:
+        `self.blocks` is the backbone's own list, and the FP4/FP8 blocks are `deepcopy`s carrying the
+        standard `Block.forward`, so a stock forward runs them unchanged.
+
+        `auto` deliberately does not swap. It picks FP8 only above `auto_min_rows`, and the row count
+        is not known until the tensor reaches a block -- so honouring it here would mean guessing.
+        """
+        target = self._blocks_for_full_inference()
+        if target is None:
+            yield
+            return
+
+        originals = list(self.blocks)
+        for idx, block in enumerate(target):
+            self.blocks[idx] = block
+        self._full_inference_precision = (
+            "fp4" if target is self.fp4_blocks else "fp8"
+        )
+        try:
+            yield
+        finally:
+            for idx, block in enumerate(originals):
+                self.blocks[idx] = block
+
+    def _blocks_for_full_inference(self) -> nn.ModuleList | None:
+        if self.precision == "fp4" and self.fp4_available:
+            return self.fp4_blocks
+        if self.precision == "fp8" and self.fp8_available:
+            return self.fp8_blocks
+        return None
 
     def _effective_precision(self, rows: int) -> str:
         if self.precision == "bf16":
@@ -544,6 +589,10 @@ class DINOv3ApproxPrecisionController:
         return {
             "approx_precision_requested": self.precision,
             "approx_precision_effective": effective,
+            # "none" when the request never took FULL_INFERENCE; otherwise the precision its
+            # stock backbone forward actually ran at. Distinct from the per-block routes above,
+            # which only cover APPROX_FORWARD.
+            "approx_precision_full_inference": self._full_inference_precision,
             "approx_precision_rows": sorted(
                 {rows for _, rows in self._event_routes.values()}
             ),

@@ -573,18 +573,21 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 rescale_to = target_shapes[image_idx]
             aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32, device=self.device)
             for img_tensor, apply_flip in zip(tta_tensors, flip_flags):
-                pred = self._make_inference(
-                    img_tensor,
-                    self.model,
-                    inference_mode=inference_mode,
-                    decoder_head_type=decoder_head_type,
-                    rescale_to=rescale_to,
-                    n_output_channels=self.num_classes,
-                    crop_size=(crop_size, crop_size),
-                    stride=(stride, stride),
-                    apply_horizontal_flip=apply_flip,
-                    output_activation=partial(F.softmax, dim=1),
-                )
+                # `_make_inference` drives the whole model, so there is no per-block hook here for
+                # `precision` to act on; substitute the quantized blocks for the duration instead.
+                with self.dinov3_full_inference_precision():
+                    pred = self._make_inference(
+                        img_tensor,
+                        self.model,
+                        inference_mode=inference_mode,
+                        decoder_head_type=decoder_head_type,
+                        rescale_to=rescale_to,
+                        n_output_channels=self.num_classes,
+                        crop_size=(crop_size, crop_size),
+                        stride=(stride, stride),
+                        apply_horizontal_flip=apply_flip,
+                        output_activation=partial(F.softmax, dim=1),
+                    )
                 aggregated_preds += pred.float()
                 del pred
 

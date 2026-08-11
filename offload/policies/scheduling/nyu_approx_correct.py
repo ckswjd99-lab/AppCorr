@@ -50,8 +50,10 @@ class NYUApproxCorrectPolicy(ISchedulingPolicy):
         if len(buffer) < target_count:
             return None
 
+        # Deliberately not `del buffer[:target_count]` -- SchedulerModule already consumes
+        # `len(task.payload)` after `decide` returns, so deleting here as well drops twice as many
+        # patches and deadlocks the next group. See ADE20KApproxCorrectPolicy for the full account.
         current_batch_patches = buffer[:target_count]
-        del buffer[:target_count]
 
         t_id = next(task_id_gen)
 
