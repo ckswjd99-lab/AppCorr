@@ -1,4 +1,5 @@
 import multiprocessing
+import queue
 import time
 import torch
 import numpy as np
@@ -291,7 +292,24 @@ class SourceModule(multiprocessing.Process):
             group_idx += 1
             t_pipeline_start = time.time()
 
-        result = self.feedback_queue.get()
+        # Bounded wait. Every patch group has been sent by now, so the only thing left is the
+        # server's result -- and if the server never produces one, an unbounded `get()` wedges the
+        # run silently: no traceback, no log line, both sides parked in a socket read until an
+        # external timeout kills them. That is how a scheduler bug once cost 45 minutes per config
+        # and stayed invisible in every log. The ceiling is deliberately far above any legitimate
+        # wait (a first request carries the server's model load, ~250 s for ViT-7B) so it can only
+        # ever fire on a genuine hang; override with APPCORR_RESULT_TIMEOUT for slower models.
+        timeout_s = float(os.environ.get('APPCORR_RESULT_TIMEOUT', 900))
+        try:
+            result = self.feedback_queue.get(timeout=timeout_s)
+        except queue.Empty:
+            raise RuntimeError(
+                f"[Source] No result from the server for {timeout_s:.0f}s "
+                f"(request #{self._requests_completed if hasattr(self, '_requests_completed') else '?'}, "
+                f"{len(all_patches)} patches sent across {group_idx} group(s)). "
+                "The server accepted the groups but never returned -- check the server log for a "
+                "pipeline error, or for a scheduler waiting on a group that never completed."
+            ) from None
         t_result_recv = time.time()
 
         server_events = []

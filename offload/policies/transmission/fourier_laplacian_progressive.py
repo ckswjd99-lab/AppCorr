@@ -30,12 +30,27 @@ class FourierLaplacianProgressivePolicy(ProgressiveLPyramidPolicy):
     target resolution), same convention as FourierProgressiveTransmissionPolicy.
     """
 
-    def _keep_hw(self, config: ExperimentConfig, image_hw) -> tuple[int, int, int, int]:
+    def _keep_hw(
+        self, config: ExperimentConfig, image_hw, native_hw: tuple[int, int] | None = None
+    ) -> tuple[int, int, int, int]:
+        """`(H, W)` is the transform size (config-derived); `(keep_h, keep_w)` is the degradation.
+
+        The kept coefficient count is measured against the **original** resolution, because keeping
+        `k` coefficients leaves `k` samples spanning the field of view. Measuring it against a canvas
+        that oversamples the original under-degrades the base: COCO's 1024x1024 canvas carries a
+        480x640 original, so `1024 / 2**2 = 256` is only a 1.9x reduction of the real content rather
+        than the intended 4x, and the approx-only floor then measures the same as the ceiling. See
+        the pyramid contract in AGENTS.md.
+
+        Under `preserve_input_shape` the transform size is already native-derived, so `native_hw`
+        changes nothing there; it only matters for the canvas-sized configs.
+        """
         H, W = self._target_hw_for_level(config, 0, image_hw)
         levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
         base_level = levels[0]
-        keep_h = min(max(math.ceil(H / (2 ** base_level)), 1), H)
-        keep_w = min(max(math.ceil(W / (2 ** base_level)), 1), W)
+        ref_h, ref_w = native_hw if native_hw is not None else (H, W)
+        keep_h = min(max(math.ceil(ref_h / (2 ** base_level)), 1), H)
+        keep_w = min(max(math.ceil(ref_w / (2 ** base_level)), 1), W)
         return H, W, keep_h, keep_w
 
     @staticmethod
@@ -97,7 +112,12 @@ class FourierLaplacianProgressivePolicy(ProgressiveLPyramidPolicy):
 
         for b_idx, image in enumerate(image_list):
             image_hw = image.shape[:2] if preserve else None
-            H, W, keep_h, keep_w = self._keep_hw(config, image_hw)
+            # `image_hw` drives the transform size and is None without preserve_input_shape; the
+            # native size is passed separately because the degradation must be native-relative
+            # either way.
+            H, W, keep_h, keep_w = self._keep_hw(
+                config, image_hw, tuple(int(v) for v in image.shape[:2])
+            )
             resized = self._resize_to_hw(image, (H, W), np.uint8)
             C = resized.shape[-1]
 

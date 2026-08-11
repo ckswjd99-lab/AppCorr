@@ -83,19 +83,46 @@ class FourierLaplacianHybridPolicy(COCOWindowProgressiveLaplacianPolicy):
     """
 
     @classmethod
-    def _keep_hw(cls, config: ExperimentConfig) -> tuple[int, int]:
+    def _keep_hw(
+        cls, config: ExperimentConfig, native_hw: tuple[int, int] | None = None
+    ) -> tuple[int, int]:
+        """How many low-frequency coefficients per axis survive -- i.e. how many samples across the
+        image the base keeps.
+
+        Sized against the **original** resolution, not `config.image_shape`. Keeping `k` coefficients
+        leaves `k` samples spanning the field of view, so measuring `k` against a canvas that
+        oversamples the original silently under-degrades: COCO's 1024x1024 canvas holds a 480x640
+        original, so the canvas-derived `1024 / 2**2 = 256` (or an explicit 352) is only a 1.4-1.9x
+        reduction of the real content rather than the intended 4x. The approximate pass then loses
+        almost nothing and the approx-only floor measures the same as the full-transmission ceiling.
+        See the pyramid contract in AGENTS.md.
+
+        `native_hw=None` keeps the old canvas-relative behaviour, which is correct whenever the
+        canvas is not an upscale (ImageNet: 375x500 into a 256x256 canvas).
+        """
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
+        base_level = levels[0]
+        H, W = config.image_shape[:2]
         explicit = config.transmission_kwargs.get('dct_keep')
+
         if explicit == 'window':
-            return cls._base_hw(config)
+            # Track the sibling window policy's group-0 base, which degrades from the original by
+            # `global_base_downscale` before being handed over at the configured size.
+            factor = int(config.transmission_kwargs.get('global_base_downscale', 3))
+            ref_h, ref_w = native_hw if native_hw is not None else (H, W)
+            return (
+                min(max(math.ceil(ref_h / factor), 1), H),
+                min(max(math.ceil(ref_w / factor), 1), W),
+            )
         if explicit:
+            # An explicit count is taken literally -- it is an override, not a derived value.
             if isinstance(explicit, (list, tuple)):
                 return int(explicit[0]), int(explicit[1])
             return int(explicit), int(explicit)
-        H, W = config.image_shape[:2]
-        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
-        base_level = levels[0]
-        keep_h = min(max(math.ceil(H / (2 ** base_level)), 1), H)
-        keep_w = min(max(math.ceil(W / (2 ** base_level)), 1), W)
+
+        ref_h, ref_w = native_hw if native_hw is not None else (H, W)
+        keep_h = min(max(math.ceil(ref_h / (2 ** base_level)), 1), H)
+        keep_w = min(max(math.ceil(ref_w / (2 ** base_level)), 1), W)
         return keep_h, keep_w
 
     @staticmethod
@@ -141,7 +168,10 @@ class FourierLaplacianHybridPolicy(COCOWindowProgressiveLaplacianPolicy):
         image_list = self._as_image_list(images)
         comp_lvl = config.transmission_kwargs.get('compression_level', 1)
         mobile_pscore = self._resolve_mobile_pscore(config)
-        keep_h, keep_w = self._keep_hw(config)
+        # Batch=1 for every config using this policy; image 0 sets the native reference, matching
+        # how the window policies take their crop layout from image 0.
+        native_hw = tuple(int(v) for v in image_list[0].shape[:2]) if image_list else None
+        keep_h, keep_w = self._keep_hw(config, native_hw)
 
         projected_images = [self._project_to_model_grid(image, config) for image in image_list]
 
