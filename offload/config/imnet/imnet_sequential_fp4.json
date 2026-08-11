@@ -1,7 +1,6 @@
 {
-    "exp_id": "imnet_approx_only_l2_fp4",
+    "exp_id": "imnet_sequential_fp4",
     "model_name": "dinov3_classifier",
-    "precision": "fp4",
     "batch_size": 32,
     "image_shape": [
         256,
@@ -19,8 +18,9 @@
     },
     "transmission_kwargs": {
         "pyramid_levels": [
-            2
+            0
         ],
         "compression_level": 1
-    }
+    },
+    "precision": "fp4"
 }

@@ -8,7 +8,14 @@ from dataclasses import asdict
 
 from offload.common import ExperimentConfig
 from offload.common.protocol import normalize_appcorr_kwargs
-from offload.policies import get_transmission
+from offload.policies import TRANSMISSION_REGISTRY, get_transmission
+# Module level on purpose: _policy_takes_raw_images runs once per request from SourceModule, which
+# also has sender/receiver threads. Importing inside that call would take the import lock on every
+# request from a worker thread -- a deadlock hazard, not just overhead.
+from offload.policies.transmission.laplacian import LaplacianPyramidPolicy
+from offload.policies.transmission.nyu_appcorr_progressive import (
+    NYUAppCorrRawTransmissionPolicy,
+)
 from offload.mobile.dataset import get_dataset_loader
 
 import os
@@ -93,23 +100,29 @@ class SourceModule(multiprocessing.Process):
             return {}
         return {'target_shape': (int(orig_h), int(orig_w))}
 
+    @staticmethod
+    def _policy_takes_raw_images(policy_name: str) -> bool:
+        """Whether this policy's `encode()` wants raw HWC uint8 arrays instead of
+        `{'image', 'metadata'}` dicts.
+
+        Decided from the policy class, not a hand-maintained name list. The list this replaced was
+        missing `FourierADE20KWindowHybrid`, so every config using it was handed dicts, and
+        `_as_image_list` then produced a malformed shape that surfaced far away as
+        `ValueError: not enough values to unpack` inside `_target_hw_for_level`. Any policy added in
+        future is classified automatically.
+
+        `NYUAppCorrRaw` is the one non-Laplacian policy that also takes raw arrays.
+        """
+        cls = TRANSMISSION_REGISTRY.get(policy_name)
+        if cls is None:
+            return False
+        return issubclass(cls, (LaplacianPyramidPolicy, NYUAppCorrRawTransmissionPolicy))
+
     def _prepare_encode_input(self, images, curr_bs: int, labels=None):
         policy_name = self.config.transmission_policy_name
         preserve_input_shape = bool(self.config.transmission_kwargs.get('preserve_input_shape', False))
         label_list = self._labels_to_list(labels, curr_bs) if labels is not None else []
-        laplacian_policies = {
-            "Laplacian",
-            "ProgressiveLaplacian",
-            "COCOWindowProgressiveLaplacian",
-            "ADE20KWindowProgressiveLaplacian",
-            "NYUAppCorrLaplacian",
-            "NYUAppCorrProgressiveLaplacian",
-            "NYUAppCorrRaw",
-            "FourierProgressive",
-            "FourierLaplacianHybrid",
-            "FourierLaplacianProgressive",
-            "NYUAppCorrFourierLaplacianHybrid",
-        }
+        takes_raw_images = self._policy_takes_raw_images(policy_name)
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
             if preserve_input_shape:
@@ -119,7 +132,7 @@ class SourceModule(multiprocessing.Process):
                     for idx, image_np in enumerate(real_imgs_np)
                 ]
                 self._current_target_shapes = target_shapes
-                if policy_name in laplacian_policies:
+                if takes_raw_images:
                     return real_imgs_np
                 encoded_items = [
                     {
@@ -135,7 +148,7 @@ class SourceModule(multiprocessing.Process):
                         for _ in range(pad_count)
                     )
                 return encoded_items
-            if policy_name in laplacian_policies:
+            if takes_raw_images:
                 return real_imgs_np
 
             server_batch_size = self.config.batch_size
@@ -160,7 +173,7 @@ class SourceModule(multiprocessing.Process):
                 for idx, image_np in enumerate(real_imgs_np)
             ]
             self._current_target_shapes = target_shapes
-            if policy_name in laplacian_policies:
+            if takes_raw_images:
                 return real_imgs_np
             encoded_items = [
                 {

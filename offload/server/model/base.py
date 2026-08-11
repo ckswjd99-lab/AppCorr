@@ -1,3 +1,4 @@
+import contextlib
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Tuple
 import torch
@@ -47,6 +48,19 @@ class ModelExecutor(ABC):
             source_key=source_key,
             **kwargs,
         )
+
+    def dinov3_full_inference_precision(self):
+        """Context manager: run a stock (FULL_INFERENCE) backbone forward at the configured precision.
+
+        FULL_INFERENCE does not dispatch per block through `run_dinov3_approx_block` -- the m2f and
+        detector executors inline their own block loops and the depther calls the whole model in one
+        go -- so without this it silently ignores `precision` and runs BF16. That is what made every
+        approx-only L0 FP4 config return results bit-identical to its BF16 twin. No-op when the
+        precision is bf16/auto, or when no controller is configured.
+        """
+        if self._dinov3_approx_precision is None:
+            return contextlib.nullcontext()
+        return self._dinov3_approx_precision.full_inference_blocks()
 
     def dinov3_approx_event_metadata(self) -> Dict[str, Any]:
         if self._dinov3_approx_precision is None:

@@ -4,7 +4,7 @@
     "dataset_kwargs": {
         "emit_original_image": true
     },
-    "exp_id": "ade20k_m2f_interleaved_static_correct_fp4",
+    "exp_id": "ade20k_m2f_sequential_fp4",
     "batch_size": 1,
     "image_shape": [
         896,
@@ -21,28 +21,17 @@
         "server_rescale_to": "original",
         "m2f_slide_merge_stage": "pre_head"
     },
-    "correct_precision": "fp4",
-    "scheduler_policy_name": "ADE20KWindowInterleaved",
-    "transmission_policy_name": "ADE20KWindowProgressiveLaplacian",
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "Laplacian",
     "transmission_kwargs": {
         "pyramid_levels": [
-            2,
             0
         ],
-        "grouping_strategy": "crop_cover",
-        "num_groups": 16,
         "compression_level": 1,
         "preserve_input_shape": true
     },
     "appcorr_kwargs": {
-        "generated_from_client": true,
-        "method": "partial_token",
-        "token_keep_thres": 4e-05,
-        "mobile_pscore": "residual_energy",
-        "mobile_pscore_weight": 1.0,
-        "server_pscore": "patch_attn_prob_layermean",
-        "server_pscore_weight": 1.0,
-        "pscore_fusion": "geo_mean",
-        "sdpa_query_bucket_size": 64
-    }
+        "enabled": false
+    },
+    "precision": "fp4"
 }

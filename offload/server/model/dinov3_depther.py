@@ -637,7 +637,9 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 batch_source=self._get_batch_source(None, images, context),
             )
 
-        with torch.autocast("cuda", self.autocast_dtype):
+        # `self.model(...)` runs the backbone as one opaque unit, so `precision` can only reach it
+        # by substituting the quantized blocks into the backbone for the duration of the call.
+        with self.dinov3_full_inference_precision(), torch.autocast("cuda", self.autocast_dtype):
             if use_tta:
                 flipped = torch.flip(input_batch, [-1]).contiguous()
                 pred = self.model(input_batch)

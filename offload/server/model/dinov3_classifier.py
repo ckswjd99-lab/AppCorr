@@ -694,7 +694,10 @@ class DINOv3ClassifierExecutor(ModelExecutor):
     def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
         inp = context.get('input_tensor')
         if inp is not None:
-            context['output'] = self.model(inp)
+            # The stock model call has no per-block precision hook, so `precision` reaches it only
+            # by substituting the quantized blocks into the backbone for the duration of the call.
+            with self.dinov3_full_inference_precision():
+                context['output'] = self.model(inp)
 
     def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
         """Extracts Top-5 predictions from context['output'] for all active indices."""
