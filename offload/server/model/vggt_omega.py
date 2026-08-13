@@ -54,18 +54,24 @@ class VGGTOmegaExecutor(ModelExecutor):
         print(f"[Executor] Loaded VGGT-Omega from {weights} ({len(state)} tensors)")
         self.model = model.eval().to(self.device)
 
-    @staticmethod
-    def _frames_to_tensor(frames, device) -> torch.Tensor:
-        """[S, H, W, C] uint8 (or a list of them) -> [1, S, 3, H, W] float in 0..1."""
-        if isinstance(frames, (list, tuple)):
-            frames = np.stack([np.asarray(f) for f in frames])
-        arr = np.asarray(frames)
-        if arr.ndim != 4:
-            raise RuntimeError(f"Expected [S, H, W, C] frames, got {arr.shape}")
-        t = torch.from_numpy(np.ascontiguousarray(arr)).to(device)
-        if t.dtype == torch.uint8:
-            t = t.float() / 255.0
-        return t.permute(0, 3, 1, 2).unsqueeze(0).contiguous()
+    def _frames_to_tensor(self, frames, config=None) -> torch.Tensor:
+        """Native frames -> the patch-aligned, aspect-preserving canvas the model expects.
+
+        Delegates to the forked upstream preprocessing. An anisotropic resize to a square would
+        leave depth looking fine and make camera pose unmeasurable, so this is not optional.
+        """
+        from .vggt_preprocess import preprocess_frames
+
+        profile = config.get_input_profile_config() if config is not None else {}
+        if not isinstance(frames, (list, tuple)):
+            frames = list(np.asarray(frames))
+        return preprocess_frames(
+            frames,
+            mode=profile.get("vggt_resize_mode", "balanced"),
+            image_resolution=int(profile.get("vggt_resolution", 512)),
+            patch_size=int(profile.get("vggt_patch_size", 16)),
+            device=self.device,
+        )
 
     @torch.inference_mode()
     def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
@@ -75,7 +81,7 @@ class VGGTOmegaExecutor(ModelExecutor):
         if frames is None:
             raise RuntimeError("Missing context['input_frames'] for VGGT-Omega full_inference().")
 
-        images = self._frames_to_tensor(frames, self.device)
+        images = self._frames_to_tensor(frames, config)
         with self.dinov3_full_inference_precision(), torch.autocast("cuda", self.autocast_dtype):
             preds = self.model(images)
 
