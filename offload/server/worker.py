@@ -220,6 +220,7 @@ class WorkerModule(multiprocessing.Process):
                         print(f"[Worker] Device overridden by Config: {self.device}")
                     self.policy = get_transmission(self.config.transmission_policy_name)
                     self._validate_lowres_sr_config()
+                    self._check_triton_runtime()
                     self._load_sr_engine()
                     self._load_model(self.config.model_name)
                     print(f"[Worker] Configured. Policy: {self.config.transmission_policy_name}, "
@@ -647,6 +648,38 @@ class WorkerModule(multiprocessing.Process):
                 context['final_results'] = {}
             context['final_results'].update(final_batch_results)
             context['active_indices'] = torch.empty(0, device=self.device, dtype=torch.long)
+
+    def _check_triton_runtime(self):
+        """Configure the compile toolchain for *every* model, then prove Triton can compile.
+
+        `_configure_compile_environment()` supplies CPATH, TRITON_PTXAS_PATH and a libcuda symlink
+        for a triton wheel that ships without them. It used to be reachable only through the DINOv3
+        precision controller, so any executor that does not build one -- VGGT-Omega, for instance --
+        hit `Cannot find ptxas` at its first correction. Calling it here makes it model-agnostic.
+
+        The verification then compiles a real kernel. Import success proves nothing: triton imports
+        cleanly with no `cuda.h` and no `ptxas` and only fails when something is compiled, which in
+        a long run is the first correction, hours in.
+
+        Reported rather than raised, because approx-only and FULL_INFERENCE configs never touch a
+        Triton kernel. The correction path raises on its own, from `note_fallback`, at the moment it
+        would otherwise have silently degraded.
+        """
+        from appcorr.models.dinov3.layers.triton_kernels import (
+            TritonFallbackError,
+            verify_triton_runtime,
+        )
+        from offload.server.model.dinov3_precision import _configure_compile_environment
+
+        _configure_compile_environment()
+        try:
+            verify_triton_runtime(raise_on_failure=True)
+        except TritonFallbackError as exc:
+            print("!!! [Worker] TRITON IS BROKEN HERE -- any correction latency measured in this "
+                  "run is meaningless.", flush=True)
+            print(str(exc), flush=True)
+            return
+        print("[Worker] Triton runtime verified (kernels compile).", flush=True)
 
     def _create_session_context(self) -> Dict[str, Any]:
         return {

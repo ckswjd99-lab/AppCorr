@@ -15,6 +15,9 @@ from .token_update import (
 )
 
 __all__ = [
+    "TritonFallbackError",
+    "note_fallback",
+    "verify_triton_runtime",
     "active_token_update_triton",
     "fused_swiglu_epilogue_triton",
     "gather_heads_triton",
@@ -30,3 +33,9 @@ __all__ = [
     "sdpa_with_pscore_triton",
     "token_prune_select_compact_triton",
 ]
+
+from ._strict import (  # noqa: E402
+    TritonFallbackError,
+    note_fallback,
+    verify_triton_runtime,
+)
