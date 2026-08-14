@@ -858,7 +858,17 @@ class SelfAttentionBlock(nn.Module):
         server_pscore: str,
     ) -> torch.Tensor:
         if server_pscore in SelfAttentionBlock._LAYERMEAN_SERVER_PSCORES:
-            cache_key = f"_shared_{server_pscore}_server_pscore_mean_all_layers"
+            # Average over the layers of *this* stack only. A model can have several block stacks
+            # over different token axes -- VGGT-Omega has three (`pe*` per-frame patch-embed tokens,
+            # `frame*` per-frame aggregator tokens, `inter*` sequence-global) whose scores are
+            # shaped (8, 1037), (8, 1049) and (1, 8392). Averaging across them is not merely a shape
+            # error, it is meaningless: they index different things.
+            #
+            # The stack is the tag with its trailing layer number removed, which leaves DINOv3
+            # unchanged (`src0_layer7` -> `src0_layer`, i.e. all layers of one source, exactly the
+            # previous grouping) and separates VGGT's three.
+            stack = tag.rstrip("0123456789")
+            cache_key = f"_shared_{server_pscore}_server_pscore_mean_{stack}"
             signature_key = f"{cache_key}_keys"
             cached_server_pscore = cache_feature.get(cache_key)
             if cached_server_pscore is not None:
@@ -868,11 +878,16 @@ class SelfAttentionBlock(nn.Module):
                 sorted(
                     key
                     for key, value in cache_feature.items()
-                    if key.endswith("_server_pscore") and isinstance(value, torch.Tensor)
+                    if key.endswith("_server_pscore")
+                    and isinstance(value, torch.Tensor)
+                    and key[: -len("_server_pscore")].rstrip("0123456789") == stack
                 )
             )
             if not server_pscore_keys:
-                raise KeyError("Missing cached *_server_pscore entries. They must be produced during approx.")
+                raise KeyError(
+                    f"Missing cached *_server_pscore entries for stack '{stack}'. "
+                    "They must be produced during approx."
+                )
 
             server_pscore_tensors = [cache_feature[key] for key in server_pscore_keys]
             base_shape = server_pscore_tensors[0].shape

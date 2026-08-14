@@ -132,8 +132,13 @@ class Aggregator(nn.Module):
         extra = {} if rope is not None else {"num_pretokens": 0}
         return blk.correct(x, dindice, rope, cache_feature, tag=tag, **kwargs, **extra)
 
-    def _run_patch_embed(self, images, cache_feature=None, approx_kwargs=None):
-        """The patch-embed ViT's 24 blocks. Stock, or approx when `cache_feature` is given.
+    def _run_patch_embed(self, images, cache_feature=None, approx_kwargs=None, correct=False):
+        """The patch-embed ViT's 24 blocks: stock, approx, or correct.
+
+        This stack is a correction target in its own right, not just a feature extractor. It is
+        per-frame and has no cross-frame dependency, so it is the only part of the model that can
+        run before every frame has arrived -- which makes it the natural place to hide work under
+        the refinement transfer. Its `pe{i}` tags keep its KV cache separate from the aggregator's.
 
         Not `forward_features_list_appcorr`: that driver builds its own input pyramid by
         interpolating the tensor, which is the standalone/offline path. Here the frames have already
@@ -148,7 +153,7 @@ class Aggregator(nn.Module):
         for idx, blk in enumerate(pe.blocks):
             rope = pe.rope_embed(H=grid_h, W=grid_w) if pe.rope_embed is not None else None
             x, cache_feature = self._call_block(
-                blk, x, rope, cache_feature, f"pe{idx}", approx_kwargs or {}
+                blk, x, rope, cache_feature, f"pe{idx}", approx_kwargs or {}, correct
             )
         return pe.post_features_list([x], [None])[0]["x_norm_patchtokens"]
 
@@ -157,6 +162,7 @@ class Aggregator(nn.Module):
         images: torch.Tensor,
         cache_feature: dict | None = None,
         approx_kwargs: dict | None = None,
+        correct: bool = False,
     ) -> tuple[torch.Tensor, tuple, dict]:
         """Everything before the block loop: normalize, patch-embed, prepend cam/register, build RoPE.
 
@@ -178,7 +184,7 @@ class Aggregator(nn.Module):
         # entry point and returns the CLS token alone, so calling the module directly silently
         # yields [B, D] where [B, N, D] is needed -- caught here only because the following cat
         # happens to fail on rank. `_run_patch_embed` handles that and the approx variant.
-        patch_tokens = self._run_patch_embed(images, cache_feature, approx_kwargs)
+        patch_tokens = self._run_patch_embed(images, cache_feature, approx_kwargs, correct)
 
         tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)
         _, num_tokens, embed_dim = tokens.shape
@@ -297,7 +303,11 @@ class Aggregator(nn.Module):
         correct: bool = False,
     ) -> tuple[torch.Tensor, dict | None]:
         tokens = tokens.view(batch_size, num_frames, num_tokens, embed_dim)
-        tag = f"inter{block_idx}"
+        # `interg` / `interr`, not one `inter` stack: the global blocks attend over S*N tokens while
+        # the register blocks attend over S*17, so their per-token scores are shaped (1, 8392) and
+        # (1, 136). Anything that aggregates across a stack -- the layer-mean pscore, for one --
+        # must not mix them, and the tag is what carries that distinction.
+        tag = f"inter{'g' if attention_type == 'global' else 'r'}{block_idx}"
         approx_kwargs = approx_kwargs or {}
 
         if attention_type == "global":

@@ -47,14 +47,29 @@ listing it in `pyramid_levels`; L4 is past the collapse and is not a useful floo
 """
 
 import math
-from typing import Tuple
+from typing import List, Tuple
 
-from offload.common.protocol import ExperimentConfig
+from offload.common.protocol import ExperimentConfig, Patch
 from .laplacian import LaplacianPyramidPolicy
 
 
 class VGGTLaplacianPolicy(LaplacianPyramidPolicy):
     """Laplacian pyramid whose level-0 canvas is VGGT's per-frame model input shape."""
+
+    def encode(self, images, config: ExperimentConfig):
+        """Base-class encode, with each pyramid level stamped as its own scheduling group.
+
+        `Patch.group_id` defaults to 0 and `LaplacianPyramidPolicy` never sets it, so a multi-level
+        transmission arrives as several groups that all claim to be group 0. An approx-then-correct
+        scheduler keys its phase off that field, sees group 0 twice, and issues APPROX again instead
+        of CORRECT -- so SEND_RESPONSE is never reached and the client waits until its timeout with
+        nothing in either log. Levels are yielded coarsest-first, so group 0 is the base and each
+        residual level follows in order.
+        """
+        for group_idx, patches in enumerate(super().encode(images, config)):
+            for patch in patches:
+                patch.group_id = group_idx
+            yield patches
 
     @staticmethod
     def _model_canvas_hw(config: ExperimentConfig, image_hw: Tuple[int, int]) -> Tuple[int, int]:
