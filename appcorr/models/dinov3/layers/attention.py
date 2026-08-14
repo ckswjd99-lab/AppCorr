@@ -84,12 +84,25 @@ class SelfAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         mask_k_bias: bool = False,
+        use_qk_norm: bool = False,
         device=None,
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim**-0.5
+
+        # Off for every DINOv3 checkpoint; on for VGGT-Omega's aggregator blocks, which were trained
+        # with it. It lives here rather than in a VGGT-side subclass because q and k are formed
+        # inline at six separate points below (stock, approx, both correct paths, both
+        # partial-channel paths) -- a subclass could not intercept them without duplicating all six.
+        self.use_qk_norm = use_qk_norm
+        if use_qk_norm:
+            self.q_norm = nn.LayerNorm(head_dim, eps=1e-5, device=device)
+            self.k_norm = nn.LayerNorm(head_dim, eps=1e-5, device=device)
+        else:
+            self.q_norm = None
+            self.k_norm = None
 
         linear_class = LinearKMaskedBias if mask_k_bias else nn.Linear
         self.qkv = linear_class(dim, dim * 3, bias=qkv_bias, device=device)
@@ -118,6 +131,22 @@ class SelfAttention(nn.Module):
             "col_idx": col_idx.detach().clone(),
             "attn_prob_sel": attn_prob_sel.to(dtype=torch.bfloat16).detach().clone(),
         }
+
+    def apply_qk_norm(self, q: Tensor, k: Tensor) -> Tuple[Tensor, Tensor]:
+        """LayerNorm q and k over the head dim. A no-op unless the checkpoint was trained with it.
+
+        Call this immediately before `apply_rope`, never after: VGGT-Omega normalizes pre-RoPE, and
+        the order is not interchangeable. It also has to hold for the correction path, because the
+        approx pass caches K *after* RoPE -- normalize on the wrong side there and the corrected
+        tokens would disagree with the cached ones in a way that reads as approximation error rather
+        than as a bug.
+
+        Shape-agnostic on purpose: the head dim is last at every call site, but the leading dims are
+        `[B, H, N]` in the stock path and a flat `[rows, H]` in the partial-token correct path.
+        """
+        if self.q_norm is None:
+            return q, k
+        return self.q_norm(q), self.k_norm(k)
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
         # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
@@ -169,7 +198,9 @@ class SelfAttention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
-        
+
+        q, k = self.apply_qk_norm(q, k)
+
         # RoPE
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
@@ -198,9 +229,14 @@ class SelfAttention(nn.Module):
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]    # [B, H, N, D//H]
 
+        q, k = self.apply_qk_norm(q, k)
+
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
 
+        # K goes into the cache normalized *and* RoPE'd; V stays raw, since only q and k are
+        # normalized. correct_partial_token has to produce its new K the same way or the corrected
+        # rows will not be comparable to the cached ones.
         cache_feature[f"{tag}_kv"][:, :, 0] = k.detach().transpose(1, 2)
         if server_pscore in {"none", "disabled"}:
             x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
@@ -380,6 +416,15 @@ class SelfAttention(nn.Module):
         q_new = qkv_new[:, 0]
         kv_new = qkv_new[:, 1:]
 
+        # Outside the rope branch on purpose: normalization is part of forming q/k, not part of
+        # positional encoding, and a qk-norm checkpoint with rope disabled would still need it.
+        # The new K must be written back into `kv_new` in place -- `_apply_rope_to_active_tokens`
+        # rotates `kv_new[:, 0]` in place and the result is scattered straight into the cache, so a
+        # normalized copy that is not written back would be silently discarded.
+        if self.q_norm is not None:
+            q_new, k_normed = self.apply_qk_norm(q_new, kv_new[:, 0])
+            kv_new[:, 0] = k_normed
+
         if rope is not None:
             prefix_len = N - rope[0].shape[0]
             q_new, _ = self._apply_rope_to_active_tokens(
@@ -505,6 +550,8 @@ class SelfAttention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+
+        q, k = self.apply_qk_norm(q, k)
 
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
