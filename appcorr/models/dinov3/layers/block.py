@@ -85,10 +85,11 @@ class SelfAttentionBlock(nn.Module):
         attn_class: Callable[..., nn.Module] = SelfAttention,
         ffn_layer: Callable[..., nn.Module] = SwiGLUFFN,
         mask_k_bias: bool = False,
+        use_qk_norm: bool = False,
         device=None,
     ) -> None:
         super().__init__()
-        
+
         self.norm1 = norm_layer(dim)
         self.attn: SelfAttention = attn_class(
             dim,
@@ -98,6 +99,7 @@ class SelfAttentionBlock(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             mask_k_bias=mask_k_bias,
+            use_qk_norm=use_qk_norm,
             device=device,
         )
         self.ls1 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
@@ -920,7 +922,16 @@ class SelfAttentionBlock(nn.Module):
 
         # create update index
         B, N, C = x.shape
-        num_pretokens = N - (rope[0].shape[0])
+        # Normally inferred from the rope length, since rope covers patch tokens only. VGGT's
+        # inter-frame blocks have no rope (they attend across frames, where a per-frame 2D position
+        # is meaningless), so they pass this explicitly. `num_pretokens = 0` there is deliberate:
+        # in the inter-frame layout the camera/register tokens are strided per frame rather than a
+        # contiguous prefix, so they cannot be expressed as "pretokens" and are scored like any
+        # other token.
+        num_pretokens = kwargs.get("num_pretokens")
+        if num_pretokens is None:
+            num_pretokens = N - (rope[0].shape[0])
+        num_pretokens = int(num_pretokens)
         dindice_pre = dindice[:, :num_pretokens]      # [B, 5] Shared pretokens
         dindice_patches = dindice[:, num_pretokens:]  # [B, M] Shared candidate patches
 
