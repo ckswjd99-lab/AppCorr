@@ -30,6 +30,7 @@ from .transmission import (
     FourierLaplacianHybridPolicy,
     FourierLaplacianProgressivePolicy,
     NYUAppCorrFourierLaplacianHybridPolicy,
+    VGGTLaplacianPolicy,
 )
 
 # Registry for dynamic instantiation
@@ -62,6 +63,7 @@ TRANSMISSION_REGISTRY = {
     "FourierLaplacianHybrid": FourierLaplacianHybridPolicy,
     "FourierLaplacianProgressive": FourierLaplacianProgressivePolicy,
     "NYUAppCorrFourierLaplacianHybrid": NYUAppCorrFourierLaplacianHybridPolicy,
+    "VGGTLaplacian": VGGTLaplacianPolicy,
 }
 
 def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:

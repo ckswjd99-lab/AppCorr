@@ -27,19 +27,24 @@ import torch.nn.functional as F
 MIN_ASPECT, MAX_ASPECT = 0.5, 2.0
 
 
+def _cropped_hw(h: int, w: int) -> Tuple[int, int]:
+    """The shape `_crop_to_supported_aspect_ratio` would produce, without the image."""
+    aspect = h / max(w, 1)
+    if aspect < MIN_ASPECT:
+        return h, min(w, max(1, int(round(h / MIN_ASPECT))))
+    if aspect > MAX_ASPECT:
+        return min(h, max(1, int(round(w * MAX_ASPECT)))), w
+    return h, w
+
+
 def _crop_to_supported_aspect_ratio(img: np.ndarray) -> np.ndarray:
     """Centre-crop only the extremes into [0.5, 2.0]; ordinary frames pass through untouched."""
     h, w = img.shape[:2]
-    aspect = h / max(w, 1)
-    if aspect < MIN_ASPECT:
-        cw = min(w, max(1, int(round(h / MIN_ASPECT))))
-        left = max((w - cw) // 2, 0)
-        return img[:, left:left + cw]
-    if aspect > MAX_ASPECT:
-        ch = min(h, max(1, int(round(w * MAX_ASPECT))))
-        top = max((h - ch) // 2, 0)
-        return img[top:top + ch, :]
-    return img
+    ch, cw = _cropped_hw(h, w)
+    if (ch, cw) == (h, w):
+        return img
+    top, left = max((h - ch) // 2, 0), max((w - cw) // 2, 0)
+    return img[top:top + ch, left:left + cw]
 
 
 def _round_to_patch_multiple(value: float, patch_size: int) -> int:
@@ -60,18 +65,50 @@ def _max_size_target_shape(aspect: float, resolution: int, patch_size: int) -> T
     return _round_to_patch_multiple(resolution * aspect, patch_size), resolution
 
 
+def model_target_hw(
+    h: int,
+    w: int,
+    mode: str = "balanced",
+    image_resolution: int = 512,
+    patch_size: int = 16,
+) -> Tuple[int, int]:
+    """The canvas shape a native `h x w` frame ends up at, computed from the shape alone.
+
+    Public because the transmission policy needs it too: the pyramid has to be anchored to the
+    shape the model will actually consume, otherwise degradation is measured against a canvas the
+    model never sees and "level 2" stops meaning a quarter of the model's resolution. Sharing this
+    function is what keeps the mobile and server sides from drifting apart.
+    """
+    ch, cw = _cropped_hw(int(h), int(w))
+    aspect = ch / max(cw, 1)
+    if mode == "balanced":
+        return _balanced_target_shape(aspect, image_resolution, patch_size)
+    if mode == "max_size":
+        return _max_size_target_shape(aspect, image_resolution, patch_size)
+    raise ValueError("mode must be 'balanced' or 'max_size'")
+
+
 def preprocess_frames(
     frames: Sequence[np.ndarray],
     mode: str = "balanced",
     image_resolution: int = 512,
     patch_size: int = 16,
     device: torch.device | None = None,
+    native_shapes: Sequence[tuple[int, int]] | None = None,
 ) -> torch.Tensor:
     """`[S, H, W, C]` uint8/float frames (native, possibly ragged) -> `[1, S, 3, H', W']` float.
 
     Mirrors upstream's `load_and_preprocess_images` for in-memory input. Frames that end up at
     different shapes are zero-padded to a common size, as upstream does, because the aggregator
     needs one tensor.
+
+    `native_shapes` gives each frame's *original* `(H, W)`, and must be supplied whenever the frames
+    have been through a transmission policy. The canvas has to be a function of the original frame,
+    not of whatever shape arrived: a policy that reconstructs at or below model scale returns a
+    patch-aligned shape (357x637 -> 368x640), whose slightly different aspect ratio can land
+    `model_target_hw` on a different token split (384x688 vs 384x672). That happens for 6.3% of
+    Co3D frames, and it silently gives the floor and ceiling conditions *different* canvases -- so
+    they stop being comparable, and the effective intrinsics shift, which moves pose.
     """
     if len(frames) == 0:
         raise ValueError("At least 1 frame is required")
@@ -79,22 +116,26 @@ def preprocess_frames(
         raise ValueError("mode must be 'balanced' or 'max_size'")
     if image_resolution % patch_size:
         raise ValueError("image_resolution must be divisible by patch_size")
+    if native_shapes is not None and len(native_shapes) != len(frames):
+        raise ValueError(
+            f"native_shapes has {len(native_shapes)} entries for {len(frames)} frames"
+        )
 
     import cv2
 
     out: List[torch.Tensor] = []
-    for f in frames:
+    for idx, f in enumerate(frames):
         img = np.asarray(f)
         if img.ndim != 3 or img.shape[2] != 3:
             raise RuntimeError(f"Expected an HWC RGB frame, got {img.shape}")
+        shape_for_target = (
+            tuple(native_shapes[idx]) if native_shapes is not None else img.shape[:2]
+        )
+        th, tw = model_target_hw(*shape_for_target, mode, image_resolution, patch_size)
+        # The crop still keys off the arriving image's own aspect, since it is that array being
+        # cropped; only the *target* comes from the original shape.
         img = _crop_to_supported_aspect_ratio(img)
         h, w = img.shape[:2]
-        aspect = h / max(w, 1)
-        th, tw = (
-            _balanced_target_shape(aspect, image_resolution, patch_size)
-            if mode == "balanced"
-            else _max_size_target_shape(aspect, image_resolution, patch_size)
-        )
         # INTER_AREA downscales without aliasing; upstream uses PIL BICUBIC, which matters little
         # next to getting the aspect ratio right.
         interp = cv2.INTER_AREA if (th < h or tw < w) else cv2.INTER_CUBIC

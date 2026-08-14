@@ -54,11 +54,15 @@ class VGGTOmegaExecutor(ModelExecutor):
         print(f"[Executor] Loaded VGGT-Omega from {weights} ({len(state)} tensors)")
         self.model = model.eval().to(self.device)
 
-    def _frames_to_tensor(self, frames, config=None) -> torch.Tensor:
+    def _frames_to_tensor(self, frames, config=None, native_shapes=None) -> torch.Tensor:
         """Native frames -> the patch-aligned, aspect-preserving canvas the model expects.
 
         Delegates to the forked upstream preprocessing. An anisotropic resize to a square would
         leave depth looking fine and make camera pose unmeasurable, so this is not optional.
+
+        `native_shapes` keeps the canvas tied to the *original* frame rather than to whatever shape
+        the transmission policy reconstructed; without it, floor and ceiling silently disagree on
+        the canvas for 6.3% of Co3D frames. See `preprocess_frames`.
         """
         from .vggt_preprocess import preprocess_frames
 
@@ -71,6 +75,7 @@ class VGGTOmegaExecutor(ModelExecutor):
             image_resolution=int(profile.get("vggt_resolution", 512)),
             patch_size=int(profile.get("vggt_patch_size", 16)),
             device=self.device,
+            native_shapes=native_shapes,
         )
 
     @torch.inference_mode()
@@ -81,7 +86,7 @@ class VGGTOmegaExecutor(ModelExecutor):
         if frames is None:
             raise RuntimeError("Missing context['input_frames'] for VGGT-Omega full_inference().")
 
-        images = self._frames_to_tensor(frames, config)
+        images = self._frames_to_tensor(frames, config, context.get("input_native_shapes"))
         with self.dinov3_full_inference_precision(), torch.autocast("cuda", self.autocast_dtype):
             preds = self.model(images)
 
@@ -92,36 +97,216 @@ class VGGTOmegaExecutor(ModelExecutor):
         preds = context.get("vggt_preds")
         if preds is None:
             return {}
-        depth = preds["depth"][0]        # [S, H, W, 1]
-        pose = preds["pose_enc"][0]      # [S, 9]
+        from appcorr.models.vggt_omega.utils.pose_enc import encoding_to_camera
+
+        # [1, S, H, W, 1] -> [S, H, W]. The trailing singleton is the head's channel axis and
+        # carrying it further makes boolean-masked depth comparisons broadcast into an [N, N]
+        # matrix instead of comparing elementwise.
+        depth = preds["depth"][0, ..., 0]
+        pose = preds["pose_enc"]         # [1, S, 9]
+
+        # Decode the 9D encoding here rather than client-side: the focal terms are angular (FoV),
+        # so recovering intrinsics needs the canvas the model actually ran on, and that shape is
+        # per-request and known only here. Handing the raw encoding to the evaluator would make the
+        # client re-derive a shape it never sees.
+        extrinsics, intrinsics = encoding_to_camera(pose.float().cpu(), context["vggt_input_hw"])
+        extrinsics = extrinsics[0].numpy()  # [S, 3, 4], camera-from-world, OpenCV axes
+
+        # Everything below is a single sequence, so it lands at batch index 0 -- the frame axis
+        # lives inside each array, not across the returned dict.
         return {
             0: {
                 "depth": depth.float().cpu().numpy(),
-                "pose_enc": pose.float().cpu().numpy(),
+                "pose_enc": pose[0].float().cpu().numpy(),
+                "R": extrinsics[:, :3, :3],
+                "T": extrinsics[:, :3, 3],
+                "intrinsics": intrinsics[0].numpy() if intrinsics is not None else None,
+                "input_hw": tuple(int(v) for v in context["vggt_input_hw"]),
                 "num_frames": int(depth.shape[0]),
             }
         }
+
+    def preprocess(self, batch_data: Any, task: Task, context: Dict[str, Any], config: Any):
+        """Decoded transmission output -> `context['input_frames']`.
+
+        The batch axis *is* the frame axis: one request is one multi-view sequence, so the S frames
+        of that sequence arrive as what every other executor calls a batch. Nothing here reshapes
+        them; `_frames_to_tensor` adds the leading singleton batch dim at inference time, because
+        that is where the model's canvas is known.
+
+        Frames may be wrapped as `{'image', 'target_shape'}` by the worker when the policy preserves
+        native shapes -- which this model's policy always does, since VGGT's canvas is derived
+        per-frame from the frame's own aspect ratio.
+        """
+        items = batch_data if isinstance(batch_data, (list, tuple)) else list(batch_data)
+        frames, natives = [], []
+        for item in items:
+            is_dict = isinstance(item, dict)
+            image = np.ascontiguousarray(item["image"] if is_dict else item)
+            frames.append(image)
+            ts = item.get("target_shape") if is_dict else None
+            natives.append(tuple(int(v) for v in ts) if ts is not None else image.shape[:2])
+        context["input_frames"] = frames
+        # Kept separately from the frames: the canvas must follow the original shape, not the
+        # reconstructed one, or the floor and ceiling conditions land on different canvases.
+        context["input_native_shapes"] = natives
+        return None
 
     # --- Staged pipeline: not implemented yet -------------------------------------------------
     # FULL_INFERENCE is the only supported op at the skeleton stage. These raise rather than
     # returning empty, so a config that schedules them fails immediately and visibly instead of
     # producing results from a half-run pipeline.
 
-    def preprocess(self, task: Task, context: Dict[str, Any], config: Any):
-        """Frames arrive ready to use; nothing to do until a transmission policy reshapes them."""
-        return None
+    @staticmethod
+    def _approx_kwargs(config: Any) -> Dict[str, Any]:
+        """The subset of appcorr options the block's `approx()` actually reads."""
+        from offload.common.protocol import normalize_appcorr_kwargs
 
+        opts = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        return {
+            "appcorr_method": opts["method"],
+            "server_pscore": opts["server_pscore"],
+            "attn_col_alive_ratio": opts["attn_col_alive_ratio"],
+            "debug": opts["debug"],
+        }
+
+    @torch.inference_mode()
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
-        raise NotImplementedError("VGGT-Omega: PREPARE_TOKENS not implemented (use FULL_INFERENCE)")
+        """Patch-embed the frames and assemble the aggregator's input tokens.
 
+        This runs the whole 24-block patch-embed ViT, because that stack is per-frame and has no
+        cross-frame dependency -- it is the only part of the model that can be done before every
+        frame has arrived. Everything after it is gated on the first inter-frame block.
+        """
+        frames = context.get("input_frames")
+        if frames is None:
+            raise RuntimeError("Missing context['input_frames'] for VGGT-Omega prepare_tokens().")
+
+        images = self._frames_to_tensor(frames, config, context.get("input_native_shapes"))
+        cache: Dict[str, Any] = context.setdefault("cache_feature", {})
+
+        # PREPARE_TOKENS runs once per transmitted group, so the second call sees the *refined*
+        # image. It must not re-run the patch-embed stack in approx mode: that would overwrite the
+        # `pe*` KV cache the approximate pass produced, and correction would then be comparing the
+        # refined tokens against themselves. The refinement pass therefore patch-embeds stock and
+        # leaves the cache alone -- correction of the patch-embed stack itself is a later step.
+        refining = context.get("vggt_approx_done", False)
+        with torch.autocast("cuda", self.autocast_dtype):
+            tokens, frame_rope, geom = self.model.aggregator.embed(
+                images,
+                cache_feature=None if refining else cache,
+                approx_kwargs=None if refining else self._approx_kwargs(config),
+            )
+
+        context["vggt_images"] = images          # the dense head re-reads the input images
+        context["vggt_tokens"] = tokens
+        context["vggt_rope"] = frame_rope
+        context["vggt_geom"] = geom
+        context["vggt_input_hw"] = tuple(images.shape[-2:])
+        if not refining:
+            context["vggt_outputs"] = [None] * self.model.aggregator.depth
+
+    @torch.inference_mode()
     def approx_forward(self, params, context: Dict[str, Any], config: Any):
-        raise NotImplementedError("VGGT-Omega: APPROX_FORWARD not implemented (use FULL_INFERENCE)")
+        """Aggregator blocks `[start, end)` on the approximate tokens."""
+        if "vggt_tokens" not in context:
+            raise RuntimeError("APPROX_FORWARD before PREPARE_TOKENS for VGGT-Omega.")
+        agg = self.model.aggregator
+        start, end = params.get("layers", (0, agg.depth))
 
+        # The DINOv3 precision controller is built from a single `backbone.blocks` list; VGGT has
+        # three stacks, so low-precision approx is not wired here yet. Skip the instrumentation
+        # rather than fail, and report nothing rather than report a precision that is not in effect.
+        if self._dinov3_approx_precision is not None:
+            self.begin_dinov3_approx_event()
+
+        with torch.autocast("cuda", self.autocast_dtype):
+            outputs, tokens = agg.run_blocks(
+                context["vggt_tokens"],
+                context["vggt_rope"],
+                context["vggt_geom"],
+                block_range=(int(start), int(end)),
+                outputs=context["vggt_outputs"],
+                cache_feature=context["cache_feature"],
+                approx_kwargs=self._approx_kwargs(config),
+            )
+        context["vggt_tokens"] = tokens
+        context["vggt_outputs"] = outputs
+        context["vggt_approx_done"] = True
+        if self._dinov3_approx_precision is None:
+            return {}
+        return self.dinov3_approx_event_metadata()
+
+    @staticmethod
+    def _correct_kwargs(config: Any) -> Dict[str, Any]:
+        from offload.common.protocol import normalize_appcorr_kwargs
+
+        o = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        return {
+            "appcorr_method": o["method"],
+            "token_keep_ratio": o["token_keep_ratio"],
+            "token_keep_thres": o["token_keep_thres"],
+            "mobile_pscore": o["mobile_pscore"],
+            "mobile_pscore_weight": o["mobile_pscore_weight"],
+            "server_pscore": o["server_pscore"],
+            "server_pscore_weight": o["server_pscore_weight"],
+            "pscore_fusion": o["pscore_fusion"],
+            "sdpa_query_bucket_size": o["sdpa_query_bucket_size"],
+            "attn_col_alive_ratio": o["attn_col_alive_ratio"],
+            "debug": o["debug"],
+        }
+
+    @torch.inference_mode()
     def correct_forward(self, params, context: Dict[str, Any], config: Any):
-        raise NotImplementedError("VGGT-Omega: CORRECT_FORWARD not implemented (use FULL_INFERENCE)")
+        """Aggregator blocks `[start, end)` in correct mode, on the refined tokens."""
+        if not context.get("vggt_approx_done"):
+            raise RuntimeError("CORRECT_FORWARD before APPROX_FORWARD for VGGT-Omega.")
+        agg = self.model.aggregator
+        start, end = params.get("layers", (0, agg.depth))
 
+        with torch.autocast("cuda", self.autocast_dtype):
+            outputs, tokens = agg.run_blocks(
+                context["vggt_tokens"],
+                context["vggt_rope"],
+                context["vggt_geom"],
+                block_range=(int(start), int(end)),
+                outputs=context["vggt_outputs"],
+                cache_feature=context["cache_feature"],
+                approx_kwargs=self._correct_kwargs(config),
+                correct=True,
+            )
+        context["vggt_tokens"] = tokens
+        context["vggt_outputs"] = outputs
+
+    @torch.inference_mode()
     def head_inference(self, task: Task, context: Dict[str, Any], config: Any):
-        raise NotImplementedError("VGGT-Omega: HEAD_INFERENCE not implemented (use FULL_INFERENCE)")
+        """Run the camera and depth heads on the cached layer outputs."""
+        outputs = context.get("vggt_outputs")
+        if outputs is None:
+            raise RuntimeError("HEAD_INFERENCE before APPROX_FORWARD for VGGT-Omega.")
+        missing = [i for i in sorted(self.model.aggregator.cached_layer_indices) if outputs[i] is None]
+        if missing:
+            # Loud, because the heads would otherwise read a None and fail far from the cause.
+            raise RuntimeError(
+                f"VGGT-Omega heads need cached layers {sorted(self.model.aggregator.cached_layer_indices)}; "
+                f"blocks {missing} were never run. Did APPROX_FORWARD cover the full depth?"
+            )
+
+        model = self.model
+        start = model.aggregator.patch_token_start
+        preds: Dict[str, Any] = {
+            "camera_and_register_tokens": outputs[-1][:, :, :start].contiguous(),
+        }
+        with torch.autocast("cuda", enabled=False):
+            if model.camera_head is not None:
+                preds["pose_enc"] = model.camera_head(outputs, patch_token_start=start)
+            if model.dense_head is not None:
+                depth, depth_conf = model.dense_head(
+                    outputs, images=context["vggt_images"], patch_token_start=start
+                )
+                preds["depth"] = depth
+                preds["depth_conf"] = depth_conf
+        context["vggt_preds"] = preds
 
     def decide_exit(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
         """No early exit: every frame is needed for the inter-frame attention the model is built on."""

@@ -7,8 +7,19 @@
 import torch
 import torch.nn as nn
 
-from appcorr.models.vggt_omega.models.layers import Mlp, RopePositionEmbedding, SelfAttentionBlock
-from appcorr.models.vggt_omega.models.layers.vision_transformer import DinoVisionTransformer
+from appcorr.models.vggt_omega.models.layers import RopePositionEmbedding
+
+# Blocks and the patch-embed ViT come from the *instrumented* DINOv3 tree, not the vendored one.
+# They are the same architecture -- verified bit-identical output under VGGT's own weights, with
+# state_dict keys matching exactly (`scratchpad/block_swap_check.py`) -- but they additionally carry
+# the approx/correct, pscore-selection and precision machinery that correction needs. Building on
+# the vendored copies would mean writing a second implementation of all of it.
+#
+# The only architectural gap was qk-norm, which VGGT's aggregator is trained with and DINOv3 is not;
+# it is now a no-op-by-default option on the shared attention.
+from appcorr.models.dinov3.layers.block import SelfAttentionBlock
+from appcorr.models.dinov3.layers.ffn_layers import Mlp
+from appcorr.models.dinov3.models.vision_transformer import DinoVisionTransformer
 
 
 _RESNET_MEAN = [0.485, 0.456, 0.406]
@@ -97,10 +108,62 @@ class Aggregator(nn.Module):
         nn.init.normal_(self.camera_token, std=1e-3)
         nn.init.normal_(self.register_token, std=1e-3)
 
-    def forward(
+    @staticmethod
+    def _call_block(blk, x, rope, cache_feature, tag, kwargs, correct=False):
+        """Run one block stock, approx, or correct. Every block call in this file goes through here
+        so the three modes cannot drift apart.
+
+        Approx mode is numerically the same forward -- it additionally stores the KV cache and the
+        per-token scores correction later needs -- so an approx-only pass must reproduce the stock
+        forward exactly. Correct mode consumes that cache and recomputes the selected tokens, so at
+        100% selection it must reproduce a stock forward on the refined input.
+
+        `dindice` is every token index: with `num_groups = 1` the whole sequence is a candidate and
+        the actual pruning happens inside the block from the fused pscore, exactly as in DINOv3.
+        """
+        if cache_feature is None:
+            out = blk(x, rope)
+            return (out[0] if isinstance(out, list) else out), None
+        if not correct:
+            return blk.approx(x, rope, cache_feature, tag=tag, **kwargs)
+
+        rows, n_tok = x.shape[0], x.shape[1]
+        dindice = torch.arange(n_tok, device=x.device, dtype=torch.long).unsqueeze(0).expand(rows, -1)
+        extra = {} if rope is not None else {"num_pretokens": 0}
+        return blk.correct(x, dindice, rope, cache_feature, tag=tag, **kwargs, **extra)
+
+    def _run_patch_embed(self, images, cache_feature=None, approx_kwargs=None):
+        """The patch-embed ViT's 24 blocks. Stock, or approx when `cache_feature` is given.
+
+        Not `forward_features_list_appcorr`: that driver builds its own input pyramid by
+        interpolating the tensor, which is the standalone/offline path. Here the frames have already
+        been degraded by the transmission policy, so degrading them again would double it.
+        """
+        pe = self.patch_embed
+        if cache_feature is None:
+            out = pe.forward_features(images)
+            return out["x_norm_patchtokens"] if isinstance(out, dict) else out
+
+        x, (grid_h, grid_w) = pe.prepare_tokens_with_masks(images, None)
+        for idx, blk in enumerate(pe.blocks):
+            rope = pe.rope_embed(H=grid_h, W=grid_w) if pe.rope_embed is not None else None
+            x, cache_feature = self._call_block(
+                blk, x, rope, cache_feature, f"pe{idx}", approx_kwargs or {}
+            )
+        return pe.post_features_list([x], [None])[0]["x_norm_patchtokens"]
+
+    def embed(
         self,
         images: torch.Tensor,
-    ) -> tuple[list[torch.Tensor | None], int]:
+        cache_feature: dict | None = None,
+        approx_kwargs: dict | None = None,
+    ) -> tuple[torch.Tensor, tuple, dict]:
+        """Everything before the block loop: normalize, patch-embed, prepend cam/register, build RoPE.
+
+        Split out of `forward` so the stock, approx and correct paths provably share one prologue.
+        `geom` carries the shape metadata the block loop needs, since the token axis is reinterpreted
+        between the frame and inter-frame stacks and every caller needs the same numbers.
+        """
         batch_size, num_frames, num_channels, height, width = images.shape
         if num_channels != 3:
             raise ValueError(f"Expected 3 input channels, got {num_channels}")
@@ -111,9 +174,11 @@ class Aggregator(nn.Module):
         camera_token = slice_expand_and_flatten(self.camera_token, batch_size, num_frames)
         register_token = slice_expand_and_flatten(self.register_token, batch_size, num_frames)
 
-        patch_tokens = self.patch_embed(images)
-        if isinstance(patch_tokens, dict):
-            patch_tokens = patch_tokens["x_norm_patchtokens"]
+        # `forward_features`, not `__call__`: on the instrumented ViT `forward` is the *classifier*
+        # entry point and returns the CLS token alone, so calling the module directly silently
+        # yields [B, D] where [B, N, D] is needed -- caught here only because the following cat
+        # happens to fail on rank. `_run_patch_embed` handles that and the approx variant.
+        patch_tokens = self._run_patch_embed(images, cache_feature, approx_kwargs)
 
         tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)
         _, num_tokens, embed_dim = tokens.shape
@@ -126,31 +191,76 @@ class Aggregator(nn.Module):
                 rope_cos.to(device=patch_tokens.device, dtype=torch.float32),
             )
 
-        outputs = []
-        for block_idx in range(self.depth):
-            tokens, frame_tokens = self._run_frame_block(
+        geom = {
+            "batch_size": batch_size,
+            "num_frames": num_frames,
+            "num_tokens": num_tokens,
+            "embed_dim": embed_dim,
+            "patch_grid_size": patch_grid_size,
+        }
+        return tokens, frame_rope, geom
+
+    def run_blocks(
+        self,
+        tokens: torch.Tensor,
+        frame_rope: tuple,
+        geom: dict,
+        block_range: tuple[int, int] | None = None,
+        outputs: list | None = None,
+        cache_feature: dict | None = None,
+        approx_kwargs: dict | None = None,
+        correct: bool = False,
+    ) -> tuple[list, torch.Tensor]:
+        """The block loop over `[start, end)` of the 24 paired blocks. Approx when given a cache.
+
+        Returned `outputs` is indexed by absolute block index so a partial range still lands its
+        cached layers in the right slots -- the heads read positions, not order of arrival.
+
+        Tags are `frame{i}` / `inter{i}`, distinct from the patch-embed stack's `pe{i}`. They must
+        stay distinct: the three stacks reuse the same block *class* and would otherwise overwrite
+        each other's KV caches, which is the kind of failure that still produces plausible numbers.
+        """
+        start, end = block_range if block_range is not None else (0, self.depth)
+        if outputs is None:
+            outputs = [None] * self.depth
+        approx_kwargs = approx_kwargs or {}
+
+        for block_idx in range(start, end):
+            tokens, frame_tokens, cache_feature = self._run_frame_block(
                 tokens,
-                batch_size,
-                num_frames,
-                num_tokens,
-                embed_dim,
+                geom["batch_size"],
+                geom["num_frames"],
+                geom["num_tokens"],
+                geom["embed_dim"],
                 block_idx,
                 frame_rope,
+                cache_feature,
+                approx_kwargs,
+                correct,
             )
-            tokens = self._run_inter_frame_attention_block(
+            tokens, cache_feature = self._run_inter_frame_attention_block(
                 tokens,
-                batch_size,
-                num_frames,
-                num_tokens,
-                embed_dim,
+                geom["batch_size"],
+                geom["num_frames"],
+                geom["num_tokens"],
+                geom["embed_dim"],
                 block_idx,
                 self.inter_frame_attention_types[block_idx],
+                cache_feature,
+                approx_kwargs,
+                correct,
             )
             if block_idx in self.cached_layer_indices:
-                outputs.append(torch.cat([frame_tokens, tokens], dim=-1))
-            else:
-                outputs.append(None)
+                outputs[block_idx] = torch.cat([frame_tokens, tokens], dim=-1)
 
+        return outputs, tokens
+
+    def forward(
+        self,
+        images: torch.Tensor,
+    ) -> tuple[list[torch.Tensor | None], int]:
+        tokens, frame_rope, geom = self.embed(images)
+        outputs, _ = self.run_blocks(tokens, frame_rope, geom)
         return outputs, self.patch_token_start
 
     def _run_frame_block(
@@ -162,10 +272,16 @@ class Aggregator(nn.Module):
         embed_dim: int,
         block_idx: int,
         rope_sincos: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        cache_feature: dict | None = None,
+        approx_kwargs: dict | None = None,
+        correct: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict | None]:
         tokens = tokens.view(batch_size * num_frames, num_tokens, embed_dim)
-        tokens = self.frame_blocks[block_idx](tokens, rope_sincos)
-        return tokens, tokens.view(batch_size, num_frames, num_tokens, embed_dim)
+        tokens, cache_feature = self._call_block(
+            self.frame_blocks[block_idx], tokens, rope_sincos,
+            cache_feature, f"frame{block_idx}", approx_kwargs or {}, correct,
+        )
+        return tokens, tokens.view(batch_size, num_frames, num_tokens, embed_dim), cache_feature
 
     def _run_inter_frame_attention_block(
         self,
@@ -176,13 +292,21 @@ class Aggregator(nn.Module):
         embed_dim: int,
         block_idx: int,
         attention_type: str,
-    ) -> torch.Tensor:
+        cache_feature: dict | None = None,
+        approx_kwargs: dict | None = None,
+        correct: bool = False,
+    ) -> tuple[torch.Tensor, dict | None]:
         tokens = tokens.view(batch_size, num_frames, num_tokens, embed_dim)
+        tag = f"inter{block_idx}"
+        approx_kwargs = approx_kwargs or {}
 
         if attention_type == "global":
             tokens = tokens.view(batch_size, num_frames * num_tokens, embed_dim)
-            tokens = self.inter_frame_blocks[block_idx](tokens, None)
-            return tokens.view(batch_size, num_frames, num_tokens, embed_dim)
+            tokens, cache_feature = self._call_block(
+                self.inter_frame_blocks[block_idx], tokens, None, cache_feature, tag,
+                approx_kwargs, correct,
+            )
+            return tokens.view(batch_size, num_frames, num_tokens, embed_dim), cache_feature
 
         if attention_type != "register":
             raise ValueError(f"Unknown inter-frame attention type: {attention_type}")
@@ -199,7 +323,10 @@ class Aggregator(nn.Module):
             embed_dim,
         )
 
-        camera_and_register_tokens = self.inter_frame_blocks[block_idx](camera_and_register_tokens, None)
+        camera_and_register_tokens, cache_feature = self._call_block(
+            self.inter_frame_blocks[block_idx], camera_and_register_tokens, None,
+            cache_feature, tag, approx_kwargs, correct,
+        )
         tokens = torch.cat([camera_and_register_tokens, patch_tokens], dim=1)
 
         camera_and_register_tokens = tokens[:, : num_frames * patch_token_start].view(
@@ -214,7 +341,7 @@ class Aggregator(nn.Module):
             num_tokens - patch_token_start,
             embed_dim,
         )
-        return torch.cat([camera_and_register_tokens, patch_tokens], dim=2)
+        return torch.cat([camera_and_register_tokens, patch_tokens], dim=2), cache_feature
 
 
 def _build_patch_embed(patch_size: int, embed_dim: int) -> DinoVisionTransformer:
