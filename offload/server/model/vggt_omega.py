@@ -185,17 +185,20 @@ class VGGTOmegaExecutor(ModelExecutor):
         images = self._frames_to_tensor(frames, config, context.get("input_native_shapes"))
         cache: Dict[str, Any] = context.setdefault("cache_feature", {})
 
-        # PREPARE_TOKENS runs once per transmitted group, so the second call sees the *refined*
-        # image. It must not re-run the patch-embed stack in approx mode: that would overwrite the
-        # `pe*` KV cache the approximate pass produced, and correction would then be comparing the
-        # refined tokens against themselves. The refinement pass therefore patch-embeds stock and
-        # leaves the cache alone -- correction of the patch-embed stack itself is a later step.
+        # PREPARE_TOKENS runs once per transmitted group, so the first call sees the approximate
+        # image and the second sees the refined one. The patch-embed stack is a correction target
+        # like any other: the first pass runs it in approx mode and fills the `pe*` KV cache, the
+        # second corrects against that cache rather than recomputing it from scratch. Re-running it
+        # in *approx* mode on the second pass would overwrite the cache and leave correction
+        # comparing the refined tokens against themselves.
         refining = context.get("vggt_approx_done", False)
         with torch.autocast("cuda", self.autocast_dtype):
             tokens, frame_rope, geom = self.model.aggregator.embed(
                 images,
-                cache_feature=None if refining else cache,
-                approx_kwargs=None if refining else self._approx_kwargs(config),
+                cache_feature=cache,
+                approx_kwargs=(self._correct_kwargs(config) if refining
+                               else self._approx_kwargs(config)),
+                correct=refining,
             )
 
         context["vggt_images"] = images          # the dense head re-reads the input images
