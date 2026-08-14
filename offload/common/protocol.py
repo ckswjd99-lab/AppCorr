@@ -292,6 +292,20 @@ class ExperimentConfig:
             }
             options.update(self.input_profile_kwargs)
             return options
+        if name == "vggt_omega_512":
+            options = {
+                "name": name,
+                # VGGT derives each frame's canvas from that frame's own aspect ratio instead of
+                # using one fixed shape, so there is deliberately no `mobile_resize_short_side`:
+                # `vggt_resolution` is a token *budget* ((res/patch)**2 tokens), not a side length.
+                "vggt_resolution": 512,
+                "vggt_patch_size": 16,
+                "vggt_resize_mode": "balanced",
+                "vggt_weights_path": "~/cjpark/weights/vggt/vggt_omega_1b_512.pt",
+                "autocast_dtype": "bfloat16",
+            }
+            options.update(self.input_profile_kwargs)
+            return options
         raise ValueError(f"Unknown input_profile_name: {name}")
 
     def use_official_ade20k_m2f_profile(self) -> bool:

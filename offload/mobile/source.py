@@ -79,14 +79,22 @@ class SourceModule(multiprocessing.Process):
         self.num_warmup = max(int(num_warmup), 0)
 
     @staticmethod
-    def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
-        if image.ndim != 3:
+    def _tensor_to_hwc_uint8(image) -> np.ndarray:
+        # Loaders whose items are ragged cannot collate into a tensor and hand over numpy instead
+        # (Co3D: one native shape per sequence, 288 distinct shapes across the dataset). Accept
+        # both rather than forcing those loaders through a pointless tensor round-trip.
+        if isinstance(image, np.ndarray):
+            if image.ndim != 3 or image.shape[-1] != 3:
+                raise RuntimeError(f"Expected an HWC RGB array, got {tuple(image.shape)}")
+            image_np = image
+        elif image.ndim != 3:
             raise RuntimeError(f"Expected image tensor [C,H,W] or [H,W,C], got {tuple(image.shape)}")
-        if image.shape[0] == 3:
-            image = image.permute(1, 2, 0)
-        elif image.shape[-1] != 3:
-            raise RuntimeError(f"Expected 3-channel image tensor, got {tuple(image.shape)}")
-        image_np = image.detach().cpu().numpy()
+        else:
+            if image.shape[0] == 3:
+                image = image.permute(1, 2, 0)
+            elif image.shape[-1] != 3:
+                raise RuntimeError(f"Expected 3-channel image tensor, got {tuple(image.shape)}")
+            image_np = image.detach().cpu().numpy()
         if image_np.dtype != np.uint8:
             image_np = np.clip(image_np, 0, 255).astype(np.uint8)
         return np.ascontiguousarray(image_np)
