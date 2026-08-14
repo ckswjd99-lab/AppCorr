@@ -63,28 +63,39 @@ Two ordering constraints that are easy to get wrong and impossible to see afterw
 Call `patch_embed.forward_features(...)`, not `patch_embed(...)`: on the instrumented ViT `forward`
 is the classifier entry point and returns the CLS token alone.
 
-### Triton has never worked in this environment
+### Triton needs `_configure_compile_environment()`, and VGGT was not calling it
 
-Found when the correct path first ran: `gather_rows_triton` raised out of Triton's JIT rather than
-falling back. The installed `triton==3.5.1` wheel is missing both
-`backends/nvidia/include/` (so `cuda.h` is not found and the driver stub fails to compile) and
-`backends/nvidia/bin/ptxas`. The compile cache confirms it: **not one AppCorr kernel had ever been
-compiled here.**
+The correct path first failed with `Cannot find ptxas` out of Triton's JIT. The cause is narrow and
+was already documented in CLAUDE.md: the installed triton wheel ships without
+`backends/nvidia/include` (no `cuda.h`) and without `bin/ptxas`, and
+`offload/server/model/dinov3_precision.py::_configure_compile_environment()` exists precisely to
+paper over that -- it supplies `CPATH` from `CUDA_HOME`, finds `ptxas` on PATH, and symlinks
+libcuda.
 
-Every AppCorr correction run in this environment has therefore used the eager fallbacks. Accuracy is
-unaffected -- the fallbacks are bit-identical by design -- but the documented kernel speedups (e.g.
-`scatter_rows_triton` at 78.0 -> 12.1 us) were never being realised, so **any latency number
-measured here understates the intended system**. Worth rechecking before quoting correction latency.
+That function was only reachable through the **DINOv3 precision controller**. VGGT-Omega does not
+build one, so nothing configured the toolchain and its first correction died. It is now called from
+`WorkerModule._check_triton_runtime()` at CONFIG time, so every model gets it.
 
-Fixed without root (the package dir is not writable) by pointing Triton at the system CUDA:
+**A wrong conclusion was recorded here first and is worth flagging.** The default Triton cache at
+`~/.triton/cache` was nearly empty, which looked like proof that no AppCorr kernel had ever
+compiled -- and therefore that every correction latency ever measured here was an eager fallback.
+That was false. `_configure_compile_environment()` redirects `TRITON_CACHE_DIR` to
+`~/.cache/appcorr/torchinductor/triton`, which holds 494 entries including `_gather_rows_kernel`,
+`_scatter_rows_kernel`, `_rope_active_inplace_kernel` and `_active_token_update_kernel`. Triton has
+been working for DINOv3 all along and **existing latency numbers stand.** Check the configured cache
+directory, not the default one.
 
-    CPATH=/usr/local/cuda/include
-    TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
-    TRITON_CUOBJDUMP_PATH=/usr/local/cuda/bin/cuobjdump
-    TRITON_NVDISASM_PATH=/usr/local/cuda/bin/nvdisasm
+### Triton fallbacks now raise by default
 
-`include_dirs` is hardcoded in `triton/backends/nvidia/driver.py:15`, hence `CPATH` rather than an
-include flag. Not yet made permanent -- that is a shell-profile change and the user's call.
+Separately, and prompted by the above: a kernel that declines to run used to return `False` and let
+the caller take the eager path silently. That is right for a service and wrong for a repository that
+measures kernel latency -- the number still looks fine.
+
+`appcorr/models/dinov3/layers/triton_kernels/_strict.py` now routes every fallback and every
+swallowed exception through `note_fallback()`, controlled by `APPCORR_TRITON_FALLBACK`:
+`error` (default, raises), `warn` (prints once per distinct reason), `silent` (the old behaviour).
+`verify_triton_runtime()` compiles a probe kernel so a broken toolchain is caught at startup with a
+diagnosis rather than at the first correction.
 
 ### Bit-exactness is not achievable for VGGT correction, and that is not a bug
 
