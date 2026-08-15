@@ -170,6 +170,65 @@ class VGGTOmegaExecutor(ModelExecutor):
             "debug": opts["debug"],
         }
 
+    def _build_mobile_hints(self, task, context, config) -> Dict[str, Any] | None:
+        """Per-patch residual energy from the transmitted patches -> one hint tensor per stack.
+
+        The score that ranks tokens for correction has two halves: how *attended to* a token is
+        (server side) and how *wrong* it is (mobile side, the residual energy the policy stamped on
+        each patch). Only the first was in use until this existed, which is half a score.
+
+        The three stacks read different token axes, so the same per-frame hint has to be laid out
+        three ways. Camera and register tokens get zero -- they have no image-space residual -- which
+        leaves the server score deciding for them rather than inventing a number.
+        """
+        from offload.common.protocol import normalize_appcorr_kwargs
+
+        opts = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
+        if opts["mobile_pscore"] == "none" or opts["mobile_pscore_weight"] == 0.0:
+            return None
+        if task is None or not getattr(task, "payload", None):
+            return None
+
+        geom = context.get("vggt_geom")
+        if geom is None:
+            return None
+        S, N = geom["num_frames"], geom["num_tokens"]
+        start = self.model.aggregator.patch_token_start
+        n_patch = N - start
+        gh, gw = geom["patch_grid_size"]
+        if gh * gw != n_patch:
+            raise RuntimeError(
+                f"Patch grid {gh}x{gw} does not match {n_patch} patch tokens; the hint would be "
+                "silently misaligned with the tokens it is meant to rank."
+            )
+
+        # Hints ride the finest transmitted level -- the residual, which is the error itself.
+        finest = min(int(l) for l in config.transmission_kwargs.get("pyramid_levels", [0]))
+        hint = np.zeros((S, n_patch), dtype=np.float32)
+        seen = 0
+        for patch in task.payload:
+            if int(getattr(patch, "res_level", finest)) != finest:
+                continue
+            f = int(getattr(patch, "image_idx", -1))
+            i = int(getattr(patch, "spatial_idx", -1))
+            if 0 <= f < S and 0 <= i < n_patch:
+                hint[f, i] = float(getattr(patch, "pscore_hint", 0.0))
+                seen += 1
+        if seen == 0:
+            return None
+
+        t = torch.from_numpy(hint).to(self.device)                  # [S, n_patch]
+        per_frame = t                                                # pe*, frame*: rows are frames
+        with_prefix = torch.cat(
+            [t.new_zeros((S, start)), t], dim=1                      # [S, N], cam/register at 0
+        )
+        return {
+            "pe": per_frame,
+            "frame": per_frame,
+            "interg": with_prefix.reshape(1, S * N),                 # global: one row, S*N tokens
+            "interr": t.new_zeros((1, S * start)),                   # register-only: no image hint
+        }
+
     @torch.inference_mode()
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
         """Patch-embed the frames and assemble the aggregator's input tokens.
@@ -192,12 +251,25 @@ class VGGTOmegaExecutor(ModelExecutor):
         # in *approx* mode on the second pass would overwrite the cache and leave correction
         # comparing the refined tokens against themselves.
         refining = context.get("vggt_approx_done", False)
+        kwargs = self._correct_kwargs(config) if refining else self._approx_kwargs(config)
+        if refining:
+            # Built here, before the patch-embed stack is corrected, because that stack is corrected
+            # inside embed(). Building it afterwards left `pe*` -- a third of the 72 blocks --
+            # selecting without the hint.
+            # A caller may pre-seed the hints (offline oracle studies do); otherwise derive them
+            # from the residual patches this task carries.
+            hints = context.get("vggt_mobile_hints")
+            if hints is None:
+                hints = self._build_mobile_hints(task, context, config)
+                context["vggt_mobile_hints"] = hints
+            if hints is not None:
+                kwargs["mobile_pscore_hints"] = hints
+
         with torch.autocast("cuda", self.autocast_dtype):
             tokens, frame_rope, geom = self.model.aggregator.embed(
                 images,
                 cache_feature=cache,
-                approx_kwargs=(self._correct_kwargs(config) if refining
-                               else self._approx_kwargs(config)),
+                approx_kwargs=kwargs,
                 correct=refining,
             )
 
@@ -208,6 +280,7 @@ class VGGTOmegaExecutor(ModelExecutor):
         context["vggt_input_hw"] = tuple(images.shape[-2:])
         if not refining:
             context["vggt_outputs"] = [None] * self.model.aggregator.depth
+
 
     @torch.inference_mode()
     def approx_forward(self, params, context: Dict[str, Any], config: Any):
@@ -267,6 +340,11 @@ class VGGTOmegaExecutor(ModelExecutor):
         agg = self.model.aggregator
         start, end = params.get("layers", (0, agg.depth))
 
+        correct_kwargs = self._correct_kwargs(config)
+        hints = context.get("vggt_mobile_hints")
+        if hints is not None:
+            correct_kwargs["mobile_pscore_hints"] = hints
+
         with torch.autocast("cuda", self.autocast_dtype):
             outputs, tokens = agg.run_blocks(
                 context["vggt_tokens"],
@@ -275,7 +353,7 @@ class VGGTOmegaExecutor(ModelExecutor):
                 block_range=(int(start), int(end)),
                 outputs=context["vggt_outputs"],
                 cache_feature=context["cache_feature"],
-                approx_kwargs=self._correct_kwargs(config),
+                approx_kwargs=correct_kwargs,
                 correct=True,
             )
         context["vggt_tokens"] = tokens

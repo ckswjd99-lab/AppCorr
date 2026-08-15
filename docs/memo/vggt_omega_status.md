@@ -266,6 +266,100 @@ rotation +51.5%, 3D +12.7%, inlier -5.0 points.
 So AppCorr's recoverable headroom at L2 is rotation alone. Recovering depth as well requires
 dropping the floor to L3.
 
+### Partial correction does not work yet, and the failure shape is informative
+
+The correction path is verified correct (bit-exact approx, correction at the numerical floor,
+100% recovering the ceiling end to end). What does **not** work is correcting only *part* of the
+tokens, which is the entire point of AppCorr.
+
+Keep-ratio sweep, 20 sequences, L3 floor, `patch_pseudo_attn_prob_layermean` scoring. Recovery is
+the fraction of the floor-to-ceiling rotation gap closed (floor 5.440 deg, ceiling 2.885 deg):
+
+| keep ratio | AbsRel | rotation | rotation recovered |
+|---|---|---|---|
+| 0.00 (floor) | 0.0863 | 5.440 | 0% |
+| 0.05 | 0.0863 | 5.443 | **-0.1%** |
+| 0.10 | 0.0864 | 5.425 | **0.6%** |
+| 0.20 | 0.0864 | 5.416 | **0.9%** |
+| 0.40 | 0.0884 | 4.068 | 53.7% |
+| 0.70 | 0.0909 | 3.108 | 91.3% |
+| 1.00 | 0.0776 | 3.059 | 93.2% |
+
+Correcting a fifth of the tokens recovers **one percent** of the gap. The curve is flat to 20% and
+then jumps. That is not merely a weak ranking: a *random* selection should recover roughly in
+proportion to the ratio, so 20% -> 0.9% is worse than random would be, and the useful region only
+begins around 40%, where there is little left to save.
+
+Two candidate causes, and they call for different responses:
+
+1. **The score mis-ranks.** Every pscore is computed within one image, but 19 of 24 inter-frame
+   blocks attend across the whole sequence, so a per-frame score cannot express which *frame*
+   deserves the budget.
+2. **Partial correction fails structurally on this architecture.** Uncorrected tokens re-contaminate
+   corrected ones through cross-frame attention every block, so below some threshold the gains
+   cancel. If so, no ranking fixes it.
+
+A random-selection control separates them: linear-ish recovery means (1), the same flat-then-jump
+shape means (2). `server_pscore: "random"` exists for this, and `scripts/vggt_random_control.sh`
+runs it at the same ratios.
+
+Note the bandwidth axis is untouched here: `token_keep_ratio` selects what is *recomputed*, not what
+is transmitted, so all of these rows send the full L0 residual (~360 KB/frame). A bandwidth win
+needs the mobile side to send only selected patches, which needs a mobile pscore hint that
+VGGTLaplacian does not yet produce.
+
+### Partial correction: what the selection can and cannot buy
+
+Correction itself is verified (bit-exact approx, roundoff-level correct, 100% recovering the
+ceiling). What follows is about correcting only *part* of the tokens.
+
+Keep-ratio sweep at the L3 floor, `patch_pseudo_attn_prob_layermean` scoring, 20 sequences.
+Recovery is the fraction of the floor-to-ceiling **rotation** gap closed:
+
+| keep ratio | attention | stable random |
+|---|---|---|
+| 0.05 | -0.1% | 0% |
+| 0.10 | 0.6% | 0% |
+| 0.20 | 0.9% | -1% |
+| 0.40 | **53.7%** | 0% |
+| 0.70 | **91.3%** | 50.6% |
+| 1.00 | 93.2% | -- |
+
+Two things hold at once. **Below ~40% nothing works**: five rankings (attention, residual energy,
+their geometric mean, random, and a first-order oracle) all sit at the floor. And **above it the
+ranking is decisive**: at 40% attention recovers 53.7% where random recovers 0%.
+
+The random control had to be made *stable across layers* to mean anything -- an independent draw per
+block corrects a different set in every block, so no token stays corrected and the control measures
+selection instability instead of selection quality. That version recovered 0% at every ratio,
+which is not a statement about random selection.
+
+### The first-order oracle loses to attention
+
+An oracle was built to bound what any ranking could achieve: score each token by
+`|dloss/dx . (x_refined - x_approx)|`, the first-order predicted benefit of correcting it. It needs
+the refined input, so it is not deployable -- it is an upper bound on per-token ranking.
+
+| ratio | attention | oracle |
+|---|---|---|
+| 0.20 | 3.4% | 2.1% |
+| 0.40 | **63.7%** | 28.5% |
+| 0.70 | 96.9% | 88.9% |
+
+**The oracle loses everywhere**, most heavily at 40%. Since it is by construction the optimal
+per-token first-order ranking, the conclusion is that correction benefit is **not a per-token
+property**: what matters is a property of the selected *set*, and interactions between corrected and
+uncorrected tokens dominate. That is consistent with random needing 70% before it recovers anything.
+
+Separately, the oracle map is nearly uncorrelated with the residual energy the mobile side reports
+(rank correlation +0.03 to +0.07), and its top 20% of tokens carry ~66% of the first-order benefit --
+so the benefit *is* concentrated, it just cannot be collected by picking tokens independently.
+
+**Retracted:** a spatial-blur study and a per-frame-normalisation study of the oracle, and the
+conclusions drawn from them ("coherence is irrelevant", "frame budget is balanced"). Both ran while
+the hint reached only 1 of 72 blocks, so they measured nothing. The blur/coherence hypothesis is
+untested, not disproved.
+
 ### The 3D metric: align on points, not on cameras
 
 The 3D number above is the median per-point distance to the GT reconstruction, in units of GT scene

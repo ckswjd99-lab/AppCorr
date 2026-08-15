@@ -60,6 +60,12 @@ class SelfAttentionBlock(nn.Module):
         "patch_pseudo_attn_prob",
         "patch_pseudo_attn_prob_layermean",
         "cls_attn_prob_layermean",
+        # Control, not a technique: selects tokens uniformly at random. A real score has to beat
+        # this to have earned its place, and the *shape* of the gap is diagnostic -- random recovery
+        # should track the keep ratio roughly linearly, so a score that does worse than random is
+        # actively mis-ranking, while a score and random failing the same way points at the
+        # correction mechanism rather than the ranking.
+        "random",
     })
     _LAYERMEAN_SERVER_PSCORES = frozenset({
         "patch_attn_prob_layermean",
@@ -908,6 +914,26 @@ class SelfAttentionBlock(nn.Module):
                 f"Missing cached {tag}_server_pscore. "
                 "It must be produced during approx."
             )
+        if server_pscore == "random":
+            # One draw per stack, reused by every layer in it -- *not* a fresh draw per layer.
+            #
+            # This matters more than it looks. A per-layer draw corrects a different token set in
+            # every block, so no token is ever corrected all the way through, and the control then
+            # measures selection *instability* rather than selection quality. Measured: a per-layer
+            # draw recovers 0% of the gap at every ratio up to 0.70, which is not a statement about
+            # random selection at all. The real scores are stable across a stack (the layer-mean
+            # ones by construction, and the per-layer ones because the query plan is cached), so the
+            # control has to be stable too for the comparison to mean anything.
+            #
+            # Cached alongside the plan cache, keyed by stack, and shaped from the real score so the
+            # control cannot silently disagree with the real path about what it is ranking.
+            stack = tag.rstrip("0123456789")
+            key = f"_shared_random_server_pscore_{stack}"
+            cached = cache_feature.get(key)
+            if cached is None:
+                cached = torch.rand_like(server_token_scores)
+                cache_feature[key] = cached
+            return cached
         return server_token_scores
 
     @nvtx.annotate("correct_partial_token")

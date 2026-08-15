@@ -132,14 +132,14 @@ def normalize_appcorr_kwargs(
             server_pscore = 'patch_pseudo_attn_prob_layermean'
         elif server_pscore == 'cls_attn_prob':
             server_pscore = 'cls_attn_prob_layermean'
-    valid_server_pscores = {
-        'cls_attn_prob',
-        'patch_attn_prob',
-        'patch_attn_prob_layermean',
-        'patch_pseudo_attn_prob',
-        'patch_pseudo_attn_prob_layermean',
-        'cls_attn_prob_layermean',
-    }
+    # Single source of truth: the block owns the set, because it is the code that has to implement
+    # each value. Duplicating the list here meant adding a score in one place and having the
+    # scheduler reject it in the other -- which surfaces as `decide()` raising, no Task ever being
+    # built, and the client sitting on a full patch buffer until its timeout. Nothing in either log
+    # says why.
+    from appcorr.models.dinov3.layers.block import SelfAttentionBlock
+
+    valid_server_pscores = set(SelfAttentionBlock._VALID_SERVER_PSCORES)
     if server_pscore not in valid_server_pscores:
         raise ValueError(
             f"Unknown server_pscore '{server_pscore}'. "
