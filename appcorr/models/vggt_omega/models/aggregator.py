@@ -128,7 +128,30 @@ class Aggregator(nn.Module):
             return blk.approx(x, rope, cache_feature, tag=tag, **kwargs)
 
         rows, n_tok = x.shape[0], x.shape[1]
-        dindice = torch.arange(n_tok, device=x.device, dtype=torch.long).unsqueeze(0).expand(rows, -1)
+        stack = tag.rstrip("0123456789")
+        avail = kwargs.get("arrived_masks", {}).get(stack) if kwargs.get("arrived_masks") else None
+        if avail is not None and avail.shape == (rows, n_tok):
+            # Interleaved rounds carry only part of the residual, so the candidates are the tokens
+            # whose refined values have arrived. Row counts differ wildly under per-frame grouping
+            # -- the delivered view has ~1049 available tokens and the rest have only their 17
+            # camera/register tokens -- so rows are padded to the widest, not trimmed to the
+            # narrowest. Trimming to the minimum silently discards every patch the round delivered
+            # and corrects nothing but the register tokens.
+            counts = avail.sum(1)
+            k = int(counts.max().item())
+            if k <= 0:
+                return x, cache_feature
+            rows_idx = []
+            for r in avail:
+                idx = torch.nonzero(r, as_tuple=True)[0]
+                if idx.numel() < k:
+                    # repeat the last index: duplicates are idempotent here, since correction
+                    # recomputes a token to the same value however many times it is listed
+                    idx = torch.cat([idx, idx[-1:].expand(k - idx.numel())])
+                rows_idx.append(idx)
+            dindice = torch.stack(rows_idx)
+        else:
+            dindice = torch.arange(n_tok, device=x.device, dtype=torch.long).unsqueeze(0).expand(rows, -1)
         extra = {} if rope is not None else {"num_pretokens": 0}
         # The mobile residual hint is laid out per stack, since the three stacks read different token
         # axes. Select by stack here, and *do not* mutate `kwargs` -- `run_blocks` hands the same
@@ -136,7 +159,8 @@ class Aggregator(nn.Module):
         # leaves the other 71 running unhinted. That produced three separate oracle experiments whose
         # results agreed to three decimals, because the hint they varied was reaching one block.
         hints = kwargs.get("mobile_pscore_hints")
-        kwargs = {k: v for k, v in kwargs.items() if k != "mobile_pscore_hints"}
+        kwargs = {k: v for k, v in kwargs.items()
+                  if k not in ("mobile_pscore_hints", "arrived_masks")}
         if hints is not None:
             extra["mobile_pscore_hint"] = hints.get(tag.rstrip("0123456789"))
         return blk.correct(x, dindice, rope, cache_feature, tag=tag, **kwargs, **extra)
@@ -166,6 +190,69 @@ class Aggregator(nn.Module):
             )
         return pe.post_features_list([x], [None])[0]["x_norm_patchtokens"]
 
+    # The network is one 48-stage sequence, not a preprocessor followed by a network:
+    #
+    #     stages  0..23   patch-embed ViT blocks
+    #     stages 24..47   aggregator pairs (frame block + inter-frame block)
+    #
+    # `patch_embed` is named for what it occupies in the original design -- a projection from image
+    # patches -- but here it is a full 24-block DINOv3 ViT and 28.7% of the forward. Treating it as
+    # preprocessing means re-running all of it on every interleaved round, which costs more than the
+    # network it is supposedly preparing for. It is real computation and is scheduled as such.
+    PE_STAGES = 24
+
+    def embed_prologue(self, images: torch.Tensor):
+        """Normalise, project to patch tokens, and note the geometry. No transformer blocks."""
+        batch_size, num_frames, num_channels, height, width = images.shape
+        if num_channels != 3:
+            raise ValueError(f"Expected 3 input channels, got {num_channels}")
+
+        flat = ((images - self._resnet_mean) / self._resnet_std).view(
+            batch_size * num_frames, num_channels, height, width
+        )
+        pe_tokens, pe_grid = self.patch_embed.prepare_tokens_with_masks(flat, None)
+        geom = {
+            "batch_size": batch_size,
+            "num_frames": num_frames,
+            "patch_grid_size": (height // self.patch_size, width // self.patch_size),
+            "pe_grid": pe_grid,
+        }
+        return pe_tokens, geom
+
+    def run_pe_blocks(self, x, geom, block_range, cache_feature=None, approx_kwargs=None,
+                      correct=False):
+        """Patch-embed ViT blocks over `[start, end)` of its 24."""
+        pe = self.patch_embed
+        gh, gw = geom["pe_grid"]
+        start, end = block_range
+        for idx in range(start, end):
+            rope = pe.rope_embed(H=gh, W=gw) if pe.rope_embed is not None else None
+            x, cache_feature = self._call_block(
+                pe.blocks[idx], x, rope, cache_feature, f"pe{idx}", approx_kwargs or {}, correct
+            )
+        return x, cache_feature
+
+    def assemble_tokens(self, pe_tokens, geom):
+        """Finish the patch-embed stack and prepend the camera and register tokens."""
+        batch_size, num_frames = geom["batch_size"], geom["num_frames"]
+        patch_tokens = self.patch_embed.post_features_list([pe_tokens], [None])[0][
+            "x_norm_patchtokens"
+        ]
+        camera_token = slice_expand_and_flatten(self.camera_token, batch_size, num_frames)
+        register_token = slice_expand_and_flatten(self.register_token, batch_size, num_frames)
+        tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)
+
+        _, num_tokens, embed_dim = tokens.shape
+        grid_h, grid_w = geom["patch_grid_size"]
+        with torch.no_grad():
+            rope_sin, rope_cos = self.rope_embed(H=grid_h, W=grid_w)
+            frame_rope = (
+                rope_sin.to(device=tokens.device, dtype=torch.float32),
+                rope_cos.to(device=tokens.device, dtype=torch.float32),
+            )
+        geom = dict(geom, num_tokens=num_tokens, embed_dim=embed_dim)
+        return tokens, frame_rope, geom
+
     def embed(
         self,
         images: torch.Tensor,
@@ -173,47 +260,15 @@ class Aggregator(nn.Module):
         approx_kwargs: dict | None = None,
         correct: bool = False,
     ) -> tuple[torch.Tensor, tuple, dict]:
-        """Everything before the block loop: normalize, patch-embed, prepend cam/register, build RoPE.
+        """Whole prologue in one call: prologue, all patch-embed blocks, then assembly.
 
-        Split out of `forward` so the stock, approx and correct paths provably share one prologue.
-        `geom` carries the shape metadata the block loop needs, since the token axis is reinterpreted
-        between the frame and inter-frame stacks and every caller needs the same numbers.
+        Kept for the stock forward and for callers that do not stage the depth.
         """
-        batch_size, num_frames, num_channels, height, width = images.shape
-        if num_channels != 3:
-            raise ValueError(f"Expected 3 input channels, got {num_channels}")
-
-        images = (images - self._resnet_mean) / self._resnet_std
-        images = images.view(batch_size * num_frames, num_channels, height, width)
-
-        camera_token = slice_expand_and_flatten(self.camera_token, batch_size, num_frames)
-        register_token = slice_expand_and_flatten(self.register_token, batch_size, num_frames)
-
-        # `forward_features`, not `__call__`: on the instrumented ViT `forward` is the *classifier*
-        # entry point and returns the CLS token alone, so calling the module directly silently
-        # yields [B, D] where [B, N, D] is needed -- caught here only because the following cat
-        # happens to fail on rank. `_run_patch_embed` handles that and the approx variant.
-        patch_tokens = self._run_patch_embed(images, cache_feature, approx_kwargs, correct)
-
-        tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)
-        _, num_tokens, embed_dim = tokens.shape
-
-        patch_grid_size = (height // self.patch_size, width // self.patch_size)
-        with torch.no_grad():
-            rope_sin, rope_cos = self.rope_embed(H=patch_grid_size[0], W=patch_grid_size[1])
-            frame_rope = (
-                rope_sin.to(device=patch_tokens.device, dtype=torch.float32),
-                rope_cos.to(device=patch_tokens.device, dtype=torch.float32),
-            )
-
-        geom = {
-            "batch_size": batch_size,
-            "num_frames": num_frames,
-            "num_tokens": num_tokens,
-            "embed_dim": embed_dim,
-            "patch_grid_size": patch_grid_size,
-        }
-        return tokens, frame_rope, geom
+        pe_tokens, geom = self.embed_prologue(images)
+        pe_tokens, _ = self.run_pe_blocks(
+            pe_tokens, geom, (0, self.PE_STAGES), cache_feature, approx_kwargs, correct
+        )
+        return self.assemble_tokens(pe_tokens, geom)
 
     def run_blocks(
         self,

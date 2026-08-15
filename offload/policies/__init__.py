@@ -13,6 +13,7 @@ from .scheduling import (
     DynamicGroupTriggerPolicy,
     GroupTriggerPolicy,
     NYUApproxCorrectPolicy,
+    VGGTInterleavedPolicy,
 )
 from .transmission import (
     RawTransmissionPolicy,
@@ -39,6 +40,7 @@ SCHEDULER_REGISTRY = {
     "ADE20KInterleavedDynamic": ADE20KInterleavedDynamicPolicy,
     "ADE20KSequential": ADE20KSequentialPolicy,
     "NYUApproxCorrect": NYUApproxCorrectPolicy,
+    "VGGTInterleaved": VGGTInterleavedPolicy,
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,

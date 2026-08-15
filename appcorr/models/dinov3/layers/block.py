@@ -1154,6 +1154,25 @@ class SelfAttentionBlock(nn.Module):
                 clone_base=False,
             )
 
+            if kwargs.get("persist_correction_residual", False):
+                # Write this block's *corrected* increment back over the approximate one, so a later
+                # round that replays this block for a different token group reproduces the corrected
+                # value here instead of falling back to the stale approximate increment.
+                #
+                # Without this, interleaved correction is not cumulative: every round restarts at
+                # stage 0, and a token that is not in the current round's group is rebuilt as
+                # `x + blocks_out_sum` from the approximate pass. Earlier rounds then survive only
+                # through the KV cache -- other tokens see the correction when they attend, but the
+                # corrected token's own value is thrown away -- so only the final round's group
+                # reaches the head with corrected features.
+                #
+                # `x_attn_active - x_active` is ls1(attn_new); adding mlp_out_new gives exactly the
+                # increment `approx` would have stored, so the two paths stay interchangeable.
+                # No-op for one-shot correction, which reads the head out before any replay.
+                blocks_out_sum[active_batch_idx, active_token_idx] = (
+                    (x_attn_active - x_active) + mlp_out_new
+                ).to(blocks_out_sum.dtype)
+
             if debug:
                 torch.cuda.synchronize()
 

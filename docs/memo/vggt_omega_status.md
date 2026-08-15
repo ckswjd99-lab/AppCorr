@@ -443,6 +443,83 @@ The third one is the one that matters for risk: `appcorr/models/dinov3/layers/` 
 existing paper config, so any future edit there must rerun a real correction config, not just a unit
 check.
 
+### Interleaved correction, and the stale-increment bug it exposed
+
+`VGGTInterleavedPolicy` (`offload/policies/scheduling/vggt_interleaved.py`) splits the residual into
+`correction_groups` rounds. Grouping is selectable: `per_frame` (one view per round) or `spatial`
+(the same band of rows in every view). Layer boundaries are equal-*compute*, not equal-block, since
+stage cost ranges 1.20%–2.82% over the 48-stage axis.
+
+The schedule is the standard one -- round `g` corrects its own group over `[0, b_{g-1})` and then
+approximates forward to `b_g` -- so correction compute is `(G+1)/2G` of one-shot (62.5% at G=4,
+56.25% at G=8) while token coverage stays 100%: every patch is corrected exactly once.
+
+**Do not read `Avg recomputed patch count per active sample` as a correction budget.** Its
+denominator (`_partial_token_sample_total`) counts rows summed over *corrected block calls*, so it
+grows with the number of rounds and measures per-block density, not total work. Under `per_frame` it
+is inflated another ~8x, because `_call_block` pads every row's `dindice` to the widest row
+(`aggregator.py:143-151`) and one delivered frame forces all 8 rows to that width. Comparing
+conditions with this number ranks them backwards.
+
+Measured at n=20 (ceiling 2.885, floor 5.440, `rot_deg`):
+
+| condition | rot | recovered |
+|---|---:|---:|
+| one-shot (`co3d_appcorr`) | 3.059 | 93.2% |
+| `VGGTInterleaved`, G=1 (sanity) | 3.059 | 93.2% |
+| **spatial, G=4 + `persist_correction_residual`** | **3.177** | **88.6%** |
+| **spatial, G=8 + `persist_correction_residual`** | **3.181** | **88.4%** |
+| **per_frame, G=8 + `persist_correction_residual`** | **3.212** | **87.2%** |
+| spatial, G=4 | 3.225 | 86.6% |
+| per_frame, G=4 | 3.343 | 82.1% |
+| spatial, G=8 | 3.548 | 74.0% |
+| per_frame, G=8 | 3.655 | 69.9% |
+| per_frame, G=8, `layer_split: full` | 5.470 | −1.2% |
+| spatial, G=8, `layer_split: full` | 5.629 | −7.4% |
+
+The G=1 row is the plumbing check: the interleaved scheduler with one group must reproduce one-shot,
+and it does to three decimals. Run it first whenever this path changes.
+
+**`layer_split: "full"` is the diagnostic that settled it.** It puts every boundary at the full
+depth, so each round corrects its group over all 48 stages and correction compute rises to ~8x
+one-shot. Recovery went to *zero* -- slightly below the floor. Eight times the correction work
+buying nothing rules out "the rounds are too small" as the explanation.
+
+What was actually wrong: **`blocks_out_sum` is written only by the approx path
+(`block.py:330,339`); `correct_partial_token` reads it (`:1137`) and never writes back.** Every
+round restarts at stage 0 (`vggt_omega.py:347`) and rebuilds any token outside the current group as
+`x + blocks_out_sum`. So a corrected token's own value is discarded at the next round -- earlier
+rounds survive only through the KV cache, where other tokens see them when they attend -- and only
+the final round's group reaches the head with corrected features.
+
+It is worse than merely losing the correction, which is why `full` lands *below* the floor.
+`prepare_tokens` re-embeds from the image as decoded *so far*, so by round `g` the pixels of groups
+`1..g-1` are refined while their increments are still the ones computed on the degraded round-0
+image. Those tokens become `refined x + degraded increment` -- self-inconsistent. The floor is
+`degraded x + degraded increment`, which is at least consistent, and consistency wins. `full`
+maximises the damage by re-walking all 48 stages under that mismatch every round; the compute-split
+schedule confines it to the prefix, which is also why recovery falls as `G` rises (74.0% -> 69.9%).
+
+The fix is `persist_correction_residual` (`appcorr_kwargs`, default off): after a corrected block,
+write `ls1(attn_new) + mlp_out_new` back over the approximate increment for those tokens. Zero extra
+compute (the increment is already materialised), zero extra memory, and a no-op for one-shot, which
+reads the head out before any replay. Recovery at spatial/G=8: **74.0% -> 88.4%**.
+
+**With the flag on, the round count stops mattering** -- G=4 gives 88.6% and G=8 gives 88.4%, where
+before the fix the same step cost 12.6pp. `G` can therefore be chosen for overlap and latency alone.
+The grouping choice also collapses: spatial vs per_frame at G=8 goes from a 4.1pp gap to 1.2pp. The
+earlier reading that "spatial wins because 19 of 24 inter-frame blocks attend across frames" was
+mostly an artifact -- per_frame simply had more tokens exposed to the stale increment each round.
+
+The residual ~4.8pp gap to one-shot is inherent to progressive transmission: group 1's increment is
+computed at round 1, when only group 1 is refined, and the context has moved on by round 8.
+
+**This is not VGGT-specific.** The ADE20K/COCO interleaved (`GroupTrigger`) configs run the same
+`correct_partial_token`, so their recorded numbers were measured with the defect present -- including
+[[ade20k_grid_vs_blockgrid_grouping]], whose "block_grid wins because correction timing is coherent
+within a crop" hypothesis is the same consistency effect seen here. Rerun those with the flag on
+before quoting them again.
+
 ### Where the forward actually goes
 
 `scratchpad/profile_split.py`, S=8, 688x384 canvas (1032 patch tokens/frame), B200, bf16:
