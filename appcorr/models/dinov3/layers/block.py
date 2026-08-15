@@ -3,6 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+import os
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -73,6 +74,8 @@ class SelfAttentionBlock(nn.Module):
         "cls_attn_prob_layermean",
     })
     _PARTIAL_TOKEN_PLAN_CACHE_KEY = "_partial_token_query_plan_cache"
+    # One-shot latch for APPCORR_PERSIST_TRACE; class-level so every block shares it.
+    _persist_traced = False
 
     def __init__(
         self,
@@ -1172,6 +1175,13 @@ class SelfAttentionBlock(nn.Module):
                 blocks_out_sum[active_batch_idx, active_token_idx] = (
                     (x_attn_active - x_active) + mlp_out_new
                 ).to(blocks_out_sum.dtype)
+                # Positive proof the write ran, for the wiring checks. Three separate faults have
+                # let the flag reach a call site while the effect went nowhere, and a metric that
+                # barely moves cannot distinguish "small effect" from "still not wired".
+                if os.environ.get("APPCORR_PERSIST_TRACE") and not SelfAttentionBlock._persist_traced:
+                    SelfAttentionBlock._persist_traced = True
+                    print(f"[persist] blocks_out_sum write executed, tag={tag} "
+                          f"rows={int(active_batch_idx.numel())}", flush=True)
 
             if debug:
                 torch.cuda.synchronize()

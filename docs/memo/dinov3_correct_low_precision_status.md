@@ -27,6 +27,46 @@ All five arms measured on the same commit, same machine:
 floor→ceiling gap (bf16): **+6.223 mIoU / +2.599 aAcc**. Correction recovers **80.3%** of the mIoU
 gap in bf16 and **83.2%** in fp4.
 
+### Interleaved correction was discarding all but the last round (fixed 2026-08-16)
+
+The interleaved rows above were measured with a defect, so **80.3% is not what this configuration is
+worth**. `blocks_out_sum` is written only by the approx path; `correct_partial_token` read it and
+never wrote back. Every round restarts at layer 0 and rebuilds any token outside the current group as
+`x + blocks_out_sum`, so a corrected token's own value was thrown away at the next round — earlier
+rounds survived only through the KV cache, where *other* tokens saw them when they attended.
+
+It is worse than merely losing the correction: `prepare_tokens` re-embeds from the image as decoded
+so far, so earlier groups became `refined x + degraded increment` — self-inconsistent, and on VGGT
+measurably *worse* than the consistent approx floor. Full mechanism and the diagnostics that isolated
+it: [[vggt_omega_status]].
+
+`appcorr_kwargs.persist_correction_residual` (default **on** since `96889a5`) writes
+`ls1(attn_new) + mlp_out_new` back over the approximate increment. No extra compute, no extra memory,
+and a no-op for one-shot correction, which reads the head out before any replay.
+
+Re-measured, same 2000 images, bf16 correction, flag off vs on:
+
+| Arm | mIoU | aAcc | mIoU gap recovered |
+|---|---:|---:|---:|
+| floor: L2 approx-only | 56.013 | 84.856 | 0% |
+| interleaved correction, **flag off** | 61.042 | 86.944 | 80.8% |
+| **interleaved correction, flag on** | **61.597** | **87.237** | **89.7%** |
+| ceiling: full forward | 62.236 | 87.454 | 100% |
+
+**+0.555 mIoU / +0.293 aAcc, i.e. +8.9pp of the available gap, for free.** The `flag off` arm was
+re-run rather than quoted, and it lands within 0.03 mIoU of the original 61.012 — which both confirms
+the pair is like-for-like and confirms the published number was measured with the defect present.
+
+**Not re-measured yet:** the fp4 correction row (61.191) and the full-forward references are affected
+the same way and still carry pre-fix numbers. The fp4-vs-bf16 *deltas* below should survive, since
+both placements shared the defect, but the absolute values will move.
+
+Other memos whose interleaved accuracy numbers predate this fix:
+[[ade20k_grid_vs_blockgrid_grouping]] (its "coherent correction timing" hypothesis is the same effect
+the fix addresses, so the ranking may not survive), [[ade20k_cropcover_grouping_sweep]],
+[[ade20k_sr_residual_pruning_sweep]], [[pyramid_degradation_native_vs_canvas]]. Latency and profiling
+memos are unaffected — the flag reuses an already-materialised tensor.
+
 **FP4 effect at matched placement (fp4 − bf16):**
 
 | placement | Δ mIoU | Δ aAcc |

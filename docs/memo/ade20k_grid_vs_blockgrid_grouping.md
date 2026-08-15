@@ -10,6 +10,18 @@ changes.
   each group.
 - **block_grid**: 4 **contiguous quadrants** (top-left / top-right / bottom-left / bottom-right).
 
+> **Both numbers below predate the `persist_correction_residual` fix (2026-08-16) and were measured
+> while interleaved correction was discarding all but the last round.** `correct_partial_token` read
+> `blocks_out_sum` and never wrote back, so a corrected token's own value was rebuilt from the stale
+> approximate increment at the next round — see [[vggt_omega_status]] for the mechanism and
+> [[dinov3_correct_low_precision_status]] for the re-measured ADE20K arms.
+>
+> This matters here specifically, because the hypothesis below — that block_grid wins by making
+> correction timing *coherent within a crop* — is the same consistency effect the fix addresses. The
+> ranking may not survive it. Re-running needs four full-2000 arms (grid and block_grid × flag off
+> and on) via `--set transmission_kwargs.grouping_strategy=...`; the per-strategy configs are gone
+> but both strategies are still in the transmission policy. Not yet done.
+
 ## Results
 
 | grouping | mIoU | recompute | n |
