@@ -31,6 +31,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
         'method': 'partial_token',
+        'persist_correction_residual': True,
         'debug': False,
     }
 
@@ -164,6 +165,9 @@ def normalize_appcorr_kwargs(
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)
     options['method'] = str(options.get('method', defaults['method']))
+    options['persist_correction_residual'] = bool(
+        options.get('persist_correction_residual', defaults['persist_correction_residual'])
+    )
     options['debug'] = bool(options.get('debug', defaults['debug']))
     return options
 

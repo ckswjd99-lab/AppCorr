@@ -22,7 +22,7 @@
         16
     ],
     "input_profile_name": "vggt_omega_512",
-    "scheduler_policy_name": "NYUApproxCorrect",
+    "scheduler_policy_name": "VGGTInterleaved",
     "transmission_policy_name": "VGGTLaplacian",
     "appcorr_kwargs": {
         "enabled": true,
@@ -35,7 +35,7 @@
         "sdpa_query_bucket_size": 64
     },
     "device": "cuda:0",
-    "exp_id": "co3d_appcorr",
+    "exp_id": "co3d_il_spatial8",
     "transmission_kwargs": {
         "pyramid_levels": [
             3,
@@ -43,7 +43,9 @@
         ],
         "num_groups": 1,
         "compression_level": 1,
-        "preserve_input_shape": true
+        "preserve_input_shape": true,
+        "correction_grouping": "spatial",
+        "correction_groups": 8
     },
     "scheduler_kwargs": {
         "total_layers": 48

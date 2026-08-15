@@ -87,20 +87,108 @@ class VGGTLaplacianPolicy(LaplacianPyramidPolicy):
         for offset, patch in enumerate(patch_list[start:]):
             patch.pscore_hint = float(energy[offset])
 
+    # --- correction grouping ---------------------------------------------------------------------
+    # How the residual is split into rounds. One request is one scene of S views, so:
+    #
+    #   per_frame  round r carries every patch of one view. Views are completed one at a time.
+    #   spatial    round r carries the same spatial band of *every* view at once.
+    #
+    # These are not interchangeable on this model. Correction has a threshold -- below ~40% of tokens
+    # nothing recovers -- so `per_frame` concentrates each round's budget hard enough for the views
+    # it touches to cross that threshold locally, while `spatial` spreads every round thinly across
+    # all views. Which one wins is exactly what the option exists to measure.
+
+    @staticmethod
+    def _correction_groups(config: ExperimentConfig) -> int:
+        return max(1, int(config.transmission_kwargs.get("correction_groups", 1)))
+
+    @staticmethod
+    def _correction_grouping(config: ExperimentConfig) -> str:
+        mode = str(config.transmission_kwargs.get("correction_grouping", "per_frame"))
+        if mode not in {"per_frame", "spatial"}:
+            raise ValueError(
+                f"correction_grouping must be 'per_frame' or 'spatial', got {mode!r}"
+            )
+        return mode
+
+    @classmethod
+    def _residual_round(cls, patch, config: ExperimentConfig, n_frames: int, grid: tuple | None) -> int:
+        """Which correction round (0-based) a residual patch belongs to."""
+        rounds = cls._correction_groups(config)
+        if rounds <= 1:
+            return 0
+        # Every round must end up non-empty. A round with no patches is never transmitted, so the
+        # scheduler waits for a group that never arrives: the client sends everything and both sides
+        # sit until the 30-minute timeout with nothing in either log. Ceiling division does exactly
+        # that whenever the units do not divide evenly -- 14 rows over 8 rounds is 2 rows each,
+        # which fills 7 rounds and leaves the eighth empty (4 of 20 Co3D sequences). Spreading the
+        # remainder over the first rounds keeps every round populated.
+        def _bucket(index: int, units: int) -> int:
+            if units <= rounds:
+                return min(index, rounds - 1)
+            base, extra = divmod(units, rounds)
+            big = extra * (base + 1)                # first `extra` rounds take one unit more
+            if index < big:
+                return index // (base + 1)
+            return extra + (index - big) // base
+
+        if cls._correction_grouping(config) == "per_frame":
+            return _bucket(int(patch.image_idx), n_frames)
+        # spatial: split by patch row, so each round is a horizontal band of every view
+        if not grid:
+            return 0
+        gh, gw = grid
+        return _bucket(int(patch.spatial_idx) // max(gw, 1), gh)
+
     def encode(self, images, config: ExperimentConfig):
-        """Base-class encode, with each pyramid level stamped as its own scheduling group.
+        """Base-class encode, with scheduling groups stamped on.
 
         `Patch.group_id` defaults to 0 and `LaplacianPyramidPolicy` never sets it, so a multi-level
         transmission arrives as several groups that all claim to be group 0. An approx-then-correct
         scheduler keys its phase off that field, sees group 0 twice, and issues APPROX again instead
         of CORRECT -- so SEND_RESPONSE is never reached and the client waits until its timeout with
-        nothing in either log. Levels are yielded coarsest-first, so group 0 is the base and each
-        residual level follows in order.
+        nothing in either log.
+
+        Group 0 is the coarse base. The residual is then split into `correction_groups` rounds so
+        correction can start before the whole residual has arrived.
         """
-        for group_idx, patches in enumerate(super().encode(images, config)):
+        image_list = self._as_image_list(images)
+        n_frames = len(image_list)
+        rounds = self._correction_groups(config)
+
+        for level_idx, patches in enumerate(super().encode(images, config)):
+            if level_idx == 0 or rounds <= 1:
+                for patch in patches:
+                    patch.group_id = level_idx
+                yield patches
+                continue
+
+            # Grid comes from the frame's own shape: `patch.target_shape` is stamped by the client
+            # *after* encode yields, so reading it here would silently give an empty tuple.
+            ph, pw = config.patch_size
+            grids = [
+                (lambda hw: (hw[0] // ph, hw[1] // pw))(
+                    self._target_hw_for_level(config, patches[0].res_level, img.shape[:2])
+                )
+                for img in image_list
+            ] if patches else []
+
+            by_round: List[list] = [[] for _ in range(rounds)]
             for patch in patches:
-                patch.group_id = group_idx
-            yield patches
+                grid = grids[patch.image_idx] if patch.image_idx < len(grids) else None
+                by_round[self._residual_round(patch, config, n_frames, grid)].append(patch)
+            for r, group in enumerate(by_round):
+                if not group:
+                    # Loud, because the quiet version is a deadlock: the scheduler waits for this
+                    # group id forever and the failure surfaces only as a client timeout.
+                    raise RuntimeError(
+                        f"correction round {r} of {rounds} is empty for a frame grid {grids[:1]}; "
+                        "the scheduler would wait for a group that is never sent"
+                    )
+                for patch in group:
+                    patch.group_id = level_idx + r
+                    patch.batch_group_total = len(group)
+                yield group
 
     @staticmethod
     def _model_canvas_hw(config: ExperimentConfig, image_hw: Tuple[int, int]) -> Tuple[int, int]:
