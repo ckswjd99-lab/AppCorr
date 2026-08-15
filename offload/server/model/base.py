@@ -69,11 +69,21 @@ class ModelExecutor(ABC):
 
     def configure_dinov3_correct_precision(self, backbone: torch.nn.Module, config: Any):
         from .dinov3_precision import DINOv3CorrectPrecisionController
+        from offload.common.protocol import normalize_appcorr_kwargs
 
         self._dinov3_correct_precision = DINOv3CorrectPrecisionController.from_config(
             backbone.blocks,
             config,
             self.device,
+        )
+        # Captured here rather than passed at every call site: the five DINOv3 executors spread
+        # ~10 `run_dinov3_correct_block` calls between them, and a keyword added to some of them is
+        # a silent partial fix. Injected once in `run_dinov3_correct_block` below.
+        self._persist_correction_residual = bool(
+            normalize_appcorr_kwargs(
+                getattr(config, "appcorr_kwargs", None),
+                getattr(config, "transmission_kwargs", None),
+            )["persist_correction_residual"]
         )
 
     def begin_dinov3_correct_event(self):
@@ -95,6 +105,10 @@ class ModelExecutor(ABC):
     ):
         if self._dinov3_correct_precision is None:
             raise RuntimeError("DINOv3 correct precision is not configured")
+        kwargs.setdefault(
+            "persist_correction_residual",
+            getattr(self, "_persist_correction_residual", False),
+        )
         return self._dinov3_correct_precision.run_block(
             layer_idx,
             x,

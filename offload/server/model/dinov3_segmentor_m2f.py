@@ -1390,6 +1390,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                                 pscore_fusion=appcorr_options["pscore_fusion"],
                                 sdpa_query_bucket_size=sdpa_query_bucket_size,
                                 attn_col_alive_ratio=attn_col_alive_ratio,
+                                # This path calls `blk.correct` directly instead of going through
+                                # `run_dinov3_correct_block`, so the injection in base.py does not
+                                # reach it. Omitting it here leaves ADE20K silently unfixed while
+                                # every other DINOv3 config is fixed -- the two arms of an A/B then
+                                # come out bit-identical and look like "no effect".
+                                persist_correction_residual=appcorr_options["persist_correction_residual"],
                                 debug=False,
                             )
                         if lidx in interaction_indexes:
@@ -1597,7 +1603,10 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
             if _cb_on:
                 _ev_b.record()
-            self._scatter_m2f_correct_batch_cache(items, batch_cache, start_l, end_l)
+            self._scatter_m2f_correct_batch_cache(
+                items, batch_cache, start_l, end_l,
+                persist_blocks_out_sum=getattr(self, "_persist_correction_residual", False),
+            )
             self._add_m2f_batch_total_stats(items[0]["cache"], batch_cache)
             if _cb_on:
                 _ev_c.record()
@@ -1756,19 +1765,28 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         batch_cache: Dict[str, Any],
         start_l: int,
         end_l: int,
+        persist_blocks_out_sum: bool = False,
     ) -> None:
+        # The gather above collects both `_kv` and `_blocks_out_sum` into the batch cache; this
+        # returned only `_kv`. That asymmetry silently swallowed `persist_correction_residual` on the
+        # m2f path: the corrected increment was written into a batch cache that then went out of
+        # scope, so both arms of an A/B came out bit-identical with no error anywhere.
+        #
+        # Gated, so that with the flag off the scatter is byte-for-byte what it was before.
+        suffixes = ("_kv", "_blocks_out_sum") if persist_blocks_out_sum else ("_kv",)
         batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
         offsets = [0]
         for size in batch_sizes[:-1]:
             offsets.append(offsets[-1] + size)
 
         for lidx in range(start_l, end_l):
-            batch_kv = batch_cache.get(f"batch_layer{lidx}_kv")
-            if batch_kv is None:
-                continue
-            for item, offset, size in zip(items, offsets, batch_sizes):
-                key = f"src{item['src_idx']}_layer{lidx}_kv"
-                item["cache"][key] = batch_kv[offset:offset + size].detach().clone()
+            for suffix in suffixes:
+                batched = batch_cache.get(f"batch_layer{lidx}{suffix}")
+                if batched is None:
+                    continue
+                for item, offset, size in zip(items, offsets, batch_sizes):
+                    key = f"src{item['src_idx']}_layer{lidx}{suffix}"
+                    item["cache"][key] = batched[offset:offset + size].detach().clone()
 
     @classmethod
     def _add_m2f_batch_total_stats(cls, dst_cache: Dict[str, Any], batch_cache: Dict[str, Any]) -> None:

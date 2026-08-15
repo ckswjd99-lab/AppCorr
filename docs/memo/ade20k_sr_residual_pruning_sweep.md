@@ -1,5 +1,12 @@
 # ADE20K m2f — SR base & SR-residual pruning threshold sweep
 
+> **Pre-fix numbers.** Every interleaved-correction figure here was measured before
+> `persist_correction_residual` (2026-08-16, `96889a5`), while interleaved correction discarded
+> all but the last round. On ADE20K the same configuration moved 61.042 -> 61.597 mIoU once the
+> corrected increment was persisted (80.8% -> 89.7% of the floor-ceiling gap). Comparisons *within*
+> this memo shared the defect and are likely to survive it; the absolute values will not. See
+> [[dinov3_correct_low_precision_status]].
+
 **Model:** DINOv3 ViT-7B + Mask2Former head (`dinov3_segmentor_m2f`), backbone
 `dinov3_vit7b16_pretrain_lvd1689m`, head `dinov3_vit7b16_ade20k_m2f_head`.
 **Dataset:** ADE20K (HF `merve/scene_parse_150`, `validation` split, **2000 images**, 150 classes),
