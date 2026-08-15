@@ -49,12 +49,43 @@ listing it in `pyramid_levels`; L4 is past the collapse and is not a useful floo
 import math
 from typing import List, Tuple
 
+import numpy as np
+
 from offload.common.protocol import ExperimentConfig, Patch
 from .laplacian import LaplacianPyramidPolicy
 
 
 class VGGTLaplacianPolicy(LaplacianPyramidPolicy):
     """Laplacian pyramid whose level-0 canvas is VGGT's per-frame model input shape."""
+
+    def _create_patches_vectorized(self, patch_list, image, b_idx, lvl, config, dtype):
+        """Base-class patching, plus a per-patch residual-energy hint on the residual levels.
+
+        Without this the correction score is attention-only: it knows which tokens are *attended to*
+        but not which ones are *wrong*, and the residual is the only signal for the latter. The
+        transmitted band at a residual level is exactly that error, so its energy per patch is free
+        to compute here and is what the mobile side is supposed to contribute.
+
+        Only residual levels carry it. The base level is the image itself, not an error, so its
+        energy would rank bright patches rather than mis-reconstructed ones.
+        """
+        start = len(patch_list)
+        super()._create_patches_vectorized(patch_list, image, b_idx, lvl, config, dtype)
+        if dtype != np.int16:
+            return
+
+        ph, pw = config.patch_size
+        H, W, _ = image.shape
+        gh, gw = H // ph, W // pw
+        crops = (
+            image.reshape(gh, ph, gw, pw, -1)
+            .transpose(0, 2, 1, 3, 4)
+            .reshape(gh * gw, -1)
+            .astype(np.float32, copy=False)
+        )
+        energy = np.square(crops, dtype=np.float32).sum(axis=1, dtype=np.float32)
+        for offset, patch in enumerate(patch_list[start:]):
+            patch.pscore_hint = float(energy[offset])
 
     def encode(self, images, config: ExperimentConfig):
         """Base-class encode, with each pyramid level stamped as its own scheduling group.

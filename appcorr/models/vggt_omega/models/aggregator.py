@@ -130,6 +130,15 @@ class Aggregator(nn.Module):
         rows, n_tok = x.shape[0], x.shape[1]
         dindice = torch.arange(n_tok, device=x.device, dtype=torch.long).unsqueeze(0).expand(rows, -1)
         extra = {} if rope is not None else {"num_pretokens": 0}
+        # The mobile residual hint is laid out per stack, since the three stacks read different token
+        # axes. Select by stack here, and *do not* mutate `kwargs` -- `run_blocks` hands the same
+        # dict to all 72 blocks, so popping from it delivers the hint to the first block only and
+        # leaves the other 71 running unhinted. That produced three separate oracle experiments whose
+        # results agreed to three decimals, because the hint they varied was reaching one block.
+        hints = kwargs.get("mobile_pscore_hints")
+        kwargs = {k: v for k, v in kwargs.items() if k != "mobile_pscore_hints"}
+        if hints is not None:
+            extra["mobile_pscore_hint"] = hints.get(tag.rstrip("0123456789"))
         return blk.correct(x, dindice, rope, cache_feature, tag=tag, **kwargs, **extra)
 
     def _run_patch_embed(self, images, cache_feature=None, approx_kwargs=None, correct=False):
