@@ -57,9 +57,54 @@ Re-measured, same 2000 images, bf16 correction, flag off vs on:
 re-run rather than quoted, and it lands within 0.03 mIoU of the original 61.012 — which both confirms
 the pair is like-for-like and confirms the published number was measured with the defect present.
 
-**Not re-measured yet:** the fp4 correction row (61.191) and the full-forward references are affected
-the same way and still carry pre-fix numbers. The fp4-vs-bf16 *deltas* below should survive, since
-both placements shared the defect, but the absolute values will move.
+The fp4 correction path keeps the gain, measured the same night:
+
+| ADE20K arm | mIoU | aAcc | gap recovered |
+|---|---:|---:|---:|
+| bf16 correction, flag off | 61.042 | 86.944 | 80.8% |
+| bf16 correction, flag on | 61.597 | 87.237 | 89.7% |
+| fp4 correction, flag off | 61.010 | 86.971 | 80.3% |
+| **fp4 correction, flag on** | **61.680** | **87.293** | **91.1%** |
+
+**`correct_precision=fp4` is set on `ade20k_m2f_interleaved_static.json` here, not the
+`..._correct_fp4_topk55.json` config.** That config selects with `token_keep_ratio: 0.55` while the
+bf16 arms select with `token_keep_thres: 4e-5`, so it is not matched placement despite the "FP4
+effect at matched placement" framing below. At genuinely matched selection **fp4 and bf16 are
+equivalent** (−0.032 mIoU with the flag off, +0.083 with it on) — the older 61.191 > 61.012 reading
+does not reproduce, and its provenance is unclear. The 61.191 row is left in the table above rather
+than overwritten, but should not be quoted.
+
+The fp4 run is a mix, not pure fp4: the log reports *160 FP4 + 40 FP8* correction Linears across 40
+blocks, with `attn.proj` kept at fp8.
+
+### Every family, flag off vs on
+
+| family | metric | floor | flag off | flag on | ceiling | off → on recovered |
+|---|---|---:|---:|---:|---:|---|
+| VGGT Co3D | rot_deg ↓ | 5.440 | 3.548 | **3.181** | 2.885 | 74.0% → **88.4%** |
+| ADE20K m2f (bf16) | mIoU ↑ | 56.013 | 61.042 | **61.597** | 62.236 | 80.8% → **89.7%** |
+| ADE20K m2f (fp4) | mIoU ↑ | 56.013 | 61.010 | **61.680** | 62.236 | 80.3% → **91.1%** |
+| COCO detector | mAP ↑ | 0.5583 | 0.6011 | 0.6010 | 0.6314 | 58.6% → 58.4% |
+| ImageNet cls | top1 ↑ | 84.498 | 87.896 | 87.890 | 88.108 | 94.1% → 94.0% |
+| NYU depther | abs_rel ↓ | 0.05302 | 0.04940 | 0.04921 | 0.05013 | frame unusable |
+
+NYU improves on all three of abs_rel / rmse / delta_1.25, but cannot be expressed as a recovered
+fraction: both correction arms sit *past* the ceiling on abs_rel and rmse. L2 degradation costs NYU
+depth almost nothing, so floor and ceiling are separated by about the metric noise.
+
+**COCO is an unexplained null, and it is the interesting one.** Two hypotheses died on it:
+
+- *Headroom* — "the flag recovers roughly half of whatever correction left on the table" fits VGGT
+  (55% of 26.0pp) and ADE20K (46% of 19.2pp), and explains ImageNet trivially (5.9pp of headroom,
+  i.e. 0.21 top1 points, is at the noise floor). COCO has **41.4pp of headroom, the most of any
+  family, and gained nothing.**
+- *Task density* — "per-token error reaches the metric more directly in dense tasks" does not
+  separate COCO from ADE20K; both are dense.
+
+COCO is the only family on `COCOWindowInterleaved` (9 window groups) with
+`COCOWindowProgressiveLaplacian` transmission, so the round structure itself differs — but that is a
+guess, not a finding. The wiring is not the explanation: `APPCORR_PERSIST_TRACE=1` shows the block
+writing `blocks_out_sum` on this config (`tag=src0_layer0, rows=105`).
 
 Other memos whose interleaved accuracy numbers predate this fix:
 [[ade20k_grid_vs_blockgrid_grouping]] (its "coherent correction timing" hypothesis is the same effect
