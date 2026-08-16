@@ -124,8 +124,13 @@ class VGGTLaplacianPolicy(LaplacianPyramidPolicy):
         # which fills 7 rounds and leaves the eighth empty (4 of 20 Co3D sequences). Spreading the
         # remainder over the first rounds keeps every round populated.
         def _bucket(index: int, units: int) -> int:
-            if units <= rounds:
-                return min(index, rounds - 1)
+            if units < rounds:
+                # Fewer units than rounds cannot fill them, whatever the assignment. Callers must
+                # pick a finer unit before getting here; reaching this is a bug, not a data case.
+                raise RuntimeError(
+                    f"cannot split {units} units over {rounds} correction rounds without an "
+                    "empty round"
+                )
             base, extra = divmod(units, rounds)
             big = extra * (base + 1)                # first `extra` rounds take one unit more
             if index < big:
@@ -138,7 +143,15 @@ class VGGTLaplacianPolicy(LaplacianPyramidPolicy):
         if not grid:
             return 0
         gh, gw = grid
-        return _bucket(int(patch.spatial_idx) // max(gw, 1), gh)
+        if gh >= rounds:
+            return _bucket(int(patch.spatial_idx) // max(gw, 1), gh)
+        # Not enough rows to give every round a band. Co3D has frames as small as a 5x6 grid, and at
+        # G=8 that leaves rounds 5-7 with nothing to send -- which used to surface only as the
+        # empty-round RuntimeError, i.e. a dead sweep 26 minutes in. Fall back to banding the
+        # flattened grid, so the unit count is gh*gw instead of gh. The bands stop being whole rows
+        # for these frames, which is a change in shape, not in kind: it is still one contiguous
+        # spatial chunk of every view per round.
+        return _bucket(int(patch.spatial_idx), max(gh * gw, 1))
 
     def encode(self, images, config: ExperimentConfig):
         """Base-class encode, with scheduling groups stamped on.
