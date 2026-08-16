@@ -112,6 +112,25 @@ COCO is the only family on `COCOWindowInterleaved` (9 window groups) with
 guess, not a finding. The wiring is not the explanation: `APPCORR_PERSIST_TRACE=1` shows the block
 writing `blocks_out_sum` on this config (`tag=src0_layer0, rows=105`).
 
+**What survives both nulls is a two-factor reading**, once the correction keep ratio each config
+actually ran at is put next to the headroom:
+
+| family | tokens corrected | headroom left by correction | fix gained |
+|---|---:|---:|---:|
+| ImageNet | 100.00% | 5.9pp | none |
+| ADE20K | 41.13% | 19.2pp | +8.9pp |
+| COCO | 20.60% | 41.4pp | none |
+
+Persistence repairs staleness *among tokens that get corrected*, so it needs both a corrected mass
+large enough for that staleness to matter and headroom for it to buy. ImageNet corrects everything
+but has nothing left to win; COCO has the most to win but recomputes only a fifth of its tokens, so
+its dominant error is the four fifths never recomputed at all, which persistence cannot touch.
+ADE20K is the only one where both conditions hold.
+
+That predicts something checkable: **raise COCO's keep ratio toward ADE20K's ~41% (its
+`token_keep_thres` default is 0.002) and the fix should start showing.** Not yet run. Until it is,
+this is a hypothesis fitted to three points, not a result.
+
 Other memos whose interleaved accuracy numbers predate this fix:
 [[ade20k_grid_vs_blockgrid_grouping]] (its "coherent correction timing" hypothesis is the same effect
 the fix addresses, so the ranking may not survive), [[ade20k_cropcover_grouping_sweep]],
