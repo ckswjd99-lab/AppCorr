@@ -467,9 +467,9 @@ Measured at n=20 (ceiling 2.885, floor 5.440, `rot_deg`):
 |---|---:|---:|
 | one-shot (`co3d_appcorr`) | 3.059 | 93.2% |
 | `VGGTInterleaved`, G=1 (sanity) | 3.059 | 93.2% |
-| **spatial, G=4 + `persist_correction_residual`** | **3.177** | **88.6%** |
-| **spatial, G=8 + `persist_correction_residual`** | **3.181** | **88.4%** |
-| **per_frame, G=8 + `persist_correction_residual`** | **3.212** | **87.2%** |
+| **spatial, G=4, fixed** | **3.177** | **88.6%** |
+| **spatial, G=8, fixed** | **3.181** | **88.4%** |
+| **per_frame, G=8, fixed** | **3.212** | **87.2%** |
 | spatial, G=4 | 3.225 | 86.6% |
 | per_frame, G=4 | 3.343 | 82.1% |
 | spatial, G=8 | 3.548 | 74.0% |
@@ -500,10 +500,16 @@ image. Those tokens become `refined x + degraded increment` -- self-inconsistent
 maximises the damage by re-walking all 48 stages under that mismatch every round; the compute-split
 schedule confines it to the prefix, which is also why recovery falls as `G` rises (74.0% -> 69.9%).
 
-The fix is `persist_correction_residual` (`appcorr_kwargs`, default off): after a corrected block,
-write `ls1(attn_new) + mlp_out_new` back over the approximate increment for those tokens. Zero extra
-compute (the increment is already materialised), zero extra memory, and a no-op for one-shot, which
-reads the head out before any replay. Recovery at spatial/G=8: **74.0% -> 88.4%**.
+The fix: after a corrected block, write `ls1(attn_new) + mlp_out_new` back over the approximate
+increment for those tokens. Zero extra compute (the increment is already materialised), zero extra
+memory, and a no-op for one-shot, which reads the head out before any replay. Recovery at
+spatial/G=8: **74.0% -> 88.4%**.
+
+It is unconditional and has no flag -- skipping it is the bug, not a setting. It shipped as
+`appcorr_kwargs.persist_correction_residual` in `96889a5`/`f365970`; the option was removed once the
+effect was confirmed, and `normalize_appcorr_kwargs` raises on the key rather than ignoring it, so a
+stale `--set ...=false` cannot quietly produce an "off" arm that is really an on arm. The pre-fix
+numbers in the table above are therefore no longer reproducible.
 
 **With the flag on, the round count stops mattering** -- G=4 gives 88.6% and G=8 gives 88.4%, where
 before the fix the same step cost 12.6pp. `G` can therefore be chosen for overlap and latency alone.

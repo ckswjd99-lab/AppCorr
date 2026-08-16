@@ -1157,31 +1157,33 @@ class SelfAttentionBlock(nn.Module):
                 clone_base=False,
             )
 
-            if kwargs.get("persist_correction_residual", False):
-                # Write this block's *corrected* increment back over the approximate one, so a later
-                # round that replays this block for a different token group reproduces the corrected
-                # value here instead of falling back to the stale approximate increment.
-                #
-                # Without this, interleaved correction is not cumulative: every round restarts at
-                # stage 0, and a token that is not in the current round's group is rebuilt as
-                # `x + blocks_out_sum` from the approximate pass. Earlier rounds then survive only
-                # through the KV cache -- other tokens see the correction when they attend, but the
-                # corrected token's own value is thrown away -- so only the final round's group
-                # reaches the head with corrected features.
-                #
-                # `x_attn_active - x_active` is ls1(attn_new); adding mlp_out_new gives exactly the
-                # increment `approx` would have stored, so the two paths stay interchangeable.
-                # No-op for one-shot correction, which reads the head out before any replay.
-                blocks_out_sum[active_batch_idx, active_token_idx] = (
-                    (x_attn_active - x_active) + mlp_out_new
-                ).to(blocks_out_sum.dtype)
-                # Positive proof the write ran, for the wiring checks. Three separate faults have
-                # let the flag reach a call site while the effect went nowhere, and a metric that
-                # barely moves cannot distinguish "small effect" from "still not wired".
-                if os.environ.get("APPCORR_PERSIST_TRACE") and not SelfAttentionBlock._persist_traced:
-                    SelfAttentionBlock._persist_traced = True
-                    print(f"[persist] blocks_out_sum write executed, tag={tag} "
-                          f"rows={int(active_batch_idx.numel())}", flush=True)
+            # Write this block's *corrected* increment back over the approximate one, so a later
+            # round that replays this block for a different token group reproduces the corrected
+            # value here instead of falling back to the stale approximate increment.
+            #
+            # Unconditional, and deliberately not behind a flag. Skipping it is not a configuration,
+            # it is the bug: every round restarts at stage 0, and a token outside the current round's
+            # group is rebuilt as `x + blocks_out_sum` from the approximate pass. Earlier rounds then
+            # survive only through the KV cache -- other tokens see the correction when they attend,
+            # but the corrected token's own value is discarded -- so only the final round's group
+            # reaches the head with corrected features. Worse, `prepare_tokens` re-embeds from the
+            # image as decoded so far, so those tokens end up as `refined x + degraded increment`,
+            # self-inconsistent and on VGGT measurably worse than the consistent approx floor.
+            #
+            # `x_attn_active - x_active` is ls1(attn_new); adding mlp_out_new gives exactly the
+            # increment `approx` would have stored, so the two paths stay interchangeable. It costs
+            # nothing -- both terms are already materialised -- and is a no-op for one-shot
+            # correction, which reads the head out before any replay.
+            blocks_out_sum[active_batch_idx, active_token_idx] = (
+                (x_attn_active - x_active) + mlp_out_new
+            ).to(blocks_out_sum.dtype)
+            # Positive proof the write ran. Wiring this up produced three separate faults that all
+            # looked identical from outside -- bit-identical arms, exit 0, clean logs -- and a metric
+            # that barely moves cannot distinguish "small effect" from "not wired".
+            if os.environ.get("APPCORR_PERSIST_TRACE") and not SelfAttentionBlock._persist_traced:
+                SelfAttentionBlock._persist_traced = True
+                print(f"[persist] blocks_out_sum write executed, tag={tag} "
+                      f"rows={int(active_batch_idx.numel())}", flush=True)
 
             if debug:
                 torch.cuda.synchronize()
@@ -1394,6 +1396,20 @@ class SelfAttentionBlock(nn.Module):
                 cache_feature,
                 tag,
                 fixed_query_state,
+            )
+            # Same persistence as `correct_partial_token` above: without it a later round replaying
+            # this block rebuilds these tokens from the stale approximate increment and the
+            # correction is thrown away. `x_attn_sel - x_sel` is ls1(attn_new), so the sum is exactly
+            # what `approx_partial_channel` would have stored.
+            #
+            # NOTE: no shipped config selects `method: partial_channel`, so unlike the partial_token
+            # path this is not exercised by any measurement. It is here so the two paths cannot
+            # disagree about whether interleaved correction accumulates; validate it before quoting
+            # numbers from a partial_channel run.
+            blocks_out_sum.scatter_(
+                1,
+                dindice_sel.unsqueeze(-1).expand(-1, -1, blocks_out_sum.shape[-1]),
+                ((x_attn_sel - x_sel) + x_ls2).to(blocks_out_sum.dtype),
             )
             x = masked_token_update_triton(
                 x_base,

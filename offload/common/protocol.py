@@ -31,7 +31,6 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'token_prune_threshold': 0.0,
         'token_prune_min_keep': 1,
         'method': 'partial_token',
-        'persist_correction_residual': True,
         'debug': False,
     }
 
@@ -69,6 +68,19 @@ def normalize_appcorr_kwargs(
     explicit_enabled = raw.pop('enabled', None)
     enabled_from_appcorr = bool(raw)
     _inherit_shared_appcorr_kwargs(raw, transmission_kwargs)
+
+    # Removed 2026-08-16: persisting the corrected increment into `blocks_out_sum` is
+    # unconditional, because not doing it is the bug rather than a setting -- interleaved
+    # correction then discards every round but the last. Raise instead of ignoring the key: a
+    # stale `--set ...=false` would otherwise produce an "off" arm that is really an on arm, and
+    # an A/B whose two halves are secretly the same condition is worse than one that fails.
+    if 'persist_correction_residual' in raw:
+        raise ValueError(
+            "appcorr_kwargs.persist_correction_residual no longer exists; the corrected "
+            "increment is always persisted. Drop the setting -- the pre-fix behaviour is not "
+            "reproducible, and its measurements are recorded in "
+            "docs/memo/dinov3_correct_low_precision_status.md."
+        )
 
     options = default_appcorr_kwargs()
     options.update(raw)
@@ -165,9 +177,6 @@ def normalize_appcorr_kwargs(
     options['token_prune_threshold'] = float(options.get('token_prune_threshold', defaults['token_prune_threshold']))
     options['token_prune_min_keep'] = max(int(options.get('token_prune_min_keep', defaults['token_prune_min_keep'])), 1)
     options['method'] = str(options.get('method', defaults['method']))
-    options['persist_correction_residual'] = bool(
-        options.get('persist_correction_residual', defaults['persist_correction_residual'])
-    )
     options['debug'] = bool(options.get('debug', defaults['debug']))
     return options
 

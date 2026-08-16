@@ -1,7 +1,7 @@
 # Pyramid levels must degrade against the original, not the canvas
 
 > **Pre-fix numbers.** Every interleaved-correction figure here was measured before
-> `persist_correction_residual` (2026-08-16, `96889a5`), while interleaved correction discarded
+> the persist fix (2026-08-16, `96889a5`), while interleaved correction discarded
 > all but the last round. On ADE20K the same configuration moved 61.042 -> 61.597 mIoU once the
 > corrected increment was persisted (80.8% -> 89.7% of the floor-ceiling gap). Comparisons *within*
 > this memo shared the defect and are likely to survive it; the absolute values will not. See
