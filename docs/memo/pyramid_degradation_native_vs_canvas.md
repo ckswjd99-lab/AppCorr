@@ -92,3 +92,41 @@ above is recorded rather than settled.
   `token_keep_thres=0.002` it recovers only 53% of the gap while selecting 20.4% of tokens, and that
   keep rate is identical before and after the base change, i.e. the threshold does not react to how
   bad the approximation is. A hyper-parameter question for the full-dataset sweep, not a defect.
+  **Answered below (2026-08-16).**
+
+## The COCO numbers above are n≈100, and the recompute/accuracy curve on the full set
+
+Every COCO figure in this memo is a ~100-image subset, which was not stated and is easy to carry off
+by mistake: re-running the same configs at n=100 reproduces them to 3-4 decimals (floor 0.6386 vs
+0.6386, `coco_sequential` ceiling 0.7034 vs 0.7033, default `token_keep_thres=0.002` 0.6727 vs
+0.6730), while the *same configs over all 5000 val images* give floor 0.5583, ceiling 0.6314, default
+0.6011. COCO's mAP moves ~0.07 between those subsets — far more than any effect measured here — so
+these numbers may be compared with each other and with nothing else.
+
+Full 5000 images, window-based interleaved correction (`COCOWindowInterleaved`):
+
+| selection | recompute | mAP | gap recovered |
+|---|---:|---:|---:|
+| floor (`coco_approx_only_windowbase`) | 0% | 0.5583 | 0% |
+| shipped default, `token_keep_thres=0.002` | 20.6% | 0.6011 | 58.6% |
+| **top-k, `token_keep_ratio=0.5`** | **50.0%** | **0.6183** | **82.1%** |
+| ceiling (`coco_sequential`) | 100% | 0.6314 | 100% |
+
+**2.43x the recompute buys +23.5pp of the gap.** Marginal return per point of recompute: 2.84 up to
+20.6%, 0.80 from there to 50%, 0.36 from 50% to 100% — a knee, but a soft one. "Stop at 50%" is not
+obviously optimal; the last half still returns about half as much per unit as the middle stretch.
+
+**Top-k and threshold are equivalent at matched recompute** (n=100: 50.00% -> 0.6969 vs 50.09% ->
+0.6987, inside this sample's several-point noise), so the selection *rule* matters much less than the
+*amount*. Top-k is the better control surface regardless: the rate comes out exactly as configured,
+where the threshold's rate is emergent and, as noted above, does not react to how bad the
+approximation is.
+
+**A caution about calibrating on subsets.** The n=100 sweep predicted that 20.6% -> 50% recompute
+would gain +40.1pp (52.6% -> 92.7%); the full set gained +23.5pp. The shape — steep below 50%, flat
+above 90% — held, the magnitude did not, overstated by 1.7x. Use small-n sweeps to find where to
+look, never to size the effect.
+
+Threshold-to-recompute mapping at n=100, for picking operating points (it is steeply non-linear):
+0.002 -> 20.4%, 0.0018 -> 24.4%, 0.0016 -> 29.4%, 0.0014 -> 35.3%, 0.0012 -> 42.5%, 0.001 -> 50.1%,
+0.0005 -> 72.1%, 0.0002 -> 90.2%, 0.0001 -> 97.2%, 0.0 -> 100%.
