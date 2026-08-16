@@ -72,6 +72,28 @@ The fp4 correction path keeps the gain, measured the same night:
 | fp4 correction, pre-fix | 61.010 | 86.971 | 80.3% |
 | **fp4 correction, fixed** | **61.680** | **87.293** | **91.1%** |
 
+### Re-measured again after the closed-loop transmission fix (2026-08-17)
+
+The `[2, 0]` round trip was not lossless: the encoder built the Laplacian residual against the native
+gaussian while the decoder predicted from the resampled base, so sending the *whole* residual still
+left 1.85% relative L2 in the image the server saw. Both ADE20K correction rows above were therefore
+measured on a slightly wrong input. Mechanism and the fix: [[vggt_omega_status]].
+
+| ADE20K arm | mIoU | aAcc | gap recovered | vs ceiling |
+|---|---:|---:|---:|---:|
+| floor: L2 approx-only | 56.013 | 84.856 | 0% | 10.0% |
+| **bf16 correction** | **61.846** | **87.309** | **93.7%** | **0.63%** |
+| **fp4 correction** | **61.814** | **87.343** | **93.2%** | **0.68%** |
+| ceiling: full forward | 62.236 | 87.454 | 100% | 0% |
+
+**+4.0pp (bf16) and +2.1pp (fp4) over the open-loop numbers**, putting both within 0.7% of a full
+forward. Floor and ceiling are unchanged and not re-run: `ade20k_m2f_approx_only_l2` sends levels
+`[2]` with no residual and `ade20k_m2f_sequential` sends the image, so neither path can be affected --
+on VGGT the corresponding rows reproduced bit-identically, which is the check that the fix is scoped
+right.
+
+fp4 and bf16 remain equivalent at matched selection (−0.032 mIoU), as they were before the fix.
+
 **`correct_precision=fp4` is set on `ade20k_m2f_interleaved_static.json` here, not the
 `..._correct_fp4_topk55.json` config.** That config selects with `token_keep_ratio: 0.55` while the
 bf16 arms select with `token_keep_thres: 4e-5`, so it is not matched placement despite the "FP4

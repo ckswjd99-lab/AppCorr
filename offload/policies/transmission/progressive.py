@@ -249,14 +249,13 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         # Up-sample sequentially and collect group members
         
         prev_lvl = levels[0]
-        prev_img = gaussians[prev_lvl]
         
         struct_idx = 0
         for lvl in levels[1:]:
-            curr_g = gaussians[lvl]
-            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
-            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
+            # Closed loop: predict from what the decoder receives, not from the native gaussian.
+            # See LaplacianPyramidPolicy._closed_loop_residual -- the open-loop form left 2.5%
+            # relative L2 even when the whole residual was transmitted.
+            residual = self._closed_loop_residual(gaussians, prev_lvl, lvl, config, image_hw)
 
             # Identify patches in this level
             ph, pw = config.patch_size
@@ -286,7 +285,6 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                     )
                 struct_idx += 1
             
-            prev_img = curr_g
             prev_lvl = lvl
             
         return local_patches
@@ -318,15 +316,10 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
 
         # Start from base layer and upsample
         prev_lvl = levels[0]
-        prev_img = gaussians[prev_lvl]
 
         for lvl in levels[1:]:
-            curr_g = gaussians[lvl]
-
-            # Residual Layer: Collect
-            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
-            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
+            # Residual Layer: Collect (closed loop -- see _closed_loop_residual)
+            residual = self._closed_loop_residual(gaussians, prev_lvl, lvl, config, image_hw)
             
             # Use vectorized collection
             self._collect_residual_candidates_vectorized(
@@ -334,7 +327,6 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 dtype=np.int16, compression=comp_lvl, mobile_pscore=mobile_pscore
             )
             
-            prev_img = curr_g
             prev_lvl = lvl
         
         return local_candidates
