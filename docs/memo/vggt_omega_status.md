@@ -461,6 +461,50 @@ is inflated another ~8x, because `_call_block` pads every row's `dindice` to the
 (`aggregator.py:143-151`) and one delivered frame forces all 8 rows to that width. Comparing
 conditions with this number ranks them backwards.
 
+**Measured over all 310 sequences.** Ceiling 1.3303 rot / 0.04253 AbsRel, floor (L3 approx-only)
+1.9771 / 0.05570; `recovered` = (floor − x) / (floor − ceiling), `vs ceil` = (x − ceiling) / ceiling,
+i.e. how much worse than a full forward.
+
+| condition | rot | recovered | vs ceil | AbsRel | recovered | vs ceil |
+|---|---:|---:|---:|---:|---:|---:|
+| ceiling (`co3d_full`) | 1.3303 | 100% | 0% | 0.04253 | 100% | 0% |
+| one-shot (`co3d_appcorr`) | 1.3996 | 89.3% | +5.2% | 0.04401 | 88.8% | +3.5% |
+| per_frame, G=8 | 1.5096 | 72.3% | +13.5% | 0.04836 | 55.7% | +13.7% |
+| per_frame, G=4 | 1.5899 | 59.9% | +19.5% | 0.05143 | 32.4% | +20.9% |
+| spatial, G=8 | 1.6538 | 50.0% | +24.3% | 0.04625 | 71.7% | +8.8% |
+| spatial, G=4 | 1.6564 | 49.6% | +24.5% | 0.04618 | 72.3% | +8.6% |
+| spatial, G=2 | 1.7280 | 38.5% | +29.9% | 0.05072 | 37.8% | +19.3% |
+| floor (L3 approx-only) | 1.9771 | 0% | +48.6% | 0.05570 | 0% | +31.0% |
+
+**Two conclusions drawn from the n=20 table below are wrong and are retracted.**
+
+- *"With the fix the round count stops mattering."* It matters a great deal: spatial G=2 recovers
+  38.5% of the rot gap and per_frame G=8 recovers 72.3%. Within a grouping the trend is monotone and
+  never inverts -- more rounds is better or equal on both metrics. `spatial` saturates by G=4 (G=8
+  buys 0.4pp rot, −0.5pp depth); `per_frame` is still climbing at G=8 (+12.4pp rot, +23.3pp depth
+  over G=4).
+- *"The grouping choice collapses."* It does not, and **the two metrics rank it oppositely**: at
+  matched G, per_frame wins on rotation (G=8: 72.3% vs 50.0%) and spatial wins on depth (G=8: 71.7%
+  vs 55.7%). There is no better grouping, only one better suited to the metric being optimised.
+
+**Interleaving does not reach one-shot at any setting.** The best of them, per_frame G=8, is 17pp
+short on rot (72.3% vs 89.3%). At n=20 that gap looked like 5pp. Whether the overlap is worth the
+accuracy is now a question that needs the latency measurement, which has not been done.
+
+More rounds being *better* is the opposite of what the mechanism suggests: fewer rounds means less of
+the schedule spent with earlier groups uncorrected, and the average per-token correction depth is
+higher at G=2 (75% of the network) than at G=8 (56%). A candidate explanation is that
+`prepare_tokens` re-embeds from the image decoded *so far* and each round's `APPROX(prev, here)`
+computes its increments against that state, so more rounds means fresher approximate increments for
+whatever is not corrected -- and on the full set that outweighs the correction depth. Hypothesis
+fitted to five points, not a result.
+
+### The n=20 numbers this replaces, and why they were misleading
+
+The 20-sequence subset is not representative: its ceiling is 2.885 rot against 1.330 over all 310, so
+those sequences are 2.2x harder than average and the floor-to-ceiling gap is 4x wider (2.555 vs
+0.647). Recovered *fractions* on it were optimistic by 4pp for one-shot and by 47pp for spatial G=2.
+
 Measured at n=20 (ceiling 2.885, floor 5.440, `rot_deg`):
 
 | condition | rot | recovered |
@@ -511,11 +555,11 @@ effect was confirmed, and `normalize_appcorr_kwargs` raises on the key rather th
 stale `--set ...=false` cannot quietly produce an "off" arm that is really an on arm. The pre-fix
 numbers in the table above are therefore no longer reproducible.
 
-**With the flag on, the round count stops mattering** -- G=4 gives 88.6% and G=8 gives 88.4%, where
-before the fix the same step cost 12.6pp. `G` can therefore be chosen for overlap and latency alone.
-The grouping choice also collapses: spatial vs per_frame at G=8 goes from a 4.1pp gap to 1.2pp. The
-earlier reading that "spatial wins because 19 of 24 inter-frame blocks attend across frames" was
-mostly an artifact -- per_frame simply had more tokens exposed to the stale increment each round.
+On this 20-sequence subset the round count and the grouping looked irrelevant once the fix was in
+(G=4 88.6% vs G=8 88.4%; spatial vs per_frame 1.2pp). **Both readings are artifacts of the subset and
+are retracted** -- over all 310 sequences the round count spans 34pp and the grouping 22pp, and the
+grouping's winner depends on whether rotation or depth is being optimised. See the full-dataset table
+above.
 
 The residual ~4.8pp gap to one-shot is inherent to progressive transmission: group 1's increment is
 computed at round 1, when only group 1 is refined, and the context has moved on by round 8.
