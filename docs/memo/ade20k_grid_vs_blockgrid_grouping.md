@@ -10,7 +10,7 @@ changes.
   each group.
 - **block_grid**: 4 **contiguous quadrants** (top-left / top-right / bottom-left / bottom-right).
 
-> **Both numbers below predate the `persist_correction_residual` fix (2026-08-16) and were measured
+> **Both numbers below predate the persist fix (2026-08-16, `96889a5`) and were measured
 > while interleaved correction was discarding all but the last round.** `correct_partial_token` read
 > `blocks_out_sum` and never wrote back, so a corrected token's own value was rebuilt from the stale
 > approximate increment at the next round — see [[vggt_omega_status]] for the mechanism and

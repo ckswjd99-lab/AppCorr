@@ -16,7 +16,6 @@ sleep 5
 CUDA_VISIBLE_DEVICES=${GPU:-1} RECV_PORT=$RECV SEND_PORT=$SEND APPCORR_PERSIST_TRACE=1 \
 PYTHONUNBUFFERED=1 APPCORR_RESULT_TIMEOUT=1800 timeout 1800 \
   ./offload/run_local.sh "$CFG" -nr "$NR" -nw 0 --set device=cuda:0 \
-  --set appcorr_kwargs.persist_correction_residual=true \
   > "logs/vggt/trace_${TAG}.log" 2>&1
 n=$(grep -ac "\[persist\] blocks_out_sum write executed" "logs/vggt/trace_${TAG}.log")
 echo "TRACE ${TAG}: persist-write lines = ${n}"

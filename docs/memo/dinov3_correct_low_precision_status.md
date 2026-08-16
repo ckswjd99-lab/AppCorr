@@ -40,20 +40,26 @@ so far, so earlier groups became `refined x + degraded increment` — self-incon
 measurably *worse* than the consistent approx floor. Full mechanism and the diagnostics that isolated
 it: [[vggt_omega_status]].
 
-`appcorr_kwargs.persist_correction_residual` (default **on** since `96889a5`) writes
-`ls1(attn_new) + mlp_out_new` back over the approximate increment. No extra compute, no extra memory,
-and a no-op for one-shot correction, which reads the head out before any replay.
+The fix writes `ls1(attn_new) + mlp_out_new` back over the approximate increment. No extra compute,
+no extra memory, and a no-op for one-shot correction, which reads the head out before any replay.
 
-Re-measured, same 2000 images, bf16 correction, flag off vs on:
+It is **unconditional** — there is no flag. Not persisting is the bug, not a setting, so leaving a
+switch for it only invites a future measurement taken in the broken state. It shipped behind
+`appcorr_kwargs.persist_correction_residual` in `96889a5`/`f365970` and the option was removed once
+the effect was confirmed; `normalize_appcorr_kwargs` now *raises* on that key rather than ignoring
+it, because a stale `--set ...=false` would otherwise yield an "off" arm that is really an on arm.
+**The pre-fix arms below are therefore no longer reproducible**; they are kept here as the record.
+
+Re-measured, same 2000 images, bf16 correction, pre-fix vs fixed:
 
 | Arm | mIoU | aAcc | mIoU gap recovered |
 |---|---:|---:|---:|
 | floor: L2 approx-only | 56.013 | 84.856 | 0% |
-| interleaved correction, **flag off** | 61.042 | 86.944 | 80.8% |
-| **interleaved correction, flag on** | **61.597** | **87.237** | **89.7%** |
+| interleaved correction, **pre-fix** | 61.042 | 86.944 | 80.8% |
+| **interleaved correction, fixed** | **61.597** | **87.237** | **89.7%** |
 | ceiling: full forward | 62.236 | 87.454 | 100% |
 
-**+0.555 mIoU / +0.293 aAcc, i.e. +8.9pp of the available gap, for free.** The `flag off` arm was
+**+0.555 mIoU / +0.293 aAcc, i.e. +8.9pp of the available gap, for free.** The pre-fix arm was
 re-run rather than quoted, and it lands within 0.03 mIoU of the original 61.012 — which both confirms
 the pair is like-for-like and confirms the published number was measured with the defect present.
 
@@ -61,25 +67,25 @@ The fp4 correction path keeps the gain, measured the same night:
 
 | ADE20K arm | mIoU | aAcc | gap recovered |
 |---|---:|---:|---:|
-| bf16 correction, flag off | 61.042 | 86.944 | 80.8% |
-| bf16 correction, flag on | 61.597 | 87.237 | 89.7% |
-| fp4 correction, flag off | 61.010 | 86.971 | 80.3% |
-| **fp4 correction, flag on** | **61.680** | **87.293** | **91.1%** |
+| bf16 correction, pre-fix | 61.042 | 86.944 | 80.8% |
+| bf16 correction, fixed | 61.597 | 87.237 | 89.7% |
+| fp4 correction, pre-fix | 61.010 | 86.971 | 80.3% |
+| **fp4 correction, fixed** | **61.680** | **87.293** | **91.1%** |
 
 **`correct_precision=fp4` is set on `ade20k_m2f_interleaved_static.json` here, not the
 `..._correct_fp4_topk55.json` config.** That config selects with `token_keep_ratio: 0.55` while the
 bf16 arms select with `token_keep_thres: 4e-5`, so it is not matched placement despite the "FP4
 effect at matched placement" framing below. At genuinely matched selection **fp4 and bf16 are
-equivalent** (−0.032 mIoU with the flag off, +0.083 with it on) — the older 61.191 > 61.012 reading
-does not reproduce, and its provenance is unclear. The 61.191 row is left in the table above rather
-than overwritten, but should not be quoted.
+equivalent** (−0.032 mIoU pre-fix, +0.083 fixed — both within run-to-run noise, neither direction
+meaningful). The older 61.191 > 61.012 reading does not reproduce, and its provenance is unclear. The 61.191 row is left in the
+table above rather than overwritten, but should not be quoted.
 
 The fp4 run is a mix, not pure fp4: the log reports *160 FP4 + 40 FP8* correction Linears across 40
 blocks, with `attn.proj` kept at fp8.
 
-### Every family, flag off vs on
+### Every family, pre-fix vs fixed
 
-| family | metric | floor | flag off | flag on | ceiling | off → on recovered |
+| family | metric | floor | pre-fix | fixed | ceiling | recovered, pre-fix → fixed |
 |---|---|---:|---:|---:|---:|---|
 | VGGT Co3D | rot_deg ↓ | 5.440 | 3.548 | **3.181** | 2.885 | 74.0% → **88.4%** |
 | ADE20K m2f (bf16) | mIoU ↑ | 56.013 | 61.042 | **61.597** | 62.236 | 80.8% → **89.7%** |
@@ -94,7 +100,7 @@ depth almost nothing, so floor and ceiling are separated by about the metric noi
 
 **COCO is an unexplained null, and it is the interesting one.** Two hypotheses died on it:
 
-- *Headroom* — "the flag recovers roughly half of whatever correction left on the table" fits VGGT
+- *Headroom* — "the fix recovers roughly half of whatever correction left on the table" fits VGGT
   (55% of 26.0pp) and ADE20K (46% of 19.2pp), and explains ImageNet trivially (5.9pp of headroom,
   i.e. 0.21 top1 points, is at the noise floor). COCO has **41.4pp of headroom, the most of any
   family, and gained nothing.**
@@ -110,7 +116,7 @@ Other memos whose interleaved accuracy numbers predate this fix:
 [[ade20k_grid_vs_blockgrid_grouping]] (its "coherent correction timing" hypothesis is the same effect
 the fix addresses, so the ranking may not survive), [[ade20k_cropcover_grouping_sweep]],
 [[ade20k_sr_residual_pruning_sweep]], [[pyramid_degradation_native_vs_canvas]]. Latency and profiling
-memos are unaffected — the flag reuses an already-materialised tensor.
+memos are unaffected — the fix reuses an already-materialised tensor.
 
 **FP4 effect at matched placement (fp4 − bf16):**
 

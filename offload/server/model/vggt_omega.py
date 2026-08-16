@@ -382,7 +382,6 @@ class VGGTOmegaExecutor(ModelExecutor):
             "pscore_fusion": o["pscore_fusion"],
             "sdpa_query_bucket_size": o["sdpa_query_bucket_size"],
             "attn_col_alive_ratio": o["attn_col_alive_ratio"],
-            "persist_correction_residual": o["persist_correction_residual"],
             "debug": o["debug"],
         }
 
