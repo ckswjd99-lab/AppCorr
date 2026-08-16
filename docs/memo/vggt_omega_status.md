@@ -461,43 +461,53 @@ is inflated another ~8x, because `_call_block` pads every row's `dindice` to the
 (`aggregator.py:143-151`) and one delivered frame forces all 8 rows to that width. Comparing
 conditions with this number ranks them backwards.
 
-**Measured over all 310 sequences.** Ceiling 1.3303 rot / 0.04253 AbsRel, floor (L3 approx-only)
-1.9771 / 0.05570; `recovered` = (floor − x) / (floor − ceiling), `vs ceil` = (x − ceiling) / ceiling,
-i.e. how much worse than a full forward.
+**Measured over all 310 sequences, after the closed-loop transmission fix.** Ceiling 1.3303 rot /
+0.04253 AbsRel, floor (L3 approx-only) 1.9771 / 0.05570; `recovered` = (floor − x) / (floor −
+ceiling), `vs ceil` = (x − ceiling) / ceiling, i.e. how much worse than a full forward.
 
 | condition | rot | recovered | vs ceil | AbsRel | recovered | vs ceil |
 |---|---:|---:|---:|---:|---:|---:|
 | ceiling (`co3d_full`) | 1.3303 | 100% | 0% | 0.04253 | 100% | 0% |
-| one-shot (`co3d_appcorr`) | 1.3996 | 89.3% | +5.2% | 0.04401 | 88.8% | +3.5% |
-| per_frame, G=8 | 1.5096 | 72.3% | +13.5% | 0.04836 | 55.7% | +13.7% |
-| per_frame, G=4 | 1.5899 | 59.9% | +19.5% | 0.05143 | 32.4% | +20.9% |
-| spatial, G=8 | 1.6538 | 50.0% | +24.3% | 0.04625 | 71.7% | +8.8% |
-| spatial, G=4 | 1.6564 | 49.6% | +24.5% | 0.04618 | 72.3% | +8.6% |
-| spatial, G=2 | 1.7280 | 38.5% | +29.9% | 0.05072 | 37.8% | +19.3% |
+| **one-shot (`co3d_appcorr`)** | **1.3330** | **99.6%** | **+0.20%** | **0.04256** | **99.7%** | **+0.08%** |
+| per_frame, G=8 | 1.4736 | 77.8% | +10.8% | 0.04656 | 69.3% | +9.5% |
+| per_frame, G=4 | 1.5499 | 66.1% | +16.5% | 0.04933 | 48.4% | +16.0% |
+| spatial, G=8 | 1.6354 | 52.8% | +22.9% | 0.04562 | 76.5% | +7.3% |
+| spatial, G=4 | 1.6466 | 51.1% | +23.8% | 0.04602 | 73.5% | +8.2% |
+| spatial, G=2 | 1.7289 | 38.4% | +30.0% | 0.05030 | 40.9% | +18.3% |
 | floor (L3 approx-only) | 1.9771 | 0% | +48.6% | 0.05570 | 0% | +31.0% |
 
-**Two conclusions drawn from the n=20 table below are wrong and are retracted.**
+**One-shot correction reproduces the full forward.** It recomputes 100% of tokens, so it has to, and
+at +0.20% rot / +0.08% AbsRel it now does -- that residual is the model's numerical sensitivity
+floor, the same one that makes bit-equality unreachable (a 1.5e-8 input perturbation comes out as
+3.5e-3). Before the transmission fix it sat at +5.20% / +3.48%, and that was reported for a day as an
+accuracy property of correction. It was the lossy round trip. **A quantity that is exact by
+construction and measures inexact is a leak, not a finding.**
 
-- *"With the fix the round count stops mattering."* It matters a great deal: spatial G=2 recovers
-  38.5% of the rot gap and per_frame G=8 recovers 72.3%. Within a grouping the trend is monotone and
-  never inverts -- more rounds is better or equal on both metrics. `spatial` saturates by G=4 (G=8
-  buys 0.4pp rot, −0.5pp depth); `per_frame` is still climbing at G=8 (+12.4pp rot, +23.3pp depth
-  over G=4).
-- *"The grouping choice collapses."* It does not, and **the two metrics rank it oppositely**: at
-  matched G, per_frame wins on rotation (G=8: 72.3% vs 50.0%) and spatial wins on depth (G=8: 71.7%
-  vs 55.7%). There is no better grouping, only one better suited to the metric being optimised.
+Everything below one-shot is what interleaving costs, now measured against a transmission that adds
+nothing. The gap is large: the best interleaved setting (per_frame G=8) is 21.8pp short on rot and
+30.4pp short on depth.
 
-**Interleaving does not reach one-shot at any setting.** The best of them, per_frame G=8, is 17pp
-short on rot (72.3% vs 89.3%). At n=20 that gap looked like 5pp. Whether the overlap is worth the
-accuracy is now a question that needs the latency measurement, which has not been done.
+### What the transmission fix moved
 
-More rounds being *better* is the opposite of what the mechanism suggests: fewer rounds means less of
-the schedule spent with earlier groups uncorrected, and the average per-token correction depth is
-higher at G=2 (75% of the network) than at G=8 (56%). A candidate explanation is that
-`prepare_tokens` re-embeds from the image decoded *so far* and each round's `APPROX(prev, here)`
-computes its increments against that state, so more rounds means fresher approximate increments for
-whatever is not corrected -- and on the full set that outweighs the correction depth. Hypothesis
-fitted to five points, not a result.
+Recovered fraction, open-loop -> closed-loop:
+
+| condition | rot | AbsRel |
+|---|---|---|
+| one-shot | 89.3% -> **99.6%** | 88.8% -> **99.7%** |
+| per_frame G=8 | 72.3% -> 77.8% | 55.7% -> 69.3% |
+| per_frame G=4 | 59.9% -> 66.1% | 32.4% -> 48.4% |
+| spatial G=8 | 50.0% -> 52.8% | 71.7% -> 76.5% |
+| spatial G=4 | 49.6% -> 51.1% | 72.3% -> 73.5% |
+| spatial G=2 | 38.5% -> 38.4% | 37.8% -> 40.9% |
+| ceiling, floor | bit-identical | bit-identical |
+
+Two things to read from it. **per_frame gained 3-4x what spatial did**, so the old "depth prefers
+spatial" conclusion rested partly on the bug -- that gap at G=8 was 16.0pp and is now 7.2pp. And
+**spatial G=2 did not move at all**, which is unexplained; with only two rounds the transmission loss
+was presumably never the dominant error, but that is a guess.
+
+The ceiling and floor rows reproducing bit-identically is the check that the fix is scoped correctly:
+neither sends a residual, so neither may change.
 
 ### The n=20 numbers this replaces, and why they were misleading
 
