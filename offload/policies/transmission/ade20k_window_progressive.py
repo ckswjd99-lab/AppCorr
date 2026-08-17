@@ -59,6 +59,33 @@ class ADE20KWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
         crop, stride = self._crop_params(config)
         return self._compute_crops(gh * ph, gw * pw, crop, stride)
 
+    def _resolve_num_groups(self, config, image_list) -> int:
+        """crop_cover's group count is a property of the image, not a setting.
+
+        Each token goes to the first sliding crop covering its centre, so the number of groups is
+        exactly the number of crops -- 1 to 5 in practice at 896/596, typically 2-3, and dependent on
+        each image's aspect ratio. `encode` emits `range(1, n + 1)`, so `n` has to cover the largest
+        image in the batch or that image's last crop is never transmitted.
+
+        This used to be a hand-set `num_groups: 16` in every crop_cover config -- headroom large
+        enough to be safe, meaningless as a number, and easily misread as "16 correction rounds"
+        (the scheduler chunks layers by `num_correction_groups`, which is the crop count, so the two
+        were never the same thing). Computing it removes the magic value, and removes the trap that
+        a crop_cover config written *without* `num_groups` would silently fall back to the base
+        class default of 4.
+        """
+        if str(config.transmission_kwargs.get('grouping_strategy', '')) != "crop_cover":
+            return super()._resolve_num_groups(config, image_list)
+        crop, stride = self._crop_params(config)
+        n = 1
+        for img in image_list:
+            hw = img.shape[:2]
+            h0, w0 = self._target_hw_for_level(config, 0, hw)
+            ph, pw = self._patch_hw(config)
+            gh, gw = h0 // ph, w0 // pw
+            n = max(n, len(self._compute_crops(gh * ph, gw * pw, crop, stride)))
+        return n
+
     def _precompute_group_assignments(self, strategy, residual_structure, num_groups):
         if strategy != "crop_cover":
             return super()._precompute_group_assignments(strategy, residual_structure, num_groups)

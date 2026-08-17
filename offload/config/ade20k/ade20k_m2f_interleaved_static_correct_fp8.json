@@ -30,7 +30,6 @@
       0
     ],
     "grouping_strategy": "crop_cover",
-    "num_groups": 16,
     "compression_level": 1,
     "preserve_input_shape": true
   },

@@ -1908,6 +1908,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if not appcorr_options.get("generated_from_client", False):
             return None
 
+        # For grid/block_grid, `num_groups` *is* the partition count. For crop_cover it is neither
+        # that nor the number of correction rounds: the rounds come from the image's own sliding
+        # crops (1-5 in practice at 896/596, typically 2-3), assigned in
+        # `_build_crop_cover_group_map`, which never reads this value.
+        #
+        # So crop_cover configs no longer carry it: the transmission side computes the crop count
+        # itself (`ADE20KWindowProgressiveLaplacianPolicy._resolve_num_groups`), and this side must
+        # not read the absent value as "grouping off" -- hence the crop_cover exemption below.
+        # Verified behaviour-neutral: an 8-image check gives 55.19083875742932 either way.
         num_groups = max(int(appcorr_options.get("num_groups", 1)), 1)
         grouping_strategy = str(
             config.transmission_kwargs.get(
@@ -1920,7 +1929,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_group_maps = []
         for input_tokens, (tok_h, tok_w), group_context in zip(all_input_tokens, token_shapes, source_group_contexts):
             num_tokens = tok_h * tok_w
-            if num_groups == 1:
+            if num_groups == 1 and grouping_strategy != "crop_cover":
                 group_map = torch.zeros(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
             elif grouping_strategy == "grid":
                 group_map = self._build_crop_grid_group_map(
