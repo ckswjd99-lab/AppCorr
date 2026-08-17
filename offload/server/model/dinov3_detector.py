@@ -1477,7 +1477,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
     def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
         inp = context.get('input_tensor')
         if inp is not None:
-            context['det_outputs'] = self.model(inp)
+            # The stock model call has no per-block precision hook, so `precision` reaches it only
+            # by substituting the quantized blocks into the backbone for the duration of the call.
+            with self.dinov3_full_inference_precision():
+                context['det_outputs'] = self.model(inp)
             context['det_output'] = context['det_outputs']
 
 

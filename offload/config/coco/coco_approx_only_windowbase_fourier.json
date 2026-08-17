@@ -3,13 +3,20 @@
     "dataset_name": "coco2017",
     "exp_id": "coco_approx_only_windowbase_fourier",
     "batch_size": 1,
-    "image_shape": [1024, 1024, 3],
-    "patch_size": [16, 16],
+    "image_shape": [
+        1024,
+        1024,
+        3
+    ],
+    "patch_size": [
+        16,
+        16
+    ],
     "scheduler_policy_name": "BatchCountBased",
     "transmission_policy_name": "FourierLaplacianHybrid",
     "transmission_kwargs": {
         "compression_level": 1,
-        "dct_keep": 352,
+        "dct_keep": "window",
         "base_only": true
     }
 }

@@ -13,6 +13,7 @@ from .scheduling import (
     DynamicGroupTriggerPolicy,
     GroupTriggerPolicy,
     NYUApproxCorrectPolicy,
+    VGGTInterleavedPolicy,
 )
 from .transmission import (
     RawTransmissionPolicy,
@@ -30,6 +31,7 @@ from .transmission import (
     FourierLaplacianHybridPolicy,
     FourierLaplacianProgressivePolicy,
     NYUAppCorrFourierLaplacianHybridPolicy,
+    VGGTLaplacianPolicy,
 )
 
 # Registry for dynamic instantiation
@@ -38,6 +40,7 @@ SCHEDULER_REGISTRY = {
     "ADE20KInterleavedDynamic": ADE20KInterleavedDynamicPolicy,
     "ADE20KSequential": ADE20KSequentialPolicy,
     "NYUApproxCorrect": NYUApproxCorrectPolicy,
+    "VGGTInterleaved": VGGTInterleavedPolicy,
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
@@ -62,6 +65,7 @@ TRANSMISSION_REGISTRY = {
     "FourierLaplacianHybrid": FourierLaplacianHybridPolicy,
     "FourierLaplacianProgressive": FourierLaplacianProgressivePolicy,
     "NYUAppCorrFourierLaplacianHybrid": NYUAppCorrFourierLaplacianHybridPolicy,
+    "VGGTLaplacian": VGGTLaplacianPolicy,
 }
 
 def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:

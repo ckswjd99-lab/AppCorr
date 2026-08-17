@@ -69,6 +69,19 @@ def normalize_appcorr_kwargs(
     enabled_from_appcorr = bool(raw)
     _inherit_shared_appcorr_kwargs(raw, transmission_kwargs)
 
+    # Removed 2026-08-16: persisting the corrected increment into `blocks_out_sum` is
+    # unconditional, because not doing it is the bug rather than a setting -- interleaved
+    # correction then discards every round but the last. Raise instead of ignoring the key: a
+    # stale `--set ...=false` would otherwise produce an "off" arm that is really an on arm, and
+    # an A/B whose two halves are secretly the same condition is worse than one that fails.
+    if 'persist_correction_residual' in raw:
+        raise ValueError(
+            "appcorr_kwargs.persist_correction_residual no longer exists; the corrected "
+            "increment is always persisted. Drop the setting -- the pre-fix behaviour is not "
+            "reproducible, and its measurements are recorded in "
+            "docs/memo/dinov3_correct_low_precision_status.md."
+        )
+
     options = default_appcorr_kwargs()
     options.update(raw)
     options['enabled'] = enabled_from_appcorr if explicit_enabled is None else bool(explicit_enabled)
@@ -132,14 +145,14 @@ def normalize_appcorr_kwargs(
             server_pscore = 'patch_pseudo_attn_prob_layermean'
         elif server_pscore == 'cls_attn_prob':
             server_pscore = 'cls_attn_prob_layermean'
-    valid_server_pscores = {
-        'cls_attn_prob',
-        'patch_attn_prob',
-        'patch_attn_prob_layermean',
-        'patch_pseudo_attn_prob',
-        'patch_pseudo_attn_prob_layermean',
-        'cls_attn_prob_layermean',
-    }
+    # Single source of truth: the block owns the set, because it is the code that has to implement
+    # each value. Duplicating the list here meant adding a score in one place and having the
+    # scheduler reject it in the other -- which surfaces as `decide()` raising, no Task ever being
+    # built, and the client sitting on a full patch buffer until its timeout. Nothing in either log
+    # says why.
+    from appcorr.models.dinov3.layers.block import SelfAttentionBlock
+
+    valid_server_pscores = set(SelfAttentionBlock._VALID_SERVER_PSCORES)
     if server_pscore not in valid_server_pscores:
         raise ValueError(
             f"Unknown server_pscore '{server_pscore}'. "
@@ -289,6 +302,20 @@ class ExperimentConfig:
                 "num_classes": 150,
                 "autocast_dtype": "float32",
                 "reduce_zero_label": True,
+            }
+            options.update(self.input_profile_kwargs)
+            return options
+        if name == "vggt_omega_512":
+            options = {
+                "name": name,
+                # VGGT derives each frame's canvas from that frame's own aspect ratio instead of
+                # using one fixed shape, so there is deliberately no `mobile_resize_short_side`:
+                # `vggt_resolution` is a token *budget* ((res/patch)**2 tokens), not a side length.
+                "vggt_resolution": 512,
+                "vggt_patch_size": 16,
+                "vggt_resize_mode": "balanced",
+                "vggt_weights_path": "~/cjpark/weights/vggt/vggt_omega_1b_512.pt",
+                "autocast_dtype": "bfloat16",
             }
             options.update(self.input_profile_kwargs)
             return options

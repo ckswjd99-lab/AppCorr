@@ -573,18 +573,21 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 rescale_to = target_shapes[image_idx]
             aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32, device=self.device)
             for img_tensor, apply_flip in zip(tta_tensors, flip_flags):
-                pred = self._make_inference(
-                    img_tensor,
-                    self.model,
-                    inference_mode=inference_mode,
-                    decoder_head_type=decoder_head_type,
-                    rescale_to=rescale_to,
-                    n_output_channels=self.num_classes,
-                    crop_size=(crop_size, crop_size),
-                    stride=(stride, stride),
-                    apply_horizontal_flip=apply_flip,
-                    output_activation=partial(F.softmax, dim=1),
-                )
+                # `_make_inference` drives the whole model, so there is no per-block hook here for
+                # `precision` to act on; substitute the quantized blocks for the duration instead.
+                with self.dinov3_full_inference_precision():
+                    pred = self._make_inference(
+                        img_tensor,
+                        self.model,
+                        inference_mode=inference_mode,
+                        decoder_head_type=decoder_head_type,
+                        rescale_to=rescale_to,
+                        n_output_channels=self.num_classes,
+                        crop_size=(crop_size, crop_size),
+                        stride=(stride, stride),
+                        apply_horizontal_flip=apply_flip,
+                        output_activation=partial(F.softmax, dim=1),
+                    )
                 aggregated_preds += pred.float()
                 del pred
 
@@ -1754,18 +1757,24 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         start_l: int,
         end_l: int,
     ) -> None:
+        # The gather above collects both `_kv` and `_blocks_out_sum` into the batch cache; this
+        # returned only `_kv`. That asymmetry silently swallowed the persisted correction on the m2f
+        # path: the corrected increment was written into a batch cache that then went out of scope,
+        # so both arms of an A/B came out bit-identical with no error anywhere.
+        suffixes = ("_kv", "_blocks_out_sum")
         batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
         offsets = [0]
         for size in batch_sizes[:-1]:
             offsets.append(offsets[-1] + size)
 
         for lidx in range(start_l, end_l):
-            batch_kv = batch_cache.get(f"batch_layer{lidx}_kv")
-            if batch_kv is None:
-                continue
-            for item, offset, size in zip(items, offsets, batch_sizes):
-                key = f"src{item['src_idx']}_layer{lidx}_kv"
-                item["cache"][key] = batch_kv[offset:offset + size].detach().clone()
+            for suffix in suffixes:
+                batched = batch_cache.get(f"batch_layer{lidx}{suffix}")
+                if batched is None:
+                    continue
+                for item, offset, size in zip(items, offsets, batch_sizes):
+                    key = f"src{item['src_idx']}_layer{lidx}{suffix}"
+                    item["cache"][key] = batched[offset:offset + size].detach().clone()
 
     @classmethod
     def _add_m2f_batch_total_stats(cls, dst_cache: Dict[str, Any], batch_cache: Dict[str, Any]) -> None:
@@ -1899,6 +1908,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if not appcorr_options.get("generated_from_client", False):
             return None
 
+        # For grid/block_grid, `num_groups` *is* the partition count. For crop_cover it is neither
+        # that nor the number of correction rounds: the rounds come from the image's own sliding
+        # crops (1-5 in practice at 896/596, typically 2-3), assigned in
+        # `_build_crop_cover_group_map`, which never reads this value.
+        #
+        # So crop_cover configs no longer carry it: the transmission side computes the crop count
+        # itself (`ADE20KWindowProgressiveLaplacianPolicy._resolve_num_groups`), and this side must
+        # not read the absent value as "grouping off" -- hence the crop_cover exemption below.
+        # Verified behaviour-neutral: an 8-image check gives 55.19083875742932 either way.
         num_groups = max(int(appcorr_options.get("num_groups", 1)), 1)
         grouping_strategy = str(
             config.transmission_kwargs.get(
@@ -1911,7 +1929,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_group_maps = []
         for input_tokens, (tok_h, tok_w), group_context in zip(all_input_tokens, token_shapes, source_group_contexts):
             num_tokens = tok_h * tok_w
-            if num_groups == 1:
+            if num_groups == 1 and grouping_strategy != "crop_cover":
                 group_map = torch.zeros(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
             elif grouping_strategy == "grid":
                 group_map = self._build_crop_grid_group_map(

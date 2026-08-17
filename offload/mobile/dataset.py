@@ -840,6 +840,9 @@ def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> Datas
         return COCO2017Loader(root, batch_size, **kwargs)
     elif name in {'ade20k', 'scene_parse_150'}:
         return ADE20KLoader(root, batch_size, **kwargs)
+    elif name in {'co3dv2', 'co3d'}:
+        from .co3d_loader import CO3DSequenceLoader
+        return CO3DSequenceLoader(root, batch_size, **kwargs)
     elif name == 'nyu_depth':
         return NYUDepthLoader(root, batch_size, **kwargs)
     else:
