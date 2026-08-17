@@ -34,10 +34,19 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             return self._compute_patch_residual_energy(crop)
         return self._compute_patch_residual_rms(crop)
 
+    def _resolve_num_groups(self, config: ExperimentConfig, image_list) -> int:
+        """How many transmission groups `encode` will emit.
+
+        For grid/block_grid this *is* the partition count and comes from the config. Strategies that
+        derive their own grouping override this -- see the crop_cover version, where the count is a
+        property of the image, not a setting.
+        """
+        return int(config.transmission_kwargs.get('num_groups', 4))
+
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
         image_list = self._as_image_list(images)
         B = len(image_list)
-        num_groups = config.transmission_kwargs.get('num_groups', 4)
+        num_groups = self._resolve_num_groups(config, image_list)
         mobile_pscore = self._resolve_mobile_pscore(config)
         preserve = self._is_preserve_input_shape(config)
 
