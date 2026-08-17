@@ -487,6 +487,44 @@ Everything below one-shot is what interleaving costs, now measured against a tra
 nothing. The gap is large: the best interleaved setting (per_frame G=8) is 21.8pp short on rot and
 30.4pp short on depth.
 
+### The same table with the base at level 2
+
+L2 is a milder degradation, so the gap is 2.9x narrower on rotation (0.2235 vs 0.6468) and 2.5x on
+depth. Same 310 sequences, same closed-loop transmission, ceiling reused from the L3 sweep (it has no
+pyramid, so the level cannot touch it).
+
+| condition | rot | recovered | vs ceil | AbsRel | recovered | vs ceil |
+|---|---:|---:|---:|---:|---:|---:|
+| ceiling | 1.3303 | 100% | 0% | 0.04253 | 100% | 0% |
+| **one-shot** | **1.3330** | **98.8%** | +0.20% | **0.04256** | **99.4%** | +0.08% |
+| per_frame, G=8 | 1.4548 | 44.3% | +9.4% | 0.04558 | 41.4% | +7.2% |
+| per_frame, G=4 | 1.5065 | 21.2% | +13.2% | 0.04818 | **−8.5%** | +13.3% |
+| floor (L2 approx-only) | 1.5538 | 0% | +16.8% | 0.04774 | 0% | +12.3% |
+| spatial, G=2 | 1.5833 | **−13.2%** | +19.0% | 0.04755 | 3.8% | +11.8% |
+| spatial, G=4 | 1.5844 | **−13.7%** | +19.1% | 0.04383 | 75.4% | +3.1% |
+| spatial, G=8 | 1.5866 | **−14.7%** | +19.3% | 0.04326 | 86.2% | +1.7% |
+
+**`spatial` grouping does not work for pose, at any round count.** Rotation lands below the floor at
+G=2, G=4 and G=8 (−13.2%, −13.7%, −14.7%) and drifts slightly *worse* with more rounds, while depth
+on those same runs climbs 3.8% -> 75.4% -> 86.2%. More rounds is not the missing ingredient; the
+failure is structural to banding by row.
+
+`per_frame` has no such wall -- both metrics rise together with rounds (G=4 -> G=8: rot 21.2% ->
+44.3%, depth −8.5% -> 41.4%) -- though its depth is also below the floor at G=4.
+
+**L3 hid this.** In absolute terms spatial G=8 costs 0.033 rot degrees over the floor. Against the L2
+gap that is −14.7%; against the wider L3 gap it is about −5%, which the +52.8% recovery there
+absorbed without a trace. A milder degradation is the *harsher* test: the less the approximation
+costs, the more visible it is when correction makes something worse.
+
+**One-shot is the only setting that is safe on both metrics at both levels** (98.8-99.7%).
+Interleaving never approaches it, and several combinations are worse than not correcting at all.
+
+Two consistency checks worth keeping: L2 and L3 one-shot are **bit-identical** (1.3329724629040283 /
+0.04256055266446163), which is what a lossless transmission requires -- the residual makes the base
+level irrelevant once every token is recomputed -- and the L2 floor reproduces the recorded 310-seq
+value (1.554 / 0.0477) exactly.
+
 ### What the transmission fix moved
 
 Recovered fraction, open-loop -> closed-loop:
