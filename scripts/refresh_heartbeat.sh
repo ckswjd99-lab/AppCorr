@@ -27,9 +27,16 @@ pos() {
 
 while true; do
   sleep "$INTERVAL"
+  # `find -newermt` on mtime, not size: tqdm rewrites the same line with \r, so a log that is very
+  # much alive can stop growing. A slow tail (1.8 s/it near the end of a run) was enough to make this
+  # report IDLE while 1825/2000 images were still going. Also count live client processes, so a
+  # quiet-but-running job cannot be announced as nothing.
   live=$(find logs/vggt -maxdepth 1 -name '*.log' -newermt "-${FRESH} seconds" 2>/dev/null | sort)
-  if [ -z "$live" ]; then
-    echo "HEARTBEAT IDLE: no log in logs/vggt written in the last ${FRESH}s -- nothing is running"
+  procs_now=$(ps -eo cmd | grep -c '[o]ffload/mobile/main')
+  if [ -z "$live" ] && [ "$procs_now" -gt 0 ]; then
+    echo "HEARTBEAT QUIET: $procs_now client process(es) alive but no log touched in ${FRESH}s"
+  elif [ -z "$live" ]; then
+    echo "HEARTBEAT IDLE: no log in logs/vggt written in the last ${FRESH}s, no client processes"
   else
     msg=""
     for L in $live; do

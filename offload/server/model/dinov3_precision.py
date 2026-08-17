@@ -179,11 +179,17 @@ class DINOv3ApproxPrecisionController:
         precision: str,
         auto_min_rows: int,
         device: torch.device,
+        fp4_fast: bool = True,
+        fp4_per_tensor_scale: bool = False,
+        fp4_proj_precision: str = "fp4",
     ) -> None:
         self.blocks = blocks
         self.precision = precision
         self.auto_min_rows = auto_min_rows
         self.device = device
+        self.fp4_fast = bool(fp4_fast)
+        self.fp4_per_tensor_scale = bool(fp4_per_tensor_scale)
+        self.fp4_proj_precision = str(fp4_proj_precision)
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
         self._compiled_fp8_approx: list[Any] = []
@@ -216,6 +222,9 @@ class DINOv3ApproxPrecisionController:
             precision=config.precision,
             auto_min_rows=config.fp8_auto_min_rows,
             device=device,
+            fp4_fast=bool(getattr(config, "approx_fp4_fast", True)),
+            fp4_per_tensor_scale=bool(getattr(config, "approx_fp4_per_tensor_scale", False)),
+            fp4_proj_precision=str(getattr(config, "approx_fp4_proj_precision", "fp4")),
         )
 
     @property
@@ -377,6 +386,10 @@ class DINOv3ApproxPrecisionController:
             use_dynamic_per_tensor_scale=True,
         )
 
+        if self.fp4_fast:
+            self._prepare_fp4_fast()
+            return
+
         fp4_blocks = nn.ModuleList()
         quantized_count = 0
         try:
@@ -428,6 +441,70 @@ class DINOv3ApproxPrecisionController:
         print(
             "[FP4] Prepared "
             f"{quantized_count} approximate Linear weights across {len(fp4_blocks)} blocks."
+        )
+
+    def _prepare_fp4_fast(self) -> None:
+        """Quantize the approximate blocks with the correction path's own FastFP4Linear.
+
+        TorchAO's NVFP4 config cannot express "block scales only" on the installed 0.17 -- its Triton
+        kernel asserts `per_tensor_scale is not None`, and turning the scale on then requires MSLK.
+        `FastFP4Linear` calls `torch._scaled_mm` directly, so it can, and it is the same code the
+        correction path already runs.
+
+        Two differences from the TorchAO path are deliberate and worth knowing when comparing to
+        older FP4 approx numbers: the activation scale is static (or absent) rather than recomputed
+        per call, and `attn.proj` can be routed to FP8. The default keeps all five Linears in FP4 so
+        that *which* layers are low precision is unchanged.
+        """
+        import copy
+
+        try:
+            from .fp4_fast_linear import convert_linears_to_fast_fp4
+        except Exception as exc:  # pragma: no cover - import guard
+            self._handle_fp4_unavailable(f"FastFP4Linear unavailable ({exc})")
+            return
+
+        fp4_blocks = nn.ModuleList()
+        fp4_count = fp8_count = 0
+        try:
+            for block in self.blocks:
+                fp4_block = (
+                    copy.deepcopy(block)
+                    .to(dtype=torch.bfloat16)
+                    .eval()
+                    .requires_grad_(False)
+                )
+                eligible_names = {name for name, _ in _eligible_fp4_linears(fp4_block)}
+                a, b = convert_linears_to_fast_fp4(
+                    fp4_block,
+                    eligible_names,
+                    proj_precision=self.fp4_proj_precision,
+                    per_tensor_scale=self.fp4_per_tensor_scale,
+                )
+                fp4_count += a
+                fp8_count += b
+                fp4_blocks.append(fp4_block)
+        except Exception as exc:
+            self._handle_fp4_unavailable(str(exc))
+            return
+
+        expected = len(self.blocks) * len(_LOW_PRECISION_LINEAR_SUFFIXES)
+        if fp4_count + fp8_count != expected:
+            self._handle_fp4_unavailable(
+                f"quantized {fp4_count + fp8_count} Linear layers, expected {expected}"
+            )
+            return
+
+        self.fp4_blocks = fp4_blocks
+        # Deliberately not compiled. The correction path compiles `blk.correct` only when asked;
+        # here the blocks are already the hot path and an untested compile would confound the very
+        # measurement this exists for.
+        self._compiled_fp4_approx = [block.approx for block in fp4_blocks]
+        print(
+            f"[FP4] Prepared {fp4_count} FP4 + {fp8_count} FP8 approximate Linear weights across "
+            f"{len(fp4_blocks)} blocks via FastFP4Linear "
+            f"(per_tensor_scale={self.fp4_per_tensor_scale}, attn.proj={self.fp4_proj_precision}).",
+            flush=True,
         )
 
     def begin_event(self) -> None:
