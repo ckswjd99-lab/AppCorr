@@ -656,6 +656,7 @@ class DINOv3CorrectPrecisionController:
         compile_enabled: bool = False,
         fp4_calib_events: int = 1,
         fp4_proj_precision: str = "fp8",
+        fp4_per_tensor_scale: bool = False,
         bucket_rows: int = 0,
     ) -> None:
         self.blocks = blocks
@@ -664,6 +665,7 @@ class DINOv3CorrectPrecisionController:
         self.compile_enabled = bool(compile_enabled)
         self.fp4_calib_events = max(0, int(fp4_calib_events))
         self.fp4_proj_precision = str(fp4_proj_precision)
+        self.fp4_per_tensor_scale = bool(fp4_per_tensor_scale)
         self.bucket_rows = max(0, int(bucket_rows))
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
@@ -702,6 +704,7 @@ class DINOv3CorrectPrecisionController:
             compile_enabled=bool(getattr(config, "correct_compile", False)),
             fp4_calib_events=int(getattr(config, "correct_fp4_calib_events", 1)),
             fp4_proj_precision=str(getattr(config, "correct_fp4_proj_precision", "fp8")),
+            fp4_per_tensor_scale=bool(getattr(config, "correct_fp4_per_tensor_scale", False)),
             bucket_rows=int(getattr(config, "correct_bucket_rows", 0)),
         )
 
@@ -861,6 +864,7 @@ class DINOv3CorrectPrecisionController:
                     fp4_block,
                     eligible_names,
                     proj_precision=self.fp4_proj_precision,
+                    per_tensor_scale=self.fp4_per_tensor_scale,
                     bucket_rows=self.bucket_rows,
                 )
                 fp4_count += a
@@ -882,7 +886,8 @@ class DINOv3CorrectPrecisionController:
         print(
             f"[FP4-correct] Prepared {fp4_count} FP4 + {fp8_count} FP8 correction Linear weights "
             f"across {len(fp4_blocks)} blocks (raw _scaled_mm, mlp.w1/w2 share one quantized "
-            f"activation, attn.proj={self.fp4_proj_precision}); calibrating for "
+            f"activation, attn.proj={self.fp4_proj_precision}, "
+            f"per_tensor_scale={self.fp4_per_tensor_scale}); calibrating for "
             f"{self._fp4_calib_remaining} event(s)."
         )
 
