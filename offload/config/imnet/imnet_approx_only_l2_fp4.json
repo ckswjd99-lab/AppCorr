@@ -1,5 +1,5 @@
 {
-    "exp_id": "approx_only_l2_fp4",
+    "exp_id": "imnet_approx_only_l2_fp4",
     "model_name": "dinov3_classifier",
     "precision": "fp4",
     "batch_size": 32,

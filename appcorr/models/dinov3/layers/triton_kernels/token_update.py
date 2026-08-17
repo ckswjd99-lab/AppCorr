@@ -4,6 +4,8 @@ import triton.language as tl
 import torch
 from typing import Tuple
 
+from ._strict import note_fallback
+
 
 @triton.jit
 def _fused_layerscale_add_kernel(
@@ -428,11 +430,15 @@ def scatter_rows_triton(dst, batch_idx, token_idx, src, block_c: int = 1024) -> 
     """
     d = _rows_view(dst)
     if d is None or src.dim() < 2 or not _trailing_is_packed(src, 1):
+        note_fallback("scatter_rows_triton", "dst is not row-viewable or src rows are not packed",
+                      detail=f"dst {tuple(dst.shape)} stride {dst.stride()}, src {tuple(src.shape)}")
         return False
     C = 1
     for _d in range(1, src.dim()):
         C *= src.shape[_d]
     if d.shape[-1] != C:
+        note_fallback("scatter_rows_triton", "row width mismatch",
+                      detail=f"dst row {d.shape[-1]} vs src row {C}")
         return False
     s = src.as_strided((src.shape[0], C), (src.stride(0), 1))
     n, dim_c = batch_idx.numel(), d.shape[-1]
@@ -522,11 +528,15 @@ def scatter_heads_triton(dst, batch_idx, pos_idx, src) -> bool:
     Same uniqueness assumption as `scatter_rows_triton`. Returns False when unsupported.
     """
     if not _heads_ok(dst) or src.dim() != 3 or src.stride(2) != 1:
+        note_fallback("scatter_heads_triton", "dst head layout unsupported or src not head-packed",
+                      detail=f"dst {tuple(dst.shape)} stride {dst.stride()}, src {tuple(src.shape)}")
         return False
     n, H, Dh = src.shape
     if n == 0:
         return True
     if dst.shape[1] != H or dst.shape[3] != Dh:
+        note_fallback("scatter_heads_triton", "head or head-dim mismatch",
+                      detail=f"dst {tuple(dst.shape)} vs src {tuple(src.shape)}")
         return False
     _scatter_heads_kernel[(n, H)](
         dst, batch_idx, pos_idx, src,
@@ -591,8 +601,11 @@ def scale_bias_inplace_triton(out: torch.Tensor, scale: float, bias: torch.Tenso
     Returns False when the layout is unsupported so callers can fall back.
     """
     if not out.is_contiguous() or out.dim() != 2:
+        note_fallback("scale_bias_inplace_triton", "out must be a contiguous 2-D tensor",
+                      detail=f"out {tuple(out.shape)} contiguous={out.is_contiguous()}")
         return False
     if bias is not None and (not bias.is_contiguous() or bias.numel() != out.shape[1]):
+        note_fallback("scale_bias_inplace_triton", "bias is not contiguous or has the wrong width")
         return False
     n_elem = out.numel()
     if n_elem == 0:

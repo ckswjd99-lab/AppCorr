@@ -6,6 +6,7 @@ from .progressive import ProgressiveLPyramidPolicy
 from .fourier_progressive import FourierProgressiveTransmissionPolicy
 from .fourier_laplacian_hybrid import FourierLaplacianHybridPolicy
 from .fourier_laplacian_progressive import FourierLaplacianProgressivePolicy
+from .vggt_laplacian import VGGTLaplacianPolicy
 from .coco_window_progressive import COCOWindowProgressiveLaplacianPolicy
 from .ade20k_window_progressive import ADE20KWindowProgressiveLaplacianPolicy
 from .fourier_ade20k_window_progressive import FourierADE20KWindowHybridPolicy

@@ -3,6 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+import os
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -60,6 +61,12 @@ class SelfAttentionBlock(nn.Module):
         "patch_pseudo_attn_prob",
         "patch_pseudo_attn_prob_layermean",
         "cls_attn_prob_layermean",
+        # Control, not a technique: selects tokens uniformly at random. A real score has to beat
+        # this to have earned its place, and the *shape* of the gap is diagnostic -- random recovery
+        # should track the keep ratio roughly linearly, so a score that does worse than random is
+        # actively mis-ranking, while a score and random failing the same way points at the
+        # correction mechanism rather than the ranking.
+        "random",
     })
     _LAYERMEAN_SERVER_PSCORES = frozenset({
         "patch_attn_prob_layermean",
@@ -67,6 +74,8 @@ class SelfAttentionBlock(nn.Module):
         "cls_attn_prob_layermean",
     })
     _PARTIAL_TOKEN_PLAN_CACHE_KEY = "_partial_token_query_plan_cache"
+    # One-shot latch for APPCORR_PERSIST_TRACE; class-level so every block shares it.
+    _persist_traced = False
 
     def __init__(
         self,
@@ -85,10 +94,11 @@ class SelfAttentionBlock(nn.Module):
         attn_class: Callable[..., nn.Module] = SelfAttention,
         ffn_layer: Callable[..., nn.Module] = SwiGLUFFN,
         mask_k_bias: bool = False,
+        use_qk_norm: bool = False,
         device=None,
     ) -> None:
         super().__init__()
-        
+
         self.norm1 = norm_layer(dim)
         self.attn: SelfAttention = attn_class(
             dim,
@@ -98,6 +108,7 @@ class SelfAttentionBlock(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             mask_k_bias=mask_k_bias,
+            use_qk_norm=use_qk_norm,
             device=device,
         )
         self.ls1 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
@@ -856,7 +867,17 @@ class SelfAttentionBlock(nn.Module):
         server_pscore: str,
     ) -> torch.Tensor:
         if server_pscore in SelfAttentionBlock._LAYERMEAN_SERVER_PSCORES:
-            cache_key = f"_shared_{server_pscore}_server_pscore_mean_all_layers"
+            # Average over the layers of *this* stack only. A model can have several block stacks
+            # over different token axes -- VGGT-Omega has three (`pe*` per-frame patch-embed tokens,
+            # `frame*` per-frame aggregator tokens, `inter*` sequence-global) whose scores are
+            # shaped (8, 1037), (8, 1049) and (1, 8392). Averaging across them is not merely a shape
+            # error, it is meaningless: they index different things.
+            #
+            # The stack is the tag with its trailing layer number removed, which leaves DINOv3
+            # unchanged (`src0_layer7` -> `src0_layer`, i.e. all layers of one source, exactly the
+            # previous grouping) and separates VGGT's three.
+            stack = tag.rstrip("0123456789")
+            cache_key = f"_shared_{server_pscore}_server_pscore_mean_{stack}"
             signature_key = f"{cache_key}_keys"
             cached_server_pscore = cache_feature.get(cache_key)
             if cached_server_pscore is not None:
@@ -866,11 +887,16 @@ class SelfAttentionBlock(nn.Module):
                 sorted(
                     key
                     for key, value in cache_feature.items()
-                    if key.endswith("_server_pscore") and isinstance(value, torch.Tensor)
+                    if key.endswith("_server_pscore")
+                    and isinstance(value, torch.Tensor)
+                    and key[: -len("_server_pscore")].rstrip("0123456789") == stack
                 )
             )
             if not server_pscore_keys:
-                raise KeyError("Missing cached *_server_pscore entries. They must be produced during approx.")
+                raise KeyError(
+                    f"Missing cached *_server_pscore entries for stack '{stack}'. "
+                    "They must be produced during approx."
+                )
 
             server_pscore_tensors = [cache_feature[key] for key in server_pscore_keys]
             base_shape = server_pscore_tensors[0].shape
@@ -891,6 +917,26 @@ class SelfAttentionBlock(nn.Module):
                 f"Missing cached {tag}_server_pscore. "
                 "It must be produced during approx."
             )
+        if server_pscore == "random":
+            # One draw per stack, reused by every layer in it -- *not* a fresh draw per layer.
+            #
+            # This matters more than it looks. A per-layer draw corrects a different token set in
+            # every block, so no token is ever corrected all the way through, and the control then
+            # measures selection *instability* rather than selection quality. Measured: a per-layer
+            # draw recovers 0% of the gap at every ratio up to 0.70, which is not a statement about
+            # random selection at all. The real scores are stable across a stack (the layer-mean
+            # ones by construction, and the per-layer ones because the query plan is cached), so the
+            # control has to be stable too for the comparison to mean anything.
+            #
+            # Cached alongside the plan cache, keyed by stack, and shaped from the real score so the
+            # control cannot silently disagree with the real path about what it is ranking.
+            stack = tag.rstrip("0123456789")
+            key = f"_shared_random_server_pscore_{stack}"
+            cached = cache_feature.get(key)
+            if cached is None:
+                cached = torch.rand_like(server_token_scores)
+                cache_feature[key] = cached
+            return cached
         return server_token_scores
 
     @nvtx.annotate("correct_partial_token")
@@ -920,7 +966,16 @@ class SelfAttentionBlock(nn.Module):
 
         # create update index
         B, N, C = x.shape
-        num_pretokens = N - (rope[0].shape[0])
+        # Normally inferred from the rope length, since rope covers patch tokens only. VGGT's
+        # inter-frame blocks have no rope (they attend across frames, where a per-frame 2D position
+        # is meaningless), so they pass this explicitly. `num_pretokens = 0` there is deliberate:
+        # in the inter-frame layout the camera/register tokens are strided per frame rather than a
+        # contiguous prefix, so they cannot be expressed as "pretokens" and are scored like any
+        # other token.
+        num_pretokens = kwargs.get("num_pretokens")
+        if num_pretokens is None:
+            num_pretokens = N - (rope[0].shape[0])
+        num_pretokens = int(num_pretokens)
         dindice_pre = dindice[:, :num_pretokens]      # [B, 5] Shared pretokens
         dindice_patches = dindice[:, num_pretokens:]  # [B, M] Shared candidate patches
 
@@ -1101,6 +1156,34 @@ class SelfAttentionBlock(nn.Module):
                 mlp_out_new,
                 clone_base=False,
             )
+
+            # Write this block's *corrected* increment back over the approximate one, so a later
+            # round that replays this block for a different token group reproduces the corrected
+            # value here instead of falling back to the stale approximate increment.
+            #
+            # Unconditional, and deliberately not behind a flag. Skipping it is not a configuration,
+            # it is the bug: every round restarts at stage 0, and a token outside the current round's
+            # group is rebuilt as `x + blocks_out_sum` from the approximate pass. Earlier rounds then
+            # survive only through the KV cache -- other tokens see the correction when they attend,
+            # but the corrected token's own value is discarded -- so only the final round's group
+            # reaches the head with corrected features. Worse, `prepare_tokens` re-embeds from the
+            # image as decoded so far, so those tokens end up as `refined x + degraded increment`,
+            # self-inconsistent and on VGGT measurably worse than the consistent approx floor.
+            #
+            # `x_attn_active - x_active` is ls1(attn_new); adding mlp_out_new gives exactly the
+            # increment `approx` would have stored, so the two paths stay interchangeable. It costs
+            # nothing -- both terms are already materialised -- and is a no-op for one-shot
+            # correction, which reads the head out before any replay.
+            blocks_out_sum[active_batch_idx, active_token_idx] = (
+                (x_attn_active - x_active) + mlp_out_new
+            ).to(blocks_out_sum.dtype)
+            # Positive proof the write ran. Wiring this up produced three separate faults that all
+            # looked identical from outside -- bit-identical arms, exit 0, clean logs -- and a metric
+            # that barely moves cannot distinguish "small effect" from "not wired".
+            if os.environ.get("APPCORR_PERSIST_TRACE") and not SelfAttentionBlock._persist_traced:
+                SelfAttentionBlock._persist_traced = True
+                print(f"[persist] blocks_out_sum write executed, tag={tag} "
+                      f"rows={int(active_batch_idx.numel())}", flush=True)
 
             if debug:
                 torch.cuda.synchronize()
@@ -1313,6 +1396,20 @@ class SelfAttentionBlock(nn.Module):
                 cache_feature,
                 tag,
                 fixed_query_state,
+            )
+            # Same persistence as `correct_partial_token` above: without it a later round replaying
+            # this block rebuilds these tokens from the stale approximate increment and the
+            # correction is thrown away. `x_attn_sel - x_sel` is ls1(attn_new), so the sum is exactly
+            # what `approx_partial_channel` would have stored.
+            #
+            # NOTE: no shipped config selects `method: partial_channel`, so unlike the partial_token
+            # path this is not exercised by any measurement. It is here so the two paths cannot
+            # disagree about whether interleaved correction accumulates; validate it before quoting
+            # numbers from a partial_channel run.
+            blocks_out_sum.scatter_(
+                1,
+                dindice_sel.unsqueeze(-1).expand(-1, -1, blocks_out_sum.shape[-1]),
+                ((x_attn_sel - x_sel) + x_ls2).to(blocks_out_sum.dtype),
             )
             x = masked_token_update_triton(
                 x_base,

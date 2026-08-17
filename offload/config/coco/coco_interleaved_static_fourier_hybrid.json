@@ -6,8 +6,15 @@
     },
     "exp_id": "coco_interleaved_static_fourier_hybrid",
     "batch_size": 1,
-    "image_shape": [1024, 1024, 3],
-    "patch_size": [16, 16],
+    "image_shape": [
+        1024,
+        1024,
+        3
+    ],
+    "patch_size": [
+        16,
+        16
+    ],
     "scheduler_policy_name": "COCOWindowInterleaved",
     "scheduler_kwargs": {
         "early_exit": false,

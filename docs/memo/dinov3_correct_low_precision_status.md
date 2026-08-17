@@ -27,6 +27,138 @@ All five arms measured on the same commit, same machine:
 floor→ceiling gap (bf16): **+6.223 mIoU / +2.599 aAcc**. Correction recovers **80.3%** of the mIoU
 gap in bf16 and **83.2%** in fp4.
 
+### Interleaved correction was discarding all but the last round (fixed 2026-08-16)
+
+The interleaved rows above were measured with a defect, so **80.3% is not what this configuration is
+worth**. `blocks_out_sum` is written only by the approx path; `correct_partial_token` read it and
+never wrote back. Every round restarts at layer 0 and rebuilds any token outside the current group as
+`x + blocks_out_sum`, so a corrected token's own value was thrown away at the next round — earlier
+rounds survived only through the KV cache, where *other* tokens saw them when they attended.
+
+It is worse than merely losing the correction: `prepare_tokens` re-embeds from the image as decoded
+so far, so earlier groups became `refined x + degraded increment` — self-inconsistent, and on VGGT
+measurably *worse* than the consistent approx floor. Full mechanism and the diagnostics that isolated
+it: [[vggt_omega_status]].
+
+The fix writes `ls1(attn_new) + mlp_out_new` back over the approximate increment. No extra compute,
+no extra memory, and a no-op for one-shot correction, which reads the head out before any replay.
+
+It is **unconditional** — there is no flag. Not persisting is the bug, not a setting, so leaving a
+switch for it only invites a future measurement taken in the broken state. It shipped behind
+`appcorr_kwargs.persist_correction_residual` in `96889a5`/`f365970` and the option was removed once
+the effect was confirmed; `normalize_appcorr_kwargs` now *raises* on that key rather than ignoring
+it, because a stale `--set ...=false` would otherwise yield an "off" arm that is really an on arm.
+**The pre-fix arms below are therefore no longer reproducible**; they are kept here as the record.
+
+Re-measured, same 2000 images, bf16 correction, pre-fix vs fixed:
+
+| Arm | mIoU | aAcc | mIoU gap recovered |
+|---|---:|---:|---:|
+| floor: L2 approx-only | 56.013 | 84.856 | 0% |
+| interleaved correction, **pre-fix** | 61.042 | 86.944 | 80.8% |
+| **interleaved correction, fixed** | **61.597** | **87.237** | **89.7%** |
+| ceiling: full forward | 62.236 | 87.454 | 100% |
+
+**+0.555 mIoU / +0.293 aAcc, i.e. +8.9pp of the available gap, for free.** The pre-fix arm was
+re-run rather than quoted, and it lands within 0.03 mIoU of the original 61.012 — which both confirms
+the pair is like-for-like and confirms the published number was measured with the defect present.
+
+The fp4 correction path keeps the gain, measured the same night:
+
+| ADE20K arm | mIoU | aAcc | gap recovered |
+|---|---:|---:|---:|
+| bf16 correction, pre-fix | 61.042 | 86.944 | 80.8% |
+| bf16 correction, fixed | 61.597 | 87.237 | 89.7% |
+| fp4 correction, pre-fix | 61.010 | 86.971 | 80.3% |
+| **fp4 correction, fixed** | **61.680** | **87.293** | **91.1%** |
+
+### Re-measured again after the closed-loop transmission fix (2026-08-17)
+
+The `[2, 0]` round trip was not lossless: the encoder built the Laplacian residual against the native
+gaussian while the decoder predicted from the resampled base, so sending the *whole* residual still
+left 1.85% relative L2 in the image the server saw. Both ADE20K correction rows above were therefore
+measured on a slightly wrong input. Mechanism and the fix: [[vggt_omega_status]].
+
+| ADE20K arm | mIoU | aAcc | gap recovered | vs ceiling |
+|---|---:|---:|---:|---:|
+| floor: L2 approx-only | 56.013 | 84.856 | 0% | 10.0% |
+| **bf16 correction** | **61.846** | **87.309** | **93.7%** | **0.63%** |
+| **fp4 correction** | **61.814** | **87.343** | **93.2%** | **0.68%** |
+| ceiling: full forward | 62.236 | 87.454 | 100% | 0% |
+
+**+4.0pp (bf16) and +2.1pp (fp4) over the open-loop numbers**, putting both within 0.7% of a full
+forward. Floor and ceiling are unchanged and not re-run: `ade20k_m2f_approx_only_l2` sends levels
+`[2]` with no residual and `ade20k_m2f_sequential` sends the image, so neither path can be affected --
+on VGGT the corresponding rows reproduced bit-identically, which is the check that the fix is scoped
+right.
+
+fp4 and bf16 remain equivalent at matched selection (−0.032 mIoU), as they were before the fix.
+
+**`correct_precision=fp4` is set on `ade20k_m2f_interleaved_static.json` here, not the
+`..._correct_fp4_topk55.json` config.** That config selects with `token_keep_ratio: 0.55` while the
+bf16 arms select with `token_keep_thres: 4e-5`, so it is not matched placement despite the "FP4
+effect at matched placement" framing below. At genuinely matched selection **fp4 and bf16 are
+equivalent** (−0.032 mIoU pre-fix, +0.083 fixed — both within run-to-run noise, neither direction
+meaningful). The older 61.191 > 61.012 reading does not reproduce, and its provenance is unclear. The 61.191 row is left in the
+table above rather than overwritten, but should not be quoted.
+
+The fp4 run is a mix, not pure fp4: the log reports *160 FP4 + 40 FP8* correction Linears across 40
+blocks, with `attn.proj` kept at fp8.
+
+### Every family, pre-fix vs fixed
+
+| family | metric | floor | pre-fix | fixed | ceiling | recovered, pre-fix → fixed |
+|---|---|---:|---:|---:|---:|---|
+| VGGT Co3D | rot_deg ↓ | 5.440 | 3.548 | **3.181** | 2.885 | 74.0% → **88.4%** |
+| ADE20K m2f (bf16) | mIoU ↑ | 56.013 | 61.042 | **61.597** | 62.236 | 80.8% → **89.7%** |
+| ADE20K m2f (fp4) | mIoU ↑ | 56.013 | 61.010 | **61.680** | 62.236 | 80.3% → **91.1%** |
+| COCO detector | mAP ↑ | 0.5583 | 0.6011 | 0.6010 | 0.6314 | 58.6% → 58.4% |
+| ImageNet cls | top1 ↑ | 84.498 | 87.896 | 87.890 | 88.108 | 94.1% → 94.0% |
+| NYU depther | abs_rel ↓ | 0.05302 | 0.04940 | 0.04921 | 0.05013 | frame unusable |
+
+NYU improves on all three of abs_rel / rmse / delta_1.25, but cannot be expressed as a recovered
+fraction: both correction arms sit *past* the ceiling on abs_rel and rmse. L2 degradation costs NYU
+depth almost nothing, so floor and ceiling are separated by about the metric noise.
+
+**COCO is an unexplained null, and it is the interesting one.** Two hypotheses died on it:
+
+- *Headroom* — "the fix recovers roughly half of whatever correction left on the table" fits VGGT
+  (55% of 26.0pp) and ADE20K (46% of 19.2pp), and explains ImageNet trivially (5.9pp of headroom,
+  i.e. 0.21 top1 points, is at the noise floor). COCO has **41.4pp of headroom, the most of any
+  family, and gained nothing.**
+- *Task density* — "per-token error reaches the metric more directly in dense tasks" does not
+  separate COCO from ADE20K; both are dense.
+
+COCO is the only family on `COCOWindowInterleaved` (9 window groups) with
+`COCOWindowProgressiveLaplacian` transmission, so the round structure itself differs — but that is a
+guess, not a finding. The wiring is not the explanation: `APPCORR_PERSIST_TRACE=1` shows the block
+writing `blocks_out_sum` on this config (`tag=src0_layer0, rows=105`).
+
+**What survives both nulls is a two-factor reading**, once the correction keep ratio each config
+actually ran at is put next to the headroom:
+
+| family | tokens corrected | headroom left by correction | fix gained |
+|---|---:|---:|---:|
+| ImageNet | 100.00% | 5.9pp | none |
+| ADE20K | 41.13% | 19.2pp | +8.9pp |
+| COCO | 20.60% | 41.4pp | none |
+
+Persistence repairs staleness *among tokens that get corrected*, so it needs both a corrected mass
+large enough for that staleness to matter and headroom for it to buy. ImageNet corrects everything
+but has nothing left to win; COCO has the most to win but recomputes only a fifth of its tokens, so
+its dominant error is the four fifths never recomputed at all, which persistence cannot touch.
+ADE20K is the only one where both conditions hold.
+
+That predicts something checkable: **raise COCO's keep ratio toward ADE20K's ~41% (its
+`token_keep_thres` default is 0.002) and the fix should start showing.** Not yet run. Until it is,
+this is a hypothesis fitted to three points, not a result.
+
+Other memos whose interleaved accuracy numbers predate this fix:
+[[ade20k_grid_vs_blockgrid_grouping]] (its "coherent correction timing" hypothesis is the same effect
+the fix addresses, so the ranking may not survive), [[ade20k_cropcover_grouping_sweep]],
+[[ade20k_sr_residual_pruning_sweep]], [[pyramid_degradation_native_vs_canvas]]. Latency and profiling
+memos are unaffected — the fix reuses an already-materialised tensor.
+
 **FP4 effect at matched placement (fp4 − bf16):**
 
 | placement | Δ mIoU | Δ aAcc |

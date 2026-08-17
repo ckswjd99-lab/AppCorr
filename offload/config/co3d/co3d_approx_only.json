@@ -1,0 +1,39 @@
+{
+    "model_name": "vggt_omega",
+    "dataset_name": "co3dv2",
+    "dataset_kwargs": {
+        "categories": [
+            "hotdog",
+            "tv",
+            "parkingmeter",
+            "baseballbat"
+        ],
+        "frames_per_sequence": 8,
+        "frame_stride": 5
+    },
+    "batch_size": 8,
+    "image_shape": [
+        512,
+        512,
+        3
+    ],
+    "patch_size": [
+        16,
+        16
+    ],
+    "input_profile_name": "vggt_omega_512",
+    "scheduler_policy_name": "BatchCountBased",
+    "transmission_policy_name": "VGGTLaplacian",
+    "appcorr_kwargs": {
+        "enabled": false
+    },
+    "device": "cuda:0",
+    "exp_id": "co3d_approx_only",
+    "transmission_kwargs": {
+        "pyramid_levels": [
+            3
+        ],
+        "compression_level": 1,
+        "preserve_input_shape": true
+    }
+}
