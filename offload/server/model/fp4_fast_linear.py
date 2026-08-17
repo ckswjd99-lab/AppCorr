@@ -110,6 +110,7 @@ class FastFP4Linear(nn.Module):
         linear: nn.Linear,
         share: SharedFP4Activation | None = None,
         bucket_rows: int = 0,
+        per_tensor_scale: bool = False,
     ) -> None:
         super().__init__()
         self.bucket_rows = max(0, int(bucket_rows))
@@ -126,9 +127,17 @@ class FastFP4Linear(nn.Module):
         self._share = share
 
         # Weight is static: quantize once at construction, keeping its per-tensor scale.
-        w_scale = per_tensor_amax_to_scale(weight.abs().amax())
+        self._use_per_tensor = bool(per_tensor_scale)
+        w_scale = (
+            per_tensor_amax_to_scale(weight.abs().amax())
+            if self._use_per_tensor
+            else torch.ones((), device=weight.device)
+        )
         w_q = NVFP4Tensor.to_nvfp4(
-            weight, block_size=16, per_tensor_scale=w_scale, is_swizzled_scales=True
+            weight,
+            block_size=16,
+            per_tensor_scale=w_scale if self._use_per_tensor else None,
+            is_swizzled_scales=True,
         )
         self._weight_q_t = w_q.t()
         self.register_buffer("weight_scale", w_scale, persistent=False)
@@ -157,7 +166,13 @@ class FastFP4Linear(nn.Module):
         if float(self.amax) <= 0.0:
             return False
         _, per_tensor_amax_to_scale = _nvfp4_helpers()
-        self.act_scale = per_tensor_amax_to_scale(self.amax)
+        # With the per-tensor scale off, the activation quantizer must divide by 1, not by an
+        # observed amax -- otherwise the operands are scaled but the epilogue no longer undoes it.
+        self.act_scale = (
+            per_tensor_amax_to_scale(self.amax)
+            if self._use_per_tensor
+            else torch.ones_like(self.amax)
+        )
         # The product both operands were divided by. Folded into the epilogue, not applied as its
         # own [M,N] kernel the way torchao does it.
         self.out_scale = (self.act_scale * self.weight_scale).to(self.orig_dtype)
@@ -232,16 +247,23 @@ class FastFP4Linear(nn.Module):
         x2d, rows = pad_rows_to_bucket(x2d, self.bucket_rows)
         x_qdata, x_scale = self._quantize(x2d)
         w_t = self._weight_q_t
+        # Without a per-tensor output scale there is nothing to defer: `_scaled_mm` takes the bias
+        # and the consumer is handed a scale of 1 with no bias left to add, so its fused epilogue
+        # collapses to a copy. Leaving the bias out here instead would make the consumer apply it,
+        # which is the [M, N] kernel this whole path exists to avoid.
+        fold_bias = not self._use_per_tensor
         out = torch._scaled_mm(
             x_qdata.view(_FP4X2),
             w_t.qdata.view(_FP4X2),
             x_scale.view(_E4M3),
             w_t.scale.t().view(_E4M3),
-            bias=None,
+            bias=self.bias if fold_bias else None,
             out_dtype=self.orig_dtype,
         )
         if out.shape[0] != rows:
             out = out[:rows].contiguous()
+        if fold_bias:
+            return out, 1.0, None, orig_shape
         return out, self.out_scale_f, self.bias, orig_shape
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -255,6 +277,22 @@ class FastFP4Linear(nn.Module):
         x2d, rows = pad_rows_to_bucket(x2d, self.bucket_rows)
         x_qdata, x_scale = self._quantize(x2d)
         w_t = self._weight_q_t
+        if not self._use_per_tensor:
+            # No per-tensor output scale to apply, so `_scaled_mm` can take the bias itself and the
+            # whole [M, N] epilogue disappears -- which is where the speed argument for dropping the
+            # per-tensor scale actually lives. Quantizing without it changes only numerics; this is
+            # what changes the time.
+            out = torch._scaled_mm(
+                x_qdata.view(_FP4X2),
+                w_t.qdata.view(_FP4X2),
+                x_scale.view(_E4M3),
+                w_t.scale.t().view(_E4M3),
+                bias=self.bias,
+                out_dtype=self.orig_dtype,
+            )
+            if out.shape[0] != rows:
+                out = out[:rows]
+            return out.reshape(*orig_shape[:-1], self.out_features)
         out = torch._scaled_mm(
             x_qdata.view(_FP4X2),
             w_t.qdata.view(_FP4X2),
@@ -293,6 +331,7 @@ def convert_linears_to_fast_fp4(
     *,
     proj_precision: str = "fp8",
     bucket_rows: int = 0,
+    per_tensor_scale: bool = False,
 ) -> tuple[int, int]:
     """Swap named Linears for FastFP4Linear, routing `attn.proj` to FP8 by default.
 
@@ -311,6 +350,13 @@ def convert_linears_to_fast_fp4(
             fp8_count += 1
         else:
             share = shared if name.endswith(("mlp.w1", "mlp.w2")) else None
-            setattr(parent, attr, FastFP4Linear(child, share=share, bucket_rows=bucket_rows))
+            setattr(
+                parent,
+                attr,
+                FastFP4Linear(
+                    child, share=share, bucket_rows=bucket_rows,
+                    per_tensor_scale=per_tensor_scale,
+                ),
+            )
             fp4_count += 1
     return fp4_count, fp8_count

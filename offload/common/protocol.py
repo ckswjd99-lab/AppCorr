@@ -201,6 +201,17 @@ class ExperimentConfig:
     # Linears -- its input is the attention-core output (least-compressible delta) and it is the one
     # input no producer fusion can reach -- so it runs FP8 by default. Set "fp4" to force it.
     correct_fp4_proj_precision: str = "fp8"
+    # correct_precision=fp4 only. NVFP4 carries a mandatory 16-element block scale and an optional
+    # second, per-tensor one. The per-tensor scale halves the weight-reconstruction error (rel-L2
+    # 0.0951 vs 0.1305 on a 4096x4096 draw) but costs an [M, N] epilogue: with an output scale
+    # pending, `_scaled_mm` cannot take the bias, so scale and bias need their own kernel. Dropping
+    # it lets the bias ride along in the GEMM and the epilogue disappear.
+    #
+    # Default off, from ADE20K m2f full-2000: 61.4208 mIoU without it against 61.4243 with -- a
+    # 0.0035 difference on a 6.223 floor-to-ceiling gap -- while CORRECT_FORWARD went 98.25 -> 89.20
+    # ms (-9.2%, with APPROX_FORWARD steady at 184.26 -> 184.08 as the control). The weight error is
+    # genuinely larger; it just does not reach the task metric.
+    correct_fp4_per_tensor_scale: bool = False
     # Round the correction GEMMs' row count M up to a multiple of this, zero-padding. M changes every
     # correction round, so without it every shape-specialised consumer -- torch.compile graphs, and
     # CUDA graph capture in particular -- sees an unbounded set of shapes. Bucketing is a *cost* on
@@ -252,6 +263,7 @@ class ExperimentConfig:
         self.correct_compile = bool(self.correct_compile)
         self.correct_fp4_calib_events = max(0, int(self.correct_fp4_calib_events))
         self.correct_bucket_rows = max(0, int(self.correct_bucket_rows))
+        self.correct_fp4_per_tensor_scale = bool(self.correct_fp4_per_tensor_scale)
         if self.correct_fp4_proj_precision not in {"fp4", "fp8"}:
             raise ValueError(
                 "correct_fp4_proj_precision must be 'fp4' or 'fp8', "
