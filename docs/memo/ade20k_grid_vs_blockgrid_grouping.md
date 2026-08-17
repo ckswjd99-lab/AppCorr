@@ -21,6 +21,12 @@ changes.
 > ranking may not survive it. Re-running needs four full-2000 arms (grid and block_grid × flag off
 > and on) via `--set transmission_kwargs.grouping_strategy=...`; the per-strategy configs are gone
 > but both strategies are still in the transmission policy. Not yet done.
+>
+> **Two fixes, not one.** These numbers also predate the closed-loop transmission fix
+> (2026-08-17, `378e21d`): the `[2,0]` Laplacian round trip lost 1.85% relative L2 on ADE20K even
+> with the whole residual sent, because the encoder predicted from the native gaussian while the
+> decoder predicted from the resampled base. Correcting both fixes moved ADE20K interleaved from
+> 80.8% of the floor-ceiling gap to **93.7%**. Anything measured on this page carries both.
 
 ## Results
 

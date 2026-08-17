@@ -668,6 +668,46 @@ depth and pose also appear to degrade *together* (both turn at L2-L3, both colla
 would argue for one shared transmission policy -- but the serving-path table above contradicts that,
 so trust the serving path.
 
+## Before merging this branch to main
+
+`feature/vggt` carries more bug fixes than VGGT integration, and three of them silently changed
+numbers that other memos still quote. What a reader on `main` needs to know:
+
+**Fixed here, and affecting results outside VGGT:**
+
+| fix | reach | effect |
+|---|---|---|
+| interleaved correction kept only the last round | every family | ADE20K +4.0pp, VGGT +14.4pp of the gap |
+| that fix reached only the VGGT executor (3 separate wiring faults) | every DINOv3 family | see [[dinov3_correct_low_precision_status]] |
+| Laplacian transmission was not lossless | VGGT, ADE20K | one-shot went +5.20% -> +0.20% vs the ceiling |
+| a residual round could come out empty | VGGT spatial | killed a full sweep 26 minutes in |
+
+NYU, imnet and COCO were untouched by the transmission fix -- their resolutions divide dyadically,
+so their grids were already consistent. Their persist numbers are in the DINOv3 memo.
+
+**Stale on `main` after this merge**, each already banner-flagged:
+[[ade20k_grid_vs_blockgrid_grouping]], [[ade20k_cropcover_grouping_sweep]],
+[[ade20k_sr_residual_pruning_sweep]], [[pyramid_degradation_native_vs_canvas]]. The last one's COCO
+figures are also an unlabelled n≈100 subset, reproduced and corrected in
+[[dinov3_correct_low_precision_status]].
+
+**Known unvalidated, deliberately:**
+
+- `correct_partial_channel` persists its corrected increment now, for symmetry with
+  `correct_partial_token`, but **no shipped config selects `method: partial_channel`**, so the code
+  path has never run. Validate before quoting any partial_channel result. Left as-is on purpose --
+  the method is not expected to be used.
+- `ade20k_grid_vs_blockgrid_grouping` has not been re-measured. Its ~0.5 mIoU margin is the same size
+  as the persist fix, and its "coherent correction timing" hypothesis is the same effect the fix
+  addresses, so the ranking may not survive. Needs four full-2000 arms with a reconstructed config
+  (the per-strategy configs were deleted; the strategies remain in the transmission policy).
+- **`spatial` grouping fails on pose** and it is not understood -- below the floor at G=2/4/8, getting
+  slightly worse with more rounds, while depth on the same runs climbs to 86%. Found on the L2 table
+  above.
+
+**Still not measured at all:** latency. Interleaving costs 21.8pp of rotation recovery against
+one-shot on the full set, and nothing yet says what the overlap buys back.
+
 ## Traps already paid for
 
 - **Anisotropic resize destroys pose while leaving depth fine.** Squashing frames to a square gave

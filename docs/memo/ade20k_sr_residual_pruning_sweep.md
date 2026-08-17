@@ -6,6 +6,12 @@
 > corrected increment was persisted (80.8% -> 89.7% of the floor-ceiling gap). Comparisons *within*
 > this memo shared the defect and are likely to survive it; the absolute values will not. See
 > [[dinov3_correct_low_precision_status]].
+>
+> **Two fixes, not one.** These numbers also predate the closed-loop transmission fix
+> (2026-08-17, `378e21d`): the `[2,0]` Laplacian round trip lost 1.85% relative L2 on ADE20K even
+> with the whole residual sent, because the encoder predicted from the native gaussian while the
+> decoder predicted from the resampled base. Correcting both fixes moved ADE20K interleaved from
+> 80.8% of the floor-ceiling gap to **93.7%**. Anything measured on this page carries both.
 
 **Model:** DINOv3 ViT-7B + Mask2Former head (`dinov3_segmentor_m2f`), backbone
 `dinov3_vit7b16_pretrain_lvd1689m`, head `dinov3_vit7b16_ade20k_m2f_head`.
