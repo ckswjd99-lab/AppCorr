@@ -212,6 +212,18 @@ class ExperimentConfig:
     # ms (-9.2%, with APPROX_FORWARD steady at 184.26 -> 184.08 as the control). The weight error is
     # genuinely larger; it just does not reach the task metric.
     correct_fp4_per_tensor_scale: bool = False
+
+    # precision=fp4 only. TorchAO's NVFP4 config cannot express "no per-tensor scale" on the
+    # installed 0.17: its Triton kernel asserts `per_tensor_scale is not None`, and enabling the
+    # scale then pulls in MSLK. Routing the approximate path through the same `FastFP4Linear` the
+    # correction path uses sidesteps that -- it calls `torch._scaled_mm` directly -- and is the only
+    # way to run an approximate forward on block scales alone.
+    approx_fp4_fast: bool = True
+    approx_fp4_per_tensor_scale: bool = False
+    # TorchAO quantized all five eligible Linears, `attn.proj` included, so this defaults to fp4 to
+    # keep *which* layers are low precision unchanged. The correction path defaults it to fp8
+    # instead, because there attn.proj's input is an attention output and the worst FP4 candidate.
+    approx_fp4_proj_precision: str = "fp4"
     # Round the correction GEMMs' row count M up to a multiple of this, zero-padding. M changes every
     # correction round, so without it every shape-specialised consumer -- torch.compile graphs, and
     # CUDA graph capture in particular -- sees an unbounded set of shapes. Bucketing is a *cost* on
@@ -264,6 +276,14 @@ class ExperimentConfig:
         self.correct_fp4_calib_events = max(0, int(self.correct_fp4_calib_events))
         self.correct_bucket_rows = max(0, int(self.correct_bucket_rows))
         self.correct_fp4_per_tensor_scale = bool(self.correct_fp4_per_tensor_scale)
+        self.approx_fp4_fast = bool(self.approx_fp4_fast)
+        self.approx_fp4_per_tensor_scale = bool(self.approx_fp4_per_tensor_scale)
+        self.approx_fp4_proj_precision = str(self.approx_fp4_proj_precision).lower()
+        if self.approx_fp4_proj_precision not in {"fp4", "fp8"}:
+            raise ValueError(
+                "approx_fp4_proj_precision must be 'fp4' or 'fp8', "
+                f"got {self.approx_fp4_proj_precision!r}"
+            )
         if self.correct_fp4_proj_precision not in {"fp4", "fp8"}:
             raise ValueError(
                 "correct_fp4_proj_precision must be 'fp4' or 'fp8', "

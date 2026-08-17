@@ -39,6 +39,8 @@ needs no MSLK. So nothing about this path wants the upgrade.
 
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -152,7 +154,19 @@ class FastFP4Linear(nn.Module):
         self.register_buffer("act_scale", torch.zeros((), device=weight.device), persistent=False)
         self.register_buffer("out_scale", torch.zeros((), device=weight.device), persistent=False)
         self.out_scale_f = 0.0
-        self.calibrating = True
+        # Calibration exists only to observe an activation amax and bake it into a static per-tensor
+        # scale. With no per-tensor scale there is nothing to observe: both operands are quantized
+        # against their block scales alone and the output scale is 1. Skipping it means the module is
+        # usable immediately, which is what lets the approximate path -- which has no calibration
+        # driver of its own -- use this class at all.
+        if self._use_per_tensor:
+            self.calibrating = True
+        else:
+            self.act_scale = torch.ones((), device=weight.device)
+            self.out_scale = torch.ones((), device=weight.device, dtype=self.orig_dtype)
+            self.out_scale_f = 1.0
+            self.weight_hp = None
+            self.calibrating = False
 
     @torch.no_grad()
     def freeze_activation_scale(self) -> bool:
@@ -249,9 +263,15 @@ class FastFP4Linear(nn.Module):
         w_t = self._weight_q_t
         # Without a per-tensor output scale there is nothing to defer: `_scaled_mm` takes the bias
         # and the consumer is handed a scale of 1 with no bias left to add, so its fused epilogue
-        # collapses to a copy. Leaving the bias out here instead would make the consumer apply it,
-        # which is the [M, N] kernel this whole path exists to avoid.
-        fold_bias = not self._use_per_tensor
+        # collapses to a copy. Leaving the bias out here instead would make the consumer apply it.
+        #
+        # Kept for consistency with `forward`, not for speed -- the A/B in `forward` shows the two
+        # are indistinguishable in CORRECT_FORWARD time. What they are *not* is numerically
+        # identical: folding gives 61.4828 mIoU on ADE20K full-2000 against 61.4208 deferred, so the
+        # fold is the better default by 0.062, well outside the ~0.0001 run-to-run noise.
+        # APPCORR_FP4_RAW_NO_FOLD restores the pre-bypass behaviour for an A/B: the consumer gets a
+        # real scale and bias back and applies its own epilogue. Measurement hatch, not a mode.
+        fold_bias = not self._use_per_tensor and not os.environ.get("APPCORR_FP4_RAW_NO_FOLD")
         out = torch._scaled_mm(
             x_qdata.view(_FP4X2),
             w_t.qdata.view(_FP4X2),
@@ -279,9 +299,15 @@ class FastFP4Linear(nn.Module):
         w_t = self._weight_q_t
         if not self._use_per_tensor:
             # No per-tensor output scale to apply, so `_scaled_mm` can take the bias itself and the
-            # whole [M, N] epilogue disappears -- which is where the speed argument for dropping the
-            # per-tensor scale actually lives. Quantizing without it changes only numerics; this is
-            # what changes the time.
+            # whole [M, N] epilogue disappears.
+            #
+            # Do not read a latency claim into this. Measured solo on ADE20K (200 requests, two runs
+            # per arm, order reversed between pairs), CORRECT_FORWARD is 85.71 ms with the epilogue
+            # bypassed and 86.07 ms without -- a 0.36 ms gap against a 1.6-3.1 ms spread between
+            # repeats of the *same* arm. The epilogue is real work but it is a rounding error next to
+            # the ~86 ms stage. The earlier 89.20 vs 103.91 ms pair was measured under three-way GPU
+            # contention and does not reproduce. Dropping the per-tensor scale is justified by
+            # numerics, not by time.
             out = torch._scaled_mm(
                 x_qdata.view(_FP4X2),
                 w_t.qdata.view(_FP4X2),
@@ -305,8 +331,6 @@ class FastFP4Linear(nn.Module):
         # non-vectorised elementwise kernel. At the real correction shape this epilogue is what
         # returns half of FP4's GEMM win (elementwise 14.96 -> 33.39 ms against -36.07 ms of GEMM),
         # so it is worth a dedicated kernel that reads and writes the same buffer once.
-        import os
-
         from appcorr.models.dinov3.layers.triton_kernels import scale_bias_inplace_triton
 
         if os.environ.get("APPCORR_ATEN_EPILOGUE") or not scale_bias_inplace_triton(

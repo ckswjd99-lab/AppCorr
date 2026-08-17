@@ -296,10 +296,60 @@ scale then requires the uninstalled MSLK package. Both the approx and correct co
 measured here are therefore not directly comparable to the historical ImageNet/COCO FP4 figures**,
 and the fused-kernel latency advantage is gone.
 
+### Dropping NVFP4's per-tensor scale (2026-08-18, `develop/fp4-no-per-tensor-scale`)
+
+NVFP4's 16-element block scale is mandatory; the *per-tensor* scale on top of it is optional, and
+TorchAO recomputes it dynamically from the activation amax on every call. The question was what it
+buys. `FastFP4Linear` now takes `per_tensor_scale=False` as the default, quantizing the weight with
+`per_tensor_scale=None` and skipping activation calibration entirely.
+
+**Accuracy — it buys nothing, in either direction.** Full datasets, not subsets:
+
+| path | per-tensor off | per-tensor on | favours |
+|---|---:|---:|---|
+| correction FP4, ADE20K full-2000 (mIoU) | **61.4828** | 61.4244 | off, +0.058 |
+| correction FP4, ImageNet (top-1) | 87.826 | **87.872** | on, +0.046 |
+| approx FP4 = plain L0 forward, ADE20K full-2000 (mIoU) | **62.2208** | 62.0964 | off, +0.124 |
+
+All three gaps are under 0.15 and the sign is not consistent, against a run-to-run noise floor of
+~0.0001 mIoU (same arm re-run reproduces to the digit). The per-tensor scale is not earning its
+keep, and turning it off is safe as a default — that is the whole claim. Note the two L0 arms differ
+in more than the scale (`attn.proj` handling, activation sharing, kernel path), so the 0.124 cannot
+be attributed to the scale alone; what it does show is that the new path is not worse.
+
+**The headline surprise: FP4 does not break the L0 forward.** Running all 200 Linears across 40
+blocks in FP4 with block scales only costs **−0.015 mIoU** against the bf16 ceiling (62.2208 vs
+62.236) — 99.8% of the way from the 56.013 floor. There is no "FP4 wrecks the baseline" effect to
+lean on. (An earlier full-forward FP4 figure of 62.167 appears in the table at the top of this memo,
+measured on a different commit and controller configuration; the three L0 numbers here are the
+internally consistent set.)
+
+**Latency — no effect, and a retracted claim.** `forward_raw` was also changed to fold bias into
+`_scaled_mm` when the per-tensor scale is off, on the theory that removing the `[M, N]` epilogue is
+where the speed lives. It is not:
+
+| arm | run 1 | run 2 | mean |
+|---|---:|---:|---:|
+| epilogue bypassed (`fold`) | 87.24 | 84.18 | **85.71** |
+| epilogue applied (`nofold`) | 85.28 | 86.86 | **86.07** |
+
+`CORRECT_FORWARD` ms/request, ADE20K, 200 requests, each arm run **alone** on the GPU, with the pair
+order reversed between run 1 and run 2. The 0.36 ms between arms is smaller than the 1.6–3.1 ms
+between repeats of the same arm, and the ordering flipped which arm won. An earlier 89.20 vs
+103.91 ms pair suggesting a 14.7 ms win was taken under three-way GPU contention and **does not
+reproduce**; it is withdrawn. The bypass stays as the default on the accuracy edge above, not on
+speed. `APPCORR_FP4_RAW_NO_FOLD=1` restores the deferred path for further A/Bs.
+
+The mIoU within each arm is bit-identical across repeats (55.57927927564676 fold,
+55.3851626824578 nofold, at N=200), so the pipeline is deterministic and only the timing is noisy —
+which is why two repeats were enough to settle it.
+
 ## Next steps
 
 - ~~Full-dataset (2000-sample) ADE20K confirmation.~~ **Done** — see the table above; it reversed
   the N=100 conclusion.
+- The per-tensor-scale default is justified on ADE20K + ImageNet. **COCO is not measured** — worth
+  one arm before treating "off" as settled across every family.
 - **Actually implement NVFP4 acceleration** (accuracy is now shown to be a non-issue, so the
   remaining work is purely making it fast). Design notes agreed for that effort:
   - **Bucketize the correction query count and pad**, then discard the pad rows. No attention
