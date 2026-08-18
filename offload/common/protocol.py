@@ -249,6 +249,8 @@ class ExperimentConfig:
     # Same grid, applied to the approximate path -- i.e. to a plain L0 forward, which is the
     # no-AppCorr baseline this is meant to break.
     approx_quant_format: str = "fp4"
+    # Sparsify the approximate path's activations -- the control arm for correct_delta_sparsity.
+    approx_act_sparsity: str = "off"
     # Round the correction GEMMs' row count M up to a multiple of this, zero-padding. M changes every
     # correction round, so without it every shape-specialised consumer -- torch.compile graphs, and
     # CUDA graph capture in particular -- sees an unbounded set of shapes. Bucketing is a *cost* on
@@ -315,12 +317,13 @@ class ExperimentConfig:
                        ("approx_quant_format", self.approx_quant_format)):
             if _v not in {"fp4", "ternary", "none"}:
                 raise ValueError(f"{_n} must be 'fp4', 'ternary' or 'none', got {_v!r}")
-        self.correct_delta_sparsity = str(self.correct_delta_sparsity).lower()
-        if self.correct_delta_sparsity not in {"off", "2:4", "unstructured50"}:
-            raise ValueError(
-                "correct_delta_sparsity must be 'off', '2:4' or 'unstructured50', "
-                f"got {self.correct_delta_sparsity!r}"
-            )
+        for _n in ("correct_delta_sparsity", "approx_act_sparsity"):
+            _v = str(getattr(self, _n)).lower()
+            setattr(self, _n, _v)
+            if _v not in {"off", "2:4", "unstructured50"}:
+                raise ValueError(
+                    f"{_n} must be 'off', '2:4' or 'unstructured50', got {_v!r}"
+                )
         self.approx_fp4_act_granularity = str(self.approx_fp4_act_granularity).lower()
         # Import-free validation: protocol.py is shared with the mobile client, which has no reason
         # to pull in a server-side quantization module just to check a spelling.

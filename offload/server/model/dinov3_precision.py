@@ -184,6 +184,7 @@ class DINOv3ApproxPrecisionController:
         fp4_proj_precision: str = "fp4",
         fp4_act_granularity: str = "kernel",
         quant_format: str = "fp4",
+        act_sparsity: str = "off",
     ) -> None:
         self.blocks = blocks
         self.precision = precision
@@ -194,6 +195,7 @@ class DINOv3ApproxPrecisionController:
         self.fp4_proj_precision = str(fp4_proj_precision)
         self.fp4_act_granularity = str(fp4_act_granularity)
         self.quant_format = str(quant_format)
+        self.act_sparsity = str(act_sparsity)
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
         self._compiled_fp8_approx: list[Any] = []
@@ -209,7 +211,12 @@ class DINOv3ApproxPrecisionController:
         if self.device.type == "cuda" and torch.cuda.is_available():
             _configure_compile_environment()
 
-        if precision in {"fp8", "auto"}:
+        # Checked before the precision routes: sparsity and the emulated formats are independent of
+        # `precision`, so gating them on precision=="fp4" leaves them installed-but-never-called on a
+        # bf16 config -- which shows up as two arms with bit-identical mIoU and an empty banner.
+        if self.act_sparsity != "off" or self.quant_format != "fp4" or self.fp4_act_granularity != "kernel":
+            self._prepare_fp4_granularity()
+        elif precision in {"fp8", "auto"}:
             self._initialize_fp8()
         elif precision == "fp4":
             self._initialize_fp4()
@@ -231,6 +238,7 @@ class DINOv3ApproxPrecisionController:
             fp4_proj_precision=str(getattr(config, "approx_fp4_proj_precision", "fp4")),
             fp4_act_granularity=str(getattr(config, "approx_fp4_act_granularity", "kernel")),
             quant_format=str(getattr(config, "approx_quant_format", "fp4")),
+            act_sparsity=str(getattr(config, "approx_act_sparsity", "off")),
         )
 
     @property
@@ -396,7 +404,8 @@ class DINOv3ApproxPrecisionController:
         # scale is not something `FastFP4Linear` can be configured into, so the two are exclusive.
         # Ternary has no kernel to fall back to, so asking for it implies the emulated path even
         # when the granularity was left at its default.
-        if self.fp4_act_granularity != "kernel" or self.quant_format != "fp4":
+        if (self.fp4_act_granularity != "kernel" or self.quant_format != "fp4"
+                or self.act_sparsity != "off"):
             self._prepare_fp4_granularity()
             return
 
@@ -557,6 +566,7 @@ class DINOv3ApproxPrecisionController:
                 count += convert_linears_to_granularity_fp4(
                     fp4_block, eligible_names,
                     act_granularity=granularity, fmt=self.quant_format,
+                    act_sparsity=self.act_sparsity,
                 )
                 fp4_blocks.append(fp4_block)
         except Exception as exc:
@@ -573,6 +583,7 @@ class DINOv3ApproxPrecisionController:
         print(
             f"[FP4] Prepared {count} approximate Linear weights across {len(fp4_blocks)} blocks via "
             f"GranularityFP4Linear (fmt={self.quant_format}, "
+            f"act_sparsity={self.act_sparsity}, "
             f"act_granularity={self.fp4_act_granularity}, "
             "weight_granularity=block16, EMULATED -- accuracy study, not a latency path).",
             flush=True,
@@ -625,14 +636,27 @@ class DINOv3ApproxPrecisionController:
             for idx, block in enumerate(originals):
                 self.blocks[idx] = block
 
+    def _emulated_route_active(self) -> bool:
+        return (
+            getattr(self, "act_sparsity", "off") != "off"
+            or getattr(self, "quant_format", "fp4") != "fp4"
+            or getattr(self, "fp4_act_granularity", "kernel") != "kernel"
+        )
+
     def _blocks_for_full_inference(self) -> nn.ModuleList | None:
-        if self.precision == "fp4" and self.fp4_available:
+        if (self.precision == "fp4" or self._emulated_route_active()) and self.fp4_available:
             return self.fp4_blocks
         if self.precision == "fp8" and self.fp8_available:
             return self.fp8_blocks
         return None
 
     def _effective_precision(self, rows: int) -> str:
+        # The emulated harness (sparsity / ternary / coarse granularity) is independent of
+        # `precision`, so it has to claim its own route. Without this a bf16 config installs the
+        # granularity blocks and then never calls them -- which reads as "the technique is harmless"
+        # with a bit-identical mIoU, the most dangerous way for this to fail.
+        if self._emulated_route_active():
+            return "fp4" if self.fp4_available else "bf16"
         if self.precision == "bf16":
             return "bf16"
         if self.precision == "fp4":
