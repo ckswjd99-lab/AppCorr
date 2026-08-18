@@ -126,10 +126,12 @@ def fake_quantize_ternary(x: torch.Tensor, granularity: str) -> torch.Tensor:
     return q.reshape(-1, k).reshape(orig_shape).to(orig_dtype)
 
 
-FORMATS = ("fp4", "ternary")
+FORMATS = ("fp4", "ternary", "none")
 
 
 def fake_quantize(x: torch.Tensor, fmt: str, granularity: str) -> torch.Tensor:
+    if fmt == "none":
+        return x
     if fmt == "fp4":
         return fake_quantize_fp4(x, granularity)
     if fmt == "ternary":
@@ -153,10 +155,12 @@ class GranularityFP4Linear(nn.Module):
 
     weight_granularity = "block16"
 
-    def __init__(self, linear: nn.Linear, act_granularity: str, fmt: str = "fp4") -> None:
+    def __init__(self, linear: nn.Linear, act_granularity: str, fmt: str = "fp4",
+                 act_sparsity: str = "off") -> None:
         super().__init__()
         self.act_granularity = act_granularity
         self.fmt = fmt
+        self.act_sparsity = act_sparsity
         self.in_features = linear.in_features
         self.out_features = linear.out_features
         weight = linear.weight.detach()
@@ -175,18 +179,27 @@ class GranularityFP4Linear(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Sparsifying the activation is the *control* for sparsifying the correction delta. It is
+        # expected to be worse and by a lot: a dropped activation element is information gone, and
+        # the loss compounds through all 40 blocks, where a dropped delta element only leaves that
+        # channel at its approximate value for the one round that touched it.
+        from .delta_split_linear import sparsify
+
+        x = sparsify(x, self.act_sparsity)
         return F.linear(fake_quantize(x, self.fmt, self.act_granularity), self.weight, self.bias)
 
     def extra_repr(self) -> str:
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"fmt={self.fmt}, act_granularity={self.act_granularity}, "
+            f"act_sparsity={self.act_sparsity}, "
             f"weight_granularity={self.weight_granularity}"
         )
 
 
 def convert_linears_to_granularity_fp4(
-    block: nn.Module, names: set[str], *, act_granularity: str, fmt: str = "fp4"
+    block: nn.Module, names: set[str], *, act_granularity: str, fmt: str = "fp4",
+    act_sparsity: str = "off",
 ) -> int:
     """Swap named Linears for `GranularityFP4Linear`. Returns how many were swapped.
 
@@ -201,6 +214,6 @@ def convert_linears_to_granularity_fp4(
         child = getattr(parent, attr)
         if not isinstance(child, nn.Linear):
             raise RuntimeError(f"{name} is {type(child).__name__}, expected nn.Linear")
-        setattr(parent, attr, GranularityFP4Linear(child, act_granularity, fmt))
+        setattr(parent, attr, GranularityFP4Linear(child, act_granularity, fmt, act_sparsity))
         count += 1
     return count

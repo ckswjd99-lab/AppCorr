@@ -49,6 +49,34 @@ Three readings:
   2x sparsity together cost nothing extra over sparsity alone (at n=50, within noise). The 2:4
   structure itself costs 1.16 mIoU against unstructured 50% (52.182 vs 53.344).
 
+## Sparsity shows NO delta-specific advantage — the control reverses it
+
+Added 2026-08-18 after measuring the control this table was missing. Applying 2:4 to the **raw L0
+activation** (`approx_act_sparsity`, no correction anywhere in the pipeline) costs almost nothing:
+
+| 2:4 applied to | dense | sparse | cost |
+|---|---:|---:|---:|
+| raw L0 activation (50-image slice, sequential config) | 54.160 | **54.119** | **-0.041** |
+| correction delta (50-image slice, interleaved config) | 54.591 | 52.182 | **-2.409** |
+| correction delta (full 2000, interleaved config) | 61.846 | 61.562 | -0.284 |
+
+**Sparsifying the raw activation is ~59x cheaper than sparsifying the delta.** The asymmetry does not
+merely vanish, it runs the other way, and the offline proxy pointed the wrong direction: per-layer
+output error said the delta was 2.24x *better* (0.0462 vs 0.1036). The sign flipped between the
+proxy and the task metric.
+
+The mechanism is obvious in hindsight and consistent with the shape data above: an activation is
+redundant (top 10% of entries hold 77% of its energy), so discarding the small half discards little.
+The delta is the correction itself — discarding half of it discards half the correction.
+
+**Consequences.** Do not claim 2:4 as delta-specific; one control run refutes it. The earlier reading
+in this memo — that 2.24-2.32x made sparsification "worth building" as a delta technique — is
+withdrawn. The -0.284 mIoU cost at full scale remains a true and useful engineering result, but its
+cause is that *this model tolerates 2:4 broadly*, not that the delta form protects it.
+
+The format axis is unaffected: ternary still destroys the L0 baseline (0.525) while the delta form
+survives (48.519). **The asymmetry lives in bit width, not in sparsity** — argue the method there.
+
 ## The mechanism is magnitude, not distribution — say so carefully
 
 Three separate probes agree that the delta is **not** an easier tensor to quantize:
@@ -103,7 +131,8 @@ installed and never called) and that the base cache must be generation-keyed, be
 
 ## Next
 
-- Full-2000 confirmation of the delta + 2:4 arm (running).
+- ~~Full-2000 confirmation of the delta + 2:4 arm.~~ **Done: 61.562 (-0.284 against dense bf16
+  61.846), 89.1% of the floor-ceiling gap.** But see the sparsity control above before using it.
 - Round-to-round error feedback: carry `d - dequant(quant(d))` into the next interleaved round. This
   is structurally impossible without AppCorr's multi-round correction and is the most promising
   remaining candidate for closing the ternary gap.
