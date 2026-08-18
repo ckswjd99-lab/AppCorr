@@ -418,12 +418,18 @@ did **not** hold at full 5,000-image scale:
 > `a02f094` tree on 2026-08-18 hardware reproduce the interleaved arm, not the row: **65.34 / 49.20**
 > with no pruning flag and **65.40 / 49.19** with the row's literal `--token-keep-thres 0`. The code
 > did not move in the intervening three months, so the row cannot be this arm. (For completeness the
-> rebased tree at `--token-keep-thres 0` gives 65.42 / 49.19; all four interleaved variants agree
-> within 0.12pp, and none is 67.96 / 50.70.)
+> rebased tree at `--token-keep-thres 0` gives 65.42 / 49.19, and a fifth run -- a02f094, no flag,
+> logged separately under `AppCorr-clip-prerebase/logs/clip_control/` -- gives 65.42 / 49.20. All
+> five interleaved variants land in **65.34-65.46**, and none is 67.96 / 50.70.)
+>
+> **Do not quote any single one of those runs to two decimals as "the" control.** Two executions of
+> the identical condition (a02f094, no flag) gave 65.34 and 65.42, so run-to-run spread on i2t R@1 is
+> ~0.08pp -- about four images out of 5,000 changing rank. The reference is ~65.4, and the thr=25
+> cost below is correspondingly **-0.6pp +/- 0.1**, not a two-decimal quantity.
 >
 > Against the correct unpruned reference the pruning cost is roughly 2.5pp smaller than shown:
-> measured against the a02f094 no-flag arm (65.34 / 49.20), on which the per-threshold rows were
-> taken, thr=25 is **-0.58pp i2t / -0.20pp t2i**, not -3.20 / -1.70. **The conclusion drawn below —
+> measured against the a02f094 no-flag arm (~65.4 / 49.20), on which the per-threshold rows were
+> taken, thr=25 is **about -0.6pp i2t / -0.2pp t2i**, not -3.20 / -1.70. **The conclusion drawn below —
 > that COCO has no free-pruning regime the way ImageNet does — is not supported by this table as
 > scored** and needs re-deriving. ImageNet's analogous table (§7.4) is *not* affected: its `baseline`
 > 77.14% does not equal the ImageNet ceiling (79.85%), and a full re-run reproduces it exactly
