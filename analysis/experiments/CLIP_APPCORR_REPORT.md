@@ -414,15 +414,30 @@ did **not** hold at full 5,000-image scale:
 > **CORRECTION (2026-08-18): the `baseline` row below is the SEQUENTIAL CEILING, not the unpruned
 > interleaved arm, so every delta in this table is overstated.** Re-measuring `interleaved_g4` at
 > full scale gives **i2t 65.46 / t2i 49.22**, while the sequential ceiling measures **67.96 / 50.70**
-> — matching the `baseline` row to all four digits on both metrics. A control run of the *unmodified*
-> `a02f094` tree on 2026-08-18 hardware reproduces 65.42 / 49.20, i.e. the code did not move in the
-> intervening three months, so the row cannot be this arm.
+> — matching the `baseline` row to all four digits on both metrics. Control runs of the *unmodified*
+> `a02f094` tree on 2026-08-18 hardware reproduce the interleaved arm, not the row: **65.34 / 49.20**
+> with no pruning flag and **65.40 / 49.19** with the row's literal `--token-keep-thres 0`. The code
+> did not move in the intervening three months, so the row cannot be this arm. (For completeness the
+> rebased tree at `--token-keep-thres 0` gives 65.42 / 49.19; all four interleaved variants agree
+> within 0.12pp, and none is 67.96 / 50.70.)
 >
 > Against the correct unpruned reference the pruning cost is roughly 2.5pp smaller than shown:
-> thr=25 is about -0.70pp i2t, not -3.20pp. **The conclusion drawn below — that COCO has no
-> free-pruning regime the way ImageNet does — is not supported by this table as scored** and needs
-> re-deriving. ImageNet's analogous table (§7.4) is *not* affected: its `baseline` 77.14% does not
-> equal the ImageNet ceiling (79.85%), and a re-run reproduces ~77.1%.
+> measured against the a02f094 no-flag arm (65.34 / 49.20), on which the per-threshold rows were
+> taken, thr=25 is **-0.58pp i2t / -0.20pp t2i**, not -3.20 / -1.70. **The conclusion drawn below —
+> that COCO has no free-pruning regime the way ImageNet does — is not supported by this table as
+> scored** and needs re-deriving. ImageNet's analogous table (§7.4) is *not* affected: its `baseline`
+> 77.14% does not equal the ImageNet ceiling (79.85%), and a full re-run reproduces it exactly
+> (77.14% / 94.88%).
+>
+> Corrected deltas against the 65.34 / 49.20 unpruned reference:
+>
+> | threshold | keep-rate | i2t R@1 | vs unpruned | t2i R@1 | vs unpruned |
+> |---|---|---|---|---|---|
+> | unpruned (a02f094, no flag) | 100% | 65.34% | — | 49.20% | — |
+> | thr=25 | 81.6% | 64.76% | -0.58pp | 49.00% | -0.20pp |
+> | thr=50 | 75.3% | 64.32% | -1.02pp | 48.72% | -0.48pp |
+> | thr=100 | 66.7% | 63.88% | -1.46pp | 48.29% | -0.91pp |
+> | thr=200 | 55.5% | 62.66% | -2.68pp | 47.43% | -1.77pp |
 
 | condition | keep-rate | i2t R@1 | t2i R@1 |
 |---|---|---|---|
