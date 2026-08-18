@@ -542,16 +542,18 @@ metrics -- across three months, 88 commits of main, and a rebase, which is a str
 pipeline stability and is why the July per-threshold numbers in 7.4/7.5 can still be trusted.
 
 **The COCO `baseline (thr=0)` row in 7.4 is the ceiling, not the unpruned arm** -- see the correction
-note there. A control run of the untouched `a02f094` tree on 2026-08-18 hardware gives 65.42 / 49.20
-against today's 65.46 / 49.22, so the code did not drift and the row cannot be this arm. Scored
-against the correct reference, `thr=25` costs **-0.70pp i2t** rather than -3.20pp; the other 2.50pp
-belongs to interleaved correction itself, not to pruning. Note both readings are legitimate and answer
-different questions: -3.20pp against the ceiling is what decides whether the configuration is usable,
--0.70pp against the unpruned arm is what pruning costs.
+note there. Control runs of the untouched `a02f094` tree on 2026-08-18 hardware give **65.34 / 49.20**
+(no pruning flag) and **65.40 / 49.19** (the row's literal `--token-keep-thres 0`), against today's
+65.46 / 49.22 — so the code did not drift by more than 0.12pp and the row cannot be this arm. Scored
+against the correct reference (the a02f094 no-flag arm, 65.34 / 49.20, which is the tree the
+per-threshold rows were taken on), `thr=25` costs **-0.58pp i2t / -0.20pp t2i** rather than
+-3.20 / -1.70; the other ~2.5pp belongs to interleaved correction itself, not to pruning. Note both
+readings are legitimate and answer different questions: -3.20pp against the ceiling is what decides
+whether the configuration is usable, -0.58pp against the unpruned arm is what pruning costs.
 
 Not re-measured: the per-threshold pruned arms themselves. The re-derivation above reuses their July
-values with a corrected reference, justified by the unpruned arm reproducing to 0.04pp, but that is
-one arm's worth of evidence.
+values with a corrected reference, justified by the unpruned arm reproducing to within 0.12pp across
+three months, but that is one arm's worth of evidence.
 
 ## 8. Key Findings & Recommendations
 
