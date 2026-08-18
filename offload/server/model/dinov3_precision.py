@@ -182,6 +182,8 @@ class DINOv3ApproxPrecisionController:
         fp4_fast: bool = True,
         fp4_per_tensor_scale: bool = False,
         fp4_proj_precision: str = "fp4",
+        fp4_act_granularity: str = "kernel",
+        quant_format: str = "fp4",
     ) -> None:
         self.blocks = blocks
         self.precision = precision
@@ -190,6 +192,8 @@ class DINOv3ApproxPrecisionController:
         self.fp4_fast = bool(fp4_fast)
         self.fp4_per_tensor_scale = bool(fp4_per_tensor_scale)
         self.fp4_proj_precision = str(fp4_proj_precision)
+        self.fp4_act_granularity = str(fp4_act_granularity)
+        self.quant_format = str(quant_format)
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
         self._compiled_fp8_approx: list[Any] = []
@@ -225,6 +229,8 @@ class DINOv3ApproxPrecisionController:
             fp4_fast=bool(getattr(config, "approx_fp4_fast", True)),
             fp4_per_tensor_scale=bool(getattr(config, "approx_fp4_per_tensor_scale", False)),
             fp4_proj_precision=str(getattr(config, "approx_fp4_proj_precision", "fp4")),
+            fp4_act_granularity=str(getattr(config, "approx_fp4_act_granularity", "kernel")),
+            quant_format=str(getattr(config, "approx_quant_format", "fp4")),
         )
 
     @property
@@ -386,6 +392,14 @@ class DINOv3ApproxPrecisionController:
             use_dynamic_per_tensor_scale=True,
         )
 
+        # Checked before `fp4_fast` because it replaces the Linear entirely: a coarser activation
+        # scale is not something `FastFP4Linear` can be configured into, so the two are exclusive.
+        # Ternary has no kernel to fall back to, so asking for it implies the emulated path even
+        # when the granularity was left at its default.
+        if self.fp4_act_granularity != "kernel" or self.quant_format != "fp4":
+            self._prepare_fp4_granularity()
+            return
+
         if self.fp4_fast:
             self._prepare_fp4_fast()
             return
@@ -507,7 +521,72 @@ class DINOv3ApproxPrecisionController:
             flush=True,
         )
 
+    def _prepare_fp4_granularity(self) -> None:
+        """Quantize the approximate blocks with a coarsened *activation* scale.
+
+        Accuracy study only -- `GranularityFP4Linear` fake-quantizes and multiplies in BF16, so this
+        is slower than BF16, let alone than FP4. It exists to answer what the 16-element block scale
+        is worth, which `_scaled_mm` cannot be asked directly: the FP4 path takes the scale tensor as
+        a required operand, so "no block scale" is only expressible as "every block, same scale".
+
+        Weights stay on 16-element blocks. Their scales are computed once offline, so coarsening them
+        would save nothing at inference and would only mix two effects into one number.
+        """
+        import copy
+
+        try:
+            from .fp4_granularity_linear import convert_linears_to_granularity_fp4
+        except Exception as exc:  # pragma: no cover - import guard
+            self._handle_fp4_unavailable(f"GranularityFP4Linear unavailable ({exc})")
+            return
+
+        fp4_blocks = nn.ModuleList()
+        count = 0
+        try:
+            for block in self.blocks:
+                fp4_block = (
+                    copy.deepcopy(block)
+                    .to(dtype=torch.bfloat16)
+                    .eval()
+                    .requires_grad_(False)
+                )
+                eligible_names = {name for name, _ in _eligible_fp4_linears(fp4_block)}
+                granularity = (
+                    "block16" if self.fp4_act_granularity == "kernel" else self.fp4_act_granularity
+                )
+                count += convert_linears_to_granularity_fp4(
+                    fp4_block, eligible_names,
+                    act_granularity=granularity, fmt=self.quant_format,
+                )
+                fp4_blocks.append(fp4_block)
+        except Exception as exc:
+            self._handle_fp4_unavailable(str(exc))
+            return
+
+        expected = len(self.blocks) * len(_LOW_PRECISION_LINEAR_SUFFIXES)
+        if count != expected:
+            self._handle_fp4_unavailable(f"quantized {count} Linear layers, expected {expected}")
+            return
+
+        self.fp4_blocks = fp4_blocks
+        self._compiled_fp4_approx = [block.approx for block in fp4_blocks]
+        print(
+            f"[FP4] Prepared {count} approximate Linear weights across {len(fp4_blocks)} blocks via "
+            f"GranularityFP4Linear (fmt={self.quant_format}, "
+            f"act_granularity={self.fp4_act_granularity}, "
+            "weight_granularity=block16, EMULATED -- accuracy study, not a latency path).",
+            flush=True,
+        )
+
     def begin_event(self) -> None:
+        # The delta-split harness keys its base-value cache off this, whether or not the approximate
+        # path itself is quantized -- it is the only hook that fires once per approximate forward.
+        try:
+            from .delta_split_linear import begin_approx_generation
+
+            begin_approx_generation()
+        except Exception:  # pragma: no cover - harness absent
+            pass
         self._event_routes = {}
         self._full_inference_precision = "none"
 
@@ -735,6 +814,9 @@ class DINOv3CorrectPrecisionController:
         fp4_proj_precision: str = "fp8",
         fp4_per_tensor_scale: bool = False,
         bucket_rows: int = 0,
+        delta_split: str = "off",
+        quant_format: str = "fp4",
+        delta_sparsity: str = "off",
     ) -> None:
         self.blocks = blocks
         self.precision = precision
@@ -744,6 +826,9 @@ class DINOv3CorrectPrecisionController:
         self.fp4_proj_precision = str(fp4_proj_precision)
         self.fp4_per_tensor_scale = bool(fp4_per_tensor_scale)
         self.bucket_rows = max(0, int(bucket_rows))
+        self.delta_split = str(delta_split)
+        self.quant_format = str(quant_format)
+        self.delta_sparsity = str(delta_sparsity)
         self.fp8_blocks: nn.ModuleList | None = None
         self.fp4_blocks: nn.ModuleList | None = None
         self._compiled_correct: dict[int, Any] = {}
@@ -762,10 +847,38 @@ class DINOv3CorrectPrecisionController:
         if self.compile_enabled and self.device.type == "cuda" and torch.cuda.is_available():
             _configure_compile_environment()
 
-        if precision == "fp8":
+        if self.delta_split != "off":
+            # Replaces the precision routes entirely: the harness owns both the approximate-side
+            # capture and the correction-side Linear, so an FP4 conversion underneath it would be
+            # quantizing operands the split has already replaced.
+            self._initialize_delta_split()
+        elif precision == "fp8":
             self._initialize_fp8()
         elif precision == "fp4":
             self._initialize_fp4()
+
+    def _initialize_delta_split(self) -> None:
+        import copy
+
+        from .delta_split_linear import install, reset_cache
+
+        reset_cache()
+        correct_blocks = nn.ModuleList(
+            copy.deepcopy(b).to(dtype=torch.bfloat16).eval().requires_grad_(False)
+            for b in self.blocks
+        )
+        captured, split = install(
+            self.blocks, correct_blocks, self.delta_split, self.quant_format, self.delta_sparsity
+        )
+        self.fp4_blocks = correct_blocks
+        print(
+            f"[delta-split] mode={self.delta_split} fmt={self.quant_format} "
+            f"sparsity={self.delta_sparsity}: captured {captured} "
+            f"approximate Linear inputs, "
+            f"split {split} correction Linears. EMULATED (fake-quant, BF16 matmul) -- accuracy "
+            "harness, do not time.",
+            flush=True,
+        )
 
     @classmethod
     def from_config(
@@ -783,6 +896,9 @@ class DINOv3CorrectPrecisionController:
             fp4_proj_precision=str(getattr(config, "correct_fp4_proj_precision", "fp8")),
             fp4_per_tensor_scale=bool(getattr(config, "correct_fp4_per_tensor_scale", False)),
             bucket_rows=int(getattr(config, "correct_bucket_rows", 0)),
+            delta_split=str(getattr(config, "correct_delta_split", "off")),
+            quant_format=str(getattr(config, "correct_quant_format", "fp4")),
+            delta_sparsity=str(getattr(config, "correct_delta_sparsity", "off")),
         )
 
     @property
@@ -1012,6 +1128,12 @@ class DINOv3CorrectPrecisionController:
                 self._maybe_freeze_fp8_scales()
 
     def _effective_precision(self) -> str:
+        # Checked first and unconditionally: the harness owns the correction Linears outright, so
+        # `correct_precision` no longer selects anything once it is on. Routing on precision instead
+        # would send correction to the untouched blocks and quietly measure nothing -- which is
+        # exactly what the first run of the identity gate did, passing on a path that never ran.
+        if self.delta_split != "off":
+            return "delta"
         if self.precision == "fp8":
             return "fp8" if self.fp8_available else "bf16"
         if self.precision == "fp4":
@@ -1036,7 +1158,7 @@ class DINOv3CorrectPrecisionController:
 
         if effective == "fp8":
             blk = self.fp8_blocks[layer_idx]
-        elif effective == "fp4":
+        elif effective in ("fp4", "delta"):
             blk = self.fp4_blocks[layer_idx]
         else:
             blk = self.blocks[layer_idx]

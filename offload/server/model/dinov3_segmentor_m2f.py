@@ -192,6 +192,16 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if self._correct_warmup_done or not torch.cuda.is_available():
             return
 
+        # The warmup sweeps ~50 synthetic bucket shapes through `.correct()` to pre-compile them. It
+        # runs on the *approximate* blocks, whose Linears the delta-split harness has wrapped in an
+        # input-recording layer -- so every synthetic shape lands in the base-value cache, which then
+        # holds ~50 tensors per site that no correction will ever read. That is both wrong (the cache
+        # is meant to hold the approximate pass's values) and enough to exhaust the GPU. The harness
+        # makes no latency claim, so there is nothing for the warmup to buy here.
+        if str(getattr(config, "correct_delta_split", "off")) != "off":
+            self._correct_warmup_done = True
+            return
+
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         bucket_size = int(appcorr_options.get("sdpa_query_bucket_size", 0) or 0)
         runs = int(appcorr_options.get("correct_warmup_runs", 1) or 0)

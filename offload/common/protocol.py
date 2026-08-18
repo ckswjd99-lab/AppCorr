@@ -224,6 +224,31 @@ class ExperimentConfig:
     # keep *which* layers are low precision unchanged. The correction path defaults it to fp8
     # instead, because there attn.proj's input is an attention output and the worst FP4 candidate.
     approx_fp4_proj_precision: str = "fp4"
+    # Coarsen the *activation* scale below NVFP4's 16-element block, to measure how much of FP4's
+    # survivability the block scale is responsible for. "kernel" is the shipped real `_scaled_mm`
+    # path; every other value swaps in `GranularityFP4Linear`, which fake-quantizes (quantize,
+    # dequantize, BF16 matmul) because `_scaled_mm` cannot express a coarser scale and the question
+    # is numerical. Weights stay on 16-element blocks in every arm -- their scales are computed
+    # offline and cost nothing at inference. "tensor" is one scale for the whole activation, i.e.
+    # no per-block scaling at all. **Accuracy study only; never a latency path.**
+    approx_fp4_act_granularity: str = "kernel"
+    # Accuracy harness (offload/server/model/delta_split_linear.py). "off" ships. "quant_full"
+    # emulates today's correction -- quantize the whole activation -- and "quant_delta" quantizes
+    # only `x - a`, the proposition AppCorr's approximate pass is supposed to enable. "exact" turns
+    # the quantization off and MUST reproduce the BF16 correction, which is the gate on the cache
+    # being keyed correctly. Fake-quantized and slower than what it measures; never time it.
+    correct_delta_split: str = "off"
+    # Value grid for the emulated correction Linears. "ternary" is {-a, 0, +a} per 16-element group
+    # (TWN threshold + least-squares magnitude), ~1.58 bits against FP4's 4. No hardware runs it;
+    # this is an accuracy probe for how far the correction operand can be pushed.
+    correct_quant_format: str = "fp4"
+    # "none" leaves the delta unquantized so `correct_delta_sparsity` can be read on its own.
+    # Sparsity applies to the delta only: zeroing part of `a+d` is a hole, not a cheap correction,
+    # whereas a dropped delta element just leaves that channel at its approximate value.
+    correct_delta_sparsity: str = "off"
+    # Same grid, applied to the approximate path -- i.e. to a plain L0 forward, which is the
+    # no-AppCorr baseline this is meant to break.
+    approx_quant_format: str = "fp4"
     # Round the correction GEMMs' row count M up to a multiple of this, zero-padding. M changes every
     # correction round, so without it every shape-specialised consumer -- torch.compile graphs, and
     # CUDA graph capture in particular -- sees an unbounded set of shapes. Bucketing is a *cost* on
@@ -283,6 +308,35 @@ class ExperimentConfig:
             raise ValueError(
                 "approx_fp4_proj_precision must be 'fp4' or 'fp8', "
                 f"got {self.approx_fp4_proj_precision!r}"
+            )
+        self.correct_quant_format = str(self.correct_quant_format).lower()
+        self.approx_quant_format = str(self.approx_quant_format).lower()
+        for _n, _v in (("correct_quant_format", self.correct_quant_format),
+                       ("approx_quant_format", self.approx_quant_format)):
+            if _v not in {"fp4", "ternary", "none"}:
+                raise ValueError(f"{_n} must be 'fp4', 'ternary' or 'none', got {_v!r}")
+        self.correct_delta_sparsity = str(self.correct_delta_sparsity).lower()
+        if self.correct_delta_sparsity not in {"off", "2:4", "unstructured50"}:
+            raise ValueError(
+                "correct_delta_sparsity must be 'off', '2:4' or 'unstructured50', "
+                f"got {self.correct_delta_sparsity!r}"
+            )
+        self.approx_fp4_act_granularity = str(self.approx_fp4_act_granularity).lower()
+        # Import-free validation: protocol.py is shared with the mobile client, which has no reason
+        # to pull in a server-side quantization module just to check a spelling.
+        _ACT_GRANULARITIES = {
+            "kernel", "block16", "block32", "block64", "block256", "block1024", "row", "tensor",
+        }
+        if self.approx_fp4_act_granularity not in _ACT_GRANULARITIES:
+            raise ValueError(
+                "approx_fp4_act_granularity must be one of "
+                f"{sorted(_ACT_GRANULARITIES)}, got {self.approx_fp4_act_granularity!r}"
+            )
+        self.correct_delta_split = str(self.correct_delta_split).lower()
+        if self.correct_delta_split not in {"off", "exact", "quant_full", "quant_delta"}:
+            raise ValueError(
+                "correct_delta_split must be one of ['off', 'exact', 'quant_full', "
+                f"'quant_delta'], got {self.correct_delta_split!r}"
             )
         if self.correct_fp4_proj_precision not in {"fp4", "fp8"}:
             raise ValueError(
