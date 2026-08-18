@@ -510,6 +510,49 @@ Extended the full-scale ImageNet sweep to more, and more extreme, threshold valu
 
 ---
 
+## 7.6 Re-measurement on `experiment/clip-appcorr-closedloop` (2026-08-18)
+
+Rebased the 14 CLIP commits onto `main` to pick up `378e21d` "Make the Laplacian transmission
+lossless (closed-loop prediction)", which had invalidated the ADE20K and VGGT numbers, and re-ran at
+full scale. One commit, `4cedaf2`, was dropped during the rebase: its conflict was comment-only,
+because main had landed the identical decode fix independently in `8efa8bb` six days earlier.
+
+**The transmission fix is a no-op for CLIP, and this is proven rather than inferred.**
+`clip_transmission_roundtrip.py` encodes through the real policy on both CLIP configs, transmits
+every group, decodes, and compares the fixed encoder against the pre-fix one monkeypatched back:
+0.0000% relative L2 on both, decoded images bit-identical. Bit-identity alone cannot distinguish
+"agrees" from "never ran", so it carries a positive control -- `_closed_loop_residual` is called 8x
+and zeroing it moves the decode by 9.45%. The cause is structural: 224x224 with `pyramid_levels
+[2, 0]` divides dyadically, so the encoder's native-gaussian predictor and the decoder's
+resampled-base predictor coincide. `378e21d`'s own message says the same (`imnet [2,0] already 0`).
+CLIP was never affected by the bug; only the non-dyadic families were.
+
+**Full-scale numbers, with the first sequential ceilings ever measured for these tasks:**
+
+| task | floor (approx-only) | interleaved g4 | ceiling (sequential) | vs ceiling | gap recovered |
+|---|---:|---:|---:|---:|---:|
+| ImageNet top1 | 65.92 | **77.14** | **79.85** | -2.71pp | **80.5%** |
+| ImageNet top5 | 88.20 | 94.88 | 96.00 | -1.12pp | 85.6% |
+| COCO i2t R@1 | 50.06 | **65.46** | **67.96** | -2.50pp | **86.0%** |
+| COCO t2i R@1 | 40.33 | **49.22** | **50.70** | -1.48pp | **85.7%** |
+
+Both floors reproduce their recorded values exactly, which is the check that the fix touches only
+residual-carrying paths. ImageNet's interleaved arm also reproduces exactly -- 77.14 / 94.88 on both
+metrics -- across three months, 88 commits of main, and a rebase, which is a strong statement about
+pipeline stability and is why the July per-threshold numbers in 7.4/7.5 can still be trusted.
+
+**The COCO `baseline (thr=0)` row in 7.4 is the ceiling, not the unpruned arm** -- see the correction
+note there. A control run of the untouched `a02f094` tree on 2026-08-18 hardware gives 65.42 / 49.20
+against today's 65.46 / 49.22, so the code did not drift and the row cannot be this arm. Scored
+against the correct reference, `thr=25` costs **-0.70pp i2t** rather than -3.20pp; the other 2.50pp
+belongs to interleaved correction itself, not to pruning. Note both readings are legitimate and answer
+different questions: -3.20pp against the ceiling is what decides whether the configuration is usable,
+-0.70pp against the unpruned arm is what pruning costs.
+
+Not re-measured: the per-threshold pruned arms themselves. The re-derivation above reuses their July
+values with a corrected reference, justified by the unpruned arm reproducing to 0.04pp, but that is
+one arm's worth of evidence.
+
 ## 8. Key Findings & Recommendations
 
 | Question | Answer |
