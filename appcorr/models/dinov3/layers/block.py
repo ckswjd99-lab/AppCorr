@@ -4,6 +4,11 @@
 # the terms of the DINOv3 License Agreement.
 
 import os
+
+try:  # accuracy harness only; absent in any normal run
+    from offload.server.model import delta_split_linear as _delta_split
+except Exception:  # pragma: no cover
+    _delta_split = None
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -1105,6 +1110,11 @@ class SelfAttentionBlock(nn.Module):
         active_batch_idx = fixed_query_state.active_batch_idx
         active_token_idx = fixed_query_state.active_token_idx
         
+        # Publish the rows this correction touches so a delta-split Linear can line its cached
+        # approximate input up with them. No-op unless that harness is installed.
+        if _delta_split is not None:
+            _delta_split.set_selection(active_batch_idx, active_token_idx)
+
         with torch.cuda.nvtx.range("correct_attn"):
             # Dedicated row gather: ~3.6x faster than aten advanced indexing (41.0 -> 11.4 us at
             # ADE20K shapes), bit-identical. Falls back when the layout is unsupported.
