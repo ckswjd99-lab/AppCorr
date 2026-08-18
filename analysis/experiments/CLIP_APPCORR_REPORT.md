@@ -411,9 +411,22 @@ An analogous nr=150 sweep suggested an almost-free sweet spot (i2t R@1 flat at 9
 keep-rate ~69%; t2i R@1 flat 82-85% across the *entire* tested range down to 23% keep-rate). This
 did **not** hold at full 5,000-image scale:
 
+> **CORRECTION (2026-08-18): the `baseline` row below is the SEQUENTIAL CEILING, not the unpruned
+> interleaved arm, so every delta in this table is overstated.** Re-measuring `interleaved_g4` at
+> full scale gives **i2t 65.46 / t2i 49.22**, while the sequential ceiling measures **67.96 / 50.70**
+> — matching the `baseline` row to all four digits on both metrics. A control run of the *unmodified*
+> `a02f094` tree on 2026-08-18 hardware reproduces 65.42 / 49.20, i.e. the code did not move in the
+> intervening three months, so the row cannot be this arm.
+>
+> Against the correct unpruned reference the pruning cost is roughly 2.5pp smaller than shown:
+> thr=25 is about -0.70pp i2t, not -3.20pp. **The conclusion drawn below — that COCO has no
+> free-pruning regime the way ImageNet does — is not supported by this table as scored** and needs
+> re-deriving. ImageNet's analogous table (§7.4) is *not* affected: its `baseline` 77.14% does not
+> equal the ImageNet ceiling (79.85%), and a re-run reproduces ~77.1%.
+
 | condition | keep-rate | i2t R@1 | t2i R@1 |
 |---|---|---|---|
-| baseline | 100% | 67.96% | 50.70% |
+| baseline (MISLABELLED - this is the ceiling; unpruned interleaved is 65.46 / 49.22) | 100% | 67.96% | 50.70% |
 | thr=25 | 81.6% | 64.76% (-3.20pp) | 49.00% (-1.70pp) |
 | thr=50 | 75.3% | 64.32% (-3.64pp) | 48.72% (-1.98pp) |
 | thr=100 | 66.7% | 63.88% (-4.08pp) | 48.29% (-2.41pp) |
