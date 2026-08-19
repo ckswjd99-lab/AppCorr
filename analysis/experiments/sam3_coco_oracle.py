@@ -400,25 +400,32 @@ def main() -> None:
         else:
             # One forward per distinct category present, since the text prompt names the concept.
             per_image = []
-            for cid in sorted({a["category_id"] for a in anns}):
-                enc = processor(text=cat_name[cid], return_tensors="pt").to(device)
-                with torch.no_grad(), swap_vision(model, tower, px, px_l2, args.arm, args.keep_ratio, args.pscore,
-                                        args.groups, args.bounds,
-                                        args.force_interleaved):
+            # ONE vision pass for the whole image, reused by every prompt. The approx/correct work
+            # depends only on the pixels -- the text never enters the tower -- so running it inside
+            # the prompt loop recomputed identical features once per category. On COCO that is 3.5
+            # prompts per image; on SA-Co/Gold it is 10.6, which is the difference between hours and
+            # days. Numerically a no-op: verified bit-identical on the detector ceiling and floor.
+            cats = sorted({a["category_id"] for a in anns})
+            with torch.no_grad(), swap_vision(model, tower, px, px_l2, args.arm, args.keep_ratio,
+                                              args.pscore, args.groups, args.bounds,
+                                              args.force_interleaved):
+                for cid in cats:
+                    enc = processor(text=cat_name[cid], return_tensors="pt").to(device)
                     out = model(pixel_values=px, input_ids=enc["input_ids"],
                                 attention_mask=enc.get("attention_mask"))
-                logits = out.pred_logits[0].float()
-                conf = logits.sigmoid().max(dim=-1).values if logits.dim() == 2 else logits.sigmoid().flatten()
-                order = conf.argsort(descending=True)
-                if args.det_score_thresh > 0:
-                    order = order[conf[order] > args.det_score_thresh]
-                keep = order[: args.det_per_cat]
-                if keep.numel() == 0:
-                    continue
-                # Masks are decoded after the global top-k below, not here: RLE over every kept
-                # query of every category is the dominant cost of this path.
-                for q in keep.tolist():
-                    per_image.append((float(conf[q]), cid, out.pred_masks[0][q].float().cpu()))
+                    logits = out.pred_logits[0].float()
+                    conf = (logits.sigmoid().max(dim=-1).values if logits.dim() == 2
+                            else logits.sigmoid().flatten())
+                    order = conf.argsort(descending=True)
+                    if args.det_score_thresh > 0:
+                        order = order[conf[order] > args.det_score_thresh]
+                    keep = order[: args.det_per_cat]
+                    if keep.numel() == 0:
+                        continue
+                    # Masks are decoded after the global top-k below, not here: RLE over every kept
+                    # query of every category is the dominant cost of this path.
+                    for q in keep.tolist():
+                        per_image.append((float(conf[q]), cid, out.pred_masks[0][q].float().cpu()))
 
             per_image.sort(key=lambda t: -t[0])
             for score, cid, mlogit in per_image[: args.det_max_dets]:

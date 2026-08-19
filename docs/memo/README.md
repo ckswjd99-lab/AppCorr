@@ -8,6 +8,11 @@ produced them.
 
 ## Index
 
+- [sam3_coco_detector_results.md](sam3_coco_detector_results.md) — the same five arms on SAM 3's
+  DETECTOR path (text prompt) over full COCO. 55% recompute recovers 89.2%; `pre_global` reaches
+  90.5% at 0.60x compute. Detection loses 1.4x more to approximation than the tracker path does, and
+  the AP50/AP75 split shows why: lost *detections*, not blurred boundaries. Also records the
+  readout-protocol sweep that replaced the hand-set score threshold.
 - [sam3_coco_interleaved_results.md](sam3_coco_interleaved_results.md) — SAM 3 tracker on **full
   COCO val2017** (4952 images), 5 arms on one commit. 55% recompute recovers 92.4% of the
   floor-ceiling gap; interleaved `pre_global` (g=4) matches one-shot to four decimals at 0.60x the
