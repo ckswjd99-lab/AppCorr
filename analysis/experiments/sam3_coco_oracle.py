@@ -291,13 +291,20 @@ def to_original(masks_logits, oh, ow):
     return m > 0
 
 
+def sam3_datasets_subsets():
+    import sam3_datasets
+    return "/".join(sam3_datasets.SACO_GOLD_SUBSETS)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["coco", "lvis"], default="coco",
+    ap.add_argument("--dataset", default="coco",
                     help="coco: val2017, 80 categories, COCOeval. "
                          "lvis: v1 val, 1203 categories with rare/common/frequent buckets, "
                          "LVISEval (federated annotations -- COCOeval would punish correct "
-                         "detections of un-annotated objects)")
+                         "detections of un-annotated objects). "
+                         "saco_gold:<subset>: promptable concept segmentation scored by cgF1, "
+                         f"subsets {sam3_datasets_subsets()}")
     ap.add_argument("--path", choices=["tracker", "detector"], default="tracker")
     ap.add_argument("--arm", choices=["ceiling", "floor", "corrected"], default="ceiling",
                     help="ceiling: stock forward on the full-resolution image. "
@@ -336,6 +343,11 @@ def main() -> None:
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"])
     ap.add_argument("--out-json", default=None)
+    ap.add_argument("--pred-json", default=None,
+                    help="where to dump raw predictions before scoring; defaults to "
+                         "<out-json>.preds.json. Feed back with --score-only.")
+    ap.add_argument("--score-only", default=None,
+                    help="skip inference and score this predictions file instead")
     args = ap.parse_args()
 
     from transformers import Sam3Model, Sam3Processor, Sam3TrackerModel
@@ -349,6 +361,17 @@ def main() -> None:
     bench = sam3_datasets.build(args.dataset, args.max_boxes,
                                 None if args.full else args.num_images)
     index = bench.items
+
+    if args.score_only:
+        with open(args.score_only) as f:
+            results = json.load(f)
+        print(f"[oracle] scoring {len(results)} predictions from {args.score_only}", flush=True)
+        stats = bench.evaluate(results, [it.image_id for it in index])
+        print("\n=== Final Summary: " + json.dumps(
+            {"dataset": bench.name, "path": args.path, "arm": args.arm,
+             "scored_from": args.score_only, "num_images": len(index),
+             "num_predictions": len(results), **bench.meta, **stats}))
+        return
 
     print(f"[oracle:{args.path}] loading {args.repo} ({args.dtype})", flush=True)
     cls = Sam3TrackerModel if args.path == "tracker" else Sam3Model
@@ -400,17 +423,25 @@ def main() -> None:
         else:
             # One forward per distinct category present, since the text prompt names the concept.
             per_image = []
+            # What to ask, and what each answer belongs to. COCO/LVIS derive prompts from the GT
+            # categories and key every prediction to this image; SA-Co supplies (pair_id, phrase)
+            # pairs, where the pair is the datapoint and one image carries several. See
+            # `sam3_datasets.Item.prompts`.
+            prompts = (item.prompts if item.prompts is not None
+                       else [(img_id, cat_name[cid], cid)
+                             for cid in sorted({a["category_id"] for a in anns})])
+            prompts = [(p[0], p[1], p[2] if len(p) > 2 else 1) for p in prompts]
+
             # ONE vision pass for the whole image, reused by every prompt. The approx/correct work
             # depends only on the pixels -- the text never enters the tower -- so running it inside
-            # the prompt loop recomputed identical features once per category. On COCO that is 3.5
-            # prompts per image; on SA-Co/Gold it is 10.6, which is the difference between hours and
-            # days. Numerically a no-op: verified bit-identical on the detector ceiling and floor.
-            cats = sorted({a["category_id"] for a in anns})
+            # the prompt loop recomputed identical features once per prompt. On COCO that is 3.5
+            # prompts per image and cost 1.9x; on SA-Co/Gold's metaclip subset it is 55.
+            # Numerically a no-op: verified bit-identical on the detector ceiling.
             with torch.no_grad(), swap_vision(model, tower, px, px_l2, args.arm, args.keep_ratio,
                                               args.pscore, args.groups, args.bounds,
                                               args.force_interleaved):
-                for cid in cats:
-                    enc = processor(text=cat_name[cid], return_tensors="pt").to(device)
+                for result_id, text, cid in prompts:
+                    enc = processor(text=text, return_tensors="pt").to(device)
                     out = model(pixel_values=px, input_ids=enc["input_ids"],
                                 attention_mask=enc.get("attention_mask"))
                     logits = out.pred_logits[0].float()
@@ -425,11 +456,24 @@ def main() -> None:
                     # Masks are decoded after the global top-k below, not here: RLE over every kept
                     # query of every category is the dominant cost of this path.
                     for q in keep.tolist():
-                        per_image.append((float(conf[q]), cid, out.pred_masks[0][q].float().cpu()))
+                        per_image.append((float(conf[q]), cid, result_id,
+                                          out.pred_masks[0][q].float().cpu()))
 
+            # Rank across prompts, then cut. For SA-Co the cut is per prompt, not per image: a
+            # datapoint is one (image, phrase) pair and its predictions must not compete with a
+            # different phrase's for the same budget.
             per_image.sort(key=lambda t: -t[0])
-            for score, cid, mlogit in per_image[: args.det_max_dets]:
-                results.append({"image_id": img_id, "category_id": cid,
+            if item.prompts is not None:
+                kept, seen = [], {}
+                for rec in per_image:
+                    n = seen.get(rec[2], 0)
+                    if n < args.det_max_dets:
+                        seen[rec[2]] = n + 1
+                        kept.append(rec)
+            else:
+                kept = per_image[: args.det_max_dets]
+            for score, cid, result_id, mlogit in kept:
+                results.append({"image_id": result_id, "category_id": cid,
                                 "segmentation": rle_of(to_original(mlogit[None].to(device), oh, ow)[0]),
                                 "score": score})
 
@@ -440,6 +484,18 @@ def main() -> None:
     if not results:
         print("[oracle] no predictions; nothing to score")
         sys.exit(1)
+
+    # Dump predictions BEFORE scoring. Inference is the expensive half -- an hour of GPU on LVIS --
+    # and the evaluators are third-party code that can fail for reasons unrelated to the run: the
+    # `lvis` package (0.5.3, 2020) calls `np.float`, removed in numpy 1.24, and took a completed
+    # 19,626-image ceiling arm down with it. With this, a scoring crash costs a rerun of
+    # `--score-only`, not a rerun of the model.
+    pred_path = args.pred_json or (f"{args.out_json}.preds.json" if args.out_json else None)
+    if pred_path:
+        os.makedirs(os.path.dirname(os.path.abspath(pred_path)), exist_ok=True)
+        with open(pred_path, "w") as f:
+            json.dump(results, f)
+        print(f"[oracle] {len(results)} predictions -> {pred_path}", flush=True)
 
     stats = bench.evaluate(results, [it.image_id for it in index])
 

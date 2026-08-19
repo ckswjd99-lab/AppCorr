@@ -34,7 +34,7 @@ COCO_TRAIN_IMAGES = f"{DATA_ROOT}/coco_train2017/train2017"
 
 @dataclass
 class Item:
-    """One image and the annotations to prompt with."""
+    """One image, the annotations to prompt with, and what to ask about it."""
     image_id: int
     file_path: str
     width: int
@@ -44,6 +44,21 @@ class Item:
     # these None and every category present in the GT is prompted.
     pos_cat_ids: List[int] | None = None
     neg_cat_ids: List[int] | None = None
+    # What to prompt the detector with, as (result_id, text). `result_id` is what predictions are
+    # keyed by, which is NOT always `image_id`:
+    #
+    #   COCO / LVIS  the prompts are derived from the GT -- one per category present -- and every
+    #                prediction belongs to this image, so result_id == image_id and the category is
+    #                carried separately.
+    #   SA-Co        a datapoint IS an (image, noun-phrase) pair with its own id, and one image
+    #                carries ~10 of them. Predictions are keyed per pair, so result_id is the pair's
+    #                id and the image is shared. 80% of pairs have no masks at all -- they ask about
+    #                a concept that is absent, and answering "none" is the thing being scored. A
+    #                harness that only prompts with categories taken from the GT can never be wrong
+    #                in that direction and so cannot produce cgF1's IL_MCC term.
+    #
+    # None means "derive from the GT categories", the COCO/LVIS behaviour.
+    prompts: List[tuple] | None = None
 
 
 @dataclass
@@ -145,10 +160,110 @@ def build_lvis(max_boxes: int, limit: int | None, require_local: bool = True) ->
                       "num_categories": len(cat_name)})
 
 
-BUILDERS = {"coco": build_coco, "lvis": build_lvis}
+SACO_GOLD_ANN = f"{DATA_ROOT}/saco_gold/annotations"
+SACO_GOLD_IMAGES = f"{DATA_ROOT}/saco_gold/images"
+SACO_GOLD_SUBSETS = ("metaclip", "sa1b", "attributes", "crowded",
+                     "wiki_common", "fg_food", "fg_sports_equipment")
 
 
-def build(name: str, max_boxes: int, limit: int | None) -> Benchmark:
+def build_saco_gold(max_boxes: int, limit: int | None, subset: str = "attributes",
+                    require_local: bool = True) -> Benchmark:
+    """SA-Co/Gold, one subset. Promptable concept segmentation, scored by cgF1.
+
+    Three things make this unlike COCO/LVIS, and all three are why the harness needed `Item.prompts`:
+
+    **A datapoint is an (image, noun-phrase) pair.** `images` rows carry `text_input`; `categories`
+    is a single dummy `object` entry the format requires and the task ignores. One image file appears
+    in ~10 rows with different phrases, so items are grouped by file and the vision tower runs once
+    per image rather than once per phrase.
+
+    **80% of pairs are negative** -- the phrase does not occur in the image, and answering "none" is
+    the thing being measured. They are kept, with empty `anns`.
+
+    **Scoring is `cgF1 = positive_micro_F1 x IL_MCC`**, from Meta's own evaluator, vendored under
+    `saco_eval/`. Matching is Hungarian, not COCOeval's greedy. Do not reimplement it.
+
+    The three files per subset are three independent annotators. `CGF1Evaluator` takes all three and
+    scores against each, keeping the most favourable -- the "oracle setting" the benchmark defines,
+    since annotators genuinely disagree on mask borders, instance counts, and whether the phrase is
+    present at all. It also drops any pair not `is_instance_exhaustive` in *all* three. Passing one
+    file instead of three is a different, harsher benchmark.
+    """
+    import json
+
+    if subset not in SACO_GOLD_SUBSETS:
+        raise SystemExit(f"unknown SA-Co/Gold subset {subset!r}; have {SACO_GOLD_SUBSETS}")
+    gt_paths = [f"{SACO_GOLD_ANN}/gold_{subset}_merged_{v}_release_test.json" for v in "abc"]
+    missing_gt = [p for p in gt_paths if not os.path.exists(p)]
+    if missing_gt:
+        raise SystemExit(f"missing SA-Co/Gold annotations: {missing_gt}")
+
+    # Annotator 'a' defines the prompt list; the other two are only ever used by the evaluator.
+    gt = json.load(open(gt_paths[0]))
+    anns_by_row = {}
+    for a in gt["annotations"]:
+        anns_by_row.setdefault(a["image_id"], []).append(a)
+
+    by_file: Dict[str, List[dict]] = {}
+    for row in gt["images"]:
+        by_file.setdefault(row["file_name"], []).append(row)
+
+    items, missing_img = [], 0
+    for fname, rows in by_file.items():
+        path = os.path.join(SACO_GOLD_IMAGES, fname)
+        if require_local and not os.path.exists(path):
+            missing_img += 1
+            continue
+        r0 = rows[0]
+        items.append(Item(
+            image_id=r0["id"], file_path=path, width=r0["width"], height=r0["height"],
+            anns=[a for r in rows for a in anns_by_row.get(r["id"], [])],
+            prompts=[(r["id"], r["text_input"]) for r in rows],
+        ))
+    if missing_img:
+        print(f"[saco_gold:{subset}] {missing_img} image files not on disk and skipped", flush=True)
+    if limit:
+        items = items[:limit]
+
+    def evaluate(results, image_ids):
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "saco_eval"))
+        from cgf1_eval import CGF1Evaluator
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(results, f)
+            pred_path = f.name
+        try:
+            ev = CGF1Evaluator(gt_path=gt_paths, iou_type="segm", verbose=True)
+            summary = ev.evaluate(pred_path)
+        finally:
+            os.unlink(pred_path)
+        pick = {"cgF1": "cgF1_eval_segm_cgF1",
+                "IL_MCC": "cgF1_eval_segm_IL_MCC",
+                "positive_micro_F1": "cgF1_eval_segm_positive_micro_F1",
+                "precision": "cgF1_eval_segm_precision",
+                "recall": "cgF1_eval_segm_recall",
+                "IL_F1": "cgF1_eval_segm_IL_F1",
+                "IL_FPR": "cgF1_eval_segm_IL_FPR"}
+        return {k: float(summary[v]) for k, v in pick.items() if v in summary}
+
+    n_pos = sum(1 for it in items for pid, _ in it.prompts if anns_by_row.get(pid))
+    n_prompt = sum(len(it.prompts) for it in items)
+    return Benchmark(f"saco_gold:{subset}", items, {}, evaluate,
+                     {"annotations": gt_paths, "images_missing": missing_img,
+                      "num_prompts": n_prompt, "num_positive_prompts": n_pos,
+                      "subset": subset})
+
+
+BUILDERS = {"coco": build_coco, "lvis": build_lvis, "saco_gold": build_saco_gold}
+
+
+def build(name: str, max_boxes: int, limit: int | None, **kw) -> Benchmark:
+    """`name` may carry a sub-selection after a colon, e.g. "saco_gold:crowded"."""
+    name, _, sub = name.partition(":")
     if name not in BUILDERS:
         raise SystemExit(f"unknown dataset {name!r}; have {sorted(BUILDERS)}")
-    return BUILDERS[name](max_boxes, limit)
+    if sub:
+        kw["subset"] = sub
+    return BUILDERS[name](max_boxes, limit, **kw)
