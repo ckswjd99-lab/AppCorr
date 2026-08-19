@@ -42,6 +42,7 @@ from PIL import Image
 # Run directly (`python analysis/experiments/...`) rather than as a module, so the repo root is not
 # on sys.path and `appcorr` would not import.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 COCO_ROOT = "/home/nxclab/fiftyone/coco-2017"
 COCO_IMAGES = f"{COCO_ROOT}/validation/data"
@@ -292,6 +293,11 @@ def to_original(masks_logits, oh, ow):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", choices=["coco", "lvis"], default="coco",
+                    help="coco: val2017, 80 categories, COCOeval. "
+                         "lvis: v1 val, 1203 categories with rare/common/frequent buckets, "
+                         "LVISEval (federated annotations -- COCOeval would punish correct "
+                         "detections of un-annotated objects)")
     ap.add_argument("--path", choices=["tracker", "detector"], default="tracker")
     ap.add_argument("--arm", choices=["ceiling", "floor", "corrected"], default="ceiling",
                     help="ceiling: stock forward on the full-resolution image. "
@@ -316,29 +322,33 @@ def main() -> None:
     ap.add_argument("--num-images", type=int, default=100)
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--max-boxes", type=int, default=20)
-    ap.add_argument("--det-score-thresh", type=float, default=0.3)
+    # Detection AP is a ranking metric: COCOeval sorts predictions by score and sweeps the
+    # threshold itself, keeping the top `maxDets` per image. Cutting at a fixed confidence
+    # therefore only ever *removes* recall the metric would have used -- a threshold is a knob
+    # that can only hurt, and picking one by hand puts an arbitrary number in front of every
+    # comparison. Keep the top-k per prompt instead and let the metric do its job.
+    ap.add_argument("--det-per-cat", type=int, default=30,
+                    help="top-k queries kept per category prompt, by confidence")
+    ap.add_argument("--det-max-dets", type=int, default=100,
+                    help="predictions kept per image after merging prompts; COCO's maxDets")
+    ap.add_argument("--det-score-thresh", type=float, default=0.0,
+                    help="optional floor on confidence; 0 disables it (the default -- see above)")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"])
     ap.add_argument("--out-json", default=None)
     args = ap.parse_args()
 
-    from pycocotools.coco import COCO
-    from pycocotools.cocoeval import COCOeval
     from transformers import Sam3Model, Sam3Processor, Sam3TrackerModel
+
+    import sam3_datasets
 
     device = torch.device(args.device)
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float32
     token = os.environ.get("HF_TOKEN")
 
-    coco = COCO(COCO_INSTANCES)
-    index = []
-    for iid in sorted(coco.getImgIds()):
-        anns = [a for a in coco.loadAnns(coco.getAnnIds(imgIds=iid, iscrowd=False))
-                if a.get("area", 0) > 1 and a.get("bbox")]
-        if anns:
-            index.append((iid, anns[: args.max_boxes]))
-    if not args.full:
-        index = index[: args.num_images]
+    bench = sam3_datasets.build(args.dataset, args.max_boxes,
+                                None if args.full else args.num_images)
+    index = bench.items
 
     print(f"[oracle:{args.path}] loading {args.repo} ({args.dtype})", flush=True)
     cls = Sam3TrackerModel if args.path == "tracker" else Sam3Model
@@ -347,7 +357,7 @@ def main() -> None:
     ip = getattr(processor, "image_processor", processor)
     mean = torch.tensor(ip.image_mean, device=device).view(1, 3, 1, 1)
     std = torch.tensor(ip.image_std, device=device).view(1, 3, 1, 1)
-    cat_name = {c["id"]: c["name"] for c in coco.loadCats(coco.getCatIds())}
+    cat_name = bench.cat_name
 
     tower = None
     if args.arm != "ceiling":
@@ -356,17 +366,17 @@ def main() -> None:
         print(f"[oracle:{args.path}] arm={args.arm} keep_ratio={args.keep_ratio} "
               f"({tower.num_layers} layers, global at {tower.global_layers})", flush=True)
 
-    print(f"[oracle:{args.path}] {len(index)} images, "
-          f"{sum(len(a) for _, a in index)} annotations", flush=True)
+    print(f"[oracle:{args.path}] {bench.name}: {len(index)} images, "
+          f"{sum(len(it.anns) for it in index)} annotations, "
+          f"{len(cat_name)} categories", flush=True)
 
     results = []
     t0 = time.time()
-    for n, (img_id, anns) in enumerate(index, 1):
-        info = coco.loadImgs(img_id)[0]
-        path = os.path.join(COCO_IMAGES, info["file_name"])
-        px, ow, oh = load_pixels(path, device, mean, std, dtype, level=0)
+    for n, item in enumerate(index, 1):
+        img_id, anns = item.image_id, item.anns
+        px, ow, oh = load_pixels(item.file_path, device, mean, std, dtype, level=0)
         px_l2 = (px if args.arm == "ceiling"
-                 else load_pixels(path, device, mean, std, dtype, level=2)[0])
+                 else load_pixels(item.file_path, device, mean, std, dtype, level=2)[0])
         sx, sy = IMAGE_SIZE / ow, IMAGE_SIZE / oh
 
         if args.path == "tracker":
@@ -389,6 +399,7 @@ def main() -> None:
                                 "score": float(scores[k, best[k]])})
         else:
             # One forward per distinct category present, since the text prompt names the concept.
+            per_image = []
             for cid in sorted({a["category_id"] for a in anns}):
                 enc = processor(text=cat_name[cid], return_tensors="pt").to(device)
                 with torch.no_grad(), swap_vision(model, tower, px, px_l2, args.arm, args.keep_ratio, args.pscore,
@@ -398,14 +409,22 @@ def main() -> None:
                                 attention_mask=enc.get("attention_mask"))
                 logits = out.pred_logits[0].float()
                 conf = logits.sigmoid().max(dim=-1).values if logits.dim() == 2 else logits.sigmoid().flatten()
-                keep = (conf > args.det_score_thresh).nonzero(as_tuple=True)[0]
+                order = conf.argsort(descending=True)
+                if args.det_score_thresh > 0:
+                    order = order[conf[order] > args.det_score_thresh]
+                keep = order[: args.det_per_cat]
                 if keep.numel() == 0:
                     continue
-                bin_masks = to_original(out.pred_masks[0][keep].float(), oh, ow)
-                for j, q in enumerate(keep.tolist()):
-                    results.append({"image_id": img_id, "category_id": cid,
-                                    "segmentation": rle_of(bin_masks[j]),
-                                    "score": float(conf[q])})
+                # Masks are decoded after the global top-k below, not here: RLE over every kept
+                # query of every category is the dominant cost of this path.
+                for q in keep.tolist():
+                    per_image.append((float(conf[q]), cid, out.pred_masks[0][q].float().cpu()))
+
+            per_image.sort(key=lambda t: -t[0])
+            for score, cid, mlogit in per_image[: args.det_max_dets]:
+                results.append({"image_id": img_id, "category_id": cid,
+                                "segmentation": rle_of(to_original(mlogit[None].to(device), oh, ow)[0]),
+                                "score": score})
 
         if n % 25 == 0 or n == len(index):
             el = time.time() - t0
@@ -415,14 +434,10 @@ def main() -> None:
         print("[oracle] no predictions; nothing to score")
         sys.exit(1)
 
-    # Score only the images actually run -- otherwise a subset is graded against all 5,000 and the
-    # AP reads as a model failure rather than a bookkeeping one.
-    ev = COCOeval(coco, coco.loadRes(results), "segm")
-    ev.params.imgIds = [i for i, _ in index]
-    ev.evaluate(); ev.accumulate(); ev.summarize()
+    stats = bench.evaluate(results, [it.image_id for it in index])
 
     summary = {
-        "path": args.path, "arm": args.arm,
+        "dataset": bench.name, "path": args.path, "arm": args.arm,
         "keep_ratio": args.keep_ratio if args.arm == "corrected" else None,
         "pscore": args.pscore if args.arm == "corrected" else None,
         "groups": args.groups if args.arm == "corrected" else None,
@@ -430,10 +445,11 @@ def main() -> None:
         "repo": args.repo, "num_images": len(index),
         "num_predictions": len(results), "dtype": args.dtype, "image_size": IMAGE_SIZE,
         "max_boxes": args.max_boxes,
+        "det_per_cat": args.det_per_cat if args.path == "detector" else None,
+        "det_max_dets": args.det_max_dets if args.path == "detector" else None,
         "det_score_thresh": args.det_score_thresh if args.path == "detector" else None,
-        "mask_AP": float(ev.stats[0]), "mask_AP50": float(ev.stats[1]), "mask_AP75": float(ev.stats[2]),
-        "mask_AP_small": float(ev.stats[3]), "mask_AP_medium": float(ev.stats[4]),
-        "mask_AP_large": float(ev.stats[5]),
+        **bench.meta,
+        **stats,
     }
     print("\n=== Final Summary: " + json.dumps(summary))
     if args.out_json:
