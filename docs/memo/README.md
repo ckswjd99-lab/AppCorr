@@ -8,6 +8,16 @@ produced them.
 
 ## Index
 
+- [sam3_coco_interleaved_results.md](sam3_coco_interleaved_results.md) — SAM 3 tracker on **full
+  COCO val2017** (4952 images), 5 arms on one commit. 55% recompute recovers 92.4% of the
+  floor-ceiling gap; interleaved `pre_global` (g=4) matches one-shot to four decimals at 0.60x the
+  correction compute and 0.69x wall clock. Includes why deferring SAM 3's global layers (7/15/23/31)
+  by one layer wins 30%, and why the wall clock understates the compute saving (launch-bound).
+- [interleaved_correction_contract.md](interleaved_correction_contract.md) — **read before writing
+  any interleaved correction path.** Four rules every fork has re-broken (correct this round's group
+  only, never the accumulated set; the stream is cumulative but the corrected set is not; persist the
+  corrected increment; coverage must equal the one-shot set) plus the four gates that catch them.
+  Each rule is invisible in one-shot correction, which is why every new fork ships it broken.
 - [ade20k_sr_residual_pruning_sweep.md](ade20k_sr_residual_pruning_sweep.md) — ADE20K m2f (ViT-7B):
   full-val threshold sweep of appcorr / appcorr+SR / appcorr+SR+SR-residual-pruning. Finding:
   SR-residual pruning only beats plain appcorr in a narrow ~30% recompute band; SR base alone ≈ a wash.

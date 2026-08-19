@@ -222,23 +222,53 @@ class swap_vision:
                 keep_mask[idx] = True
                 per_group = [g[keep_mask[g]] for g in per_group]
 
+                # The input stream may only carry full-resolution values for tokens that have
+                # ALREADY arrived. Handing the whole `mixed` to the approximate pass, or to a
+                # round whose arrived set is smaller than `idx`, feeds the model data from the
+                # future: the un-arrived selected tokens sit in the residual stream at full
+                # resolution (`correct` reconstructs untouched positions as `flat + increment`,
+                # reading `flat` everywhere, not just at the corrected indices). That inflates
+                # every interleaved arm against one-shot, which never has the gap because its
+                # corrected set IS `idx`.
+                def stream(tok):
+                    """Layer-0 input with full resolution at every token that has ARRIVED.
+
+                    Two separate things, easy to conflate: what the *stream* carries and what a
+                    round *recomputes*. The stream is cumulative -- a corrected token's layer-0
+                    value simply IS its full-resolution patch embedding, and `correct` rebuilds
+                    untouched positions as `flat + increment`, reading `flat` everywhere. Handing
+                    it the full `idx` instead would put un-arrived tokens in at full resolution,
+                    which is data from the future.
+                    """
+                    m = flat_a.clone()
+                    if tok.numel():
+                        m[:, tok] = flat_f[:, tok]
+                    return m.reshape(b, h, w, c)
+
                 cache = {}
-                hidden, cache = self.tower.approx_forward(mixed, cache, layers=(0, bounds[0]))
-                arrived = [per_group[0]]
-                for r in range(1, len(bounds)):
+                # Nothing has arrived yet, so the opening pass is the pure approximate one --
+                # the same input one-shot starts from.
+                hidden, cache = self.tower.approx_forward(
+                    x_approx, cache, layers=(0, bounds[0]))
+                arrived = []
+                for r in range(len(bounds)):
                     arrived.append(per_group[r])
-                    tok = torch.cat(arrived).sort().values
+                    # THIS ROUND'S GROUP ONLY -- never the accumulated set. Earlier groups are
+                    # already corrected and stay corrected: their recomputed K/V sits in the
+                    # cache, their corrected increment was persisted, and the approximate pass
+                    # over the next layer range carried them forward. Re-listing them recomputes
+                    # what is already right and, on the last round, collapses the whole schedule
+                    # into one-shot correction. The VGGT path records the same mistake
+                    # (`offload/server/model/vggt_omega.py`), where interleaved and one-shot then
+                    # agreed to 16 decimals.
+                    tok = per_group[r]
                     if tok.numel():
                         hidden, cache = self.tower.correct_forward(
-                            mixed, tok, cache, layers=(0, bounds[r - 1]))
-                    hidden, cache = self.tower.approx_forward(
-                        hidden, cache, layers=(bounds[r - 1], bounds[r]))
-                # The last bound is the full depth, and correction above only ran up to
-                # bounds[-2]; without this the deepest range never sees the arrived tokens.
-                tok = torch.cat(arrived).sort().values
-                if tok.numel():
-                    hidden, cache = self.tower.correct_forward(
-                        mixed, tok, cache, layers=(0, self.tower.num_layers))
+                            stream(torch.cat(arrived).sort().values), tok, cache,
+                            layers=(0, bounds[r]))
+                    if r + 1 < len(bounds):
+                        hidden, cache = self.tower.approx_forward(
+                            hidden, cache, layers=(bounds[r], bounds[r + 1]))
 
         fpn, pos = self.tower.run_neck(hidden)
         out = Sam3VisionEncoderOutput(fpn_hidden_states=fpn, fpn_position_encoding=pos)
