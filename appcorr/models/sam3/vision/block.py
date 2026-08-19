@@ -122,7 +122,8 @@ class ApproxCorrectSam3ViTLayer(nn.Module):
 
     # ----------------------------------------------------------------- approx
 
-    def approx(self, x: torch.Tensor, cache_feature: Dict[str, Any], tag: str):
+    def approx(self, x: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
+               collect_attn: bool = False):
         """Full layer over all tokens; caches the layer increment and the K/V.
 
         `x` is [B, H, W, C]. The cached K/V are stored in *window* layout,
@@ -156,10 +157,47 @@ class ApproxCorrectSam3ViTLayer(nn.Module):
         cache_feature[f"{tag}_k"] = k.detach()
         cache_feature[f"{tag}_v"] = v.detach()
 
+        if collect_attn:
+            cache_feature[f"{tag}_patch_attn"] = self._incoming_attention(
+                q, k, batch, height, width, per_window
+            )
+
         x_mid = x + attn_out
         mlp_out = self.dropout(self.mlp(self.layer_norm2(x_mid)))
         cache_feature[f"{tag}_blocks_out_sum"] = (attn_out + mlp_out).detach()
         return x_mid + mlp_out, cache_feature
+
+    def _incoming_attention(self, q, k, batch, height, width, per_window,
+                            chunk: int = 512) -> torch.Tensor:
+        """How much attention each token *receives*, head- and query-averaged. [B, H*W].
+
+        The analogue of DINOv3's `patch_attn_prob_layermean`. SAM 3's ViT has no CLS token, so the
+        CLIP fork's trick -- softmax of the single CLS query row -- has nothing to attach to; the
+        signal has to come from the column mass of the attention matrix instead.
+
+        Computed in query chunks and never materialised whole: at the four global layers the matrix
+        is [B, 16, 5184, 5184], about 1.7 GB in fp32 per layer, and there is no reason to hold it
+        when only its column mean is wanted. On the 28 windowed layers each block is 576x576, so the
+        chunking is a no-op there.
+        """
+        rows = q.shape[0]
+        acc = torch.zeros(rows, per_window, device=q.device, dtype=torch.float32)
+        for start in range(0, per_window, chunk):
+            qc = q[:, :, start:start + chunk]
+            w = torch.softmax(
+                (qc.float() @ k.float().transpose(-2, -1)) * self.attention.scaling, dim=-1
+            )                                            # [rows, heads, chunk, per_window]
+            acc += w.mean(dim=1).sum(dim=1)              # head-mean, then sum over this chunk
+        acc /= per_window                                # -> mean over queries
+
+        if self.window_size <= 0:
+            return acc.reshape(batch, height * width)
+        # Undo the window layout: windows run row-major over the window grid, tokens row-major
+        # inside each, exactly as `window_partition` lays them out.
+        wh, ww, _ = self._window_grid(height, width)
+        out = acc.reshape(batch, wh, ww, self.window_size, self.window_size)
+        out = out.permute(0, 1, 3, 2, 4).reshape(batch, height * width)
+        return out
 
     # ---------------------------------------------------------------- correct
 
@@ -212,6 +250,24 @@ class ApproxCorrectSam3ViTLayer(nn.Module):
         increment = cache_feature[f"{tag}_blocks_out_sum"].reshape(batch, height * width, channels)
         out = (flat + increment.to(flat.dtype)).clone()
         out[:, token_idx] = (x_attn_active + mlp_out_new).to(out.dtype)
+
+        # Persist this round's corrected increment over the approximate one, unconditionally.
+        #
+        # Without this, `blocks_out_sum` still holds what the approximate pass wrote, so a *later*
+        # round reconstructs every position it is not correcting from the approximate value and
+        # throws away everything earlier rounds fixed -- interleaved correction keeps only its last
+        # round. One-shot correction is unaffected (there is no later round to read a stale value),
+        # which is exactly why the defect hides: the numbers look plausible and only the interleaved
+        # arms are wrong. Fixed in DINOv3 as ac0238f, where it moved VGGT from 74.0% to 88.4% of the
+        # floor-ceiling gap and ADE20K from 80.8% to 89.7%; this fork inherited the pre-fix shape
+        # from the CLIP one.
+        new_increment = increment.clone()
+        new_increment[:, token_idx] = (
+            (x_attn_active - x_active) + mlp_out_new
+        ).to(new_increment.dtype)
+        cache_feature[f"{tag}_blocks_out_sum"] = new_increment.reshape(
+            batch, height, width, channels
+        )
 
         cache_feature[f"{tag}_k"] = k_cache
         cache_feature[f"{tag}_v"] = v_cache
