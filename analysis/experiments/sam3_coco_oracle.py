@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import sys
 import time
 
@@ -38,18 +39,28 @@ import numpy as np
 import torch
 from PIL import Image
 
+# Run directly (`python analysis/experiments/...`) rather than as a module, so the repo root is not
+# on sys.path and `appcorr` would not import.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
 COCO_ROOT = "/home/nxclab/fiftyone/coco-2017"
 COCO_IMAGES = f"{COCO_ROOT}/validation/data"
 COCO_INSTANCES = f"{COCO_ROOT}/raw/instances_val2017.json"
 IMAGE_SIZE = 1008
 
 
-def load_pixels(path, device, mean, std, dtype):
-    img = Image.open(path).convert("RGB")
-    ow, oh = img.size
+def _to_tensor(img, device, mean, std, dtype):
     arr = np.array(img.resize((IMAGE_SIZE, IMAGE_SIZE), Image.BILINEAR), copy=True)
     px = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device).float() / 255.0
-    return ((px - mean) / std).to(dtype), ow, oh
+    return ((px - mean) / std).to(dtype)
+
+
+def load_pixels(path, device, mean, std, dtype, level: int = 0):
+    """Model-canvas tensor for the given pyramid level, degraded natively first when level > 0."""
+    img = Image.open(path).convert("RGB")
+    ow, oh = img.size
+    src = img if level == 0 else l2_from_native(img, level)
+    return _to_tensor(src, device, mean, std, dtype), ow, oh
 
 
 def rle_of(mask_bool):
@@ -58,6 +69,187 @@ def rle_of(mask_bool):
     rle = mask_utils.encode(np.asfortranarray(mask_bool.cpu().numpy().astype(np.uint8)))
     rle["counts"] = rle["counts"].decode("utf-8")
     return rle
+
+
+def l2_from_native(img, level: int = 2) -> "Image.Image":
+    """Build the level-`level` approximation **from the original image in native coordinates**.
+
+    Required by docs/memo/pyramid_degradation_native_vs_canvas.md: pyramid levels are built from the
+    original and only the selected level is scaled to the model input. Degrading the canvas instead
+    barely touches real content when the canvas is an upscale -- COCO's native median is 480x640
+    against SAM 3's 1008x1008 input, so canvas-relative degradation removes information the upscale
+    had just invented. That defect once made COCO's floor and ceiling agree to 1e-4, leaving nothing
+    for correction to recover; fixing it opened the gap to ~0.065.
+
+    Short side / 2**level, aspect preserved, area-downsampled. The caller then resizes to the model
+    canvas, which is the "only the selected level is scaled" half of the rule.
+    """
+    ow, oh = img.size
+    scale = 2 ** level
+    short = min(ow, oh)
+    target_short = max(1, short // scale)
+    if oh <= ow:
+        th, tw = target_short, max(1, round(ow / oh * target_short))
+    else:
+        tw, th = target_short, max(1, round(oh / ow * target_short))
+    return img.resize((tw, th), Image.BOX)
+
+
+def residual_energy(px_full: torch.Tensor, px_l2: torch.Tensor, patch: int) -> torch.Tensor:
+    """Per-patch squared difference between the real image and its L2 approximation. [H/p * W/p].
+
+    Client-side signal: computable without the model, which is what makes it deployable.
+    """
+    resid = (px_full.float() - px_l2.float()).pow(2).sum(dim=1, keepdim=True)
+    return torch.nn.functional.avg_pool2d(resid, patch).flatten()
+
+
+def select_tokens(energy: torch.Tensor, attn: torch.Tensor | None, keep: float) -> torch.Tensor:
+    """Top-`keep` patches by the chosen score.
+
+    `energy x attn` rather than energy alone: energy says only where the approximation is wrong,
+    with no notion of whether the network reads from there. Weighting by received attention asks for
+    both. Each factor is normalised to unit mean first, so the product is not dominated by whichever
+    happens to have the larger scale.
+    """
+    score = energy
+    if attn is not None:
+        e = energy / energy.mean().clamp_min(1e-12)
+        a = attn.flatten().to(energy.device) / attn.mean().clamp_min(1e-12)
+        score = e * a
+    k = max(1, int(round(score.numel() * keep)))
+    return score.topk(k).indices.sort().values
+
+
+def layer_bounds(num_layers: int, global_idx, groups: int, mode: str) -> list[int]:
+    """Layer index each interleaved round runs up to.
+
+    `aligned` splits the depth evenly: at 32 layers and g=4 that is 8/16/24/32, and because SAM 3's
+    global-attention layers sit at 7/15/23/31 every one of those ranges *ends just after* a global
+    layer -- so rounds 2..g each re-correct it.
+
+    `pre_global` stops one layer earlier, 7/15/23/32, ending just before each global layer instead.
+    The global layers are the expensive ones to correct (attention over all 5184 tokens rather than
+    576 inside a window), so deferring each one to the round after removes global-layer corrections
+    from the early rounds. The last bound is always the full depth, so nothing is skipped overall --
+    the work moves later, it does not disappear.
+    """
+    if groups <= 1:
+        return [num_layers]
+    if mode == "pre_global":
+        gl = sorted(i for i in global_idx if 0 < i < num_layers)
+        bounds = [gl[i] for i in range(min(groups - 1, len(gl)))]
+        while len(bounds) < groups - 1:                    # more groups than global layers
+            bounds.append(round(num_layers * (len(bounds) + 1) / groups))
+        return sorted(set(bounds))[: groups - 1] + [num_layers]
+    return [min(num_layers, round(num_layers * (r + 1) / groups)) for r in range(groups)]
+
+
+def block_grid_groups(height: int, width: int, groups: int, device) -> list[torch.Tensor]:
+    """Partition the token grid into `groups` contiguous blocks, block_grid style.
+
+    block_grid rather than grid because it is the measured default -- it took ImageNet top1 and
+    COCO i2t on the CLIP comparison. Needs a square group count, same constraint the transmission
+    policy has.
+    """
+    s = int(round(groups ** 0.5))
+    if s * s != groups:
+        raise ValueError(f"block_grid needs a square group count, got {groups}")
+    rows = torch.arange(height, device=device).unsqueeze(1)
+    cols = torch.arange(width, device=device).unsqueeze(0)
+    gid = (rows * s // height) * s + (cols * s // width)
+    gid = gid.flatten()
+    return [(gid == g).nonzero(as_tuple=True)[0] for g in range(groups)]
+
+
+class swap_vision:
+    """Temporarily make the model's vision encoder return features we computed.
+
+    Both paths consume the tower differently -- `Sam3Model` takes a `vision_embeds` object while
+    `Sam3TrackerModel` wants `image_embeddings` *after* its own post-processing (no-memory embedding
+    added, reshaped by `backbone_feature_sizes`). Reproducing that second transform here would be a
+    second implementation of something the model already does, and it is exactly the kind of thing
+    that silently drifts. Swapping the encoder instead lets both paths run their stock code from the
+    FPN onward, so the only thing this driver changes is which features go in.
+    """
+
+    def __init__(self, model, tower, px, px_l2, arm, keep_ratio, pscore="energy_attn",
+                 groups=1, bounds="aligned", force_interleaved=False):
+        self.model, self.tower, self.px, self.px_l2 = model, tower, px, px_l2
+        self.arm, self.keep_ratio, self.pscore = arm, keep_ratio, pscore
+        self.groups, self.bounds = groups, bounds
+        # Gate only: run the interleaved machinery with one group, which must reproduce one-shot.
+        self.force_interleaved = force_interleaved
+        self.original = None
+
+    def __enter__(self):
+        if self.arm == "ceiling":
+            return self
+        from transformers.models.sam3.modeling_sam3 import Sam3VisionEncoderOutput
+
+        px_l2 = self.px_l2
+        want_attn = self.arm == "corrected" and self.pscore == "energy_attn"
+        x_approx = self.tower.prepare_tokens(px_l2)
+        hidden, cache = self.tower.approx_forward(x_approx, {}, collect_attn=want_attn)
+
+        if self.arm == "corrected":
+            energy = residual_energy(self.px, px_l2, self.tower.patch_size)
+            attn = cache.get("vision_layer_patch_attn_layermean") if want_attn else None
+            idx = select_tokens(energy, attn, self.keep_ratio).to(self.px.device)
+            x_full = self.tower.prepare_tokens(self.px)
+            b, h, w, c = x_approx.shape
+            flat_a, flat_f = x_approx.reshape(b, h * w, c), x_full.reshape(b, h * w, c)
+            mixed = flat_a.clone()
+            mixed[:, idx] = flat_f[:, idx]
+            mixed = mixed.reshape(b, h, w, c)
+
+            if self.groups <= 1 and not self.force_interleaved:
+                hidden, _ = self.tower.correct_forward(mixed, idx, cache)
+            else:
+                # Interleaved: redo the approximate pass in ranges so each round's cache reflects
+                # only the depth reached so far, then correct the arrived groups over that depth.
+                # Every round starts from the same input stream -- that is how the executor calls
+                # it, and it is what makes persisting the corrected increment necessary.
+                bounds = layer_bounds(self.tower.num_layers, self.tower.global_layers,
+                                      self.groups, self.bounds)
+                per_group = block_grid_groups(h, w, self.groups, idx.device)
+                # Restrict each spatial group to the tokens the score actually selected, so the
+                # union over all rounds is exactly the one-shot set. Getting this wrong is not
+                # visible in the score: an earlier version indexed groups from 1 and silently
+                # dropped group 0, correcting 41.3% while reporting a 55% keep ratio -- fewer
+                # tokens than one-shot yet scoring higher, which is how it was caught.
+                keep_mask = torch.zeros(h * w, dtype=torch.bool, device=idx.device)
+                keep_mask[idx] = True
+                per_group = [g[keep_mask[g]] for g in per_group]
+
+                cache = {}
+                hidden, cache = self.tower.approx_forward(mixed, cache, layers=(0, bounds[0]))
+                arrived = [per_group[0]]
+                for r in range(1, len(bounds)):
+                    arrived.append(per_group[r])
+                    tok = torch.cat(arrived).sort().values
+                    if tok.numel():
+                        hidden, cache = self.tower.correct_forward(
+                            mixed, tok, cache, layers=(0, bounds[r - 1]))
+                    hidden, cache = self.tower.approx_forward(
+                        hidden, cache, layers=(bounds[r - 1], bounds[r]))
+                # The last bound is the full depth, and correction above only ran up to
+                # bounds[-2]; without this the deepest range never sees the arrived tokens.
+                tok = torch.cat(arrived).sort().values
+                if tok.numel():
+                    hidden, cache = self.tower.correct_forward(
+                        mixed, tok, cache, layers=(0, self.tower.num_layers))
+
+        fpn, pos = self.tower.run_neck(hidden)
+        out = Sam3VisionEncoderOutput(fpn_hidden_states=fpn, fpn_position_encoding=pos)
+        self.original = self.model.vision_encoder.forward
+        self.model.vision_encoder.forward = lambda *a, **k: out
+        return self
+
+    def __exit__(self, *exc):
+        if self.original is not None:
+            self.model.vision_encoder.forward = self.original
+        return False
 
 
 def to_original(masks_logits, oh, ow):
@@ -71,6 +263,25 @@ def to_original(masks_logits, oh, ow):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", choices=["tracker", "detector"], default="tracker")
+    ap.add_argument("--arm", choices=["ceiling", "floor", "corrected"], default="ceiling",
+                    help="ceiling: stock forward on the full-resolution image. "
+                         "floor: approximate forward on the L2 image, no correction. "
+                         "corrected: approximate on L2, then recompute --keep-ratio of the tokens "
+                         "from the full-resolution image.")
+    ap.add_argument("--pscore", choices=["energy", "energy_attn"], default="energy_attn",
+                    help="energy: residual energy only. energy_attn (default): residual energy x "
+                         "the token's layer-mean received attention, the validated combination.")
+    ap.add_argument("--groups", type=int, default=1,
+                    help="1 = one-shot correction. >1 = interleaved: patches arrive in this many "
+                         "block_grid groups and each round corrects what has arrived so far.")
+    ap.add_argument("--bounds", choices=["aligned", "pre_global"], default="aligned",
+                    help="Where each interleaved round stops. aligned: even splits (8/16/24/32 at "
+                         "g=4). pre_global: one layer earlier (7/15/23/32), stopping just before "
+                         "each global-attention layer instead of just after it.")
+    ap.add_argument("--force-interleaved", action="store_true",
+                    help="equivalence gate: drive the interleaved path even at --groups 1")
+    ap.add_argument("--keep-ratio", type=float, default=0.55,
+                    help="fraction of tokens the corrected arm recomputes, chosen by residual energy")
     ap.add_argument("--repo", default="facebook/sam3")
     ap.add_argument("--num-images", type=int, default=100)
     ap.add_argument("--full", action="store_true")
@@ -108,6 +319,13 @@ def main() -> None:
     std = torch.tensor(ip.image_std, device=device).view(1, 3, 1, 1)
     cat_name = {c["id"]: c["name"] for c in coco.loadCats(coco.getCatIds())}
 
+    tower = None
+    if args.arm != "ceiling":
+        from appcorr.models.sam3.vision.backbone import ApproxCorrectSam3VisionTower
+        tower = ApproxCorrectSam3VisionTower(model.vision_encoder).eval()
+        print(f"[oracle:{args.path}] arm={args.arm} keep_ratio={args.keep_ratio} "
+              f"({tower.num_layers} layers, global at {tower.global_layers})", flush=True)
+
     print(f"[oracle:{args.path}] {len(index)} images, "
           f"{sum(len(a) for _, a in index)} annotations", flush=True)
 
@@ -115,16 +333,21 @@ def main() -> None:
     t0 = time.time()
     for n, (img_id, anns) in enumerate(index, 1):
         info = coco.loadImgs(img_id)[0]
-        px, ow, oh = load_pixels(os.path.join(COCO_IMAGES, info["file_name"]), device, mean, std, dtype)
+        path = os.path.join(COCO_IMAGES, info["file_name"])
+        px, ow, oh = load_pixels(path, device, mean, std, dtype, level=0)
+        px_l2 = (px if args.arm == "ceiling"
+                 else load_pixels(path, device, mean, std, dtype, level=2)[0])
         sx, sy = IMAGE_SIZE / ow, IMAGE_SIZE / oh
 
         if args.path == "tracker":
             boxes = [[a["bbox"][0] * sx, a["bbox"][1] * sy,
                       (a["bbox"][0] + a["bbox"][2]) * sx, (a["bbox"][1] + a["bbox"][3]) * sy]
                      for a in anns]
-            with torch.no_grad():
-                out = model(pixel_values=px,
-                            input_boxes=torch.tensor([boxes], device=device, dtype=torch.float32))
+            bt = torch.tensor([boxes], device=device, dtype=torch.float32)
+            with torch.no_grad(), swap_vision(model, tower, px, px_l2, args.arm, args.keep_ratio, args.pscore,
+                                        args.groups, args.bounds,
+                                        args.force_interleaved):
+                out = model(pixel_values=px, input_boxes=bt)
             # [B, num_boxes, 3, h, w] with [B, num_boxes, 3] scores: keep the model's own pick.
             masks, scores = out.pred_masks[0], out.iou_scores[0]
             best = scores.argmax(dim=-1)
@@ -138,7 +361,9 @@ def main() -> None:
             # One forward per distinct category present, since the text prompt names the concept.
             for cid in sorted({a["category_id"] for a in anns}):
                 enc = processor(text=cat_name[cid], return_tensors="pt").to(device)
-                with torch.no_grad():
+                with torch.no_grad(), swap_vision(model, tower, px, px_l2, args.arm, args.keep_ratio, args.pscore,
+                                        args.groups, args.bounds,
+                                        args.force_interleaved):
                     out = model(pixel_values=px, input_ids=enc["input_ids"],
                                 attention_mask=enc.get("attention_mask"))
                 logits = out.pred_logits[0].float()
@@ -167,7 +392,12 @@ def main() -> None:
     ev.evaluate(); ev.accumulate(); ev.summarize()
 
     summary = {
-        "path": args.path, "repo": args.repo, "num_images": len(index),
+        "path": args.path, "arm": args.arm,
+        "keep_ratio": args.keep_ratio if args.arm == "corrected" else None,
+        "pscore": args.pscore if args.arm == "corrected" else None,
+        "groups": args.groups if args.arm == "corrected" else None,
+        "bounds": args.bounds if args.arm == "corrected" and args.groups > 1 else None,
+        "repo": args.repo, "num_images": len(index),
         "num_predictions": len(results), "dtype": args.dtype, "image_size": IMAGE_SIZE,
         "max_boxes": args.max_boxes,
         "det_score_thresh": args.det_score_thresh if args.path == "detector" else None,

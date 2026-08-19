@@ -78,13 +78,25 @@ class ApproxCorrectSam3VisionTower(nn.Module):
         cache_feature: Dict[str, Any],
         layers: Sequence[int] | None = None,
         tag_prefix: str = "vision_layer",
+        collect_attn: bool = False,
     ):
-        """Run layers [start, end) over all tokens, caching what `correct_forward` will need."""
+        """Run layers [start, end) over all tokens, caching what `correct_forward` will need.
+
+        With `collect_attn`, also accumulates each token's received attention, layer-averaged, under
+        `{tag_prefix}_patch_attn_layermean`. That is the server-side half of the default patch score
+        (residual energy x average attention); it costs a softmax per layer that the ordinary path
+        does not pay, so it is opt-in.
+        """
         start, end = (0, self.num_layers) if layers is None else (int(layers[0]), int(layers[1]))
         for idx in range(start, end):
             hidden, cache_feature = self.layers[idx].approx(
-                hidden, cache_feature, f"{tag_prefix}{idx}"
+                hidden, cache_feature, f"{tag_prefix}{idx}", collect_attn=collect_attn
             )
+        if collect_attn:
+            per_layer = [cache_feature[f"{tag_prefix}{i}_patch_attn"] for i in range(start, end)
+                         if f"{tag_prefix}{i}_patch_attn" in cache_feature]
+            if per_layer:
+                cache_feature[f"{tag_prefix}_patch_attn_layermean"] = torch.stack(per_layer).mean(0)
         return hidden, cache_feature
 
     def correct_forward(
