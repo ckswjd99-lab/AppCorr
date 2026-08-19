@@ -565,6 +565,44 @@ Not re-measured: the per-threshold pruned arms themselves. The re-derivation abo
 values with a corrected reference, justified by the unpruned arm reproducing to within 0.12pp across
 three months, but that is one arm's worth of evidence.
 
+## 7.7 Grouping strategy at full scale (2026-08-19)
+
+All three strategies on both tasks, full datasets, same trees and configs, `pyramid_levels [2, 0]`,
+4 groups, **`keep_rate` 100% -- no token pruning anywhere**. Grouping is the only variable.
+
+Every token is corrected either way, so what changes is the *order* patches arrive in; interleaved
+correction is order-dependent because each round corrects against the state the previous rounds
+left. That is the whole effect being measured here.
+
+| | floor | grid | **block_grid** | expansion | ceiling |
+|---|---:|---:|---:|---:|---:|
+| ImageNet top1 | 65.92 | 77.14 | **77.48** | 76.63 | 79.85 |
+| *gap recovered* | 0% | 80.5% | **83.0%** | 76.9% | 100% |
+| COCO i2t R@1 | 50.06 | 65.46 | **65.90** | 64.96 | 67.96 |
+| *gap recovered* | 0% | 86.0% | **88.5%** | 83.2% | 100% |
+| COCO t2i R@1 | 40.33 | **49.22** | 49.06 | 49.00 | 50.70 |
+| *gap recovered* | 0% | **85.7%** | 84.2% | 83.6% | 100% |
+
+**`block_grid` wins two of the three** and is the recommended default. The exception, COCO t2i,
+puts all three within 49.00-49.22 -- about 2.5x the ~0.08pp run-to-run spread of this eval, so it is
+a difference that exists but does not decide anything.
+
+**`expansion` loses on all three, including ImageNet.** It groups patches into concentric rings of
+equal area expanding from the centre, on the theory that image content -- and a classifier's subject
+in particular -- concentrates there. ImageNet was where that should have paid and it did not
+(76.63, below even `grid`). The implementation is not in question: the transmission-side and
+server-side assignments agree exactly on eight grid shapes, the rings are equal-area to within one
+patch, and group order is centre-outward. The premise is what failed.
+
+Read against the ceiling rather than against each other, all three land 2.4-3.2pp short on ImageNet
+and 2.1-3.0pp short on COCO i2t, so the choice of grouping moves roughly 1pp while interleaved
+correction itself is giving up ~2.5pp. **Grouping is the smaller lever.**
+
+**These numbers do not carry over to a pruned configuration.** With pruning on, the grouping also
+decides which patches are *candidates* in each round -- `expansion`'s first round offers only the
+centre -- so selection and ordering compound. The pruned rows in 7.4/7.5 were all measured under
+`grid`; `block_grid` with pruning has never been measured.
+
 ## 8. Key Findings & Recommendations
 
 | Question | Answer |
