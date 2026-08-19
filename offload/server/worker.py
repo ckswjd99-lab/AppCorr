@@ -109,6 +109,19 @@ class WorkerModule(multiprocessing.Process):
                 msg_type, payload = msg
 
                 if msg_type == 'CONFIG':
+                    # Set up everything this thread reads, before forwarding. It uses `self.config`
+                    # and `self.policy` while decoding, but only the GPU worker used to assign
+                    # either -- so both reads depended on that thread draining its queue before the
+                    # first task reached us. When it lost, the AttributeError killed this thread and
+                    # the run died much later and far away, as `KeyError: '<tag>_kv'` in the
+                    # correction path, because the approximate pass never ran.
+                    #
+                    # `self.policy` is listed here deliberately: fixing `self.config` alone moved the
+                    # failure to `'NoneType' object has no attribute 'decode'` with the same
+                    # downstream signature. Anything the decoder reads has to be initialised here.
+                    # `get_transmission` is a pure lookup, so building it twice is harmless.
+                    self.config = payload
+                    self.policy = get_transmission(self.config.transmission_policy_name)
                     self.gpu_queue.put(msg)
                     continue
 

@@ -73,9 +73,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         yield base_patches # Yield Group 0 (Base Layer) Immediately!
 
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
+        DATA_DEPENDENT_STRATEGIES = {'uniform_diff', 'energy_asc', 'energy_desc'}
 
-        if grouping_strategy == 'uniform_diff':
-            # Collect all then group (Non-pipelined fallback)
+        if grouping_strategy in DATA_DEPENDENT_STRATEGIES:
+            # Collect all then group (Non-pipelined fallback) -- these strategies need to see
+            # actual patch content (size or energy) before assigning groups.
             batch_candidates = [[] for _ in range(B)]
             with ThreadPoolExecutor() as executor:
                 futures = [
@@ -84,10 +86,14 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 ]
                 for b, f in enumerate(futures):
                     batch_candidates[b] = f.result()
-                    
+
             residual_patches = []
             if any(batch_candidates):
-                self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
+                if grouping_strategy == 'uniform_diff':
+                    self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
+                else:
+                    descending = (grouping_strategy == 'energy_desc')
+                    self._apply_energy_grouping(residual_patches, batch_candidates, num_groups, descending=descending)
 
             group_counts = {}
             for p in residual_patches:
@@ -190,6 +196,59 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                  group_ids = np.resize(group_ids, N)
             elif len(group_ids) > N:
                  group_ids = group_ids[:N]
+            return group_ids
+
+        elif strategy == 'expansion':
+            # Centre-out concentric rings, each holding ~N/num_groups patches.
+            #
+            # The ordering key is deliberately all-integer. This assignment has to be reproduced
+            # bit-for-bit by `create_group_index` on the server, and a float radius would leave the
+            # two free to disagree on ties -- which shows up as the server correcting different
+            # tokens than the client sent, with no error anywhere.
+            #
+            # Key: squared Euclidean distance from the grid centre, normalised to the grid's aspect
+            # by cross-multiplying instead of dividing. Doubling the coordinates keeps the centre
+            # exact for even side lengths. Squared-Euclidean rather than Chebyshev because it takes
+            # far more distinct values, so few patches tie -- with Chebyshev a whole square ring ties
+            # at once and the boundary between two groups cut it into a top half and a bottom half
+            # instead of a thin arc. Equal area comes from splitting by *rank*, not by radius, so the
+            # one ring that straddles a boundary is shared and areas stay equal to within one patch.
+            #
+            # Unlike grid/block_grid, num_groups need not be a perfect square.
+            if structure is not None and all('row' in item and 'col' in item for item in structure):
+                grid_hw_by_level = {}
+                for item in structure:
+                    if item.get('grid_hw') is not None:
+                        grid_hw_by_level[int(item.get('res_level', 0))] = tuple(
+                            int(v) for v in item['grid_hw']
+                        )
+                fb_h = max(int(i['row']) for i in structure) + 1
+                fb_w = max(int(i['col']) for i in structure) + 1
+                keys = []
+                for idx, item in enumerate(structure):
+                    gh, gw = grid_hw_by_level.get(int(item.get('res_level', 0)), (fb_h, fb_w))
+                    r, c = int(item['row']), int(item['col'])
+                    dr, dc = 2 * r - (gh - 1), 2 * c - (gw - 1)
+                    keys.append((dr * dr * max(gw - 1, 1) ** 2
+                                 + dc * dc * max(gh - 1, 1) ** 2, idx))
+            else:
+                side = int(round(N ** 0.5))
+                keys = []
+                for idx in range(N):
+                    r, c = divmod(idx, side)
+                    dr, dc = 2 * r - (side - 1), 2 * c - (side - 1)
+                    keys.append((dr * dr * max(side - 1, 1) ** 2
+                                 + dc * dc * max(side - 1, 1) ** 2, idx))
+
+            if num_groups > len(keys):
+                raise ValueError(
+                    f"expansion grouping needs at least one patch per group, got "
+                    f"num_groups={num_groups} for {len(keys)} patches"
+                )
+            order = sorted(range(len(keys)), key=lambda i: keys[i])
+            group_ids = np.empty(len(keys), dtype=int)
+            for rank, i in enumerate(order):
+                group_ids[i] = rank * num_groups // len(keys) + 1
             return group_ids
 
         elif strategy == 'block_grid':
@@ -389,9 +448,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             data = crop.tobytes()
             compressed = zlib.compress(data, level=compression)
             pscore_hint = self._compute_patch_pscore_hint(crop, mobile_pscore)
+            residual_energy = self._compute_patch_residual_energy(crop)
             candidate_list.append({
                 'image_idx': b_idx, 'spatial_idx': i, 'res_level': lvl,
                 'data': compressed, 'size': len(compressed), 'pscore_hint': pscore_hint,
+                'residual_energy': residual_energy,
             })
 
     def _apply_random_grouping(self, final_patch_list, batch_candidates, num_groups):
@@ -493,6 +554,56 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         rank_to_group_id = np.searchsorted(boundaries, cumsum_sizes) + 1
         
         # Assign groups to patches
+        for b in range(B):
+            for rank in range(N):
+                spatial_idx_at_rank = sorted_indices[b, rank]
+                assigned_group = int(rank_to_group_id[rank])
+                c = batch_candidates[b][spatial_idx_at_rank]
+                self._add_patch(final_patch_list, c, assigned_group)
+
+    def _apply_energy_grouping(self, final_patch_list, batch_candidates, num_groups, descending=False):
+        """Assign group IDs so each group carries roughly equal total residual ENERGY (sum of
+        squared residual pixel values, `_compute_patch_residual_energy` -- true signal energy, not
+        `_apply_uniform_diff_grouping`'s compressed-byte-size proxy and independent of whatever
+        `mobile_pscore` is configured for pscore_hint).
+
+        `descending=True` ("energy_desc"): group 1 gets the highest-energy (fewest, most
+        informative) patches first -- latency-hiding priority order, mirroring the OpenVLA fork's
+        "energy" transmission mode (offload/policies/transmission/vla_patch_canvas.py).
+        `descending=False` ("energy_asc", default): group 1 gets the lowest-energy (most numerous,
+        least informative) patches first, deferring high-value content to later groups -- the
+        reverse priority. Testing both directions against the classifier/detector/segmentor/depther
+        pipelines to see whether front-loading high-value content actually matters for accuracy
+        under a fixed group/latency budget (see analysis/experiments/ENERGY_GROUPING_LOG.md).
+        """
+        B = len(batch_candidates)
+        if B == 0: return
+        N = len(batch_candidates[0])
+        if N == 0: return
+
+        energy_matrix = np.zeros((B, N), dtype=np.float64)
+        for b in range(B):
+            for i in range(N):
+                energy_matrix[b, i] = float(batch_candidates[b][i].get('residual_energy', 0.0))
+
+        sort_key = -energy_matrix if descending else energy_matrix
+        sorted_indices = np.argsort(sort_key, axis=1)
+        sorted_energy = np.take_along_axis(energy_matrix, sorted_indices, axis=1)
+
+        avg_sorted_energy = np.mean(sorted_energy, axis=0)
+        cumsum_energy = np.cumsum(avg_sorted_energy)
+        total_energy = cumsum_energy[-1]
+
+        if total_energy <= 0 or num_groups <= 0:
+            for b in range(B):
+                for c in batch_candidates[b]:
+                    self._add_patch(final_patch_list, c, 1)
+            return
+
+        target_sum = total_energy / num_groups
+        boundaries = np.arange(1, num_groups) * target_sum
+        rank_to_group_id = np.searchsorted(boundaries, cumsum_energy) + 1
+
         for b in range(B):
             for rank in range(N):
                 spatial_idx_at_rank = sorted_indices[b, rank]
