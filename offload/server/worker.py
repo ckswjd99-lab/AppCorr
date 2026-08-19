@@ -109,6 +109,14 @@ class WorkerModule(multiprocessing.Process):
                 msg_type, payload = msg
 
                 if msg_type == 'CONFIG':
+                    # Take our own copy before forwarding. This thread reads
+                    # `self.config.transmission_policy_name` when the first LOAD_INPUT arrives, but
+                    # only the GPU worker used to assign it -- so whether that read worked depended
+                    # on the GPU worker draining its queue before the first task reached us. When it
+                    # lost, the AttributeError killed this thread and the run died much later and
+                    # far away, as `KeyError: '<tag>_kv'` in the correction path, because the
+                    # approximate pass never ran.
+                    self.config = payload
                     self.gpu_queue.put(msg)
                     continue
 
