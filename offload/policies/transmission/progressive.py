@@ -198,6 +198,59 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                  group_ids = group_ids[:N]
             return group_ids
 
+        elif strategy == 'expansion':
+            # Centre-out concentric rings, each holding ~N/num_groups patches.
+            #
+            # The ordering key is deliberately all-integer. This assignment has to be reproduced
+            # bit-for-bit by `create_group_index` on the server, and a float radius would leave the
+            # two free to disagree on ties -- which shows up as the server correcting different
+            # tokens than the client sent, with no error anywhere.
+            #
+            # Key: squared Euclidean distance from the grid centre, normalised to the grid's aspect
+            # by cross-multiplying instead of dividing. Doubling the coordinates keeps the centre
+            # exact for even side lengths. Squared-Euclidean rather than Chebyshev because it takes
+            # far more distinct values, so few patches tie -- with Chebyshev a whole square ring ties
+            # at once and the boundary between two groups cut it into a top half and a bottom half
+            # instead of a thin arc. Equal area comes from splitting by *rank*, not by radius, so the
+            # one ring that straddles a boundary is shared and areas stay equal to within one patch.
+            #
+            # Unlike grid/block_grid, num_groups need not be a perfect square.
+            if structure is not None and all('row' in item and 'col' in item for item in structure):
+                grid_hw_by_level = {}
+                for item in structure:
+                    if item.get('grid_hw') is not None:
+                        grid_hw_by_level[int(item.get('res_level', 0))] = tuple(
+                            int(v) for v in item['grid_hw']
+                        )
+                fb_h = max(int(i['row']) for i in structure) + 1
+                fb_w = max(int(i['col']) for i in structure) + 1
+                keys = []
+                for idx, item in enumerate(structure):
+                    gh, gw = grid_hw_by_level.get(int(item.get('res_level', 0)), (fb_h, fb_w))
+                    r, c = int(item['row']), int(item['col'])
+                    dr, dc = 2 * r - (gh - 1), 2 * c - (gw - 1)
+                    keys.append((dr * dr * max(gw - 1, 1) ** 2
+                                 + dc * dc * max(gh - 1, 1) ** 2, idx))
+            else:
+                side = int(round(N ** 0.5))
+                keys = []
+                for idx in range(N):
+                    r, c = divmod(idx, side)
+                    dr, dc = 2 * r - (side - 1), 2 * c - (side - 1)
+                    keys.append((dr * dr * max(side - 1, 1) ** 2
+                                 + dc * dc * max(side - 1, 1) ** 2, idx))
+
+            if num_groups > len(keys):
+                raise ValueError(
+                    f"expansion grouping needs at least one patch per group, got "
+                    f"num_groups={num_groups} for {len(keys)} patches"
+                )
+            order = sorted(range(len(keys)), key=lambda i: keys[i])
+            group_ids = np.empty(len(keys), dtype=int)
+            for rank, i in enumerate(order):
+                group_ids[i] = rank * num_groups // len(keys) + 1
+            return group_ids
+
         elif strategy == 'block_grid':
             s = int(num_groups ** 0.5)
             if s * s != num_groups:
