@@ -412,7 +412,10 @@ keep-rate ~69%; t2i R@1 flat 82-85% across the *entire* tested range down to 23%
 did **not** hold at full 5,000-image scale:
 
 > **CORRECTION (2026-08-18): the `baseline` row below is the SEQUENTIAL CEILING, not the unpruned
-> interleaved arm, so every delta in this table is overstated.** Re-measuring `interleaved_g4` at
+> interleaved arm.** The deltas below are therefore ceiling-relative, which is a legitimate and
+> necessary reading -- it is what decides whether a configuration is good enough to use. What the
+> table lacks is the *other* reference, the unpruned interleaved arm, without which pruning's own
+> cost cannot be separated from interleaved correction's. Re-measuring `interleaved_g4` at
 > full scale gives **i2t 65.46 / t2i 49.22**, while the sequential ceiling measures **67.96 / 50.70**
 > — matching the `baseline` row to all four digits on both metrics. Control runs of the *unmodified*
 > `a02f094` tree on 2026-08-18 hardware reproduce the interleaved arm, not the row: **65.34 / 49.20**
@@ -430,8 +433,9 @@ did **not** hold at full 5,000-image scale:
 > Against the correct unpruned reference the pruning cost is roughly 2.5pp smaller than shown:
 > measured against the a02f094 no-flag arm (~65.4 / 49.20), on which the per-threshold rows were
 > taken, thr=25 is **about -0.6pp i2t / -0.2pp t2i**, not -3.20 / -1.70. **The conclusion drawn below —
-> that COCO has no free-pruning regime the way ImageNet does — is not supported by this table as
-> scored** and needs re-deriving. ImageNet's analogous table (§7.4) is *not* affected: its `baseline`
+> that COCO has no free-pruning regime the way ImageNet does — does not follow from these deltas**,
+> because they carry interleaving's cost as well as pruning's, and needs re-deriving against the
+> unpruned arm. ImageNet's analogous table (§7.4) is *not* affected: its `baseline`
 > 77.14% does not equal the ImageNet ceiling (79.85%), and a full re-run reproduces it exactly
 > (77.14% / 94.88%).
 >
@@ -447,7 +451,7 @@ did **not** hold at full 5,000-image scale:
 
 | condition | keep-rate | i2t R@1 | t2i R@1 |
 |---|---|---|---|
-| baseline (MISLABELLED - this is the ceiling; unpruned interleaved is 65.46 / 49.22) | 100% | 67.96% | 50.70% |
+| baseline — this row is the sequential ceiling; unpruned interleaved is 65.46 / 49.22 | 100% | 67.96% | 50.70% |
 | thr=25 | 81.6% | 64.76% (-3.20pp) | 49.00% (-1.70pp) |
 | thr=50 | 75.3% | 64.32% (-3.64pp) | 48.72% (-1.98pp) |
 | thr=100 | 66.7% | 63.88% (-4.08pp) | 48.29% (-2.41pp) |
