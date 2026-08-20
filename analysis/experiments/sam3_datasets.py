@@ -236,6 +236,20 @@ def build_saco_gold(max_boxes: int, limit: int | None, subset: str = "attributes
             pred_path = f.name
         try:
             ev = CGF1Evaluator(gt_path=gt_paths, iou_type="segm", verbose=True)
+            # Score only the prompts actually run. CGF1Evaluator walks `self.eval_img_ids`, which is
+            # every instance-exhaustive pair in the whole subset, and a pair with no predictions
+            # counts as IL_FN if it is positive. On a 200-image slice of `attributes` that meant 757
+            # prompts scored against 9,222, driving IL_recall to 0.135 and cgF1 to 0.015 -- a
+            # bookkeeping artifact that reads as total model failure. Same trap as COCOeval's
+            # `params.imgIds`, which this evaluator has no equivalent of.
+            ran = {r["image_id"] for r in results}
+            before = len(ev.eval_img_ids)
+            ev.eval_img_ids = [i for i in ev.eval_img_ids if i in ran]
+            if len(ev.eval_img_ids) != before:
+                print(f"[saco_gold] scoring {len(ev.eval_img_ids)} of {before} exhaustive prompts "
+                      f"(the ones this run produced predictions for)", flush=True)
+            if not ev.eval_img_ids:
+                raise SystemExit("no scored prompts: predictions and GT prompt ids do not intersect")
             summary = ev.evaluate(pred_path)
         finally:
             os.unlink(pred_path)

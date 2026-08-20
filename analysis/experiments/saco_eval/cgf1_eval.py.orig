@@ -120,19 +120,7 @@ class COCOCustom(COCO):
         elif type(resFile) == np.ndarray:
             anns = self.loadNumpyAnnotations(resFile)
         else:
-            # LOCAL PATCH (AppCorr): copy, do not alias.
-            #
-            # `CGF1Evaluator.evaluate` hands the SAME per-image prediction list to loadRes once per
-            # ground truth -- three times in the Gold oracle setting. The `"segmentation" in anns[0]`
-            # branch below mutates those dicts, adding `bbox` from `maskUtils.toBbox`. So annotator
-            # a takes the segmentation branch while b and c, now seeing a `bbox` key, take the bbox
-            # branch instead and derive `area` from the box rather than the mask -- the three
-            # annotators end up scored on different rules.
-            #
-            # On numpy >= 1.25 it does not even get that far: the guard below compares an ndarray of
-            # shape (4,) against `[]` and raises. Copying restores the intended semantics for all
-            # three passes and removes the crash as a side effect.
-            anns = copy.deepcopy(resFile)
+            anns = resFile
         assert type(anns) == list, "results in not an array of objects"
         annsImgIds = [ann["image_id"] for ann in anns]
         # MODIFICATION: faster and cached subset check
@@ -151,7 +139,7 @@ class COCOCustom(COCO):
             ]
             for id, ann in enumerate(anns):
                 ann["id"] = id + 1
-        elif "bbox" in anns[0] and len(anns[0]["bbox"]) > 0:
+        elif "bbox" in anns[0] and not anns[0]["bbox"] == []:
             res.dataset["categories"] = copy.deepcopy(self.dataset["categories"])
             for id, ann in enumerate(anns):
                 bb = ann["bbox"]

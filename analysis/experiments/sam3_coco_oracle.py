@@ -338,6 +338,9 @@ def main() -> None:
                     help="top-k queries kept per category prompt, by confidence")
     ap.add_argument("--det-max-dets", type=int, default=100,
                     help="predictions kept per image after merging prompts; COCO's maxDets")
+    ap.add_argument("--no-presence", action="store_true",
+                    help="score queries by pred_logits alone, ignoring the presence token "
+                         "(the pre-fix behaviour; kept to reproduce older numbers)")
     ap.add_argument("--det-score-thresh", type=float, default=0.0,
                     help="optional floor on confidence; 0 disables it (the default -- see above)")
     ap.add_argument("--device", default="cuda:0")
@@ -444,9 +447,22 @@ def main() -> None:
                     enc = processor(text=text, return_tensors="pt").to(device)
                     out = model(pixel_values=px, input_ids=enc["input_ids"],
                                 attention_mask=enc.get("attention_mask"))
+                    # SAM 3 splits recognition from localisation: a dedicated presence token says
+                    # whether the concept occurs at all, and `Sam3ModelOutput` documents the score
+                    # as `pred_logits.sigmoid() * presence_logits.sigmoid()`. Using the query logit
+                    # alone throws away the recognition half.
+                    #
+                    # It makes no difference to COCO/LVIS -- there only categories present in the GT
+                    # are prompted, and a per-image constant factor cannot reorder a ranking metric.
+                    # On SA-Co it is decisive: 80% of prompts ask about an absent concept, and
+                    # without presence the harness answered "present" for 98% of them (IL_FPR 0.980,
+                    # IL_MCC 0.073), which is most of cgF1 since cgF1 = positive_micro_F1 x IL_MCC.
                     logits = out.pred_logits[0].float()
                     conf = (logits.sigmoid().max(dim=-1).values if logits.dim() == 2
                             else logits.sigmoid().flatten())
+                    pres = getattr(out, "presence_logits", None)
+                    if pres is not None and not args.no_presence:
+                        conf = conf * pres[0].float().sigmoid().reshape(-1)[0]
                     order = conf.argsort(descending=True)
                     if args.det_score_thresh > 0:
                         order = order[conf[order] > args.det_score_thresh]
