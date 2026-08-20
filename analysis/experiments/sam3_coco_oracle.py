@@ -338,9 +338,9 @@ def main() -> None:
                     help="top-k queries kept per category prompt, by confidence")
     ap.add_argument("--det-max-dets", type=int, default=100,
                     help="predictions kept per image after merging prompts; COCO's maxDets")
-    ap.add_argument("--no-presence", action="store_true",
-                    help="score queries by pred_logits alone, ignoring the presence token "
-                         "(the pre-fix behaviour; kept to reproduce older numbers)")
+    ap.add_argument("--presence", choices=["auto", "on", "off"], default="auto",
+                    help="multiply query scores by SAM 3's presence token. "
+                         "auto: on for SA-Co, off for COCO/LVIS -- see the note in main().")
     ap.add_argument("--det-score-thresh", type=float, default=0.0,
                     help="optional floor on confidence; 0 disables it (the default -- see above)")
     ap.add_argument("--device", default="cuda:0")
@@ -384,6 +384,24 @@ def main() -> None:
     mean = torch.tensor(ip.image_mean, device=device).view(1, 3, 1, 1)
     std = torch.tensor(ip.image_std, device=device).view(1, 3, 1, 1)
     cat_name = bench.cat_name
+
+    # Presence is task-dependent, not a bug fix to apply everywhere.
+    #
+    # SA-Co asks about concepts that are absent 80% of the time and scores the answer
+    # (cgF1 = positive_micro_F1 x IL_MCC), so the presence token is most of the metric: enabling it
+    # moved cgF1 0.0147 -> 0.5655 on a 200-image `attributes` slice.
+    #
+    # COCO and LVIS only ever prompt categories the GT says are present, so presence has nothing to
+    # discriminate -- and it is not inert there either. Predictions are pooled across categories and
+    # cut at det_max_dets per image, and AP's precision-recall curve is a global ranking, so a
+    # per-prompt factor reshuffles which categories survive. Measured on the COCO detector ceiling
+    # (200 images): 0.5631 without presence, 0.5528 with. It costs 1.03pp of a reference that should
+    # be as strong as possible, for information the task does not contain -- the same reasoning that
+    # picked --det-per-cat on the ceiling arm.
+    use_presence = (args.presence == "on"
+                    or (args.presence == "auto" and bench.name.startswith("saco")))
+    print(f"[oracle:{args.path}] presence token: {'on' if use_presence else 'off'} "
+          f"({args.presence})", flush=True)
 
     tower = None
     if args.arm != "ceiling":
@@ -461,7 +479,7 @@ def main() -> None:
                     conf = (logits.sigmoid().max(dim=-1).values if logits.dim() == 2
                             else logits.sigmoid().flatten())
                     pres = getattr(out, "presence_logits", None)
-                    if pres is not None and not args.no_presence:
+                    if pres is not None and use_presence:
                         conf = conf * pres[0].float().sigmoid().reshape(-1)[0]
                     order = conf.argsort(descending=True)
                     if args.det_score_thresh > 0:
