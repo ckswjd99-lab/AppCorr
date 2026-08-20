@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import time
 import torch
@@ -50,6 +51,7 @@ class WorkerModule(multiprocessing.Process):
         self.policy = None
         self.executor = None
         self.sr_engine = None
+        self._loaded_model_identity = None
 
     def run(self):
         print("[Worker] Started.")
@@ -62,6 +64,15 @@ class WorkerModule(multiprocessing.Process):
 
         # Monitor Queue (GPU Worker → Reaper Thread)
         self.monitor_queue = queue.Queue()
+
+        # Set once the FIRST CONFIG has been applied (self.config/self.policy assigned) by the GPU
+        # worker thread below. self.config is written only in _gpu_worker's message loop (a
+        # different thread than _decoder_worker, which merely forwards CONFIG onward via
+        # gpu_queue) -- without this, a TASK message that races ahead of gpu_queue's CONFIG
+        # processing can reach _decoder_worker while self.config is still None (AttributeError) or
+        # still holds a stale previous-request config. Created here (not __init__) since
+        # threading.Event isn't picklable and __init__ runs in the parent process before spawn.
+        self._config_ready = threading.Event()
 
         # Global timing anchor: ties CPU wall-clock to the CUDA timeline.
         # anchor_cpu + anchor_ev.elapsed_time(ev) / 1000.0 -> absolute timestamp.
@@ -132,6 +143,13 @@ class WorkerModule(multiprocessing.Process):
                 if msg_type == 'TASK':
                     task = payload
                     req_id = task.request_id
+
+                    # See _config_ready's docstring in __init__: guards against a TASK racing ahead
+                    # of the GPU-worker thread's processing of the CONFIG this decoder thread just
+                    # forwarded onward. Only blocks on the FIRST CONFIG of a fresh process (already
+                    # ready for every later message in practice); does not block the GPU worker
+                    # thread itself, which never waits on this event.
+                    self._config_ready.wait()
 
                     if req_id not in self.sessions:
                         self.sessions[req_id] = self._create_session_context()
@@ -232,10 +250,25 @@ class WorkerModule(multiprocessing.Process):
                         self.device = torch.device(self.config.device)
                         print(f"[Worker] Device overridden by Config: {self.device}")
                     self.policy = get_transmission(self.config.transmission_policy_name)
+                    self._config_ready.set()
                     self._validate_lowres_sr_config()
                     self._check_triton_runtime()
                     self._load_sr_engine()
-                    self._load_model(self.config.model_name)
+                    # Skip re-loading the model executor if nothing that would change WHICH
+                    # weights/executor are loaded has changed since the last CONFIG (e.g. only
+                    # image_shape differs, as when a driver resends CONFIG per-image for native-
+                    # resolution runs) -- reloading a large model (tens to 100+ GB) on every such
+                    # CONFIG message is always wasteful and was never intentional; every other
+                    # config field (image_shape, transmission_kwargs, etc.) is still applied fresh
+                    # above/below regardless of this skip.
+                    model_identity = (
+                        self.config.model_name,
+                        json.dumps(self.config.dataset_kwargs, sort_keys=True, default=str),
+                        self.device,
+                    )
+                    if self.executor is None or model_identity != self._loaded_model_identity:
+                        self._load_model(self.config.model_name)
+                        self._loaded_model_identity = model_identity
                     print(f"[Worker] Configured. Policy: {self.config.transmission_policy_name}, "
                           f"Model: {self.config.model_name}, Device: {self.device}")
                     continue

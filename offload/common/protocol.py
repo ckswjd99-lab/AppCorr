@@ -362,6 +362,8 @@ class Patch:
     # Number of correction groups for this image (crop-cover policy: = sliding-crop count,
     # which varies per image). 0 = unset / not applicable.
     num_correction_groups: int = 0
+    # The prompt a VLM request carries alongside its pixels. Empty for vision-only models.
+    text_payload: str = ""
 
 class OpType(Enum):
     # --- Computation Ops ---
