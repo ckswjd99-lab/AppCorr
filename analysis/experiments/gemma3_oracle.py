@@ -74,7 +74,7 @@ def patch_energy(px_full: torch.Tensor, px_l2: torch.Tensor, patch: int) -> torc
 
 @torch.no_grad()
 def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype, device,
-            max_new_tokens, pscore="energy_attn"):
+            max_new_tokens, pscore="energy_attn", groups=4):
     msgs = [{"role": "user", "content": [{"type": "image", "image": img},
                                          {"type": "text", "text": prompt}]}]
     enc = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
@@ -125,7 +125,12 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
 
     if arm == "corrected_j":
         sel_tok = axis.patch_mask_any_to_token(pm)
-    elif arm == "corrected_t":
+    elif arm in ("corrected_t", "interleaved", "parity"):
+        # interleaved is the INTERLEAVED FORM OF corrected_t, so it must share corrected_t's
+        # selection: the patch mask is DERIVED from the chosen tokens. Leaving it in the `else`
+        # branch gave it the `corrected` arm's independent patch top-k instead -- the same 141
+        # tokens but a different patch set -- and the two arms disagreed on 16/40 samples while
+        # each stayed perfectly reproducible. `parity` joins them so it compares like with like.
         pooled = axis.pool_patch_score(score)
         tk = max(1, int(round(keep * n_img)))
         sel_tok = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
@@ -155,6 +160,43 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
     stats["patches_corrected"] = int(pm.sum())
     stats["llm_tokens_corrected"] = int(tm.sum())
     stats["tokens_whose_block_changed"] = int(axis.patch_mask_any_to_token(pm).sum())
+
+    if arm == "parity":
+        # Both paths, in the DRIVER, off the SAME pm/sel_tok/tm. A standalone replica of these two
+        # paths reported bit-identical output while the driver's two arms disagreed on 16/40
+        # samples -- so the replica was wrong, and the only trustworthy comparison is this one.
+        # interleaved runs first: it builds its own cache from {}, whereas the corrected_t path
+        # below mutates `cache` in place via vision_correct.
+        hI, cI = axis.interleaved_forward(px, px2, ids, tti, pm, tm, groups)
+        txt_I = _generate_from_axis(model, proc, axis, hI, cI, ids, max_new_tokens)
+
+        mixed = torch.where(pm.unsqueeze(-1), axis.vision_prepare(px), axis.vision_prepare(px2))
+        vh_corr, cache = axis.vision_correct(mixed, pm, cache)
+        feats_mixed = torch.where(sel_tok.unsqueeze(-1), axis.project(vh_corr), feats_appr)
+        emb_mixed, _ = axis.llm_prepare(ids, feats_mixed, tti)
+        hA, cache = axis.llm_correct(emb_mixed, tm, ctx, cache)
+        txt_A = _generate_from_axis(model, proc, axis, hA, cache, ids, max_new_tokens)
+
+        h_rel = (hA.float() - hI.float()).abs().max().item() / max(hA.float().abs().max().item(), 1e-9)
+        kv_rel, kv_where = 0.0, -1
+        for li in range(axis.n_llm):
+            for w in ("k", "v"):
+                ta, tb = cache[f"l{li}_{w}"].float(), cI[f"l{li}_{w}"].float()
+                r = (ta - tb).abs().max().item() / max(ta.abs().max().item(), 1e-9)
+                if r > kv_rel:
+                    kv_rel, kv_where = r, li
+        print(f"    parity: hidden={h_rel:.2e} kv={kv_rel:.2e}@l{kv_where} "
+              f"text {'SAME' if txt_A == txt_I else 'DIFFER'}"
+              + ("" if txt_A == txt_I else f"  A={txt_A[:40]!r} I={txt_I[:40]!r}"), flush=True)
+        return txt_A, stats
+
+    if arm == "interleaved":
+        # Same selection as corrected_t, split into `groups` arrival rounds. The walk owns the
+        # whole axis, so it rebuilds its own approximate pass -- the cache above is only used for
+        # the score's attention term.
+        hidden, cache = axis.interleaved_forward(px, px2, ids, tti, pm, tm, groups)
+        stats["groups"] = groups
+        return _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens), stats
 
     # --- vision correction: selected patches recomputed from the full-resolution stream --------- #
     mixed = torch.where(pm.unsqueeze(-1), axis.vision_prepare(px), axis.vision_prepare(px2))
@@ -216,8 +258,12 @@ def main():
     ap.add_argument("--model", default="google/gemma-3-4b-it")
     ap.add_argument("--dataset", default="chartqa")
     ap.add_argument("--arm",
-                    choices=["ceiling", "floor", "corrected", "corrected_j", "corrected_t"],
+                    choices=["ceiling", "floor", "corrected", "corrected_j", "corrected_t",
+                             "interleaved", "parity"],
                     default="ceiling")
+    ap.add_argument("--groups", type=int, default=4,
+                    help="interleaved rounds; the arm corrects the SAME tokens as corrected_t, "
+                         "only split across rounds (verified: g=1 reproduces it bit-exactly)")
     ap.add_argument("--keep", type=float, default=0.55)
     ap.add_argument("--pscore", choices=["energy", "energy_attn"], default="energy_attn",
                     help="standard is residual energy x average attention")
@@ -258,7 +304,7 @@ def main():
         ex = ds[i]
         img, prompt, gold = spec.prepare(ex, lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
         text, stats = run_one(axis, model, proc, img, prompt, a.arm, a.keep, a.level, cap,
-                              patch, dtype, a.device, a.max_new_tokens, a.pscore)
+                              patch, dtype, a.device, a.max_new_tokens, a.pscore, a.groups)
         ok, sc = spec.score(text, gold)
         correct += int(ok); total += sc
         per_sample.append({"idx": i, "gold": gold, "pred": text, "score": sc})

@@ -457,7 +457,11 @@ class Gemma3UnifiedAxis(nn.Module):
                                                  layers=(llm_depth, nxt - n_vis))
                     llm_depth = nxt - n_vis
 
-        return self.llm_finish(emb), cache
+        # Return the PRE-finish hidden state, the same contract as `llm_correct` -- every driver
+        # applies `llm_finish` itself before the lm_head. Returning a finished state here made the
+        # interleaved arm norm twice, which the axis gate could not see because its reference was
+        # finished too: the gate read rel 0.00e+00 while the driver lost 20pp of accuracy.
+        return emb, cache
 
     def _llm_group_mask(self, patch_group, ctx, input_ids, llm_oneshot):
         """This round's LLM-side selection.
