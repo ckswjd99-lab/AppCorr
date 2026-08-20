@@ -112,10 +112,41 @@ class Gemma3UnifiedAxis(nn.Module):
         return self.vt.embeddings(pixel_values)
 
     @torch.no_grad()
-    def vision_approx(self, hidden, cache, layers: Optional[Tuple[int, int]] = None):
+    def _incoming_attention(self, hidden: torch.Tensor, layer_idx: int) -> torch.Tensor:
+        """Column mass of one layer's attention, head- and query-averaged. [B, patches].
+
+        How much the rest of the image reads FROM each patch -- the term the standard patch score
+        multiplies residual energy by. Taken on the approximate pass, from the same projections the
+        layer is about to use, so it costs one extra QK product and no extra weights.
+
+        SigLIP has no CLS token, so the result already lines up with patch indices; InternVL's
+        equivalent has to drop position 0.
+        """
+        layer = self.vision_layers[layer_idx]
+        q, k, _ = layer._qkv(layer.layer_norm1(hidden))
+        scale = layer.self_attn.scale
+        b, heads, seq, _ = q.shape
+        # [B, heads, 4096, 4096] in fp32 would be ~1 GB per head-batch; accumulate in query chunks.
+        col = torch.zeros(b, seq, device=hidden.device, dtype=torch.float32)
+        chunk = 512
+        for s0 in range(0, seq, chunk):
+            e0 = min(s0 + chunk, seq)
+            w = torch.softmax((q[:, :, s0:e0] @ k.transpose(-1, -2)) * scale, dim=-1)
+            col += w.float().sum(dim=2).mean(dim=1)
+        return col / seq
+
+    @torch.no_grad()
+    def vision_approx(self, hidden, cache, layers: Optional[Tuple[int, int]] = None,
+                      collect_attn: bool = False):
         a, b = (0, self.n_vision) if layers is None else layers
+        acc = None
         for i in range(a, b):
+            if collect_attn:
+                c = self._incoming_attention(hidden, i)
+                acc = c if acc is None else acc + c
             hidden, cache = self.vision_layers[i].approx(hidden, cache, f"v{i}")
+        if collect_attn and acc is not None:
+            cache["vision_patch_attn_layermean"] = acc / max(1, b - a)
         return hidden, cache
 
     @torch.no_grad()
