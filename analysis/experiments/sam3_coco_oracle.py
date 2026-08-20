@@ -84,10 +84,26 @@ def l2_from_native(img, level: int = 2) -> "Image.Image":
 
     Short side / 2**level, aspect preserved, area-downsampled. The caller then resizes to the model
     canvas, which is the "only the selected level is scaled" half of the rule.
+
+    **Which comes first depends on the direction**, and the memo above only exercises one half
+    because every dataset it covers is an upscale onto the canvas:
+
+      native < input  -> build the pyramid from the original, then fit to the input. Degrading the
+                         canvas first would only remove information the upscale had just invented,
+                         which is the defect that memo is about.
+      native > input  -> fit to the input FIRST, then build the pyramid. The model never sees more
+                         than IMAGE_SIZE samples per axis, so degrading against a resolution it
+                         cannot use makes the approximation milder than the pipeline's own.
+
+    SA-Co/Gold's `sa1b` is the first case of the second half here: 2089x1500 images against a 1008
+    canvas, 100% of them over, where every other set is under (COCO and LVIS medians 428, the other
+    Gold subsets ~600). Building from native gave an L2 short side of 375 where the rule gives 252 --
+    1.49x too mild -- and it showed up exactly as that predicts, as the one subset whose floor and
+    ceiling were indistinguishable (cgF1 0.5418 vs 0.5394, floor nominally *above* ceiling).
     """
     ow, oh = img.size
     scale = 2 ** level
-    short = min(ow, oh)
+    short = min(min(ow, oh), IMAGE_SIZE)
     target_short = max(1, short // scale)
     if oh <= ow:
         th, tw = target_short, max(1, round(ow / oh * target_short))
