@@ -398,8 +398,10 @@ def main() -> None:
     # (200 images): 0.5631 without presence, 0.5528 with. It costs 1.03pp of a reference that should
     # be as strong as possible, for information the task does not contain -- the same reasoning that
     # picked --det-per-cat on the ceiling arm.
+    # Tokenize directly; see the truncation note in the prompt loop.
+    tokenizer = getattr(processor, "tokenizer", processor)
     # CLIP text encoder position limit, read from the model rather than hardcoded.
-    text_max_len = 32
+    text_max_len = int(getattr(tokenizer, "model_max_length", 32) or 32)
     for attr in ("text_config", "text_model"):
         cfg = getattr(getattr(model, "config", None), attr, None)
         if cfg is not None and getattr(cfg, "max_position_embeddings", None):
@@ -471,14 +473,19 @@ def main() -> None:
                                               args.pscore, args.groups, args.bounds,
                                               args.force_interleaved):
                 for result_id, text, cid in prompts:
-                    # Truncate, do not skip. SAM 3's text encoder is CLIP with
-                    # max_position_embeddings=32 and a handful of SA-Co phrases exceed it -- 5 of
-                    # `crowded`'s 20,687, one of them 34 words, apparently two phrases concatenated
-                    # during annotation merge. Unhandled, a single prompt aborts the whole run.
-                    # Dropping them instead would change which prompts are scored, and cgF1 counts
-                    # every prompt including the negatives, so the scored set must stay the dataset's.
-                    enc = processor(text=text, return_tensors="pt", truncation=True,
-                                    max_length=text_max_len).to(device)
+                    # Truncate at the tokenizer, not the processor. `Sam3Processor.__call__`
+                    # takes **kwargs but does not forward `truncation`/`max_length` to the
+                    # tokenizer, so an over-long prompt passes straight through to a CLIP text
+                    # encoder with max_position_embeddings=32 and raises.
+                    #
+                    # Exactly ONE prompt in all of SA-Co/Gold needs this -- 44 tokens, in
+                    # `crowded`: "a plate of tandoori mixed vegetable a plate of grilled quail a
+                    # plate of shawarma", three phrases run together. One prompt in 15,754 aborts
+                    # the entire run. Truncate rather than skip: cgF1 scores every prompt including
+                    # negatives, so dropping one changes the scored set, and a quietly different
+                    # scored set is worse than one worse answer.
+                    enc = tokenizer(text, return_tensors="pt", truncation=True,
+                                    max_length=text_max_len, padding="max_length").to(device)
                     out = model(pixel_values=px, input_ids=enc["input_ids"],
                                 attention_mask=enc.get("attention_mask"))
                     # SAM 3 splits recognition from localisation: a dedicated presence token says
