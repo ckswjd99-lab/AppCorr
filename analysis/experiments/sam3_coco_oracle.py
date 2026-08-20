@@ -398,6 +398,15 @@ def main() -> None:
     # (200 images): 0.5631 without presence, 0.5528 with. It costs 1.03pp of a reference that should
     # be as strong as possible, for information the task does not contain -- the same reasoning that
     # picked --det-per-cat on the ceiling arm.
+    # CLIP text encoder position limit, read from the model rather than hardcoded.
+    text_max_len = 32
+    for attr in ("text_config", "text_model"):
+        cfg = getattr(getattr(model, "config", None), attr, None)
+        if cfg is not None and getattr(cfg, "max_position_embeddings", None):
+            text_max_len = int(cfg.max_position_embeddings)
+            break
+    print(f"[oracle:{args.path}] text prompts truncated at {text_max_len} tokens", flush=True)
+
     use_presence = (args.presence == "on"
                     or (args.presence == "auto" and bench.name.startswith("saco")))
     print(f"[oracle:{args.path}] presence token: {'on' if use_presence else 'off'} "
@@ -462,7 +471,14 @@ def main() -> None:
                                               args.pscore, args.groups, args.bounds,
                                               args.force_interleaved):
                 for result_id, text, cid in prompts:
-                    enc = processor(text=text, return_tensors="pt").to(device)
+                    # Truncate, do not skip. SAM 3's text encoder is CLIP with
+                    # max_position_embeddings=32 and a handful of SA-Co phrases exceed it -- 5 of
+                    # `crowded`'s 20,687, one of them 34 words, apparently two phrases concatenated
+                    # during annotation merge. Unhandled, a single prompt aborts the whole run.
+                    # Dropping them instead would change which prompts are scored, and cgF1 counts
+                    # every prompt including the negatives, so the scored set must stay the dataset's.
+                    enc = processor(text=text, return_tensors="pt", truncation=True,
+                                    max_length=text_max_len).to(device)
                     out = model(pixel_values=px, input_ids=enc["input_ids"],
                                 attention_mask=enc.get("attention_mask"))
                     # SAM 3 splits recognition from localisation: a dedicated presence token says
