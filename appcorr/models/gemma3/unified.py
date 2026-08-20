@@ -14,12 +14,11 @@ one axis reaches ~76%. This is the VGGT lesson -- there, treating the 24 patch-e
 
 Three things make the axis more than two loops glued together:
 
-**The token identity changes at stage 27.** Vision stages act on 4096 patches; LLM stages act on 277
-sequence positions of which 256 are the pooled image and ~21 are text. A patch selection therefore
-has to be *mapped* across the boundary, not carried. `patch_mask_to_llm_mask` does that mapping in
-one place: Gemma 3 pools 4096 patches to 256 tokens by a 4x4 average
-(`mm_tokens_per_image=256`), so LLM image token `t` covers 16 patches and is marked corrected if any
-of them was.
+**The token identity changes at stage 27, and the two halves get SEPARATE budgets.** Vision stages
+act on 4096 patches; LLM stages act on ~272 positions of which 256 are the pooled image. Translating
+a patch selection into a token selection does not work: each token pools 16 patches, so "corrected
+if any of mine was" saturates -- measured, a 55% patch keep marks 86% of tokens and 10% already marks
+43%. Instead the patch *score* is pooled the same 16:1 way and the LLM half runs its own top-k.
 
 **Text tokens are always exact.** They arrive as text, not pixels, so there is nothing to
 approximate and nothing to correct -- the role VGGT's camera and register tokens play. They are
@@ -73,20 +72,37 @@ class Gemma3UnifiedAxis(nn.Module):
     def n_stages(self) -> int:
         return self.n_vision + self.n_llm
 
-    def patch_mask_to_llm_mask(self, patch_mask: torch.Tensor, seq_len: int,
-                               image_positions: torch.Tensor) -> torch.Tensor:
-        """[B, 4096] over patches -> [B, seq_len] over LLM positions.
-
-        Gemma 3 pools 4096 patches to `mm_tokens_per_image` (256) image tokens, so each LLM image
-        token covers 4096/256 = 16 patches; it counts as corrected if ANY of its patches was. Text
-        positions are never selected -- they were never approximated.
-        """
-        b, n_patch = patch_mask.shape
+    def pool_patch_score(self, patch_score: torch.Tensor) -> torch.Tensor:
+        """[B, 4096] patch scores -> [B, 256] image-token scores, by the same 16:1 pooling."""
+        b, n_patch = patch_score.shape
         n_img_tok = int(self.cfg.mm_tokens_per_image)
-        per = n_patch // n_img_tok
-        pooled = patch_mask.reshape(b, n_img_tok, per).any(dim=-1)      # [B, 256]
-        out = torch.zeros(b, seq_len, dtype=torch.bool, device=patch_mask.device)
-        out[:, image_positions] = pooled
+        return patch_score.reshape(b, n_img_tok, n_patch // n_img_tok).mean(dim=-1)
+
+    def llm_mask_from_score(self, patch_score: torch.Tensor, keep: float, seq_len: int,
+                            image_positions: torch.Tensor) -> torch.Tensor:
+        """Select image tokens on their OWN budget, from pooled scores. [B, seq_len].
+
+        Do NOT translate the patch selection across the boundary. Each image token pools 16 patches,
+        so "corrected if any of my patches was" saturates: measured on 20 RealWorldQA images with the
+        real residual-energy score, a 55% patch keep marks **219.8 of 256** tokens (86%), and 10%
+        already marks 109.6. Real scores do cluster -- 0.52x the tokens a uniformly random selection
+        of the same size would touch, at 10% -- but nowhere near the 26 tokens an ideally clustered
+        selection needs. Under `any()` nothing saved in the vision half reaches the LLM half.
+
+        The two halves simply have different units (4096 patches vs 256 tokens), so they get
+        different budgets, and `keep` here means what it says. It also becomes a knob worth having:
+        the vision tower and the prefill need not be equally sensitive to approximation.
+
+        Text positions are never selected -- they arrive as text, were never approximated, and
+        spending budget on them would recompute tokens that are already exact.
+        """
+        pooled = self.pool_patch_score(patch_score)                    # [B, 256]
+        b, n_tok = pooled.shape
+        k = max(1, int(round(keep * n_tok)))
+        idx = pooled.topk(k, dim=-1).indices
+        sel = torch.zeros_like(pooled, dtype=torch.bool).scatter_(1, idx, True)
+        out = torch.zeros(b, seq_len, dtype=torch.bool, device=patch_score.device)
+        out[:, image_positions] = sel
         return out
 
     # --- vision half --------------------------------------------------------------------------- #
