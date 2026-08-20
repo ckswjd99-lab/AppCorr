@@ -93,59 +93,86 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
                                    return_dict=True, return_tensors="pt")["pixel_values"].to(device, dtype)
     assert px2.shape == px.shape, f"degradation changed the input shape: {px.shape} vs {px2.shape}"
 
-    vh, cache = axis.vision_approx(axis.vision_prepare(px2), {},
-                                   collect_attn=(arm != "floor" and pscore == "energy_attn"))
-    emb, ctx = axis.llm_prepare(ids, axis.project(vh), tti)
+    # --- approximate pass over the WHOLE axis, on the approximate image ----------------------- #
+    # The cache every correction reads from has to be built here, on the approximate input. Rebuilding
+    # it on corrected features (as an earlier version did) makes the "approximate" state depend on
+    # the correction, and then partial correction has no baseline to reconstruct untouched positions
+    # from.
+    vh_appr, cache = axis.vision_approx(axis.vision_prepare(px2), {},
+                                        collect_attn=(arm != "floor" and pscore == "energy_attn"))
+    feats_appr = axis.project(vh_appr)
+    emb_appr, ctx = axis.llm_prepare(ids, feats_appr, tti)
     n_img = ctx["image_positions"].numel()
+    _, cache = axis.llm_approx(emb_appr, ctx, cache)
     stats = {"image_tokens": int(n_img)}
 
-    if arm != "floor":
-        # Standard patch score: residual energy x average attention, each normalised to unit mean
-        # first. Energy alone says only where the degraded image differs from the real one; it is
-        # blind to whether the model reads from there.
-        score = patch_energy(px, px2, patch)
-        if pscore == "energy_attn":
-            attn = cache.get("vision_patch_attn_layermean")
-            if attn is None:
-                raise RuntimeError("energy_attn requested but no attention was collected")
-            score = (score / score.mean().clamp_min(1e-12)) * \
-                    (attn / attn.mean().clamp_min(1e-12)).to(score.device)
-        n_patch = score.shape[1]
-        pk = max(1, int(round(keep * n_patch)))
-        pm = torch.zeros_like(score, dtype=torch.bool).scatter_(
-            1, score.topk(pk, dim=-1).indices, True)
-        if arm == "corrected_j":
-            # JOINT, vision-driven: translate the patch selection up across the projector. A token
-            # counts as corrected if ANY of its 16 patches was, so most selected tokens are only
-            # partly refreshed -- recomputed from a mixture of fresh and approximate patches.
-            pooled = axis.patch_mask_any_to_token(pm)
-            tm = torch.zeros(ids.shape[0], ids.shape[1], dtype=torch.bool, device=device)
-            tm[:, ctx["image_positions"]] = pooled
-        elif arm == "corrected_t":
-            # JOINT, token-driven: pick tokens first from the pooled score, then correct exactly
-            # the 16 patches each one owns. Every selected token is therefore FULLY refreshed,
-            # which is the direct test of why `corrected_j` might be losing -- coherence, not count.
-            pooled = axis.pool_patch_score(score)
-            tk = max(1, int(round(keep * n_img)))
-            sel = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
-                1, pooled.topk(tk, dim=-1).indices, True)
-            pm = axis.token_mask_to_patch_mask(sel, n_patch)
-            tm = torch.zeros(ids.shape[0], ids.shape[1], dtype=torch.bool, device=device)
-            tm[:, ctx["image_positions"]] = sel
-        else:
-            tm = axis.llm_mask_from_score(score, keep, ids.shape[1], ctx["image_positions"])
-        stats["patches_corrected"] = int(pm.sum())
-        stats["llm_tokens_corrected"] = int(tm.sum())
+    if arm == "floor":
+        hidden, _ = axis.llm_approx(emb_appr, ctx, dict(cache))
+        return _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens), stats
 
-        # Corrected patches are recomputed from the FULL-resolution stream so the residual actually
-        # enters the model; the rest stay on the approximate one.
-        mixed = torch.where(pm.unsqueeze(-1), axis.vision_prepare(px), axis.vision_prepare(px2))
-        vh, cache = axis.vision_correct(mixed, pm, dict(cache))
-        emb, ctx = axis.llm_prepare(ids, axis.project(vh), tti)
-        emb, cache = axis.llm_approx(emb, ctx, cache)
-        hidden, cache = axis.llm_correct(emb, tm, ctx, cache)
+    score = patch_energy(px, px2, patch)
+    if pscore == "energy_attn":
+        attn = cache.get("vision_patch_attn_layermean")
+        if attn is None:
+            raise RuntimeError("energy_attn requested but no attention was collected")
+        score = (score / score.mean().clamp_min(1e-12)) * \
+                (attn / attn.mean().clamp_min(1e-12)).to(score.device)
+
+    n_patch = score.shape[1]
+    pk = max(1, int(round(keep * n_patch)))
+    pm = torch.zeros_like(score, dtype=torch.bool).scatter_(
+        1, score.topk(pk, dim=-1).indices, True)
+
+    if arm == "corrected_j":
+        sel_tok = axis.patch_mask_any_to_token(pm)
+    elif arm == "corrected_t":
+        pooled = axis.pool_patch_score(score)
+        tk = max(1, int(round(keep * n_img)))
+        sel_tok = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
+            1, pooled.topk(tk, dim=-1).indices, True)
+        pm = axis.token_mask_to_patch_mask(sel_tok, n_patch)
     else:
-        hidden, cache = axis.llm_approx(emb, ctx, cache)
+        pooled = axis.pool_patch_score(score)
+        tk = max(1, int(round(keep * n_img)))
+        sel_tok = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
+            1, pooled.topk(tk, dim=-1).indices, True)
+
+    tm = torch.zeros(ids.shape[0], ids.shape[1], dtype=torch.bool, device=device)
+    tm[:, ctx["image_positions"]] = sel_tok
+    # Text positions join the FINAL correction. They were never approximated, but they ATTEND to the
+    # image tokens, so their values change when those are corrected -- and the answer is read off
+    # the last position, which is text. Leaving them out gave correction no path to the output at
+    # all: every corrected arm scored exactly the floor, and the last-position hidden state differed
+    # from the approximate one by 0.0098.
+    #
+    # Only the final round needs them: text is causal and sits after the image block, so one
+    # correction against the fully-corrected K/V is enough -- correcting text every round would cost
+    # g times as much for an intermediate state nothing reads.
+    is_text = torch.ones(ids.shape[0], ids.shape[1], dtype=torch.bool, device=device)
+    is_text[:, ctx["image_positions"]] = False
+    tm = tm | is_text
+    stats["text_tokens_corrected"] = int(is_text.sum())
+    stats["patches_corrected"] = int(pm.sum())
+    stats["llm_tokens_corrected"] = int(tm.sum())
+    stats["tokens_whose_block_changed"] = int(axis.patch_mask_any_to_token(pm).sum())
+
+    # --- vision correction: selected patches recomputed from the full-resolution stream --------- #
+    mixed = torch.where(pm.unsqueeze(-1), axis.vision_prepare(px), axis.vision_prepare(px2))
+    vh_corr, cache = axis.vision_correct(mixed, pm, cache)
+
+    # --- the LLM input carries corrected features ONLY at the selected tokens ------------------- #
+    # This is the step that was missing. Pooling is 4x4, so vision correction changes essentially
+    # every image token's feature; feeding all of them to the LLM means the LLM half was fully
+    # recomputed no matter what its budget said. Mixing per token is what makes the LLM budget mean
+    # anything -- and it is the same rule the vision half follows: the stream carries corrected
+    # values exactly where correction happened.
+    feats_corr = axis.project(vh_corr)
+    feats_mixed = torch.where(sel_tok.unsqueeze(-1), feats_corr, feats_appr)
+    emb_mixed, _ = axis.llm_prepare(ids, feats_mixed, tti)
+    # Keep the corrected cache: generation decodes on top of it. Passing a copy and discarding the
+    # result left every token after the first to be produced from the APPROXIMATE K/V, so even a
+    # keep=1.0 run -- which must reproduce the exact forward by definition -- could not.
+    hidden, cache = axis.llm_correct(emb_mixed, tm, ctx, cache)
 
     text = _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens)
     return text, stats

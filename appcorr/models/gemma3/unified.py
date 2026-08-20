@@ -57,6 +57,7 @@ class Gemma3UnifiedAxis(nn.Module):
         self.llm_layers = nn.ModuleList(
             ApproxCorrectGemma3DecoderLayer.from_stock(l) for l in lm.layers)
         self.cfg = model.config
+        self._last_seq_len = None
 
     # --- geometry ------------------------------------------------------------------------------ #
 
@@ -187,9 +188,31 @@ class Gemma3UnifiedAxis(nn.Module):
             cache["vision_patch_attn_layermean"] = acc / max(1, b - a)
         return hidden, cache
 
+    @staticmethod
+    def _check_entry(x, cache, tag, what):
+        """The entry tensor of a correction walk must be the layer-0 input the approx walk saw.
+
+        Only at layer 0: from layer 1 on, `correct` legitimately carries a *corrected* running state
+        that differs from what approx saw, so checking per layer is wrong (it fired on legitimate
+        corrections). The mistake worth catching is handing the whole walk the approximate pass's
+        OUTPUT -- a 34-layer-deep hidden state fed back into layer 0. That runs, returns plausible
+        numbers, and passed every gate that called the API correctly; a driver did exactly it.
+        """
+        sig = cache.get(f"{tag}_in_sig")
+        if sig is None:
+            return
+        got = (float(x.float().mean()), float(x.float().std()), tuple(x.shape))
+        if got[2] != sig[2] or abs(got[1] - sig[1]) > 0.25 * max(abs(sig[1]), 1e-6):
+            raise RuntimeError(
+                f"{what}_correct got an entry tensor this cache was not built from: approx saw "
+                f"mean/std/shape {sig}, got {got}. Pass the same layer-0 input approx received "
+                f"(the mixed stream), not the approximate pass's output.")
+
     @torch.no_grad()
     def vision_correct(self, hidden, patch_mask, cache, layers: Optional[Tuple[int, int]] = None):
         a, b = (0, self.n_vision) if layers is None else layers
+        if a == 0:
+            self._check_entry(hidden, cache, "v0", "vision")
         for i in range(a, b):
             hidden, cache = self.vision_layers[i].correct(hidden, patch_mask, cache, f"v{i}")
         return hidden, cache
@@ -235,6 +258,7 @@ class Gemma3UnifiedAxis(nn.Module):
             attention_mask=torch.ones_like(input_ids), past_key_values=None,
             position_ids=position_ids,
             block_sequence_ids=get_block_sequence_ids_for_mask(token_type_ids, device=emb.device))
+        self._last_seq_len = int(n)
         ctx = {"pe": pe, "masks": masks, "position_ids": position_ids, "image_positions": img_pos}
         return emb, ctx
 
@@ -254,6 +278,8 @@ class Gemma3UnifiedAxis(nn.Module):
     @torch.no_grad()
     def llm_correct(self, hidden, token_mask, ctx, cache, layers: Optional[Tuple[int, int]] = None):
         a, b = (0, self.n_llm) if layers is None else layers
+        if a == 0:
+            self._check_entry(hidden, cache, "l0", "llm")
         for i in range(a, b):
             pe, m = self._layer_ctx(i, ctx)
             hidden, cache = self.llm_layers[i].correct(hidden, token_mask, pe, m, cache, f"l{i}")
@@ -262,6 +288,162 @@ class Gemma3UnifiedAxis(nn.Module):
     @torch.no_grad()
     def llm_finish(self, hidden: torch.Tensor) -> torch.Tensor:
         return self.lm.norm(hidden)
+
+    # --- interleaved scheduling ------------------------------------------------------------------ #
+
+    def stage_costs(self) -> torch.Tensor:
+        """Relative cost of each of the 61 stages, for the interleaved cost model.
+
+        Counting stages would be wrong: a vision layer processes 4096 tokens at width 1152 and an
+        LLM layer 272 at width 2560, so they are not interchangeable units. Cost is taken as
+        tokens x width^2 (the projection/MLP term dominates at these shapes), normalised so the
+        whole axis sums to 1. Measured wall clock agrees with the ratio this gives -- vision 9.39 ms
+        against LLM 16.96 ms -- which is the check that matters, since the formula is a proxy.
+        """
+        v = self.cfg.vision_config
+        n_patch = int(v.image_size // v.patch_size) ** 2
+        cv = n_patch * v.hidden_size ** 2
+        t = self.cfg.text_config
+        n_tok = self._last_seq_len or int(self.cfg.mm_tokens_per_image)
+        cl = n_tok * t.hidden_size ** 2
+        costs = torch.tensor([cv] * self.n_vision + [cl] * self.n_llm, dtype=torch.float64)
+        return costs / costs.sum()
+
+    def layer_bounds(self, groups: int) -> list:
+        """Round boundaries over the 61-stage axis, split by equal COST rather than equal count.
+
+        Equal stage counts would give the early rounds far too little work: the 27 vision stages are
+        cheaper per stage than the 34 LLM ones here. The last bound is always the full axis.
+        """
+        if groups <= 1:
+            return [self.n_stages]
+        cum = torch.cumsum(self.stage_costs(), 0)
+        bounds = []
+        for r in range(1, groups):
+            target = r / groups
+            b = int(torch.searchsorted(cum, torch.tensor(target, dtype=torch.float64)).item()) + 1
+            bounds.append(max(1, min(b, self.n_stages - 1)))
+        bounds = sorted(set(bounds))
+        while len(bounds) < groups - 1:                    # keep g distinct rounds
+            for cand in range(1, self.n_stages):
+                if cand not in bounds:
+                    bounds.append(cand); break
+            bounds = sorted(set(bounds))
+        return bounds + [self.n_stages]
+
+    def spatial_groups(self, selected_patches: torch.Tensor, groups: int) -> list:
+        """Split the SELECTED patches into `groups` contiguous spatial blocks. [B, n_patch] bool.
+
+        Selection and grouping are deliberately separate. Selection stays free -- the top-k patches
+        by score, wherever they are -- because forcing patches to follow token blocks costs more
+        than it buys (measured: the token-driven arm trails the free one by 13pp). Grouping then
+        only decides the ORDER those already-chosen patches arrive in, which is what interleaving
+        schedules.
+
+        Blocks are rows of the patch grid, so a group is a contiguous horizontal band -- the
+        block_grid shape that beat dispersed grids on ADE20K.
+        """
+        pps, _, _ = self.patch_grid()
+        b, n_patch = selected_patches.shape
+        rows = torch.arange(n_patch, device=selected_patches.device) // pps
+        edges = torch.linspace(0, pps, groups + 1).round().long()
+        out = []
+        for r in range(groups):
+            band = (rows >= edges[r]) & (rows < edges[r + 1])
+            out.append(selected_patches & band.unsqueeze(0))
+        return out
+
+    # --- interleaved walk ------------------------------------------------------------------------ #
+
+    @torch.no_grad()
+    def interleaved_forward(self, px_full, px_approx, input_ids, token_type_ids,
+                            patch_selection, llm_oneshot, groups):
+        """Walk the 61-stage axis in `groups` rounds, correcting one group per round.
+
+        Follows docs/memo/interleaved_correction_contract.md. The three rules that are easy to break,
+        and what they mean on an axis with a projector in the middle:
+
+        **A round corrects its OWN group.** Never the accumulated arrived set -- that makes the last
+        round equal one-shot and inverts the cost claim. Earlier groups stay corrected because their
+        K/V is cached, their increment was persisted, and the approximate pass over the next stage
+        range carried them forward.
+
+        **The stream is cumulative even though the corrected set is not.** For vision that means
+        full-resolution patch embeddings at every ARRIVED patch. For the LLM half there is nothing to
+        construct: its input is the projector's output, and the projector runs on a vision hidden
+        state that is already corrected exactly as far as the arrivals go. Re-projecting each round
+        is what keeps the two consistent -- building an LLM-side stream by hand would be inventing a
+        quantity the model never has.
+
+        **The opening pass is pure approximate.** Nothing has arrived at stage 0.
+        """
+        n_vis = self.n_vision
+        bounds = self.layer_bounds(groups)
+        groups_p = self.spatial_groups(patch_selection, groups)
+
+        x_appr = self.vision_prepare(px_approx)
+        x_full = self.vision_prepare(px_full)
+
+        def vision_stream(arrived: torch.Tensor) -> torch.Tensor:
+            return torch.where(arrived.unsqueeze(-1), x_full, x_appr)
+
+        # Opening approximate pass, up to the first bound.
+        cache: Dict[str, Any] = {}
+        v_end = min(bounds[0], n_vis)
+        vh, cache = self.vision_approx(x_appr, cache, layers=(0, v_end))
+        emb, ctx = (None, None)
+        if bounds[0] > n_vis:
+            emb, ctx = self.llm_prepare(input_ids, self.project(vh), token_type_ids)
+            emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, bounds[0] - n_vis))
+
+        arrived = torch.zeros_like(patch_selection)
+        prev = bounds[0]
+        for r in range(groups):
+            arrived = arrived | groups_p[r]
+            stream = vision_stream(arrived)
+
+            # Correct THIS round's group over everything walked so far.
+            depth = min(prev, n_vis)
+            if groups_p[r].any() and depth > 0:
+                vh, cache = self.vision_correct(stream, groups_p[r], cache, layers=(0, depth))
+            if prev > n_vis:
+                emb, ctx = self.llm_prepare(input_ids, self.project(vh), token_type_ids)
+                tm = self._llm_group_mask(groups_p[r], ctx, input_ids, llm_oneshot)
+                emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, 0))   # ctx refresh only
+                emb, cache = self.llm_correct(emb, tm, ctx, cache, layers=(0, prev - n_vis))
+
+            # Advance the approximate frontier to the next bound.
+            nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
+            if prev < n_vis:
+                vh, cache = self.vision_approx(vh, cache, layers=(prev, min(nxt, n_vis)))
+            if nxt > n_vis:
+                if emb is None or prev <= n_vis:
+                    emb, ctx = self.llm_prepare(input_ids, self.project(vh), token_type_ids)
+                    emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, nxt - n_vis))
+                else:
+                    emb, cache = self.llm_approx(emb, ctx, cache,
+                                                 layers=(prev - n_vis, nxt - n_vis))
+            prev = nxt
+
+        return self.llm_finish(emb), cache
+
+    def _llm_group_mask(self, patch_group, ctx, input_ids, llm_oneshot):
+        """This round's LLM-side selection.
+
+        The LLM budget is the SAME set one-shot would correct (`llm_oneshot`, chosen by its own
+        top-k on the pooled score); interleaving only decides WHEN each of those tokens is done.
+        A token belongs to the round whose patch group touches it, so the union over rounds is
+        exactly the one-shot set -- which is coverage rule 4, and what makes `g=1` an identity
+        rather than an approximation.
+
+        Recomputing the budget per round instead would let the rounds correct more tokens in total
+        than one-shot and quietly make interleaving look better by doing more work.
+        """
+        touched = self.patch_mask_any_to_token(patch_group)
+        out = torch.zeros(input_ids.shape[0], input_ids.shape[1], dtype=torch.bool,
+                          device=input_ids.device)
+        out[:, ctx["image_positions"]] = touched
+        return out & llm_oneshot
 
     # --- whole axis ----------------------------------------------------------------------------- #
 
