@@ -420,12 +420,17 @@ class Gemma3UnifiedAxis(nn.Module):
 
             # --- and over the LLM stages walked so far ---
             if llm_depth > 0:
-                arrived_t = arrived_t | self.patch_mask_any_to_token(groups_p[r])
+                # The tokens this round corrects, and therefore the tokens whose features enter the
+                # LLM stream, are the SAME set: this group's touched tokens intersected with the
+                # one-shot budget. Letting `arrived_t` track raw touched tokens instead would feed
+                # corrected features for tokens that were never corrected, and would break g=1
+                # identity -- the mix mask (222 tokens) would not match the correction mask (141).
+                this_round = (self.patch_mask_any_to_token(groups_p[r])
+                              & llm_oneshot[:, ctx["image_positions"]])
+                arrived_t = arrived_t | this_round
                 tm = torch.zeros(input_ids.shape[0], input_ids.shape[1], dtype=torch.bool,
                                  device=input_ids.device)
-                tm[:, ctx["image_positions"]] = (
-                    self.patch_mask_any_to_token(groups_p[r])
-                    & llm_oneshot[:, ctx["image_positions"]])
+                tm[:, ctx["image_positions"]] = this_round
                 if last:
                     is_text = torch.ones_like(tm)
                     is_text[:, ctx["image_positions"]] = False

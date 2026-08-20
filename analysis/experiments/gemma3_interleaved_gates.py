@@ -66,8 +66,13 @@ def main():
         pm = torch.zeros_like(score, dtype=torch.bool).scatter_(
             1, score.topk(pk, dim=-1).indices, True)
 
+        # The approximate pass over the WHOLE axis, on the approximate image. This is the cache
+        # every correction reads from -- both halves of it. An earlier version of this gate built
+        # only the vision half and then asked llm_correct for `l0_k`.
         vh, cache = axis.vision_approx(axis.vision_prepare(px2), {})
-        emb, ctx = axis.llm_prepare(ids, axis.project(vh), tti)
+        feats_appr = axis.project(vh)
+        emb, ctx = axis.llm_prepare(ids, feats_appr, tti)
+        _, cache = axis.llm_approx(emb, ctx, cache)
         llm_oneshot = axis.llm_mask_from_score(score, a.keep, ids.shape[1], ctx["image_positions"])
         print(f"  {axis.n_vision}+{axis.n_llm}={axis.n_stages} stages; "
               f"patches {int(pm.sum())}/{n_patch}, llm tokens {int(llm_oneshot.sum())}")
@@ -88,11 +93,19 @@ def main():
         ok &= txt == 0
 
         # --- 2: g=1 identity against the one-shot path ---
+        # One-shot reference, built the way the driver builds it -- and the way the entry guard
+        # insists on: `correct` gets the layer-0 input, the LLM stream is MIXED against the purely
+        # approximate projection, and text joins the correction. An earlier version of this gate
+        # made the same mistake the driver did (feeding the approximate pass's output back into
+        # layer 0), which is what the `g=1` failure at rel 6.6e-01 was actually measuring.
         mixed = torch.where(pm.unsqueeze(-1), axis.vision_prepare(px), axis.vision_prepare(px2))
-        vh1, c1 = axis.vision_correct(mixed, pm, dict(cache))
-        emb1, ctx1 = axis.llm_prepare(ids, axis.project(vh1), tti)
-        emb1, c1 = axis.llm_approx(emb1, ctx1, c1)
-        h1, _ = axis.llm_correct(emb1, llm_oneshot, ctx1, c1)
+        vh1, c1 = axis.vision_correct(mixed, pm, dict(cache))   # copy: keeps `cache` pristine
+        sel_tok = llm_oneshot[:, ctx["image_positions"]]
+        feats_mixed = torch.where(sel_tok.unsqueeze(-1), axis.project(vh1), feats_appr)
+        emb1, _ = axis.llm_prepare(ids, feats_mixed, tti)
+        is_text = torch.ones_like(llm_oneshot)
+        is_text[:, ctx["image_positions"]] = False
+        h1, _ = axis.llm_correct(emb1, llm_oneshot | is_text, ctx, c1)
         ref = axis.llm_finish(h1)
 
         hI, _ = axis.interleaved_forward(px, px2, ids, tti, pm, llm_oneshot, 1)
