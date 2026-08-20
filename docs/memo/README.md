@@ -8,6 +8,12 @@ produced them.
 
 ## Index
 
+- [sam3_summary.md](sam3_summary.md) — **start here for SAM 3.** All six full-set measurements in
+  one table: 55% token recompute preserves 97-100% of the exact forward at 0.60x correction compute,
+  across a 54x range in how much damage there is to repair. Also: why preservation leads over
+  recovery, why interleaving is cheaper rather than better, that object size in *L2 pixels* is the
+  only predictor of damage, and why partial recompute works (recognition survives the approximation;
+  only edges need repair).
 - [sam3_saco_gold_results.md](sam3_saco_gold_results.md) — SAM 3's own benchmark, scored by cgF1,
   the only one here that asks about ABSENT concepts. Three subsets spanning 18x in object size.
   cgF1's factorisation separates mask quality from recognition and shows recognition is immune to

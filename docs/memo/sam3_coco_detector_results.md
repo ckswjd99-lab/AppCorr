@@ -40,9 +40,16 @@ comparison holds), and its absolute value must not be placed next to SAM 3's pub
 | **interleaved g=4, `pre_global`** | **0.5020** | 0.7632 | 0.5452 | 0.3377 | 0.5412 | 0.6745 | **90.5%** | **0.60x** |
 | ceiling | 0.5092 | 0.7694 | 0.5544 | 0.3462 | 0.5505 | 0.6794 | 100% | — |
 
-Gap is 0.0761 AP. **`pre_global` beats one-shot by 1.3pp of recovery at 0.60x the correction
-compute** — the same direction the tracker path showed in feature space (0.4642 vs 0.4664 rel-L2),
-here large enough to see in the task metric.
+Gap is 0.0761 AP. **Preservation** — `arm / ceiling`, the figure to lead with — is 85.1% at the
+floor, 98.4% for one-shot and **98.6%** for `pre_global`; see `sam3_summary.md` for why preservation
+is primary.
+
+`pre_global` is 1.3pp ahead of one-shot *in recovery* here, and a note in an earlier version of this
+memo called that non-coincidental because it agreed with the tracker path's feature-space L2.
+**That reading did not survive.** LVIS reverses the sign and SA-Co `crowded` reverses it further; in
+preservation, which does not divide by the gap, the two arms are 98.4% and 98.6% — a 0.2pp
+difference. Across all six full-set measurements they stay within 0.5pp of each other. The claim is
+equal accuracy at 0.60x the correction compute, in both directions.
 
 ## Detection is harder to approximate than outlining
 

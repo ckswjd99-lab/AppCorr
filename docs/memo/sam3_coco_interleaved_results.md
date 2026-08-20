@@ -21,7 +21,10 @@ Produced by `scripts/sam3_full_coco.sh` and `scripts/sam3_full_coco_inter.sh` on
 | **interleaved g=4, `pre_global`** | **0.5961** | 0.8759 | 0.4453 | 0.6540 | 0.7447 | **92.3%** | **0.60x** | **15.3 min** |
 | ceiling (exact forward) | 0.6010 | 0.8772 | 0.4529 | 0.6587 | 0.7465 | 100% | — | 7.0 min |
 
-Recovery is `(arm - floor) / (ceiling - floor)`; the gap is 0.0635 AP.
+Recovery is `(arm - floor) / (ceiling - floor)`; the gap is 0.0635 AP. **Preservation** -- the
+fraction of the exact forward that survives, `arm / ceiling`, and the figure to lead with -- is
+89.4% at the floor and **99.2%** for `pre_global`. See `sam3_summary.md` for why preservation is
+primary: recovery divides by the gap, and how wide the gap is belongs to the dataset.
 
 **The headline: `pre_global` matches one-shot to four decimals (0.5961 vs 0.5961) at 0.60x the
 correction compute and 0.69x the wall clock.** Interleaving is not more accurate — it is the same
@@ -113,7 +116,9 @@ carried full resolution at tokens that had not arrived yet, which is what produc
 
 ## Not measured
 
-- The detector path (`Sam3Model`) — oracle only (0.5496 at 500 images); no floor/corrected arms. Its
-  `--det-score-thresh 0.3` is arbitrary and emits 2.2x more predictions than there are GT boxes.
 - Keep ratios other than 55%.
 - `g` other than 1 and 4 on the full set.
+
+(The detector path was listed here as unmeasured; it has since been run in full --
+`sam3_coco_detector_results.md` -- and its arbitrary `--det-score-thresh 0.3` replaced by a
+top-k readout chosen on the ceiling arm.)
