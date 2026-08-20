@@ -114,12 +114,11 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
         pk = max(1, int(round(keep * n_patch)))
         pm = torch.zeros_like(score, dtype=torch.bool).scatter_(
             1, score.topk(pk, dim=-1).indices, True)
-        per = n_patch // n_img
         if arm == "corrected_j":
             # JOINT, vision-driven: translate the patch selection up across the projector. A token
             # counts as corrected if ANY of its 16 patches was, so most selected tokens are only
             # partly refreshed -- recomputed from a mixture of fresh and approximate patches.
-            pooled = pm.reshape(pm.shape[0], n_img, per).any(-1)
+            pooled = axis.patch_mask_any_to_token(pm)
             tm = torch.zeros(ids.shape[0], ids.shape[1], dtype=torch.bool, device=device)
             tm[:, ctx["image_positions"]] = pooled
         elif arm == "corrected_t":
@@ -130,7 +129,7 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
             tk = max(1, int(round(keep * n_img)))
             sel = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
                 1, pooled.topk(tk, dim=-1).indices, True)
-            pm = sel.unsqueeze(-1).expand(-1, -1, per).reshape(pm.shape[0], n_patch).contiguous()
+            pm = axis.token_mask_to_patch_mask(sel, n_patch)
             tm = torch.zeros(ids.shape[0], ids.shape[1], dtype=torch.bool, device=device)
             tm[:, ctx["image_positions"]] = sel
         else:

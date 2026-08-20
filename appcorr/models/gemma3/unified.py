@@ -72,11 +72,49 @@ class Gemma3UnifiedAxis(nn.Module):
     def n_stages(self) -> int:
         return self.n_vision + self.n_llm
 
+    def patch_grid(self) -> Tuple[int, int, int]:
+        """(patches per side, tokens per side, pooling kernel) -- 64, 16, 4 on Gemma 3 4B."""
+        v = self.cfg.vision_config
+        pps = int(v.image_size // v.patch_size)
+        tps = int(self.cfg.mm_tokens_per_image ** 0.5)
+        return pps, tps, pps // tps
+
+    def patch_to_token(self) -> torch.Tensor:
+        """[n_patch] -> the image-token index each patch belongs to.
+
+        Gemma 3 pools with `AvgPool2d(kernel_size=4, stride=4)` over the 64x64 patch GRID, so an
+        image token owns a 4x4 spatial BLOCK of patches -- not 16 consecutive patches in raster
+        order. Grouping by `reshape(256, 16)` picks a 16x1 strip instead and lands only 6.2% of
+        patches in the right token, which is close enough to random to be worse than useless while
+        still producing plausible numbers.
+        """
+        pps, tps, k = self.patch_grid()
+        idx = torch.arange(pps * pps)
+        r, c = idx // pps, idx % pps
+        return (r // k) * tps + (c // k)
+
     def pool_patch_score(self, patch_score: torch.Tensor) -> torch.Tensor:
-        """[B, 4096] patch scores -> [B, 256] image-token scores, by the same 16:1 pooling."""
-        b, n_patch = patch_score.shape
-        n_img_tok = int(self.cfg.mm_tokens_per_image)
-        return patch_score.reshape(b, n_img_tok, n_patch // n_img_tok).mean(dim=-1)
+        """[B, n_patch] patch scores -> [B, n_token] token scores, by Gemma 3's own 4x4 pooling."""
+        b = patch_score.shape[0]
+        n_tok = int(self.cfg.mm_tokens_per_image)
+        p2t = self.patch_to_token().to(patch_score.device)
+        out = torch.zeros(b, n_tok, device=patch_score.device, dtype=patch_score.dtype)
+        out.index_add_(1, p2t, patch_score)
+        return out / (patch_score.shape[1] / n_tok)
+
+    def token_mask_to_patch_mask(self, token_sel: torch.Tensor, n_patch: int) -> torch.Tensor:
+        """[B, n_token] -> [B, n_patch]: every patch of a selected token, by the same 4x4 blocks."""
+        p2t = self.patch_to_token().to(token_sel.device)
+        return token_sel[:, p2t]
+
+    def patch_mask_any_to_token(self, patch_mask: torch.Tensor) -> torch.Tensor:
+        """[B, n_patch] -> [B, n_token]: token selected if ANY patch of its 4x4 block was."""
+        b = patch_mask.shape[0]
+        n_tok = int(self.cfg.mm_tokens_per_image)
+        p2t = self.patch_to_token().to(patch_mask.device)
+        counts = torch.zeros(b, n_tok, device=patch_mask.device, dtype=torch.int32)
+        counts.index_add_(1, p2t, patch_mask.to(torch.int32))
+        return counts > 0
 
     def llm_mask_from_score(self, patch_score: torch.Tensor, keep: float, seq_len: int,
                             image_positions: torch.Tensor) -> torch.Tensor:
