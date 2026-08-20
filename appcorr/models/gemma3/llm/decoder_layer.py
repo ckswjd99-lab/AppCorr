@@ -114,6 +114,8 @@ class ApproxCorrectGemma3DecoderLayer(nn.Module):
         cache_feature[f"{tag}_k"] = k
         cache_feature[f"{tag}_v"] = v
         cache_feature[f"{tag}_blocks_out_sum"] = attn_out + mlp_out
+        cache_feature[f"{tag}_in_sig"] = (float(x.float().mean()), float(x.float().std()),
+                                          tuple(x.shape))
         return x + attn_out + mlp_out, cache_feature
 
     @torch.no_grad()
