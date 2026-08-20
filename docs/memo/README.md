@@ -8,6 +8,11 @@ produced them.
 
 ## Index
 
+- [sam3_saco_gold_results.md](sam3_saco_gold_results.md) — SAM 3's own benchmark, scored by cgF1,
+  the only one here that asks about ABSENT concepts. Three subsets spanning 18x in object size.
+  cgF1's factorisation separates mask quality from recognition and shows recognition is immune to
+  the approximation (IL_MCC −0.1% to −1.1%), which is why partial recompute works at all. Also:
+  four harness/evaluator faults COCO and LVIS could not expose, and the pyramid-direction rule.
 - [sam3_lvis_results.md](sam3_lvis_results.md) — full LVIS v1 val (19,626 images, 1203 categories),
   four arms. The approximation costs 2.4x more here than on COCO tracker (26.9% vs 10.6%) and 55%
   recompute still returns ~90% of it: **a harder dataset does not need a higher keep ratio**. Rarity
