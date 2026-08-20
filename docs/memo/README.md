@@ -8,6 +8,12 @@ produced them.
 
 ## Index
 
+- [internvl_tile_pipelining.md](internvl_tile_pipelining.md) — **the boundary of the method.**
+  InternVL3's tiles are encoder-independent and its LLM is causal over contiguous per-tile blocks, so
+  tile-by-tile streaming is lossless (verified: encoder rel 0.000e+00, chunked prefill rel 1.24e-05)
+  and approx-then-correct buys nothing there. Includes the model-by-model table of which families can
+  stream, why Gemma cannot (bidirectional over image tokens, −4pp when forced causal), and the
+  RealWorldQA arms that quantify the cost of approximating when you did not have to.
 - [sam3_summary.md](sam3_summary.md) — **start here for SAM 3.** All six full-set measurements in
   one table: 55% token recompute preserves 97-100% of the exact forward at 0.60x correction compute,
   across a 54x range in how much damage there is to repair. Also: why preservation leads over
