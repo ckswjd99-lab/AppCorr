@@ -8,6 +8,38 @@ produced them.
 
 ## Index
 
+- [sam3_summary.md](sam3_summary.md) — **start here for SAM 3.** All six full-set measurements in
+  one table: 55% token recompute preserves 97-100% of the exact forward at 0.60x correction compute,
+  across a 54x range in how much damage there is to repair. Also: why preservation leads over
+  recovery, why interleaving is cheaper rather than better, that object size in *L2 pixels* is the
+  only predictor of damage, and why partial recompute works (recognition survives the approximation;
+  only edges need repair).
+- [sam3_saco_gold_results.md](sam3_saco_gold_results.md) — SAM 3's own benchmark, scored by cgF1,
+  the only one here that asks about ABSENT concepts. Three subsets spanning 18x in object size.
+  cgF1's factorisation separates mask quality from recognition and shows recognition is immune to
+  the approximation (IL_MCC −0.1% to −1.1%), which is why partial recompute works at all. Also:
+  four harness/evaluator faults COCO and LVIS could not expose, and the pyramid-direction rule.
+- [sam3_lvis_results.md](sam3_lvis_results.md) — full LVIS v1 val (19,626 images, 1203 categories),
+  four arms. The approximation costs 2.4x more here than on COCO tracker (26.9% vs 10.6%) and 55%
+  recompute still returns ~90% of it: **a harder dataset does not need a higher keep ratio**. Rarity
+  is orthogonal to both damage and repair (APr/APc/APf degrade 26.7/26.2/27.9%, recover 90.3/89.1/89.3%);
+  object size is the only variable that matters. Retracts the claim that `pre_global` is more accurate
+  than one-shot — across three measurements the sign flips, so it is a tie at 0.60x compute.
+- [sam3_coco_detector_results.md](sam3_coco_detector_results.md) — the same five arms on SAM 3's
+  DETECTOR path (text prompt) over full COCO. 55% recompute recovers 89.2%; `pre_global` reaches
+  90.5% at 0.60x compute. Detection loses 1.4x more to approximation than the tracker path does, and
+  the AP50/AP75 split shows why: lost *detections*, not blurred boundaries. Also records the
+  readout-protocol sweep that replaced the hand-set score threshold.
+- [sam3_coco_interleaved_results.md](sam3_coco_interleaved_results.md) — SAM 3 tracker on **full
+  COCO val2017** (4952 images), 5 arms on one commit. 55% recompute recovers 92.4% of the
+  floor-ceiling gap; interleaved `pre_global` (g=4) matches one-shot to four decimals at 0.60x the
+  correction compute and 0.69x wall clock. Includes why deferring SAM 3's global layers (7/15/23/31)
+  by one layer wins 30%, and why the wall clock understates the compute saving (launch-bound).
+- [interleaved_correction_contract.md](interleaved_correction_contract.md) — **read before writing
+  any interleaved correction path.** Four rules every fork has re-broken (correct this round's group
+  only, never the accumulated set; the stream is cumulative but the corrected set is not; persist the
+  corrected increment; coverage must equal the one-shot set) plus the four gates that catch them.
+  Each rule is invisible in one-shot correction, which is why every new fork ships it broken.
 - [ade20k_sr_residual_pruning_sweep.md](ade20k_sr_residual_pruning_sweep.md) — ADE20K m2f (ViT-7B):
   full-val threshold sweep of appcorr / appcorr+SR / appcorr+SR+SR-residual-pruning. Finding:
   SR-residual pruning only beats plain appcorr in a narrow ~30% recompute band; SR base alone ≈ a wash.
