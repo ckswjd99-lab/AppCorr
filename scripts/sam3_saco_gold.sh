@@ -50,7 +50,7 @@ run() {  # subset  tag  extra...
   grep -aoE '=== Final Summary: .*' "$LOG/${sub}_${tag}.log" | tail -1
 }
 
-for sub in crowded sa1b; do
+for sub in sa1b; do
   run "$sub" ceiling         --arm ceiling
   run "$sub" floor           --arm floor
   run "$sub" inter_preglobal --arm corrected --keep-ratio 0.55 --groups 4 --bounds pre_global

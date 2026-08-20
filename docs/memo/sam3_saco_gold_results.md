@@ -87,6 +87,96 @@ Four, in the order they surfaced:
 None of these could fire on COCO or LVIS. Plausible numbers from an easier configuration are not
 validation of the harness.
 
-## `crowded` and `sa1b`
+## `crowded` and `sa1b`: the two subsets with a measurable gap
 
-Running.
+Full subsets. Preservation is `arm / ceiling`; recovery is `(arm - floor) / (ceiling - floor)`.
+
+**`crowded`** — 846 images, 20,687 prompts (24% positive), object side 10.2px at L2.
+
+| term | floor | one-shot | `pre_global` | ceiling | one-shot prsv | `pre_global` prsv |
+|---|---:|---:|---:|---:|---:|---:|
+| **cgF1** | 0.5315 | 0.5793 | 0.5762 | 0.5895 | **98.3%** | **97.8%** |
+| positive_micro_F1 | 0.5989 | 0.6480 | 0.6474 | 0.6570 | 98.6% | 98.5% |
+| IL_MCC | 0.8874 | 0.8940 | 0.8901 | 0.8972 | 99.6% | 99.2% |
+
+**`sa1b`** — 997 images, 13,258 prompts (58% positive), object side 16.3px at L2. Measured *after*
+the pyramid-direction fix; see the note below.
+
+| term | floor | one-shot | `pre_global` | ceiling | one-shot prsv | `pre_global` prsv |
+|---|---:|---:|---:|---:|---:|---:|
+| **cgF1** | 0.5278 | 0.5378 | 0.5376 | 0.5394 | **99.7%** | **99.7%** |
+| positive_micro_F1 | 0.6130 | 0.6192 | 0.6188 | 0.6213 | 99.7% | 99.6% |
+| IL_MCC | 0.8610 | 0.8686 | 0.8688 | 0.8682 | 100.0% | 100.1% |
+
+Damage splits the same way it did on `attributes`: `crowded` loses 8.8% of mask quality and 1.1% of
+IL_MCC. Correction repairs the mask term (98.5% preserved) and has almost nothing to do to
+recognition. The approximate pass settles *what is there*; correction refines *where its edges are*.
+
+### Recovery rate exaggerated a 0.5pp difference into 5.3pp
+
+On `crowded`, one-shot recovers 82.5% of the gap and `pre_global` 77.2% — a 5.3pp spread that looked
+like the first real evidence that interleaving costs accuracy. In preservation the same two numbers
+are 98.3% and 97.8%, and the absolute difference is 0.0031 cgF1. Dividing by a 0.0579 gap magnified
+it 19x. `sa1b` then shows the two arms identical (0.5378 vs 0.5376, both 99.7%).
+
+Across all six measurements — COCO tracker/detector, LVIS, and these three subsets — one-shot and
+`pre_global` sit within 0.5pp of preservation of each other, with `pre_global` at **0.60x the
+correction compute**. That is the claim; "more accurate" was withdrawn earlier and "less accurate"
+does not survive either.
+
+### The pyramid rule has two halves and only one was implemented
+
+`sa1b`'s first run showed floor *above* ceiling (cgF1 0.5418 vs 0.5394), which was explained here as
+high native resolution leaving objects legible at L2 (24.4px per object side against `crowded`'s
+10.2). That explanation was wrong. `l2_from_native` built the pyramid from the original
+unconditionally, which is correct only when the native image is *smaller* than the model input; when
+it is larger the image must be fitted to the input first. `sa1b` is 2089x1500 against a 1008 canvas —
+100% of its images over the limit, where COCO and LVIS medians are 428 and the other Gold subsets
+~600 — so its L2 short side was 375 where the rule gives 252, **1.49x too mild**.
+
+Corrected, the object side is 16.3px, the floor drops to 0.5278, and the gap opens to 2.2%. `sa1b`
+was never a counterexample to the size law; it was a third point on it:
+
+| subset | object side at L2 | approximation cost |
+|---|---:|---:|
+| crowded | 10.2 px | 9.8% |
+| sa1b | 16.3 px | 2.2% |
+| attributes | 38.6 px | 0.5% |
+
+Only `sa1b` was affected — COCO and LVIS have no images over the canvas at the median, and the
+ceiling arm never touches this path (it reproduced 0.5394316677 exactly across the fix).
+
+## Discussion: content-adaptive selection
+
+Every arm here recomputes a **fixed 55% of tokens on every image**, and the subsets show how badly
+that mismatches what each one needs. With zero recompute:
+
+| run | floor / ceiling | object side in L2 |
+|---|---:|---:|
+| SA-Co `attributes` | **99.5%** | 38.6 px |
+| SA-Co `crowded` | 90.2% | 10.2 px |
+| COCO tracker | 89.4% | ~30 px |
+| COCO detector | 85.1% | ~30 px |
+| LVIS detector | 73.1% | ~30 px |
+
+`attributes` is already at 99.5% of ceiling before any correction runs, so its 55% is spent buying
+0.5pp. LVIS starts at 73.1% and needs every token it gets. A fixed ratio pays the same on both.
+
+**So a threshold on the patch score, rather than a top-k, should cut total recompute at equal
+accuracy** — the score is residual energy x average attention, and on large-object content there is
+little residual energy anywhere, so few patches would clear a threshold. The saving would come from
+adapting the *rate* per image, not from choosing better patches: `pyramid_degradation_native_vs_canvas.md`
+measured top-k and threshold as equivalent at matched recompute (n=100: 50.00% -> 0.6969 vs 50.09%
+-> 0.6987, inside noise). Rate, not ranking, is what a threshold buys.
+
+**The one existing measurement is not encouraging, and says what to fix.** In DINOv3 the shipped
+`token_keep_thres=0.002` selected 20.4% of tokens *identically before and after* the base image was
+made 4x more degraded — the threshold did not react to how bad the approximation was, which is the
+entire premise. Whatever quantity the threshold is applied to has to move with approximation damage;
+that one evidently did not, so it behaved as an awkward way of setting a fixed rate.
+
+Two things to check before treating this as a result: whether the per-image score distribution
+actually separates `attributes` from `crowded` (measurable offline from the pscore, no arms needed),
+and whether a threshold tuned on one dataset transfers, since the useful claim is a single operating
+point that adapts, not a per-dataset knob. Note also that any variable-rate scheme complicates the
+interleaved cost model, which assumes a known token count per round.
