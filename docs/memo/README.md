@@ -8,6 +8,12 @@ produced them.
 
 ## Index
 
+- [sam3_lvis_results.md](sam3_lvis_results.md) — full LVIS v1 val (19,626 images, 1203 categories),
+  four arms. The approximation costs 2.4x more here than on COCO tracker (26.9% vs 10.6%) and 55%
+  recompute still returns ~90% of it: **a harder dataset does not need a higher keep ratio**. Rarity
+  is orthogonal to both damage and repair (APr/APc/APf degrade 26.7/26.2/27.9%, recover 90.3/89.1/89.3%);
+  object size is the only variable that matters. Retracts the claim that `pre_global` is more accurate
+  than one-shot — across three measurements the sign flips, so it is a tie at 0.60x compute.
 - [sam3_coco_detector_results.md](sam3_coco_detector_results.md) — the same five arms on SAM 3's
   DETECTOR path (text prompt) over full COCO. 55% recompute recovers 89.2%; `pre_global` reaches
   90.5% at 0.60x compute. Detection loses 1.4x more to approximation than the tracker path does, and
