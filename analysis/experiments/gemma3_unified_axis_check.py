@@ -97,17 +97,26 @@ def main():
         h2, c2 = axis.llm_correct(emb2, every_t, ctx, c2)
         ok &= rep("correct(all) over 61 stages == stock", axis.llm_finish(h2), ref, rtol)
 
-        # --- partial selection, mapped across the boundary ---
-        pm = torch.zeros(px.shape[0], vh.shape[1], dtype=torch.bool, device=a.device)
-        k = int(a.keep * vh.shape[1])
-        pm[:, torch.randperm(vh.shape[1], device=a.device)[:k]] = True
-        tm = axis.patch_mask_to_llm_mask(pm, ids.shape[1], ctx["image_positions"])
-        text_selected = int(tm.sum().item()) - int(tm[:, ctx["image_positions"]].sum().item())
-        print(f"  patch keep {a.keep:.0%} -> {int(pm.sum())} patches -> "
-              f"{int(tm.sum())} LLM tokens selected; text tokens selected: {text_selected}")
+        # --- partial selection: each half on its own budget ---
+        # A real-shaped score (energy-like, spatially clustered) rather than randperm, since the
+        # point of separate budgets is precisely that translation across the 16:1 pooling fails.
+        g = torch.linspace(0, 1, vh.shape[1], device=a.device).unsqueeze(0)
+        score = (torch.sin(g * 37) ** 2 + 0.1 * torch.rand_like(g))
+        pk = max(1, int(a.keep * vh.shape[1]))
+        pm = torch.zeros_like(score, dtype=torch.bool).scatter_(
+            1, score.topk(pk, dim=-1).indices, True)
+        tm = axis.llm_mask_from_score(score, a.keep, ids.shape[1], ctx["image_positions"])
+
+        n_img_sel = int(tm[:, ctx["image_positions"]].sum().item())
+        text_selected = int(tm.sum().item()) - n_img_sel
+        print(f"  vision keep {a.keep:.0%} -> {int(pm.sum())}/{vh.shape[1]} patches;  "
+              f"llm keep {a.keep:.0%} -> {n_img_sel}/{n_img} image tokens; text selected {text_selected}")
         ok &= text_selected == 0
-        if text_selected:
-            print("  FAIL  text positions were selected; they are never approximated")
+        # The budget must actually be honoured -- this is what the `any()` mapping failed.
+        want = max(1, int(round(a.keep * n_img)))
+        ok &= n_img_sel == want
+        if n_img_sel != want:
+            print(f"  FAIL  llm budget not honoured: {n_img_sel} != {want}")
 
         c3 = dict(cache)
         vh3, c3 = axis.vision_correct(axis.vision_prepare(px), pm, c3)
