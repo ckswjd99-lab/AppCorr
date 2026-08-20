@@ -360,22 +360,22 @@ class Gemma3UnifiedAxis(nn.Module):
                             patch_selection, llm_oneshot, groups):
         """Walk the 61-stage axis in `groups` rounds, correcting one group per round.
 
-        Follows docs/memo/interleaved_correction_contract.md. The three rules that are easy to break,
-        and what they mean on an axis with a projector in the middle:
+        Follows docs/memo/interleaved_correction_contract.md. Three things this axis adds to the
+        rules, all of them learned the hard way on the one-shot driver:
 
-        **A round corrects its OWN group.** Never the accumulated arrived set -- that makes the last
-        round equal one-shot and inverts the cost claim. Earlier groups stay corrected because their
-        K/V is cached, their increment was persisted, and the approximate pass over the next stage
-        range carried them forward.
+        **The LLM input is MIXED, never wholly replaced.** Vision correction changes essentially
+        every image token's feature (4x4 pooling saturates), so projecting the corrected vision
+        state and handing all of it to the LLM means the LLM half was fully recomputed no matter
+        what its budget said. `feats_appr` -- the projection of the purely approximate vision pass --
+        is the baseline, and corrected features enter only at tokens that have arrived.
 
-        **The stream is cumulative even though the corrected set is not.** For vision that means
-        full-resolution patch embeddings at every ARRIVED patch. For the LLM half there is nothing to
-        construct: its input is the projector's output, and the projector runs on a vision hidden
-        state that is already corrected exactly as far as the arrivals go. Re-projecting each round
-        is what keeps the two consistent -- building an LLM-side stream by hand would be inventing a
-        quantity the model never has.
+        **Text joins the FINAL round only.** Text is never approximated, but it attends to the image
+        block and the answer is read off the last position, which is text; leaving it out gives
+        correction no path to the output at all. One correction against the fully corrected K/V is
+        enough because text is causal and sits after the image.
 
-        **The opening pass is pure approximate.** Nothing has arrived at stage 0.
+        **A round corrects its OWN group** -- never the accumulated set, which would make the last
+        round equal one-shot.
         """
         n_vis = self.n_vision
         bounds = self.layer_bounds(groups)
@@ -384,46 +384,73 @@ class Gemma3UnifiedAxis(nn.Module):
         x_appr = self.vision_prepare(px_approx)
         x_full = self.vision_prepare(px_full)
 
-        def vision_stream(arrived: torch.Tensor) -> torch.Tensor:
-            return torch.where(arrived.unsqueeze(-1), x_full, x_appr)
-
-        # Opening approximate pass, up to the first bound.
         cache: Dict[str, Any] = {}
-        v_end = min(bounds[0], n_vis)
-        vh, cache = self.vision_approx(x_appr, cache, layers=(0, v_end))
-        emb, ctx = (None, None)
+        arrived_p = torch.zeros_like(patch_selection)
+        arrived_t = None
+        feats_appr = None
+        ctx = None
+        emb = None
+        llm_depth = 0                                   # LLM stages already walked approximately
+
+        def llm_input():
+            """Layer-0 LLM input: approximate everywhere, corrected at arrived tokens."""
+            feats = self.project(vh)
+            mixed = torch.where(arrived_t.unsqueeze(-1), feats, feats_appr)
+            return self.llm_prepare(input_ids, mixed, token_type_ids)[0]
+
+        # Opening approximate pass, up to the first bound. Nothing has arrived yet.
+        vh, cache = self.vision_approx(x_appr, cache, layers=(0, min(bounds[0], n_vis)))
+        v_front = min(bounds[0], n_vis)
         if bounds[0] > n_vis:
-            emb, ctx = self.llm_prepare(input_ids, self.project(vh), token_type_ids)
-            emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, bounds[0] - n_vis))
+            feats_appr = self.project(vh)
+            emb_appr, ctx = self.llm_prepare(input_ids, feats_appr, token_type_ids)
+            arrived_t = torch.zeros(input_ids.shape[0], int(self.cfg.mm_tokens_per_image),
+                                    dtype=torch.bool, device=input_ids.device)
+            emb, cache = self.llm_approx(emb_appr, ctx, cache, layers=(0, bounds[0] - n_vis))
+            llm_depth = bounds[0] - n_vis
 
-        arrived = torch.zeros_like(patch_selection)
-        prev = bounds[0]
         for r in range(groups):
-            arrived = arrived | groups_p[r]
-            stream = vision_stream(arrived)
+            last = (r == groups - 1)
+            arrived_p = arrived_p | groups_p[r]
+            stream = torch.where(arrived_p.unsqueeze(-1), x_full, x_appr)
 
-            # Correct THIS round's group over everything walked so far.
-            depth = min(prev, n_vis)
-            if groups_p[r].any() and depth > 0:
-                vh, cache = self.vision_correct(stream, groups_p[r], cache, layers=(0, depth))
-            if prev > n_vis:
-                emb, ctx = self.llm_prepare(input_ids, self.project(vh), token_type_ids)
-                tm = self._llm_group_mask(groups_p[r], ctx, input_ids, llm_oneshot)
-                emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, 0))   # ctx refresh only
-                emb, cache = self.llm_correct(emb, tm, ctx, cache, layers=(0, prev - n_vis))
+            # --- correct this round's group over the vision stages walked so far ---
+            if v_front > 0 and bool(groups_p[r].any()):
+                vh, cache = self.vision_correct(stream, groups_p[r], cache, layers=(0, v_front))
 
-            # Advance the approximate frontier to the next bound.
+            # --- and over the LLM stages walked so far ---
+            if llm_depth > 0:
+                arrived_t = arrived_t | self.patch_mask_any_to_token(groups_p[r])
+                tm = torch.zeros(input_ids.shape[0], input_ids.shape[1], dtype=torch.bool,
+                                 device=input_ids.device)
+                tm[:, ctx["image_positions"]] = (
+                    self.patch_mask_any_to_token(groups_p[r])
+                    & llm_oneshot[:, ctx["image_positions"]])
+                if last:
+                    is_text = torch.ones_like(tm)
+                    is_text[:, ctx["image_positions"]] = False
+                    tm = tm | is_text
+                if bool(tm.any()):
+                    emb, cache = self.llm_correct(llm_input(), tm, ctx, cache,
+                                                  layers=(0, llm_depth))
+
+            # --- advance the approximate frontier to the next bound ---
             nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
-            if prev < n_vis:
-                vh, cache = self.vision_approx(vh, cache, layers=(prev, min(nxt, n_vis)))
+            if v_front < min(nxt, n_vis):
+                vh, cache = self.vision_approx(vh, cache, layers=(v_front, min(nxt, n_vis)))
+                v_front = min(nxt, n_vis)
             if nxt > n_vis:
-                if emb is None or prev <= n_vis:
-                    emb, ctx = self.llm_prepare(input_ids, self.project(vh), token_type_ids)
-                    emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, nxt - n_vis))
-                else:
+                if feats_appr is None:                  # first time the axis crosses the projector
+                    feats_appr = self.project(vh)
+                    emb_appr, ctx = self.llm_prepare(input_ids, feats_appr, token_type_ids)
+                    arrived_t = torch.zeros(input_ids.shape[0],
+                                            int(self.cfg.mm_tokens_per_image),
+                                            dtype=torch.bool, device=input_ids.device)
+                    emb = emb_appr
+                if nxt - n_vis > llm_depth:
                     emb, cache = self.llm_approx(emb, ctx, cache,
-                                                 layers=(prev - n_vis, nxt - n_vis))
-            prev = nxt
+                                                 layers=(llm_depth, nxt - n_vis))
+                    llm_depth = nxt - n_vis
 
         return self.llm_finish(emb), cache
 
