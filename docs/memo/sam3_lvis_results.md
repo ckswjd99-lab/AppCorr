@@ -30,7 +30,10 @@ Produced by `scripts/sam3_lvis_full.sh`.
 | medium | 0.5636 | 0.6871 | 0.6870 | 0.7056 | 87.0% | 86.9% |
 | large | 0.7386 | 0.7781 | 0.7789 | 0.7873 | 81.1% | 82.8% |
 
-Correction cost: one-shot 1.00x, `pre_global` 0.60x. Gap is 0.1517 AP.
+Correction cost: one-shot 1.00x, `pre_global` 0.60x. Gap is 0.1517 AP. **Preservation**
+(`arm / ceiling`, the figure to lead with) is 73.1% at the floor, **97.3%** for one-shot and
+**97.1%** for `pre_global` -- the widest gap of any benchmark here, and still 97% preserved. See
+`sam3_summary.md`.
 
 ## The result: a 2.4x wider gap, and recovery holds
 
