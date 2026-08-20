@@ -326,11 +326,12 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
                 curr_img = np.clip(curr_img.astype(np.int16) + res_img, 0, 255).astype(np.uint8)
             
             prev_lvl = lvl
-        
-        # The model input is always expressed at config.image_shape, even when
-        # only a coarse base level is transmitted (for example levels=[2]).
-        # Without this final expansion, base-only decode returns H/4 x W/4 and
-        # cannot be placed in the fixed-size output batch.
+
+        # Always finish at config.image_shape, even when 0 was not an explicit configured level
+        # (e.g. pyramid_levels=[2] alone -- a heavily-downsampled approx-only base with no
+        # residual levels still has to be upsampled back before the model sees it, matching what
+        # every other pyramid_levels config produces). Without this, base-only decode returns
+        # H/4 x W/4 and cannot be placed in the fixed-size output batch.
         if prev_lvl > 0:
             curr_img = self._iterative_upsample(curr_img, prev_lvl, 0, H, W)
 
@@ -382,6 +383,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
             prev_lvl = lvl
 
+        # Same rationale as _process_image_decode: always finish at config.image_shape.
         if prev_lvl > 0:
             tgt_hw = self._target_hw_for_level(config, 0, target_shape)
             curr_img = self._iterative_upsample_to_hw(curr_img, prev_lvl, 0, tgt_hw)
