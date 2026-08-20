@@ -116,3 +116,36 @@ Each rule is invisible in the arm that gets built first. One-shot correction exe
 its corrected set is the whole selection, so rule 1 is vacuous, rule 2 has no gap to leak through,
 rule 3 has no later round, and rule 4 is trivially satisfied. Interleaving is where all four start to
 matter at once — and by then the one-shot numbers look right, so the fork feels validated.
+
+## Rule 5 — the interleaved arm must share the one-shot arm's SELECTION
+
+Interleaving is a claim about *scheduling*, not about *which tokens get corrected*. An interleaved
+arm is only interpretable against a one-shot arm that corrects the same set; otherwise "interleaved
+scored higher" conflates the schedule with the budget.
+
+On Gemma 3 this failed silently. `gemma3_oracle.py` derives the patch mask from the chosen tokens
+for `corrected_t`, but the `interleaved` arm was not named in that `elif` and fell through to the
+`else` branch, inheriting the `corrected` arm's *independent* patch top-k. Same 141 tokens, a
+different patch set. The two arms disagreed on 16/40 ChartQA samples -- `Teal` vs `Orange`, `Three`
+vs `Four`, `525000` vs `675,000` -- while each stayed perfectly reproducible run to run.
+
+## How the gates missed it, twice
+
+Both failures were the gate measuring the wrong thing and reporting `rel 0.00e+00`.
+
+1. **The reference shared the defect.** `interleaved_forward` returned an already-`llm_finish`ed
+   state while `_generate_from_axis` applies `llm_finish` itself, so the arm normed twice and lost
+   20pp. The axis gate could not see it because its reference was finished too.
+2. **The harness shared the variable under test.** The parity check fed *one* `pm`/`sel_tok`/`tm`
+   to both paths, so the very quantity that differed was held constant. It reported bit-identical
+   hidden states, K/V caches, and generated text -- all true, and all irrelevant.
+
+**A comparison harness must not share any quantity that the two arms compute independently.**
+Sharing it does not control for it; it deletes that axis from the measurement.
+
+**Accuracy is not a debugging instrument.** 40-sample accuracy said 0.700 vs 0.675 -- a one-sample
+gap that reads like noise. Dumping the per-sample predictions showed 16 genuine disagreements and
+killed the nondeterminism hypothesis instantly. Diff the outputs, not the score.
+
+**Gate on per-sample equality, not on the metric.** `g=1` must reproduce the one-shot arm token for
+token; equal accuracy over a small sample is satisfied by chance too easily to be evidence.

@@ -106,7 +106,7 @@ def main():
         is_text = torch.ones_like(llm_oneshot)
         is_text[:, ctx["image_positions"]] = False
         h1, _ = axis.llm_correct(emb1, llm_oneshot | is_text, ctx, c1)
-        ref = axis.llm_finish(h1)
+        ref = h1        # compare PRE-finish, the contract both paths must meet
 
         hI, _ = axis.interleaved_forward(px, px2, ids, tti, pm, llm_oneshot, 1)
         scale = max(ref.float().abs().max().item(), 1e-9)
