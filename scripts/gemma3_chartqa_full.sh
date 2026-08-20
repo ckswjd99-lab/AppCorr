@@ -15,10 +15,15 @@
 # Patch score is the standard residual energy x average attention. An earlier version of this run
 # used energy alone; those numbers are discarded.
 #
-# 24-sample smoke (direction only): floor 25.0 | corrected_j 29.2 | corrected 45.8 | corrected_t 54.2,
-# with corrected_j correcting 231 LLM tokens against 141 for the other two. corrected_j recomputing
-# 40% MORE and scoring 25pp LOWER is what this run has to confirm: the cost of correcting a token
-# from a mixture of fresh and approximate patches rather than a coherent set.
+# Identity gate before any of this is read: at keep=1.0 nothing is approximated, so the corrected
+# result must reproduce the exact forward. It does, bit-exact (rel 0.000e+00), and matches the
+# ceiling arm's accuracy exactly. Five driver bugs were found by that gate; three earlier ChartQA
+# result sets are withdrawn.
+#
+# 120-sample smoke: ceiling 68.33 | corrected 69.17 | corrected_t 70.00 | corrected_j 73.33 |
+# floor 21.67. The corrected arms sit above the ceiling, which at n=120 is inside noise (se ~4.3pp)
+# and not separable -- that is what the full set is for. The 47pp floor-ceiling gap is the real
+# signal: ChartQA is where the approximation costs the most of anything measured so far.
 set -u
 REPO=/NHNHOME/share/cjpark/AppCorr-gemma3
 PY=/home/nxclab/anaconda3/envs/appcorr/bin/python
@@ -39,6 +44,7 @@ run() {
 
 run ceiling      --arm ceiling
 run floor        --arm floor
+run identity     --arm corrected   --keep 1.0
 run corrected    --arm corrected   --keep 0.55
 run corrected_t  --arm corrected_t --keep 0.55
 run corrected_j  --arm corrected_j --keep 0.55
