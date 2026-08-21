@@ -57,12 +57,19 @@ def l2_from_native(img: Image.Image, level: int, cap: int) -> Image.Image:
     out milder than the pipeline's own.
     """
     w, h = img.size
-    short = min(min(w, h), cap)
-    t = max(1, short // 2 ** level)
-    if h <= w:
-        th, tw = t, max(1, round(w / h * t))
-    else:
-        tw, th = t, max(1, round(h / w * t))
+    # PER AXIS. Gemma 3 resizes to a SQUARE 896x896 canvas without preserving aspect ratio, so the
+    # two axes are resampled by different factors and a single short-side target cannot serve both.
+    # Driving both axes off the short side left the long axis under-degraded by exactly the aspect
+    # ratio -- 1.54x on RealWorldQA, 1.14x on TextVQA -- which is the failure mode
+    # docs/memo/pyramid_degradation_native_vs_canvas.md was written about: a floor that sits too
+    # close to the ceiling makes every number between them uninterpretable.
+    #
+    # Each axis takes its own binding constraint, which is the pyramid-direction rule applied
+    # axis-wise: an axis longer than the canvas degrades relative to the CANVAS (fit first, then
+    # degrade); an axis shorter than the canvas degrades relative to NATIVE (degrade first, then
+    # fit), because the canvas upscale carries no information to remove.
+    tw = max(1, min(w, cap) // 2 ** level)
+    th = max(1, min(h, cap) // 2 ** level)
     return img.resize((tw, th), Image.BOX).resize((w, h), Image.BICUBIC)
 
 
