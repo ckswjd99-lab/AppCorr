@@ -1,0 +1,14 @@
+{
+  "model": "vggt_omega",
+  "batch_size": 8,
+  "mean_total_gflops_per_image": 2664.355004416,
+  "mean_critical_gflops_per_image": 2664.355004416,
+  "requests": 2,
+  "mean_total_gflops": 21314.840035328,
+  "mean_critical_gflops": 21314.840035328,
+  "mean_overlappable_gflops": 0.0,
+  "critical_fraction": 1.0,
+  "mean_stage_gflops": {
+    "FULL_INFERENCE": 21314.840035328
+  }
+}

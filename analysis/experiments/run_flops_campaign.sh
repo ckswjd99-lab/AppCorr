@@ -16,7 +16,9 @@ set -u
 cd /NHNHOME/share/cjpark/AppCorr-flops
 OUT=${OUT:-analysis/results/flops}
 NR=${NR:-3}
-CO3D_ROOT=${CO3D_ROOT:-/NHNHOME/share/cjpark/data/co3dv2}
+# The sequences live under extracted/, not at the archive root, which is why the
+# loader reported 'No Co3D sequences under ...' for every category.
+CO3D_ROOT=${CO3D_ROOT:-/NHNHOME/share/cjpark/data/co3dv2/extracted}
 mkdir -p "$OUT"
 export CUDA_VISIBLE_DEVICES=${GPU:-0}
 export APPCORR_FLOPS=1
@@ -49,10 +51,15 @@ run "dinov3_coco_ceiling"     offload/config/coco/coco_sequential.json          
 
 # ---- VGGT-Omega: Co3D -------------------------------------------------------------------------- #
 for K in 0.25 0.30 0.50; do
+  # The root goes through `--set dataset_kwargs.data_root`, not `-d`: an earlier edit dropped the
+  # -d flag from this line while rewriting the keep overrides, and the loader then received None.
   run "vggt_co3d_g4_k${K}" offload/config/co3d/co3d_interleaved.json "$NR" \
-      --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K --set transmission_kwargs.num_groups=4
+      --set dataset_kwargs.data_root="$CO3D_ROOT" \
+      --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K \
+      --set transmission_kwargs.num_groups=4
 done
-run "vggt_co3d_ceiling" offload/config/co3d/co3d_full.json "$NR" -d "$CO3D_ROOT"
+run "vggt_co3d_ceiling" offload/config/co3d/co3d_full.json "$NR" \
+    --set dataset_kwargs.data_root="$CO3D_ROOT"
 
 # ---- Qwen2.5-VL ------------------------------------------------------------------------------- #
 # Measured in-process by flops_report_qwen25vl.py, not here. Its offload configs name dataset
