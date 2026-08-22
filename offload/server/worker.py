@@ -1,6 +1,7 @@
 import json
 import multiprocessing
 import time
+import os
 import torch
 from contextlib import nullcontext
 import numpy as np
@@ -732,11 +733,48 @@ class WorkerModule(multiprocessing.Process):
             return self.executor.decide_exit(task, context, self.config)
 
         elif op == OpType.EXIT_ALL:
+            self._emit_flops()
             final_batch_results = self.executor.get_final_results(task, context, self.config)
             if 'final_results' not in context:
                 context['final_results'] = {}
             context['final_results'].update(final_batch_results)
             context['active_indices'] = torch.empty(0, device=self.device, dtype=torch.long)
+
+    def _emit_flops(self):
+        """Print, and optionally write, the backbone FLOP split accumulated so far.
+
+        Emitted on every EXIT_ALL rather than at shutdown: the worker's exit path varies by run
+        mode, and a measurement that only survives a clean shutdown is one that goes missing on
+        exactly the runs that were interrupted. Rewriting the same file each time is cheap and
+        leaves the last complete state on disk regardless of how the process ends.
+        """
+        fl = getattr(self, 'flop_counter', None)
+        if fl is None or not fl.requests:
+            return
+        agg = fl.aggregate()
+        print(f"[Worker][FLOPS] requests={agg['requests']} "
+              f"mean_total={agg['mean_total_gflops']:.1f} GF "
+              f"mean_critical={agg['mean_critical_gflops']:.1f} GF "
+              f"critical_fraction={agg['critical_fraction']:.4f}", flush=True)
+        print(f"[Worker][FLOPS] by_stage(GF/req)={ {k: round(v, 1) for k, v in agg['mean_stage_gflops'].items()} }",
+              flush=True)
+        out = os.environ.get("APPCORR_FLOPS_OUT")
+        if out:
+            import json as _json
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+                # Batch size matters for comparability: an ImageNet request carries 32 images
+                # while a VLM request carries one, so a per-request mean is not a per-image
+                # number until it is divided by this.
+                bs = int(getattr(self.config, 'batch_size', 1) or 1)
+                with open(out, "w") as f:
+                    _json.dump({"model": getattr(self.config, 'model_name', None),
+                                "batch_size": bs,
+                                "mean_total_gflops_per_image": agg["mean_total_gflops"] / bs,
+                                "mean_critical_gflops_per_image": agg["mean_critical_gflops"] / bs,
+                                **agg}, f, indent=2)
+            except Exception as e:                      # never let reporting kill a run
+                print(f"[Worker][FLOPS] could not write {out}: {e}", flush=True)
 
     def _check_triton_runtime(self):
         """Configure the compile toolchain for *every* model, then prove Triton can compile.

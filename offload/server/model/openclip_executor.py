@@ -148,12 +148,24 @@ class OpenCLIPExecutor(ModelExecutor):
         """Applies the validated `residual_energy x avg_cls_attn` thresholded importance score
         (see analysis/experiments/ENERGY_GROUPING_LOG.md's classifier finding, ported here for
         CLIP) to sub-select which of a group's arrived patches actually get corrected this round.
-        No-op (keeps all of patch_idx) if `token_keep_thres` isn't configured, or if the signals
-        aren't ready yet (e.g. mobile_pscore_hint_map has no real residual-energy hints for this
-        group, or no approx chunk has run yet to seed cls_attn_layermean)."""
+        Selection is top-k when the config sets `token_keep_ratio` -- an exact keep rate, the same
+        knob the DINOv3 family exposes -- and thresholded on the same score otherwise. No-op (keeps
+        all of patch_idx) when neither is configured, or when the signals are not ready yet (e.g.
+        mobile_pscore_hint_map carries no real residual-energy hints for this group, or no approx
+        chunk has run to seed cls_attn_layermean)."""
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         token_keep_thres = appcorr_options.get("token_keep_thres")
-        if token_keep_thres is None:
+        # Top-k selection, matching the DINOv3 family's `token_keep_ratio`, so a keep RATE can be
+        # asked for directly instead of being reverse-engineered from a threshold sweep.
+        #
+        # Only honoured when the config states it. `normalize_appcorr_kwargs` defaults the ratio to
+        # 0.2, so reading the normalized value would silently turn every existing OpenCLIP run from
+        # "keep everything" into "keep 20%" -- a behaviour change disguised as a new feature.
+        raw_appcorr = getattr(config, "appcorr_kwargs", None) or {}
+        token_keep_ratio = (float(raw_appcorr["token_keep_ratio"])
+                            if "token_keep_ratio" in raw_appcorr else None)
+        use_topk = token_keep_ratio is not None and token_keep_ratio < 1.0
+        if token_keep_thres is None and not use_topk:
             return patch_idx
 
         cache = context.get("cache_feature", {})
@@ -182,7 +194,13 @@ class OpenCLIPExecutor(ModelExecutor):
                 flush=True,
             )
 
-        keep_mask = combined >= token_keep_thres
+        if use_topk:
+            n = int(combined.numel())
+            k = max(1, min(int(round(n * token_keep_ratio)), n))
+            keep_mask = torch.zeros(n, dtype=torch.bool, device=combined.device)
+            keep_mask.scatter_(0, combined.topk(k).indices, True)
+        else:
+            keep_mask = combined >= token_keep_thres
         full_count = float(patch_idx.numel())
         kept_count = float(int(keep_mask.sum().item())) if bool(keep_mask.any()) else full_count
         cache["_token_prune_kept_patch_total"] = cache.get("_token_prune_kept_patch_total", 0.0) + kept_count
