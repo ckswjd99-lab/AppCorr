@@ -51,6 +51,10 @@ class Sam3Executor(ModelExecutor):
 
     # ------------------------------------------------------------------ setup
 
+    def backbone_modules(self):
+        """The vision encoder only -- the mask decoder and the presence head are the header."""
+        return [getattr(self.model, "vision_encoder", None)]
+
     def load_model(self, model_name: str, config: Any):
         from transformers import Sam3Model, Sam3Processor
 

@@ -33,6 +33,7 @@ silently corrupts the 5 full-attention layers -- an error the LLM fork's unit te
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Dict, Optional, Tuple
 
 import torch
@@ -45,8 +46,12 @@ from .vision.block import ApproxCorrectSiglipLayer
 class Gemma3UnifiedAxis(nn.Module):
     """Wraps a stock `Gemma3ForConditionalGeneration`'s inner model as one approx/correct axis."""
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(self, model: nn.Module, flop_counter=None) -> None:
         super().__init__()
+        # Optional `appcorr.flops.FlopCounter`; see the OV2 axis for the contract. The axis only
+        # declares WHEN each piece of work became possible. Left None -- the default, and what
+        # every existing driver passes -- the scopes below are `nullcontext`.
+        self.flops = flop_counter
         self.model = model                                   # Gemma3Model
         vt = model.vision_tower
         self.vt = vt
@@ -58,6 +63,16 @@ class Gemma3UnifiedAxis(nn.Module):
             ApproxCorrectGemma3DecoderLayer.from_stock(l) for l in lm.layers)
         self.cfg = model.config
         self._last_seq_len = None
+
+    # --- FLOP accounting scopes ------------------------------------------------------------------ #
+    # Arrival 0 is the base image; arrivals 1..g are the detail groups. The highest index reached
+    # is the critical set. `full_forward` opens none, so the ceiling comes out 100% critical.
+
+    def _arrival(self, index: int):
+        return self.flops.arrival(index) if self.flops is not None else nullcontext()
+
+    def _stage(self, name: str):
+        return self.flops.stage(name) if self.flops is not None else nullcontext()
 
     # --- geometry ------------------------------------------------------------------------------ #
 
@@ -398,64 +413,70 @@ class Gemma3UnifiedAxis(nn.Module):
             mixed = torch.where(arrived_t.unsqueeze(-1), feats, feats_appr)
             return self.llm_prepare(input_ids, mixed, token_type_ids)[0]
 
-        # Opening approximate pass, up to the first bound. Nothing has arrived yet.
-        vh, cache = self.vision_approx(x_appr, cache, layers=(0, min(bounds[0], n_vis)))
+        # Opening approximate pass, up to the first bound. Nothing has arrived yet -- arrival 0
+        # needs only the base image, so it overlaps the detail transmission entirely.
         v_front = min(bounds[0], n_vis)
-        if bounds[0] > n_vis:
-            feats_appr = self.project(vh)
-            emb_appr, ctx = self.llm_prepare(input_ids, feats_appr, token_type_ids)
-            arrived_t = torch.zeros(input_ids.shape[0], int(self.cfg.mm_tokens_per_image),
-                                    dtype=torch.bool, device=input_ids.device)
-            emb, cache = self.llm_approx(emb_appr, ctx, cache, layers=(0, bounds[0] - n_vis))
-            llm_depth = bounds[0] - n_vis
+        with self._arrival(0), self._stage("approx"):
+            vh, cache = self.vision_approx(x_appr, cache, layers=(0, v_front))
+            if bounds[0] > n_vis:
+                feats_appr = self.project(vh)
+                emb_appr, ctx = self.llm_prepare(input_ids, feats_appr, token_type_ids)
+                arrived_t = torch.zeros(input_ids.shape[0], int(self.cfg.mm_tokens_per_image),
+                                        dtype=torch.bool, device=input_ids.device)
+                emb, cache = self.llm_approx(emb_appr, ctx, cache, layers=(0, bounds[0] - n_vis))
+                llm_depth = bounds[0] - n_vis
 
         for r in range(groups):
             last = (r == groups - 1)
             arrived_p = arrived_p | groups_p[r]
             stream = torch.where(arrived_p.unsqueeze(-1), x_full, x_appr)
 
-            # --- correct this round's group over the vision stages walked so far ---
-            if v_front > 0 and bool(groups_p[r].any()):
-                vh, cache = self.vision_correct(stream, groups_p[r], cache, layers=(0, v_front))
+            # Round r cannot start before group r lands, so its whole body -- the
+            # correction AND the approximate frontier that follows it -- is charged to
+            # arrival r+1. Only the highest index survives as critical.
+            with self._arrival(r + 1):
+                # --- correct this round's group over the vision stages walked so far ---
+                if v_front > 0 and bool(groups_p[r].any()):
+                    vh, cache = self.vision_correct(stream, groups_p[r], cache, layers=(0, v_front))
 
-            # --- and over the LLM stages walked so far ---
-            if llm_depth > 0:
-                # The tokens this round corrects, and therefore the tokens whose features enter the
-                # LLM stream, are the SAME set: this group's touched tokens intersected with the
-                # one-shot budget. Letting `arrived_t` track raw touched tokens instead would feed
-                # corrected features for tokens that were never corrected, and would break g=1
-                # identity -- the mix mask (222 tokens) would not match the correction mask (141).
-                this_round = (self.patch_mask_any_to_token(groups_p[r])
-                              & llm_oneshot[:, ctx["image_positions"]])
-                arrived_t = arrived_t | this_round
-                tm = torch.zeros(input_ids.shape[0], input_ids.shape[1], dtype=torch.bool,
-                                 device=input_ids.device)
-                tm[:, ctx["image_positions"]] = this_round
-                if last:
-                    is_text = torch.ones_like(tm)
-                    is_text[:, ctx["image_positions"]] = False
-                    tm = tm | is_text
-                if bool(tm.any()):
-                    emb, cache = self.llm_correct(llm_input(), tm, ctx, cache,
-                                                  layers=(0, llm_depth))
+                # --- and over the LLM stages walked so far ---
+                if llm_depth > 0:
+                    # The tokens this round corrects, and therefore the tokens whose features enter the
+                    # LLM stream, are the SAME set: this group's touched tokens intersected with the
+                    # one-shot budget. Letting `arrived_t` track raw touched tokens instead would feed
+                    # corrected features for tokens that were never corrected, and would break g=1
+                    # identity -- the mix mask (222 tokens) would not match the correction mask (141).
+                    this_round = (self.patch_mask_any_to_token(groups_p[r])
+                                  & llm_oneshot[:, ctx["image_positions"]])
+                    arrived_t = arrived_t | this_round
+                    tm = torch.zeros(input_ids.shape[0], input_ids.shape[1], dtype=torch.bool,
+                                     device=input_ids.device)
+                    tm[:, ctx["image_positions"]] = this_round
+                    if last:
+                        is_text = torch.ones_like(tm)
+                        is_text[:, ctx["image_positions"]] = False
+                        tm = tm | is_text
+                    if bool(tm.any()):
+                        emb, cache = self.llm_correct(llm_input(), tm, ctx, cache,
+                                                      layers=(0, llm_depth))
 
-            # --- advance the approximate frontier to the next bound ---
-            nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
-            if v_front < min(nxt, n_vis):
-                vh, cache = self.vision_approx(vh, cache, layers=(v_front, min(nxt, n_vis)))
-                v_front = min(nxt, n_vis)
-            if nxt > n_vis:
-                if feats_appr is None:                  # first time the axis crosses the projector
-                    feats_appr = self.project(vh)
-                    emb_appr, ctx = self.llm_prepare(input_ids, feats_appr, token_type_ids)
-                    arrived_t = torch.zeros(input_ids.shape[0],
-                                            int(self.cfg.mm_tokens_per_image),
-                                            dtype=torch.bool, device=input_ids.device)
-                    emb = emb_appr
-                if nxt - n_vis > llm_depth:
-                    emb, cache = self.llm_approx(emb, ctx, cache,
-                                                 layers=(llm_depth, nxt - n_vis))
-                    llm_depth = nxt - n_vis
+                # --- advance the approximate frontier to the next bound ---
+                nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
+                if v_front < min(nxt, n_vis):
+                    vh, cache = self.vision_approx(vh, cache, layers=(v_front, min(nxt, n_vis)))
+                    v_front = min(nxt, n_vis)
+                if nxt > n_vis:
+                    if feats_appr is None:                  # first time the axis crosses the projector
+                        feats_appr = self.project(vh)
+                        emb_appr, ctx = self.llm_prepare(input_ids, feats_appr, token_type_ids)
+                        arrived_t = torch.zeros(input_ids.shape[0],
+                                                int(self.cfg.mm_tokens_per_image),
+                                                dtype=torch.bool, device=input_ids.device)
+                        emb = emb_appr
+                    if nxt - n_vis > llm_depth:
+                        emb, cache = self.llm_approx(emb, ctx, cache,
+                                                     layers=(llm_depth, nxt - n_vis))
+                        llm_depth = nxt - n_vis
 
         # Return the PRE-finish hidden state, the same contract as `llm_correct` -- every driver
         # applies `llm_finish` itself before the lm_head. Returning a finished state here made the

@@ -128,6 +128,10 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             short_side = int(math.ceil(short_side / 32.0)) * 32
         return short_side
 
+    def backbone_modules(self):
+        """The ViT trunk only -- the Mask2Former decode head sits outside the backbone."""
+        return [getattr(self.model, "backbone", None)]
+
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Segmentor-M2F Model (MMap): {model_name}...")
         if self.model is not None:

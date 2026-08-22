@@ -2,6 +2,7 @@ import json
 import multiprocessing
 import time
 import torch
+from contextlib import nullcontext
 import numpy as np
 import traceback
 import re
@@ -470,6 +471,36 @@ class WorkerModule(multiprocessing.Process):
             print(f"!!! [Worker] Failed to load executor: {e}")
             self.executor = None
             raise e
+        self._open_flop_session(model_name)
+
+    def _open_flop_session(self, model_name: str):
+        """Start backbone FLOP accounting, if `APPCORR_FLOPS=1` asked for it.
+
+        Opened once per worker rather than per task: installing and removing hooks around every
+        instruction would itself cost more than the ops being measured on the small ones.
+
+        An executor that has not declared `backbone_modules()` is refused rather than silently
+        counted as zero. Zero is the failure this whole feature would be most likely to report and
+        least likely to have noticed.
+        """
+        from appcorr import flops as _flops
+
+        self.flop_counter = None
+        self._flop_stack = None
+        if not _flops.enabled_by_default():
+            return
+        roots = self.executor.backbone_modules() if self.executor is not None else None
+        if not roots:
+            raise RuntimeError(
+                f"APPCORR_FLOPS=1 but the '{model_name}' executor does not declare "
+                f"backbone_modules(); it would report zero FLOPs. Declare the backbone subtree "
+                f"(feature trunk for a VFM; vision tower + language model for a VLM) first.")
+        from contextlib import ExitStack
+
+        self._flop_stack = ExitStack()
+        self.flop_counter = self._flop_stack.enter_context(_flops.session(*roots, enabled=True))
+        print(f"[Worker] backbone FLOP accounting ON for {model_name} "
+              f"({sum(1 for _ in roots)} root module(s))")
 
     def _load_sr_engine(self):
         self.sr_engine = None
@@ -505,9 +536,19 @@ class WorkerModule(multiprocessing.Process):
             self.sessions[req_id] = self._create_session_context()
         context = self.sessions[req_id]
 
+        # The transmission group this task carries IS the arrival index: work dispatched under
+        # group g could not have started before group g landed. Tasks with no payload continue an
+        # earlier group, so the last seen value persists in the session context.
+        if getattr(task, 'payload', None):
+            context['_flop_arrival'] = int(getattr(task.payload[0], 'group_id', 0) or 0)
+        arrival = int(context.get('_flop_arrival', 0))
+        fl = getattr(self, 'flop_counter', None)
+
         try:
             session_range = f"APPCORR_SESSION|req={req_id}|task={task.task_id}"
-            with torch.cuda.nvtx.range(session_range):
+            with (fl.request(req_id) if fl is not None else nullcontext()), \
+                 (fl.arrival(arrival) if fl is not None else nullcontext()), \
+                 torch.cuda.nvtx.range(session_range):
                 for instr in task.instructions:
                     nsys_seq = int(context.get('_nsys_seq', 0))
                     context['_nsys_seq'] = nsys_seq + 1
@@ -522,7 +563,9 @@ class WorkerModule(multiprocessing.Process):
                     start_ev.record()
                     with torch.cuda.nvtx.range(nsys_range):
                         with torch.cuda.nvtx.range(instr.op_type.name):
-                            meta = self._dispatch(instr, task, context)
+                            with (fl.stage(instr.op_type.name) if fl is not None
+                                  else nullcontext()):
+                                meta = self._dispatch(instr, task, context)
                     end_ev.record()
 
                     meta = self._merge_nsys_event_meta(

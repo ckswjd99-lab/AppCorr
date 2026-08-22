@@ -39,6 +39,15 @@ class Qwen25VLExecutor(ModelExecutor):
         self.num_llm_layers = 0
         self.image_token_id = None
 
+    def backbone_modules(self):
+        """A VLM's backbone is both halves: the vision tower and the language model.
+
+        `lm_head` is excluded -- it is the header, and it is also the only part whose cost scales
+        with the vocabulary rather than with the image.
+        """
+        inner = getattr(self.model, "model", None)
+        return [getattr(inner, "visual", None), getattr(inner, "language_model", None)]
+
     def load_model(self, model_name: str, config: Any):
         from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
         from appcorr.models.qwen25vl.vision.backbone import ApproxCorrectQwen25VLVisionTower

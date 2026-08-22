@@ -635,6 +635,16 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if not valid_group_plans:
             self.prepare_group_maps_and_dindices(None, context, config)
 
+    def backbone_modules(self):
+        """The ViT trunk only.
+
+        The detector wraps it as `model.encoder.backbone`, and the detection head plus the encoder's
+        own transformer are the header. Both spellings are checked because the two DINOv3 detector
+        builds in this repo differ.
+        """
+        enc = getattr(self.model, "encoder", None)
+        return [getattr(self.model, "backbone", None) or getattr(enc, "backbone", None)]
+
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Detector Model (MMap): {model_name}...")
         if self.model is not None:
