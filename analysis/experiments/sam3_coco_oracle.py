@@ -191,13 +191,25 @@ class swap_vision:
     """
 
     def __init__(self, model, tower, px, px_l2, arm, keep_ratio, pscore="energy_attn",
-                 groups=1, bounds="aligned", force_interleaved=False):
+                 groups=1, bounds="aligned", force_interleaved=False, flops=None):
         self.model, self.tower, self.px, self.px_l2 = model, tower, px, px_l2
         self.arm, self.keep_ratio, self.pscore = arm, keep_ratio, pscore
         self.groups, self.bounds = groups, bounds
         # Gate only: run the interleaved machinery with one group, which must reproduce one-shot.
         self.force_interleaved = force_interleaved
+        # Optional `appcorr.flops.FlopCounter`. Arrival 0 is the base image, arrivals 1..g are the
+        # detail groups, and `ceiling` opens none -- so it comes out 100% critical, which is right:
+        # for it the full-resolution image IS the whole transmission.
+        self.flops = flops
         self.original = None
+
+    def _arrival(self, index):
+        from contextlib import nullcontext
+        return self.flops.arrival(index) if self.flops is not None else nullcontext()
+
+    def _stage(self, name):
+        from contextlib import nullcontext
+        return self.flops.stage(name) if self.flops is not None else nullcontext()
 
     def __enter__(self):
         if self.arm == "ceiling":
@@ -207,7 +219,12 @@ class swap_vision:
         px_l2 = self.px_l2
         want_attn = self.arm == "corrected" and self.pscore == "energy_attn"
         x_approx = self.tower.prepare_tokens(px_l2)
-        hidden, cache = self.tower.approx_forward(x_approx, {}, collect_attn=want_attn)
+        # Default for the floor arm: it never opens a later arrival, so index 0 is also the
+        # maximum and the whole request is critical -- correct, since the degraded image is its
+        # entire transmission.
+        self._last_arrival_hint = 0
+        with self._arrival(0), self._stage("approx"):
+            hidden, cache = self.tower.approx_forward(x_approx, {}, collect_attn=want_attn)
 
         if self.arm == "corrected":
             energy = residual_energy(self.px, px_l2, self.tower.patch_size)
@@ -221,7 +238,9 @@ class swap_vision:
             mixed = mixed.reshape(b, h, w, c)
 
             if self.groups <= 1 and not self.force_interleaved:
-                hidden, _ = self.tower.correct_forward(mixed, idx, cache)
+                self._last_arrival_hint = 1
+                with self._arrival(1), self._stage("correct"):
+                    hidden, _ = self.tower.correct_forward(mixed, idx, cache)
             else:
                 # Interleaved: redo the approximate pass in ranges so each round's cache reflects
                 # only the depth reached so far, then correct the arrived groups over that depth.
@@ -264,10 +283,12 @@ class swap_vision:
 
                 cache = {}
                 # Nothing has arrived yet, so the opening pass is the pure approximate one --
-                # the same input one-shot starts from.
-                hidden, cache = self.tower.approx_forward(
-                    x_approx, cache, layers=(0, bounds[0]))
+                # the same input one-shot starts from. It needs only the base image: arrival 0.
+                with self._arrival(0), self._stage("approx"):
+                    hidden, cache = self.tower.approx_forward(
+                        x_approx, cache, layers=(0, bounds[0]))
                 arrived = []
+                last_arrival = 0
                 for r in range(len(bounds)):
                     arrived.append(per_group[r])
                     # THIS ROUND'S GROUP ONLY -- never the accumulated set. Earlier groups are
@@ -279,15 +300,26 @@ class swap_vision:
                     # (`offload/server/model/vggt_omega.py`), where interleaved and one-shot then
                     # agreed to 16 decimals.
                     tok = per_group[r]
-                    if tok.numel():
-                        hidden, cache = self.tower.correct_forward(
-                            stream(torch.cat(arrived).sort().values), tok, cache,
-                            layers=(0, bounds[r]))
-                    if r + 1 < len(bounds):
-                        hidden, cache = self.tower.approx_forward(
-                            hidden, cache, layers=(bounds[r], bounds[r + 1]))
+                    # Round r cannot start before group r lands: arrival r+1. Only the highest
+                    # index survives as critical, which at g=4 is the r=3 body.
+                    last_arrival = r + 1
+                    with self._arrival(last_arrival):
+                        if tok.numel():
+                            with self._stage("correct"):
+                                hidden, cache = self.tower.correct_forward(
+                                    stream(torch.cat(arrived).sort().values), tok, cache,
+                                    layers=(0, bounds[r]))
+                        if r + 1 < len(bounds):
+                            with self._stage("approx"):
+                                hidden, cache = self.tower.approx_forward(
+                                    hidden, cache, layers=(bounds[r], bounds[r + 1]))
+                self._last_arrival_hint = last_arrival
 
-        fpn, pos = self.tower.run_neck(hidden)
+        # The neck consumes the FINAL hidden state, so it waits on whatever the last
+        # arrival was; giving it an index of its own would invent an arrival the
+        # transmission never had.
+        with self._arrival(self._last_arrival_hint), self._stage("neck"):
+            fpn, pos = self.tower.run_neck(hidden)
         out = Sam3VisionEncoderOutput(fpn_hidden_states=fpn, fpn_position_encoding=pos)
         self.original = self.model.vision_encoder.forward
         self.model.vision_encoder.forward = lambda *a, **k: out
