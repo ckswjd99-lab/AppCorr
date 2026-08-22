@@ -16,7 +16,11 @@ set -u
 cd /NHNHOME/share/cjpark/AppCorr-flops
 PY=/home/nxclab/anaconda3/envs/appcorr/bin/python
 export CUDA_VISIBLE_DEVICES=${GPU:-0}
-GROUPS=${BANDS:-4}
+# NOT `GROUPS`: bash owns that name -- it holds the caller's group ids, so `GROUPS=${BANDS:-4}`
+# leaves the array in place and `${GROUPS}` reads its first element (1999 here). The same trap
+# already cost a sweep in run_ov2_multidataset.sh; the assert in ov2_oracle.py catches it now, but
+# the fix is to not use the name.
+BANDS=${BANDS:-4}
 DATASETS=${DATASETS:-"realworldqa mmmu chartqa gqa pope textvqa infovqa refcoco docvqa"}
 MODELS=${MODELS:-"ov2 gemma3"}
 
@@ -37,8 +41,8 @@ for DS in $DATASETS; do
     arm_run "$M" "$DS" ceiling --arm ceiling
     arm_run "$M" "$DS" floor   --arm floor
     for K in 0.30 0.50; do
-      arm_run "$M" "$DS" "interleaved_g${GROUPS}_k${K}" \
-              --arm interleaved --keep "$K" --groups "$GROUPS"
+      arm_run "$M" "$DS" "interleaved_g${BANDS}_k${K}" \
+              --arm interleaved --keep "$K" --groups "$BANDS"
     done
   done
 done
