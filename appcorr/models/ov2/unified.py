@@ -35,6 +35,7 @@ second image size.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -47,8 +48,13 @@ from .vision.block import ApproxCorrectOneVisionLayer
 class OV2UnifiedAxis(nn.Module):
     """Wraps a stock `LlavaOnevision2Model` as one 60-stage approx/correct axis."""
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(self, model: nn.Module, flop_counter=None) -> None:
         super().__init__()
+        # Optional `appcorr.flops.FlopCounter`. The axis only declares WHEN each piece of work
+        # became possible; the counter decides what that makes critical. Left None -- the default,
+        # and what every existing driver passes -- the arrival/stage scopes below are `nullcontext`
+        # and cost one attribute test per scope, not per operation.
+        self.flops = flop_counter
         self.model = model                                   # LlavaOnevision2Model
         vt = model.visual
         self.vt = vt
@@ -65,6 +71,18 @@ class OV2UnifiedAxis(nn.Module):
         # image decides all three and a stale value silently mis-sizes the interleaved schedule.
         self._n_patch: Optional[int] = None
         self._seq_len: Optional[int] = None
+
+    # --- FLOP accounting scopes ------------------------------------------------------------------ #
+    # The axis declares WHEN work became possible; `appcorr.flops` turns that into the critical /
+    # overlappable split. Arrival 0 is the base image, arrivals 1..g are the detail groups, so the
+    # highest index -- and therefore the critical set -- is whatever ran after the last group.
+    # `full_forward` opens none, which is what makes the ceiling come out 100% critical.
+
+    def _arrival(self, index: int):
+        return self.flops.arrival(index) if self.flops is not None else nullcontext()
+
+    def _stage(self, name: str):
+        return self.flops.stage(name) if self.flops is not None else nullcontext()
 
     # --- geometry ------------------------------------------------------------------------------ #
 
@@ -440,53 +458,64 @@ class OV2UnifiedAxis(nn.Module):
             emb = emb_appr
 
         # Opening approximate pass, up to the first bound, on the PURE approximate input --
-        # nothing has arrived yet (contract rule 2).
+        # nothing has arrived yet (contract rule 2). Arrival 0: it needs only the base image, so it
+        # overlaps the detail transmission entirely.
         v_front = min(bounds[0], n_vis)
-        vh, cache = self.vision_approx(x_appr, freqs, cache, layers=(0, v_front))
-        if bounds[0] > n_vis:
-            cross_projector()
-            emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, bounds[0] - n_vis))
-            llm_depth = bounds[0] - n_vis
+        with self._arrival(0), self._stage("approx"):
+            vh, cache = self.vision_approx(x_appr, freqs, cache, layers=(0, v_front))
+            if bounds[0] > n_vis:
+                cross_projector()
+                emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, bounds[0] - n_vis))
+                llm_depth = bounds[0] - n_vis
 
         for r in range(groups):
             last = (r == groups - 1)
             arrived_p = arrived_p | groups_p[r]
             stream = torch.where(arrived_p.unsqueeze(-1), x_full, x_appr)
 
-            # --- correct this round's group over the vision stages walked so far ---
-            if v_front > 0 and bool(groups_p[r].any()):
-                vh, cache = self.vision_correct(stream, groups_p[r], freqs, cache,
-                                                layers=(0, v_front))
-                stats["layer_corrections"] += v_front
+            # Round r cannot start before group r lands, so its whole body -- the correction AND
+            # the approximate frontier that follows it -- is charged to arrival r+1. Only the
+            # highest index survives as critical, which at g=4 is exactly the r=3 body.
+            with self._arrival(r + 1):
+                # --- correct this round's group over the vision stages walked so far ---
+                if v_front > 0 and bool(groups_p[r].any()):
+                    with self._stage("vision_correct"):
+                        vh, cache = self.vision_correct(stream, groups_p[r], freqs, cache,
+                                                        layers=(0, v_front))
+                    stats["layer_corrections"] += v_front
 
-            # --- and over the LLM stages walked so far ---
-            if llm_depth > 0:
-                this_round = (self.patch_mask_any_to_token(groups_p[r])
-                              & llm_oneshot[:, ctx["image_positions"]])
-                arrived_t = arrived_t | this_round
-                tm = torch.zeros(input_ids.shape[0], seq_len, dtype=torch.bool,
-                                 device=input_ids.device)
-                tm[:, ctx["image_positions"]] = this_round
-                if last:
-                    is_text = torch.ones_like(tm)
-                    is_text[:, ctx["image_positions"]] = False
-                    tm = tm | is_text
-                if bool(tm.any()):
-                    emb, cache = self.llm_correct(llm_input(), tm, ctx, cache,
-                                                  layers=(0, llm_depth))
-                    stats["layer_corrections"] += llm_depth
+                # --- and over the LLM stages walked so far ---
+                if llm_depth > 0:
+                    this_round = (self.patch_mask_any_to_token(groups_p[r])
+                                  & llm_oneshot[:, ctx["image_positions"]])
+                    arrived_t = arrived_t | this_round
+                    tm = torch.zeros(input_ids.shape[0], seq_len, dtype=torch.bool,
+                                     device=input_ids.device)
+                    tm[:, ctx["image_positions"]] = this_round
+                    if last:
+                        is_text = torch.ones_like(tm)
+                        is_text[:, ctx["image_positions"]] = False
+                        tm = tm | is_text
+                    if bool(tm.any()):
+                        with self._stage("llm_correct"):
+                            emb, cache = self.llm_correct(llm_input(), tm, ctx, cache,
+                                                          layers=(0, llm_depth))
+                        stats["layer_corrections"] += llm_depth
 
-            # --- advance the approximate frontier to the next bound ---
-            nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
-            if v_front < min(nxt, n_vis):
-                vh, cache = self.vision_approx(vh, freqs, cache, layers=(v_front, min(nxt, n_vis)))
-                v_front = min(nxt, n_vis)
-            if nxt > n_vis:
-                if feats_appr is None:                  # first time the axis crosses the projector
-                    cross_projector()
-                if nxt - n_vis > llm_depth:
-                    emb, cache = self.llm_approx(emb, ctx, cache, layers=(llm_depth, nxt - n_vis))
-                    llm_depth = nxt - n_vis
+                # --- advance the approximate frontier to the next bound ---
+                nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
+                with self._stage("approx"):
+                    if v_front < min(nxt, n_vis):
+                        vh, cache = self.vision_approx(vh, freqs, cache,
+                                                       layers=(v_front, min(nxt, n_vis)))
+                        v_front = min(nxt, n_vis)
+                    if nxt > n_vis:
+                        if feats_appr is None:          # first time the axis crosses the projector
+                            cross_projector()
+                        if nxt - n_vis > llm_depth:
+                            emb, cache = self.llm_approx(emb, ctx, cache,
+                                                         layers=(llm_depth, nxt - n_vis))
+                            llm_depth = nxt - n_vis
 
         # Return the PRE-finish hidden state: every driver applies `llm_finish` itself before the
         # lm_head. Returning a finished state here made the Gemma 3 interleaved arm norm twice,
@@ -574,8 +603,10 @@ class OV2UnifiedAxis(nn.Module):
         x_full = self.vision_prepare(px_full)
 
         # --- base image: the whole encoder, so every token has a value and every layer a K/V ---
+        # Arrival 0 -- it needs only the base image, so it overlaps the detail transmission.
         cache: Dict[str, Any] = {}
-        vh, cache = self.vision_approx(x_base, freqs, cache)
+        with self._arrival(0), self._stage("vision_base"):
+            vh, cache = self.vision_approx(x_base, freqs, cache)
         stats = {"vision_layer_passes": self.n_vision, "prefill_tokens": 0}
 
         emb_all = self.lm.get_input_embeddings()(input_ids)
@@ -603,32 +634,44 @@ class OV2UnifiedAxis(nn.Module):
             pos_done = end
 
         arrived = torch.zeros(1, n_patch, dtype=torch.bool, device=x_full.device)
+        last_arrival = 0
         for r, (t0, t1) in enumerate(bands):
             if t1 <= t0:
                 continue
-            pm = torch.zeros(1, n_patch, dtype=torch.bool, device=x_full.device)
-            pm[0, t0 * self.merge:t1 * self.merge] = True
-            arrived |= pm
-            stream = torch.where(arrived.unsqueeze(-1), x_full, x_base)
+            # Band r cannot start before band r lands, so its whole body is charged to arrival r+1.
+            # Only the highest index survives as critical, which is the 1/g claim this schedule
+            # makes: one band's vision recompute plus one prefill chunk.
+            last_arrival = r + 1
+            with self._arrival(last_arrival):
+                pm = torch.zeros(1, n_patch, dtype=torch.bool, device=x_full.device)
+                pm[0, t0 * self.merge:t1 * self.merge] = True
+                arrived |= pm
+                stream = torch.where(arrived.unsqueeze(-1), x_full, x_base)
 
-            # Recompute this band against the stored K/V -- which already carries earlier bands'
-            # corrected keys and values, so a later band sees a better context than an earlier one.
-            vh, cache = self.vision_correct(stream, pm, freqs, cache)
-            stats["vision_layer_passes"] += self.n_vision * (t1 - t0) / n_tok
+                # Recompute this band against the stored K/V -- which already carries earlier
+                # bands' corrected keys and values, so a later band sees a better context.
+                with self._stage("vision_correct"):
+                    vh, cache = self.vision_correct(stream, pm, freqs, cache)
+                stats["vision_layer_passes"] += self.n_vision * (t1 - t0) / n_tok
 
-            # Project only this band. The merger is per-token (LayerNorm over features, a reshape
-            # of 4 consecutive patches, then an MLP), so slicing it is exact, not an approximation.
-            sl = slice(t0 * self.merge, t1 * self.merge)
-            pp_sl = (patch_positions.squeeze(0) if patch_positions.dim() == 3
-                     else patch_positions)[sl]
-            emb_all[:, lo + t0:lo + t1] = self.project(vh[:, sl], pp_sl).reshape(
-                1, t1 - t0, -1).to(emb_all.dtype)
+                # Project only this band. The merger is per-token (LayerNorm over features, a
+                # reshape of 4 consecutive patches, then an MLP), so slicing it is exact.
+                sl = slice(t0 * self.merge, t1 * self.merge)
+                pp_sl = (patch_positions.squeeze(0) if patch_positions.dim() == 3
+                         else patch_positions)[sl]
+                with self._stage("project"):
+                    emb_all[:, lo + t0:lo + t1] = self.project(vh[:, sl], pp_sl).reshape(
+                        1, t1 - t0, -1).to(emb_all.dtype)
 
-            # Everything up to the end of this band is now final as far as this schedule is
-            # concerned; prefill it. On r=0 this also carries the leading text.
-            prefill(lo + t1)
+                # Everything up to the end of this band is now final as far as this schedule is
+                # concerned; prefill it. On r=0 this also carries the leading text.
+                with self._stage("llm_prefill"):
+                    prefill(lo + t1)
 
-        prefill(seq)                      # the trailing text: the question and the generation prompt
+        # The trailing text waits on the last band, so it belongs to that same arrival -- charging
+        # it to a later index of its own would invent an arrival the transmission never had.
+        with self._arrival(last_arrival), self._stage("llm_prefill"):
+            prefill(seq)                  # the question and the generation prompt
         return last_hidden, kv, stats
 
     # --- whole axis ----------------------------------------------------------------------------- #

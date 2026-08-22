@@ -122,6 +122,22 @@ class ModelExecutor(ABC):
         denom = score_sums.clamp_min(torch.finfo(torch.float32).eps).to(dtype=score_map.dtype)
         return score_map / denom
 
+    def backbone_modules(self):
+        """The module subtree `appcorr.flops` should account for, or None if not declared.
+
+        This is how "backbone only" is enforced: FLOP hooks go on exactly what is returned here, so
+        task heads, detokenizers and action heads are excluded by not being in the subtree rather
+        than by being named somewhere that could drift.
+
+        Returning None is not "count everything" -- it makes the worker REFUSE to enable
+        accounting for this executor. A measurement feature that silently reports zero for a model
+        nobody wired up is worse than one that stops and says so.
+
+        For a VFM return the feature trunk and stop before the head; for a VLM the vision tower and
+        the language model; for a VLA the same.
+        """
+        return None
+
     @abstractmethod
     def load_model(self, model_name: str, config: Any):
         pass

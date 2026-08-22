@@ -44,6 +44,10 @@ class DINOv3DeptherExecutor(ModelExecutor):
             return torch.float32
         raise ValueError(f"Unsupported autocast dtype: {name}")
 
+    def backbone_modules(self):
+        """The ViT trunk only; the DPT-style depth head is excluded."""
+        return [getattr(self.model, "backbone", None)]
+
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Depther Model (MMap): {model_name}...")
         if self.model is not None:

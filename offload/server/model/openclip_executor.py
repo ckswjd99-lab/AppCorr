@@ -49,6 +49,16 @@ class OpenCLIPExecutor(ModelExecutor):
         self.norm_mean = torch.tensor(CLIP_MEAN).view(1, 3, 1, 1).to(self.device).float()
         self.norm_std = torch.tensor(CLIP_STD).view(1, 3, 1, 1).to(self.device).float()
 
+    def backbone_modules(self):
+        """Vision tower plus the projection into the shared embedding space.
+
+        Zero-shot classification's "head" is a precomputed text-prototype matrix, and retrieval has
+        no head at all, so the image embedding IS this VFM's feature and the projection belongs
+        inside the backbone rather than after it.
+        """
+        return [getattr(self.clip_model, "vision_model", None),
+                getattr(self.clip_model, "visual_projection", None)]
+
     def load_model(self, model_name: str, config: Any):
         from transformers import CLIPModel, CLIPProcessor
         from appcorr.models.openclip.vision.backbone import ApproxCorrectCLIPVisionTower
