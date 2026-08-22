@@ -36,10 +36,10 @@ run () {   # run <tag> <config> <nr> [--set ...]
 
 # ---- DINOv3: classification, detection, segmentation, depth ---------------------------------- #
 for K in 0.25 0.30 0.50; do
-  run "dinov3_imagenet_g4_k${K}"  offload/config/imnet/imnet_interleaved_g4.json          "$NR" --set appcorr_kwargs.token_keep_ratio=$K
-  run "dinov3_ade20k_g4_k${K}"    offload/config/ade20k/ade20k_m2f_interleaved_static.json "$NR" --set appcorr_kwargs.token_keep_ratio=$K
-  run "dinov3_nyu_g4_k${K}"       offload/config/nyu/nyu_interleaved_static.json           "$NR" --set appcorr_kwargs.token_keep_ratio=$K
-  run "dinov3_coco_g4_k${K}"      offload/config/coco/coco_interleaved_static.json         "$NR" --set appcorr_kwargs.token_keep_ratio=$K
+  run "dinov3_imagenet_g4_k${K}"  offload/config/imnet/imnet_interleaved_g4.json          "$NR" --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
+  run "dinov3_ade20k_g4_k${K}"    offload/config/ade20k/ade20k_m2f_interleaved_static.json "$NR" --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
+  run "dinov3_nyu_g4_k${K}"       offload/config/nyu/nyu_interleaved_static.json           "$NR" --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
+  run "dinov3_coco_g4_k${K}"      offload/config/coco/coco_interleaved_static.json         "$NR" --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
 done
 run "dinov3_imagenet_ceiling" offload/config/imnet/imnet_sequential.json           "$NR"
 run "dinov3_ade20k_ceiling"   offload/config/ade20k/ade20k_m2f_sequential.json     "$NR"
@@ -49,7 +49,7 @@ run "dinov3_coco_ceiling"     offload/config/coco/coco_sequential.json          
 # ---- VGGT-Omega: Co3D -------------------------------------------------------------------------- #
 for K in 0.25 0.30 0.50; do
   run "vggt_co3d_g4_k${K}" offload/config/co3d/co3d_interleaved.json "$NR" \
-      --set appcorr_kwargs.token_keep_ratio=$K --set transmission_kwargs.num_groups=4
+      --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K --set transmission_kwargs.num_groups=4
 done
 run "vggt_co3d_ceiling" offload/config/co3d/co3d_full.json "$NR"
 
