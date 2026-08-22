@@ -6,7 +6,9 @@
 # so they are the comparable axis across all three model families.
 cd /NHNHOME/share/cjpark/AppCorr-ov2
 PY=/home/nxclab/anaconda3/envs/appcorr/bin/python
-export HF_TOKEN='REDACTED_SEE_HEAD'
+# Never hardcode the token -- see the Gemma 3 sweep scripts. Fail loudly when it is unset.
+: "${HF_TOKEN:?set HF_TOKEN in the environment before running this sweep}"
+export HF_TOKEN
 export CUDA_VISIBLE_DEVICES=0
 
 for DS in chartqa textvqa; do
