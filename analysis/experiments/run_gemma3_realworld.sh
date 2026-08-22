@@ -5,7 +5,11 @@
 # the sweep with it, and an arm that already has results is skipped on re-run.
 cd /NHNHOME/share/cjpark/AppCorr-gemma3
 PY=/home/nxclab/anaconda3/envs/appcorr/bin/python
-export HF_TOKEN='REDACTED_SEE_HEAD'
+# Never hardcode the token: a committed credential is what GitHub push protection blocks, and it
+# has to be scrubbed from every commit that carried it. Take it from the environment and fail loudly
+# if it is missing, rather than running and failing later with an opaque 401 from the hub.
+: "${HF_TOKEN:?set HF_TOKEN in the environment before running this sweep}"
+export HF_TOKEN
 export CUDA_VISIBLE_DEVICES=0
 
 for DS in realworldqa textvqa pope; do
