@@ -16,6 +16,7 @@ set -u
 cd /NHNHOME/share/cjpark/AppCorr-flops
 OUT=${OUT:-analysis/results/flops}
 NR=${NR:-3}
+CO3D_ROOT=${CO3D_ROOT:-/NHNHOME/share/cjpark/data/co3dv2}
 mkdir -p "$OUT"
 export CUDA_VISIBLE_DEVICES=${GPU:-0}
 export APPCORR_FLOPS=1
@@ -51,7 +52,7 @@ for K in 0.25 0.30 0.50; do
   run "vggt_co3d_g4_k${K}" offload/config/co3d/co3d_interleaved.json "$NR" \
       --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K --set transmission_kwargs.num_groups=4
 done
-run "vggt_co3d_ceiling" offload/config/co3d/co3d_full.json "$NR"
+run "vggt_co3d_ceiling" offload/config/co3d/co3d_full.json "$NR" -d "$CO3D_ROOT"
 
 # ---- Qwen2.5-VL ------------------------------------------------------------------------------- #
 # Measured in-process by flops_report_qwen25vl.py, not here. Its offload configs name dataset
@@ -64,7 +65,8 @@ run "vggt_co3d_ceiling" offload/config/co3d/co3d_full.json "$NR"
 # threshold operating point kept for comparison against the exact rates.
 run "openclip_imagenet_g4_thres" offload/config/imagenet_clip_bigg_interleaved_g4.json      "$NR"
 run "openclip_imagenet_ceiling" offload/config/imagenet_clip_bigg_sequential.json           "$NR"
-run "openclip_cocoret_g4_thres" offload/config/coco_retrieval_clip_bigg_interleaved_g4.json "$NR"
-run "openclip_cocoret_ceiling"  offload/config/coco_retrieval_clip_bigg_sequential.json     "$NR"
+# COCO retrieval is NOT runnable here: its config names dataset "coco_captions" and
+# `offload/mobile/dataset.get_dataset_loader` has no entry for it, the same gap that blocks
+# Qwen's "realworldqa". Left out rather than retried.
 
 echo "FLOPS CAMPAIGN COMPLETE $(date)"
