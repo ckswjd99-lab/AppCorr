@@ -87,16 +87,38 @@ def main():
                     px2 = encode(proc, deg, prompt, dev)["pixel_values"].to(dt)
                     with fl.request(i, n_patch=int(px.shape[0]), seq=int(ids.shape[1])):
                         fn(axis, fl, ids, pp, px, px2)
-            return fl.aggregate()
+            return fl.aggregate(), fl
 
         # --- ceiling: the stock prefill, no arrivals, so it is 100% critical by the rule --------- #
         def ceiling(axis, fl, ids, pp, px, px2):
             axis.full_forward(px, pp, ids)
 
-        ceil_agg = run(ceiling)
+        ceil_agg, fl_ceiling = run(ceiling)
         full_g = ceil_agg["mean_total_gflops"]
         print(f"\n══ {ds_name}  (n={len(idxs)}) ══")
         print(f"  full inference (ceiling prefill)   {full_g:10.1f} GFLOPs/instruction")
+
+        # --- did the hooks see everything? ------------------------------------------------------ #
+        # A path that reaches attention through a fused or varlen kernel never calls
+        # `scaled_dot_product_attention`, and the counter then loses the entire quadratic term while
+        # every other number still looks plausible. Cross-check the ceiling against a closed form
+        # built from the config and the measured token counts, and say so out loud when it drifts.
+        vc, tc = model.config.vision_config, model.config.text_config
+        n_patch = sum(int(r.meta.get("n_patch", 0)) for r in fl_ceiling.requests) / len(idxs)
+        seq = sum(int(r.meta.get("seq", 0)) for r in fl_ceiling.requests) / len(idxs)
+        n_tok = n_patch / 4
+        vh, th = vc.hidden_size, tc.hidden_size
+        vheads = vc.num_attention_heads
+        v_layer = (2 * n_patch * vh * (3 * vh + vh) + 2 * 2 * n_patch * n_patch * vh
+                   + 2 * 2 * n_patch * vh * vc.intermediate_size)
+        kv_dim = tc.num_key_value_heads * (th // tc.num_attention_heads)
+        l_layer = (2 * seq * th * (th + 2 * kv_dim + th) + 2 * 2 * seq * seq * th
+                   + 3 * 2 * seq * th * tc.intermediate_size)
+        analytic = (vc.num_hidden_layers * v_layer + tc.num_hidden_layers * l_layer) / 1e9
+        ratio = full_g / analytic if analytic else 0.0
+        flag = "OK" if 0.9 <= ratio <= 1.15 else "!! CHECK -- hooks may be missing a path"
+        print(f"  independent analytic estimate      {analytic:10.1f} GFLOPs   "
+              f"measured/analytic = {ratio:4.2f}  {flag}")
 
         for keep in a.keeps:
             def interleaved(axis, fl, ids, pp, px, px2, keep=keep):
@@ -115,7 +137,7 @@ def main():
                 is_text[:, ctx["image_positions"]] = False
                 axis.interleaved_forward(px, px2, pp, ids, pm, tm | is_text, a.groups)
 
-            agg = run(interleaved)
+            agg, _ = run(interleaved)
             crit = agg["mean_critical_gflops"]
             tot = agg["mean_total_gflops"]
             rows.append((ds_name, keep, crit, tot, full_g))
