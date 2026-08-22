@@ -1,0 +1,14 @@
+{
+  "model": "dinov3_segmentor_m2f",
+  "batch_size": 1,
+  "mean_total_gflops_per_image": 12931.40754432,
+  "mean_critical_gflops_per_image": 12931.40754432,
+  "requests": 3,
+  "mean_total_gflops": 12931.40754432,
+  "mean_critical_gflops": 12931.40754432,
+  "mean_overlappable_gflops": 0.0,
+  "critical_fraction": 1.0,
+  "mean_stage_gflops": {
+    "APPROX_FORWARD": 12931.40754432
+  }
+}

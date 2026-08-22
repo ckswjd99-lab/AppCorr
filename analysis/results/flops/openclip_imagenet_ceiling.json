@@ -1,0 +1,14 @@
+{
+  "model": "openclip_zeroshot",
+  "batch_size": 32,
+  "mean_total_gflops_per_image": 967.496032256,
+  "mean_critical_gflops_per_image": 967.496032256,
+  "requests": 3,
+  "mean_total_gflops": 30959.873032192,
+  "mean_critical_gflops": 30959.873032192,
+  "mean_overlappable_gflops": 0.0,
+  "critical_fraction": 1.0,
+  "mean_stage_gflops": {
+    "FULL_INFERENCE": 30959.873032192
+  }
+}

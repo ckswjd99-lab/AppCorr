@@ -1,0 +1,14 @@
+{
+  "model": "dinov3_classifier",
+  "batch_size": 32,
+  "mean_total_gflops_per_image": 3549.337092096,
+  "mean_critical_gflops_per_image": 3549.337092096,
+  "requests": 3,
+  "mean_total_gflops": 113578.786947072,
+  "mean_critical_gflops": 113578.786947072,
+  "mean_overlappable_gflops": 0.0,
+  "critical_fraction": 1.0,
+  "mean_stage_gflops": {
+    "FULL_INFERENCE": 113578.786947072
+  }
+}

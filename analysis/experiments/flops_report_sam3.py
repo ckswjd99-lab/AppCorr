@@ -53,12 +53,17 @@ def main():
     # Sam3TrackerModel loads a subset of the architecture and leaves `vision_encoder` returning a
     # tuple -- surfacing later as "'tuple' object has no attribute 'shape'", far from the cause.
     model = AutoModel.from_pretrained(a.repo, dtype=dt, token=token).to(dev).eval()
+    # `Sam3VideoModel` nests the image path under `detector_model`; the tracker half is a separate
+    # subtree with no vision encoder of its own. Descend to whichever child actually owns one
+    # rather than assuming a flat layout.
     if not hasattr(model, "vision_encoder"):
-        for attr in ("model", "sam3", "vision_model"):
+        for attr in ("detector_model", "model", "sam3", "vision_model"):
             inner = getattr(model, attr, None)
             if inner is not None and hasattr(inner, "vision_encoder"):
                 model = inner
                 break
+    if not hasattr(model, "vision_encoder"):
+        raise SystemExit("could not locate a vision_encoder on the loaded SAM 3 model")
     proc = Sam3Processor.from_pretrained(a.repo, token=token)
     ip = getattr(proc, "image_processor", proc)
     mean = torch.tensor(ip.image_mean, device=dev).view(1, 3, 1, 1)
