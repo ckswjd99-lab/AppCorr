@@ -34,6 +34,20 @@ class VGGTOmegaExecutor(ModelExecutor):
         super().__init__(device)
         self.autocast_dtype = torch.bfloat16
 
+    def backbone_modules(self):
+        """VGGT's aggregator -- the DINOv3-derived trunk that produces the tokens every head reads.
+
+        The camera, depth and point heads are the header this VFM stops before. `aggregator` is
+        checked first because that is what the VGGT builds in this repo call it; the fallbacks cover
+        a plain `backbone` naming.
+        """
+        m = self.model
+        for attr in ("aggregator", "backbone", "trunk"):
+            sub = getattr(m, attr, None)
+            if sub is not None:
+                return [sub]
+        return [m]
+
     def load_model(self, model_name: str, config: Any = None):
         from appcorr.models.vggt_omega.models.vggt_omega import VGGTOmega
 

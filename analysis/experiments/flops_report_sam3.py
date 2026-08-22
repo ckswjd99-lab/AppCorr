@@ -87,8 +87,11 @@ def main():
     def run(arm, keep, groups):
         with flops.session(model.vision_encoder, enabled=True) as fl:
             for p in paths:
-                px = S.load_pixels(p, dev, mean, std, dt, 0)
-                px2 = S.load_pixels(p, dev, mean, std, dt, a.level)
+                # `load_pixels` returns (tensor, orig_w, orig_h) -- the oracle needs the original
+                # size to map masks back. Passing the whole tuple as pixel_values surfaced far away
+                # as "'tuple' object has no attribute 'shape'" inside the encoder.
+                px, _, _ = S.load_pixels(p, dev, mean, std, dt, 0)
+                px2, _, _ = S.load_pixels(p, dev, mean, std, dt, a.level)
                 with fl.request(p):
                     if arm == "ceiling":
                         # No arrivals opened: the exact forward waits on the whole image by
