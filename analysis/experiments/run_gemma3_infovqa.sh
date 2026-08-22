@@ -20,6 +20,6 @@ run () {
 }
 run ceiling        --arm ceiling
 run floor          --arm floor
-run corrected_t    --arm corrected_t
+run corrected      --arm corrected
 run interleaved_g4 --arm interleaved --keep 0.55 --groups 4
 echo "INFOVQA SWEEP COMPLETE $(date)"

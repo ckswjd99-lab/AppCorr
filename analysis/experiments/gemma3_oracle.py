@@ -130,24 +130,32 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
     pm = torch.zeros_like(score, dtype=torch.bool).scatter_(
         1, score.topk(pk, dim=-1).indices, True)
 
-    if arm == "corrected_j":
+    # Two variations, kept because they were measured, not because they are recommended: at full
+    # scale on ChartQA all three are statistically indistinguishable (p >= 0.64), and
+    # `corrected_patchled` reaches that tie while correcting 45% more LLM tokens (261 vs 180).
+    if arm == "corrected_patchled":
+        # Patches lead: take the patch top-k, then correct every token whose 4x4 block it touches.
         sel_tok = axis.patch_mask_any_to_token(pm)
-    elif arm in ("corrected_t", "interleaved", "parity"):
-        # interleaved is the INTERLEAVED FORM OF corrected_t, so it must share corrected_t's
-        # selection: the patch mask is DERIVED from the chosen tokens. Leaving it in the `else`
-        # branch gave it the `corrected` arm's independent patch top-k instead -- the same 141
-        # tokens but a different patch set -- and the two arms disagreed on 16/40 samples while
-        # each stayed perfectly reproducible. `parity` joins them so it compares like with like.
+    elif arm == "corrected_split":
+        # Independent budgets: keep the patch top-k for vision AND take a token top-k for the LLM.
+        # The two masks do not nest, which is why interleaved cannot use this variant.
+        pooled = axis.pool_patch_score(score)
+        tk = max(1, int(round(keep * n_img)))
+        sel_tok = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
+            1, pooled.topk(tk, dim=-1).indices, True)
+    else:
+        # DEFAULT (`corrected`, and everything built on it: interleaved, parity).
+        # Tokens lead and the patch mask is DERIVED from them, so
+        # `patch_mask_any_to_token(pm) == sel_tok` holds exactly. Interleaved needs that identity to
+        # split patches into groups that map onto token groups; when it briefly fell into the
+        # independent-budget branch instead it corrected the same 141 tokens over a different patch
+        # set and disagreed with one-shot on 16/40 samples. The default lives in `else` on purpose:
+        # a new arm added later inherits the selection that composes, rather than one that does not.
         pooled = axis.pool_patch_score(score)
         tk = max(1, int(round(keep * n_img)))
         sel_tok = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
             1, pooled.topk(tk, dim=-1).indices, True)
         pm = axis.token_mask_to_patch_mask(sel_tok, n_patch)
-    else:
-        pooled = axis.pool_patch_score(score)
-        tk = max(1, int(round(keep * n_img)))
-        sel_tok = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
-            1, pooled.topk(tk, dim=-1).indices, True)
 
     tm = torch.zeros(ids.shape[0], ids.shape[1], dtype=torch.bool, device=device)
     tm[:, ctx["image_positions"]] = sel_tok
@@ -172,7 +180,7 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
         # Both paths, in the DRIVER, off the SAME pm/sel_tok/tm. A standalone replica of these two
         # paths reported bit-identical output while the driver's two arms disagreed on 16/40
         # samples -- so the replica was wrong, and the only trustworthy comparison is this one.
-        # interleaved runs first: it builds its own cache from {}, whereas the corrected_t path
+        # interleaved runs first: it builds its own cache from {}, whereas the corrected path
         # below mutates `cache` in place via vision_correct.
         hI, cI = axis.interleaved_forward(px, px2, ids, tti, pm, tm, groups)
         txt_I = _generate_from_axis(model, proc, axis, hI, cI, ids, max_new_tokens)
@@ -198,7 +206,7 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
         return txt_A, stats
 
     if arm == "interleaved":
-        # Same selection as corrected_t, split into `groups` arrival rounds. The walk owns the
+        # Same selection as `corrected`, split into `groups` arrival rounds. The walk owns the
         # whole axis, so it rebuilds its own approximate pass -- the cache above is only used for
         # the score's attention term.
         hidden, cache = axis.interleaved_forward(px, px2, ids, tti, pm, tm, groups)
@@ -265,11 +273,11 @@ def main():
     ap.add_argument("--model", default="google/gemma-3-4b-it")
     ap.add_argument("--dataset", default="chartqa")
     ap.add_argument("--arm",
-                    choices=["ceiling", "floor", "corrected", "corrected_j", "corrected_t",
-                             "interleaved", "parity"],
+                    choices=["ceiling", "floor", "corrected", "interleaved", "parity",
+                             "corrected_split", "corrected_patchled"],
                     default="ceiling")
     ap.add_argument("--groups", type=int, default=4,
-                    help="interleaved rounds; the arm corrects the SAME tokens as corrected_t, "
+                    help="interleaved rounds; the arm corrects the SAME tokens as `corrected`, "
                          "only split across rounds (verified: g=1 reproduces it bit-exactly)")
     ap.add_argument("--keep", type=float, default=0.55)
     ap.add_argument("--pscore", choices=["energy", "energy_attn"], default="energy_attn",

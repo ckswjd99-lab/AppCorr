@@ -19,10 +19,10 @@ run () {  # name, extra args
 
 run ceiling       --arm ceiling
 run floor         --arm floor
-run corrected_t   --arm corrected_t
-run interleaved_g4 --arm interleaved --keep 0.55 --groups 4
 run corrected     --arm corrected
-run corrected_j   --arm corrected_j
+run interleaved_g4 --arm interleaved --keep 0.55 --groups 4
+run corrected_split --arm corrected_split
+run corrected_patchled --arm corrected_patchled
 run interleaved_g2 --arm interleaved --keep 0.55 --groups 2
 run interleaved_g8 --arm interleaved --keep 0.55 --groups 8
 echo "SWEEP COMPLETE $(date)"

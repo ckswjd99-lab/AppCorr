@@ -8,10 +8,11 @@ import json, os, re, sys
 
 ROOT = "/NHNHOME/share/cjpark/AppCorr-gemma3/analysis/results"
 DATASETS = ["chartqa", "textvqa", "infovqa", "pope", "realworldqa"]
-ARMS = ["ceiling", "floor", "corrected_t", "interleaved_g4",
-        "corrected", "corrected_j", "interleaved_g2", "interleaved_g8"]
-HEAD = {"ceiling": "ceiling", "floor": "floor", "corrected_t": "corr_t",
-        "interleaved_g4": "intlv_g4", "corrected": "corr", "corrected_j": "corr_j",
+ARMS = ["ceiling", "floor", "corrected", "interleaved_g4",
+        "corrected_split", "corrected_patchled", "interleaved_g2", "interleaved_g8"]
+HEAD = {"ceiling": "ceiling", "floor": "floor", "corrected": "corrected",
+        "interleaved_g4": "intlv_g4", "corrected_split": "var_split",
+        "corrected_patchled": "var_patch",
         "interleaved_g2": "intlv_g2", "interleaved_g8": "intlv_g8"}
 PROG = re.compile(r"\[(\d+)/(\d+)\].*?acc=([\d.]+)%")
 
