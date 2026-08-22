@@ -19,6 +19,10 @@ NR=${NR:-3}
 mkdir -p "$OUT"
 export CUDA_VISIBLE_DEVICES=${GPU:-0}
 export APPCORR_FLOPS=1
+# `run_local.sh` invokes a bare `python`, and the system interpreter here carries torch but NOT
+# transformers -- which is why every DINOv3 row passed while OpenCLIP died at
+# `from transformers import CLIPModel`. Put the project env first rather than editing the runner.
+export PATH=/home/nxclab/anaconda3/envs/appcorr/bin:$PATH
 
 run () {   # run <tag> <config> <nr> [--set ...]
   local tag=$1 cfg=$2 nr=$3; shift 3
@@ -31,7 +35,7 @@ run () {   # run <tag> <config> <nr> [--set ...]
 }
 
 # ---- DINOv3: classification, detection, segmentation, depth ---------------------------------- #
-for K in 0.30 0.50; do
+for K in 0.25 0.30 0.50; do
   run "dinov3_imagenet_g4_k${K}"  offload/config/imnet/imnet_interleaved_g4.json          "$NR" --set appcorr_kwargs.token_keep_ratio=$K
   run "dinov3_ade20k_g4_k${K}"    offload/config/ade20k/ade20k_m2f_interleaved_static.json "$NR" --set appcorr_kwargs.token_keep_ratio=$K
   run "dinov3_nyu_g4_k${K}"       offload/config/nyu/nyu_interleaved_static.json           "$NR" --set appcorr_kwargs.token_keep_ratio=$K
@@ -43,25 +47,24 @@ run "dinov3_nyu_ceiling"      offload/config/nyu/nyu_sequential.json            
 run "dinov3_coco_ceiling"     offload/config/coco/coco_sequential.json             "$NR"
 
 # ---- VGGT-Omega: Co3D -------------------------------------------------------------------------- #
-for K in 0.30 0.50; do
+for K in 0.25 0.30 0.50; do
   run "vggt_co3d_g4_k${K}" offload/config/co3d/co3d_interleaved.json "$NR" \
       --set appcorr_kwargs.token_keep_ratio=$K --set transmission_kwargs.num_groups=4
 done
 run "vggt_co3d_ceiling" offload/config/co3d/co3d_full.json "$NR"
 
-# ---- Qwen2.5-VL: RealWorldQA ------------------------------------------------------------------- #
-for K in 0.30 0.50; do
-  run "qwen25vl32b_realworldqa_g4_k${K}" offload/config/realworldqa_qwen25vl_32b_interleaved_g4.json \
-      "$NR" --set appcorr_kwargs.keep_rate=$K
-done
-run "qwen25vl32b_realworldqa_ceiling" offload/config/realworldqa_qwen25vl_32b_sequential.json "$NR"
+# ---- Qwen2.5-VL ------------------------------------------------------------------------------- #
+# Measured in-process by flops_report_qwen25vl.py, not here. Its offload configs name dataset
+# "realworldqa", for which `offload/mobile/dataset.get_dataset_loader` has no loader at all, so
+# every run aborts at handshake with "Unknown dataset name" before a single batch moves.
 
 # ---- OpenCLIP: ImageNet zero-shot and COCO retrieval ------------------------------------------- #
-# Threshold-driven, so these run at the config's own operating point; the achieved keep rate is in
-# the log's keep_rate_pct telemetry rather than being set to 30/50%.
-run "openclip_imagenet_g4"      offload/config/imagenet_clip_bigg_interleaved_g4.json       "$NR"
+# The keep-rate arms now live in run_flops_openclip_topk.sh, since `_prune_patch_idx` learned
+# `token_keep_ratio`. What stays here is the ceiling for each task, plus the config's own
+# threshold operating point kept for comparison against the exact rates.
+run "openclip_imagenet_g4_thres" offload/config/imagenet_clip_bigg_interleaved_g4.json      "$NR"
 run "openclip_imagenet_ceiling" offload/config/imagenet_clip_bigg_sequential.json           "$NR"
-run "openclip_cocoret_g4"       offload/config/coco_retrieval_clip_bigg_interleaved_g4.json "$NR"
+run "openclip_cocoret_g4_thres" offload/config/coco_retrieval_clip_bigg_interleaved_g4.json "$NR"
 run "openclip_cocoret_ceiling"  offload/config/coco_retrieval_clip_bigg_sequential.json     "$NR"
 
 echo "FLOPS CAMPAIGN COMPLETE $(date)"

@@ -10,6 +10,7 @@ cd /NHNHOME/share/cjpark/AppCorr-flops
 OUT=${OUT:-analysis/results/flops}; mkdir -p "$OUT"
 NR=${NR:-3}
 export CUDA_VISIBLE_DEVICES=${GPU:-0} APPCORR_FLOPS=1
+export PATH=/home/nxclab/anaconda3/envs/appcorr/bin:$PATH   # run_local.sh calls a bare `python` that lacks transformers
 
 run () {  # run <tag> <config> <extra...>
   local tag=$1 cfg=$2; shift 2
@@ -20,7 +21,7 @@ run () {  # run <tag> <config> <extra...>
   echo "[done ] $tag rc=$?  $(grep -ao 'mean_critical=[0-9.]* GF' "$OUT/$tag.log" | tail -1)"
 }
 
-for K in 0.30 0.50; do
+for K in 0.25 0.30 0.50; do
   run "dinov3_nyu_g4_k${K}"    offload/config/nyu/nyu_interleaved_static.json \
       --set device=cuda:0 --set appcorr_kwargs.token_keep_ratio=$K
   run "dinov3_ade20k_g4_k${K}" offload/config/ade20k/ade20k_m2f_interleaved_static.json \
