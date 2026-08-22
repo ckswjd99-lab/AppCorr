@@ -9,7 +9,8 @@ cd /NHNHOME/share/cjpark/AppCorr-flops
 OUT=${OUT:-analysis/results/flops}; mkdir -p "$OUT"
 NR=${NR:-3}
 export CUDA_VISIBLE_DEVICES=${GPU:-0} APPCORR_FLOPS=1
-for K in 0.30 0.50; do
+export PATH=/home/nxclab/anaconda3/envs/appcorr/bin:$PATH   # run_local.sh calls a bare `python` that lacks transformers
+for K in 0.25 0.30 0.50; do
   for TASK in imagenet cocoret; do
     CFG=offload/config/imagenet_clip_bigg_interleaved_g4.json
     [ "$TASK" = "cocoret" ] && CFG=offload/config/coco_retrieval_clip_bigg_interleaved_g4.json
