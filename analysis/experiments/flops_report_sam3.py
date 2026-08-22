@@ -43,13 +43,22 @@ def main():
     ap.add_argument("--device", default="cuda:0")
     a = ap.parse_args()
 
-    from transformers import Sam3Processor, Sam3TrackerModel
+    from transformers import AutoModel, Sam3Processor
 
     from appcorr.models.sam3.vision.backbone import ApproxCorrectSam3VisionTower
 
     dev, dt = a.device, torch.bfloat16
     token = os.environ.get("HF_TOKEN")
-    model = Sam3TrackerModel.from_pretrained(a.repo, dtype=dt, token=token).to(dev).eval()
+    # `facebook/sam3` is a sam3_video checkpoint (Sam3VideoModel). Forcing it into
+    # Sam3TrackerModel loads a subset of the architecture and leaves `vision_encoder` returning a
+    # tuple -- surfacing later as "'tuple' object has no attribute 'shape'", far from the cause.
+    model = AutoModel.from_pretrained(a.repo, dtype=dt, token=token).to(dev).eval()
+    if not hasattr(model, "vision_encoder"):
+        for attr in ("model", "sam3", "vision_model"):
+            inner = getattr(model, attr, None)
+            if inner is not None and hasattr(inner, "vision_encoder"):
+                model = inner
+                break
     proc = Sam3Processor.from_pretrained(a.repo, token=token)
     ip = getattr(proc, "image_processor", proc)
     mean = torch.tensor(ip.image_mean, device=dev).view(1, 3, 1, 1)
@@ -80,7 +89,8 @@ def main():
                         # No arrivals opened: the exact forward waits on the whole image by
                         # definition, so the rule makes all of it critical.
                         with fl.stage("full"):
-                            model.vision_encoder(px)
+                            out = model.vision_encoder(px)
+                            _ = out[0] if isinstance(out, tuple) else out
                     else:
                         with S.swap_vision(model, tower, px, px2, "corrected", keep,
                                            groups=groups, bounds=a.bounds, flops=fl):

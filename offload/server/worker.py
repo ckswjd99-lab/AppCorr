@@ -594,6 +594,12 @@ class WorkerModule(multiprocessing.Process):
             if req_id in self.sessions:
                 del self.sessions[req_id]
 
+        # Emit after every task, not only on EXIT_ALL: the sequential (ceiling) configs never send
+        # EXIT_ALL, so hooking the emission there produced no output for exactly the arms the table
+        # needs as its denominator. Rewriting one small JSON per task is free next to the GPU work
+        # it describes.
+        self._emit_flops()
+
     @staticmethod
     def _merge_nsys_event_meta(meta: Any, **nsys_fields) -> Dict[str, Any]:
         if isinstance(meta, dict):
@@ -733,7 +739,6 @@ class WorkerModule(multiprocessing.Process):
             return self.executor.decide_exit(task, context, self.config)
 
         elif op == OpType.EXIT_ALL:
-            self._emit_flops()
             final_batch_results = self.executor.get_final_results(task, context, self.config)
             if 'final_results' not in context:
                 context['final_results'] = {}

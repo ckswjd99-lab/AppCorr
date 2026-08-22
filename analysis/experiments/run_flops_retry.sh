@@ -23,9 +23,9 @@ run () {  # run <tag> <config> <extra...>
 
 for K in 0.25 0.30 0.50; do
   run "dinov3_nyu_g4_k${K}"    offload/config/nyu/nyu_interleaved_static.json \
-      --set device=cuda:0 --set appcorr_kwargs.token_keep_ratio=$K
+      --set device=cuda:0 --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
   run "dinov3_ade20k_g4_k${K}" offload/config/ade20k/ade20k_m2f_interleaved_static.json \
-      --set appcorr_kwargs.token_keep_ratio=$K
+      --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
 done
 run "dinov3_nyu_ceiling"    offload/config/nyu/nyu_sequential.json --set device=cuda:0
 run "dinov3_ade20k_ceiling" offload/config/ade20k/ade20k_m2f_sequential.json
