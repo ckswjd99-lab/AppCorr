@@ -1,0 +1,315 @@
+"""Emit the evaluation table as LaTeX from whatever results exist on disk.
+
+Run it any time. Cells with no measurement print `--`, so the table is always current and never
+carries a number that was typed by hand -- which is the point: transcribing these by eye already
+put a wrong MMMU row into one progress report.
+
+    python analysis/experiments/make_eval_table.py                  # LaTeX, keeps 25/50
+    python analysis/experiments/make_eval_table.py --keeps 0.30 0.50
+    python analysis/experiments/make_eval_table.py --format md      # readable while working
+    python analysis/experiments/make_eval_table.py --status         # what is still missing
+
+Where the numbers come from:
+
+  accuracy   analysis/results/{model}_{dataset}/{arm}.json -> summary.accuracy, written by the
+             oracle drivers. `ceiling`, `floor`, `interleaved_g{g}_k{keep}`.
+  FLOPs      analysis/results/flops/*.json for the offload-driven models, written by the worker;
+             analysis/results/flops/inprocess_flops.json for the ones driven in process.
+
+Two conventions the table depends on, both enforced here rather than left to the reader:
+
+  * Crit.\\ Comp. is per INSTRUCTION. Offload arms differ in batch size within a single model --
+    NYU's ceiling runs at 1 and its interleaved arms at 8 -- so every offload value is divided by
+    its recorded batch size. Skipping that made NYU's critical exceed its own ceiling.
+  * A VFM runs one backbone regardless of task, so its rows repeat the same FLOPs by construction.
+    They are emitted repeatedly because the table has one row per task, not because they were
+    measured per task.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Dict, Optional
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RESULTS = os.path.join(ROOT, "analysis", "results")
+FLOPS_DIR = os.path.join(RESULTS, "flops")
+
+# (model label, [(dataset label, accuracy key, flops key)]). `accuracy key` is (dir_prefix, dataset)
+# or None when no accuracy arm exists; `flops key` selects the FLOPs source.
+SPEC = [
+    ("LLaVA-OV2 (8.5B)", [
+        ("ChartQA (Relaxed Acc.)", ("ov2", "chartqa"),     ("inproc", "ov2", "chartqa")),
+        ("InfoVQA (ANLS)",         ("ov2", "infovqa"),     ("inproc", "ov2", "infovqa")),
+        ("TextVQA (VQA Acc.)",     ("ov2", "textvqa"),     ("inproc", "ov2", "textvqa")),
+        ("DocVQA (ANLS)",          ("ov2", "docvqa"),      ("inproc", "ov2", "docvqa")),
+        ("RealWorldQA (Acc.)",     ("ov2", "realworldqa"), ("inproc", "ov2", "realworldqa")),
+        ("POPE (Acc.)",            ("ov2", "pope"),        ("inproc", "ov2", "pope")),
+    ]),
+    ("Gemma 3 (4.3B)", [
+        ("ChartQA (Relaxed Acc.)", ("gemma3", "chartqa"),     ("inproc", "gemma3", "chartqa")),
+        ("InfoVQA (ANLS)",         ("gemma3", "infovqa"),     ("inproc", "gemma3", "infovqa")),
+        ("TextVQA (VQA Acc.)",     ("gemma3", "textvqa"),     ("inproc", "gemma3", "textvqa")),
+        ("POPE (Acc.)",            ("gemma3", "pope"),        ("inproc", "gemma3", "pope")),
+        ("RealWorldQA (Acc.)",     ("gemma3", "realworldqa"), ("inproc", "gemma3", "realworldqa")),
+    ]),
+    ("Qwen2.5-VL (33.5B / 73.4B)", [
+        ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
+        ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
+        ("GQA testdev (Exact Match)", None, ("inproc", "qwen25vl_32b", "gqa")),
+        ("RealWorldQA (33.5B Acc.)",  None, ("inproc", "qwen25vl_32b", "realworldqa")),
+        ("RealWorldQA (73.4B Acc.)",  None, None),
+    ]),
+    ("SAM 3 (0.85B)", [
+        ("COCO Tracker (Mask AP)",  None, ("inproc", "sam3", "coco")),
+        ("COCO Detector (Mask AP)", None, ("inproc", "sam3", "coco")),
+        ("LVIS Detector (Mask AP)", None, ("inproc", "sam3", "coco")),
+        ("SA-Co crowded (cgF1)",    None, ("inproc", "sam3", "coco")),
+        ("SA-Co sa1b (cgF1)",       None, ("inproc", "sam3", "coco")),
+        ("SA-Co attributes (cgF1)", None, ("inproc", "sam3", "coco")),
+    ]),
+    ("DINOv3 (7B)", [
+        (r"ImageNet-1k (Top-1 $\uparrow$)", None, ("offload", "dinov3_imagenet")),
+        (r"COCO Detector (mAP $\uparrow$)", None, ("offload", "dinov3_coco")),
+        (r"ADE20K m2f (mIoU $\uparrow$)",   None, ("offload", "dinov3_ade20k")),
+        (r"NYUv2 (AbsRel $\downarrow$)",    None, ("offload", "dinov3_nyu")),
+        (r"Co3Dv2 (Rot. deg $\downarrow$)", None, None),
+    ]),
+    ("VGGT-Omega (7B)", [
+        (r"Co3Dv2 (Depth AbsRel $\downarrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (Rot. deg $\downarrow$)",     None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (3D Point Err. $\downarrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (3D Inlier $<10\%$)",         None, ("offload", "vggt_co3d")),
+    ]),
+    ("OpenCLIP (2.5B)", [
+        ("ImageNet-1k (Top-1)",        None, ("offload", "openclip_imagenet")),
+        ("ImageNet-1k (Top-5)",        None, ("offload", "openclip_imagenet")),
+        ("COCO Ret. val2017 (i2t R@1)", None, None),
+        ("COCO Ret. val2017 (t2i R@1)", None, None),
+    ]),
+    ("OpenVLA (7B)", [
+        ("LIBERO-Spatial (Success Rate)", None, None),
+        ("LIBERO-Object (Success Rate)",  None, None),
+        ("LIBERO-Goal (Success Rate)",    None, None),
+        ("LIBERO-Long (Success Rate)",    None, None),
+    ]),
+]
+
+# Values that exist only in prose (other branches, published memos) and have no JSON to read.
+# Kept separate from anything measured here so the two are never confused.
+LITERALS = {
+    ("Qwen2.5-VL (33.5B / 73.4B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 74.76, "ceiling": 85.75},
+    ("Qwen2.5-VL (33.5B / 73.4B)", "RefCOCO val (mIoU)"):        {"floor": 65.02, "ceiling": 76.20},
+    ("Qwen2.5-VL (33.5B / 73.4B)", "GQA testdev (Exact Match)"): {"floor": 55.16, "ceiling": 60.84},
+    ("Qwen2.5-VL (33.5B / 73.4B)", "RealWorldQA (73.4B Acc.)"):  {"ceiling": 72.29},
+    ("Qwen2.5-VL (33.5B / 73.4B)", "RealWorldQA (33.5B Acc.)"):  {"ceiling": 68.89},
+    ("SAM 3 (0.85B)", "COCO Tracker (Mask AP)"):  {"floor": 53.74, "ceiling": 60.10},
+    ("SAM 3 (0.85B)", "COCO Detector (Mask AP)"): {"floor": 43.32, "ceiling": 50.92},
+    ("SAM 3 (0.85B)", "LVIS Detector (Mask AP)"): {"floor": 41.21, "ceiling": 56.38},
+    ("SAM 3 (0.85B)", "SA-Co crowded (cgF1)"):    {"floor": 53.15, "ceiling": 58.95},
+    ("SAM 3 (0.85B)", "SA-Co sa1b (cgF1)"):       {"floor": 52.78, "ceiling": 53.94},
+    ("SAM 3 (0.85B)", "SA-Co attributes (cgF1)"): {"floor": 53.96, "ceiling": 54.21},
+    ("DINOv3 (7B)", r"ImageNet-1k (Top-1 $\uparrow$)"): {"floor": 84.50, "ceiling": 88.11},
+    ("DINOv3 (7B)", r"COCO Detector (mAP $\uparrow$)"): {"floor": 55.83, "ceiling": 63.14},
+    ("DINOv3 (7B)", r"ADE20K m2f (mIoU $\uparrow$)"):   {"floor": 56.01, "ceiling": 62.24},
+    ("DINOv3 (7B)", r"NYUv2 (AbsRel $\downarrow$)"):    {"floor": 0.0530, "ceiling": 0.0501,
+                                                        "fmt": "{:.4f}"},
+    ("DINOv3 (7B)", r"Co3Dv2 (Rot. deg $\downarrow$)"): {"floor": 5.440, "ceiling": 2.885,
+                                                        "fmt": "{:.3f}"},
+    ("VGGT-Omega (7B)", r"Co3Dv2 (Depth AbsRel $\downarrow$)"): {"floor": 0.0477, "ceiling": 0.0426,
+                                                                "fmt": "{:.4f}"},
+    ("VGGT-Omega (7B)", r"Co3Dv2 (Rot. deg $\downarrow$)"):     {"floor": 1.554, "ceiling": 1.305,
+                                                                "fmt": "{:.3f}"},
+    ("VGGT-Omega (7B)", r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)"): {"floor": 92.81, "ceiling": 92.91},
+    ("VGGT-Omega (7B)", r"Co3Dv2 (3D Point Err. $\downarrow$)"): {"floor": 0.1464, "ceiling": 0.1572,
+                                                                 "fmt": "{:.4f}"},
+    ("VGGT-Omega (7B)", r"Co3Dv2 (3D Inlier $<10\%$)"):          {"floor": 66.25, "ceiling": 62.61},
+    ("OpenCLIP (2.5B)", "ImageNet-1k (Top-1)"): {"floor": 65.92, "ceiling": 77.14},
+    ("OpenCLIP (2.5B)", "ImageNet-1k (Top-5)"): {"floor": 88.20, "ceiling": 94.88},
+    ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): {"ceiling": 67.96},
+    ("OpenCLIP (2.5B)", "COCO Ret. val2017 (t2i R@1)"): {"ceiling": 50.70},
+    ("OpenVLA (7B)", "LIBERO-Spatial (Success Rate)"): {"ceiling": 79.00},
+    ("OpenVLA (7B)", "LIBERO-Object (Success Rate)"):  {"ceiling": 89.00},
+    ("OpenVLA (7B)", "LIBERO-Goal (Success Rate)"):    {"ceiling": 73.00},
+    ("OpenVLA (7B)", "LIBERO-Long (Success Rate)"):    {"ceiling": 54.00},
+}
+
+
+def load_accuracy(model: str, dataset: str, tag: str) -> Optional[float]:
+    p = os.path.join(RESULTS, f"{model}_{dataset}", f"{tag}.json")
+    if not (os.path.exists(p) and os.path.getsize(p) > 0):
+        return None
+    try:
+        return json.load(open(p))["summary"]["accuracy"] * 100.0
+    except Exception:
+        return None
+
+
+_INPROC = None
+
+
+def inproc_flops(model: str, dataset: str, key: str) -> Optional[float]:
+    global _INPROC
+    if _INPROC is None:
+        p = os.path.join(FLOPS_DIR, "inprocess_flops.json")
+        _INPROC = json.load(open(p)) if os.path.exists(p) else {}
+    return (_INPROC.get(model, {}) or {}).get(dataset, {}).get(key)
+
+
+def offload_flops(base: str, key: str) -> Optional[float]:
+    """Per-INSTRUCTION FLOPs from a worker-written JSON.
+
+    Divides by the recorded batch size. Arms of one model disagree on it -- NYU's ceiling runs at 1
+    while its interleaved arms run at 8 -- so per-request means are not comparable and reading them
+    directly made NYU's critical exceed its own ceiling.
+    """
+    tag = f"{base}_ceiling" if key == "full" else f"{base}_g4_{key.replace('k', 'k')}"
+    p = os.path.join(FLOPS_DIR, f"{tag}.json")
+    if not (os.path.exists(p) and os.path.getsize(p) > 0):
+        return None
+    try:
+        j = json.load(open(p))
+        bs = max(int(j.get("batch_size", 1) or 1), 1)
+        field = "mean_total_gflops" if key == "full" else "mean_critical_gflops"
+        return j[field] / bs
+    except Exception:
+        return None
+
+
+def get_flops(spec, key: str) -> Optional[float]:
+    if spec is None:
+        return None
+    if spec[0] == "inproc":
+        return inproc_flops(spec[1], spec[2], key)
+    return offload_flops(spec[1], key)
+
+
+def fmt_tf(gf: Optional[float], full: Optional[float]) -> str:
+    """GFLOPs -> a TF cell, with the share of the full-res critical computation in parentheses."""
+    if gf is None:
+        return "--"
+    tf = gf / 1000.0
+    body = f"{tf:.3f}" if tf < 0.1 else f"{tf:.2f}"
+    if full:
+        return f"{body}\\,TF ({100 * gf / full:.1f}\\%)"
+    return f"{body}\\,TF"
+
+
+def build_rows(keeps, groups: int):
+    out = []
+    for model, rows in SPEC:
+        block = []
+        for label, acc_key, fl_key in rows:
+            lit = LITERALS.get((model, label), {})
+            f = "{:.2f}"
+            if "fmt" in lit:
+                f = lit["fmt"]
+
+            def acc(tag, lit_key=None):
+                v = load_accuracy(*acc_key, tag) if acc_key else None
+                if v is None and lit_key and lit_key in lit:
+                    v = lit[lit_key]
+                    return f.format(v)
+                return f.format(v) if v is not None else "--"
+
+            full_gf = get_flops(fl_key, "full")
+            cells = [acc("floor", "floor")]
+            for k in keeps:
+                cells.append(acc(f"interleaved_g{groups}_k{k:.2f}"))
+                cells.append(fmt_tf(get_flops(fl_key, f"k{k:.2f}"), full_gf))
+            cells.append(acc("ceiling", "ceiling"))
+            cells.append(fmt_tf(full_gf, None))
+            block.append((label, cells))
+        out.append((model, block))
+    return out
+
+
+def emit_latex(table, keeps) -> str:
+    heads = " & ".join(f"\\multicolumn{{2}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
+    cmids, col = [], 4
+    for _ in keeps:
+        cmids.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
+        col += 2
+    cmids.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
+    sub = " & ".join(["Acc. (\\%) & Crit. Comp."] * (len(keeps) + 1))
+    ncol = 3 + 2 * (len(keeps) + 1) - 1
+    L = []
+    L.append(r"\begin{table*}[t]")
+    L.append(r"\vspace{-0.1in}")
+    L.append(r"\caption{Evaluation Results across Different Configurations. Crit.\ Comp.\ is "
+             r"backbone prefill FLOPs per instruction that can only begin once the whole image has "
+             r"arrived (decode excluded); parentheses give the ratio to the Full-res.\ critical "
+             r"computation. Ours uses interleaved $g{=}4$.}")
+    L.append(r"\label{tab:evaluation_results}")
+    L.append(r"\begin{center}\begin{small}\begin{sc}")
+    L.append(r"\resizebox{\textwidth}{!}{%")
+    L.append(r"\begin{tabular}{ll" + "c" * (ncol - 2) + "}")
+    L.append(r"\toprule")
+    L.append(r"\multirow{2}{*}{Model} & \multirow{2}{*}{Dataset (Metric)} & "
+             r"\multicolumn{1}{c}{Low-res.} & " + heads +
+             r" & \multicolumn{2}{c}{Full-res.} \\")
+    L.append(r"\cmidrule(lr){3-3} " + " ".join(cmids))
+    L.append(r"& & Acc. (\%) & " + sub + r" \\")
+    L.append(r"\midrule")
+    for i, (model, rows) in enumerate(table):
+        if i:
+            L.append(r"\midrule")
+        L.append(f"\\multirow{{{len(rows)}}}{{*}}{{{model}}}")
+        for label, cells in rows:
+            L.append(f"& {label} & " + " & ".join(cells) + r" \\")
+    L.append(r"\bottomrule")
+    L.append(r"\end{tabular}}")
+    L.append(r"\end{sc}\end{small}\end{center}")
+    L.append(r"\vspace{-0.22in}")
+    L.append(r"\end{table*}")
+    return "\n".join(L)
+
+
+def emit_md(table, keeps) -> str:
+    hdr = ["model", "dataset", "low-res"]
+    for k in keeps:
+        hdr += [f"ours{int(k*100)} acc", f"ours{int(k*100)} crit"]
+    hdr += ["full acc", "full crit"]
+    L = ["| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
+    for model, rows in table:
+        for label, cells in rows:
+            L.append("| " + " | ".join([model, label] + [c.replace("\\,", " ").replace("\\%", "%")
+                                                         for c in cells]) + " |")
+    return "\n".join(L)
+
+
+def emit_status(keeps, groups: int) -> str:
+    L, missing, total = [], 0, 0
+    for model, rows in SPEC:
+        for label, acc_key, fl_key in rows:
+            if acc_key is None:
+                continue
+            for tag in ["floor", "ceiling"] + [f"interleaved_g{groups}_k{k:.2f}" for k in keeps]:
+                total += 1
+                if load_accuracy(*acc_key, tag) is None:
+                    missing += 1
+                    L.append(f"  MISSING  {acc_key[0]}/{acc_key[1]}/{tag}")
+    L.append(f"\n  accuracy cells: {total - missing}/{total} present")
+    return "\n".join(L)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50])
+    ap.add_argument("--groups", type=int, default=4)
+    ap.add_argument("--format", choices=["latex", "md"], default="latex")
+    ap.add_argument("--status", action="store_true")
+    a = ap.parse_args()
+    if a.status:
+        print(emit_status(a.keeps, a.groups))
+        return
+    table = build_rows(a.keeps, a.groups)
+    print(emit_latex(table, a.keeps) if a.format == "latex" else emit_md(table, a.keeps))
+
+
+if __name__ == "__main__":
+    main()
