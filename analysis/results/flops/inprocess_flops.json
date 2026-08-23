@@ -7,6 +7,8 @@
     "",
     "Units: GFLOPs per instruction (one image + prompt), backbone only, decode excluded.",
     "Schedule: interleaved g=4, degradation level L2, bf16.",
+    "'total_k*' is the arm's TOTAL backbone FLOPs -- approximate pass plus every correction round --",
+    "so total/full is the compute OVERHEAD the schedule pays, separate from what it defers.",
     "'full' is the ceiling prefill, which is 100% critical by the rule and is the denominator the",
     "table reports against. 'k*' entries are CRITICAL FLOPs at that recompute rate.",
     "",
@@ -18,45 +20,186 @@
     "FLOPs are deterministic given the shapes, so a rerun at the same --samples reproduces these;",
     "a different --samples moves them by the change in mean image size, a few percent."
   ],
-  "_meta": {"groups": 4, "level": 2, "dtype": "bfloat16", "unit": "GFLOPs/instruction"},
-
+  "_meta": {
+    "groups": 4,
+    "level": 2,
+    "dtype": "bfloat16",
+    "unit": "GFLOPs/instruction"
+  },
   "ov2": {
     "_samples": 12,
-    "chartqa":     {"full": 11136.1, "k0.25": 1412.5, "k0.30": 1481.6, "k0.50": 1835.5},
-    "textvqa":     {"full": 18674.7, "k0.25": 1627.4, "k0.30": 1871.1, "k0.50": 2852.6},
-    "infovqa":     {"full": 92462.2, "k0.25": 6817.3, "k0.30": 7812.5, "k0.50": 12288.5},
-    "docvqa":      {"full": 123785.3, "k0.25": 6423.5, "k0.30": 7804.6, "k0.50": 12784.0},
-    "realworldqa": {"full": 38564.1, "k0.25": 2041.2, "k0.30": 2361.0, "k0.50": 4085.6},
-    "pope":        {"full": 5624.8,  "k0.25": 948.8,  "k0.30": 1025.3, "k0.50": 1293.0},
-    "gqa":         {"full": 6047.3,  "k0.25": 972.6,  "k0.30": 1043.6, "k0.50": 1349.8},
-    "mmmu":        {"full": 9437.8,  "k0.25": 2414.3, "k0.30": 2479.9, "k0.50": 2893.4},
-    "refcoco":     {"full": 7686.7,  "k0.25": 1266.1, "k0.30": 1334.9, "k0.50": 1636.9}
+    "chartqa": {
+      "full": 11136.1,
+      "k0.25": 1412.5,
+      "k0.30": 1481.6,
+      "k0.50": 1835.5,
+      "total_k0.25": 16091.6,
+      "total_k0.30": 16421.7,
+      "total_k0.50": 17726.0
+    },
+    "textvqa": {
+      "full": 18674.7,
+      "k0.25": 1627.4,
+      "k0.30": 1871.1,
+      "k0.50": 2852.6,
+      "total_k0.25": 27105.1,
+      "total_k0.30": 27733.5,
+      "total_k0.50": 30226.4
+    },
+    "infovqa": {
+      "full": 92462.2,
+      "k0.25": 6817.3,
+      "k0.30": 7812.5,
+      "k0.50": 12288.5,
+      "total_k0.25": 145989.9,
+      "total_k0.30": 149272.6,
+      "total_k0.50": 162558.0
+    },
+    "docvqa": {
+      "full": 123785.3,
+      "k0.25": 6423.5,
+      "k0.30": 7804.6,
+      "k0.50": 12784.0,
+      "total_k0.25": 196405.2,
+      "total_k0.30": 200838.7,
+      "total_k0.50": 218043.1
+    },
+    "realworldqa": {
+      "full": 38564.1,
+      "k0.25": 2041.2,
+      "k0.30": 2361.0,
+      "k0.50": 4085.6,
+      "total_k0.25": 57084.9,
+      "total_k0.30": 58356.0,
+      "total_k0.50": 63790.9
+    },
+    "pope": {
+      "full": 5624.8,
+      "k0.25": 948.8,
+      "k0.30": 1025.3,
+      "k0.50": 1293.0,
+      "total_k0.25": 8207.9,
+      "total_k0.30": 8382.9,
+      "total_k0.50": 9049.9
+    },
+    "gqa": {
+      "full": 6047.3,
+      "k0.25": 972.6,
+      "k0.30": 1043.6,
+      "k0.50": 1349.8
+    },
+    "mmmu": {
+      "full": 9437.8,
+      "k0.25": 2414.3,
+      "k0.30": 2479.9,
+      "k0.50": 2893.4
+    },
+    "refcoco": {
+      "full": 7686.7,
+      "k0.25": 1266.1,
+      "k0.30": 1334.9,
+      "k0.50": 1636.9
+    }
   },
-
   "gemma3": {
     "_samples": 12,
-    "chartqa":     {"full": 7371.7, "k0.25": 924.2,  "k0.30": 1037.7, "k0.50": 1160.5},
-    "textvqa":     {"full": 7323.5, "k0.25": 614.5,  "k0.30": 714.2,  "k0.50": 1135.9},
-    "infovqa":     {"full": 7355.3, "k0.25": 750.3,  "k0.30": 824.4,  "k0.50": 1151.2},
-    "docvqa":      {"full": 7365.7, "k0.25": 568.3,  "k0.30": 630.9,  "k0.50": 953.0},
-    "realworldqa": {"full": 7450.2, "k0.25": 496.7,  "k0.30": 545.4,  "k0.50": 774.8},
-    "pope":        {"full": 7338.3, "k0.25": 756.6,  "k0.30": 888.7,  "k0.50": 1284.9},
-    "gqa":         {"full": 7339.3, "k0.25": 755.4,  "k0.30": 880.5,  "k0.50": 1251.3},
-    "mmmu":        {"full": 7983.6, "k0.25": 1319.1, "k0.30": 1395.7, "k0.50": 1713.5},
-    "refcoco":     {"full": 7541.9, "k0.25": 765.9,  "k0.30": 835.4,  "k0.50": 1143.7}
+    "chartqa": {
+      "full": 7371.7,
+      "k0.25": 924.2,
+      "k0.30": 1037.7,
+      "k0.50": 1160.5,
+      "total_k0.25": 15207.4,
+      "total_k0.30": 15473.7,
+      "total_k0.50": 16405.1
+    },
+    "textvqa": {
+      "full": 7323.5,
+      "k0.25": 614.5,
+      "k0.30": 714.2,
+      "k0.50": 1135.9,
+      "total_k0.25": 15089.7,
+      "total_k0.30": 15344.8,
+      "total_k0.50": 16325.6
+    },
+    "infovqa": {
+      "full": 7355.3,
+      "k0.25": 750.3,
+      "k0.30": 824.4,
+      "k0.50": 1151.2,
+      "total_k0.25": 15080.3,
+      "total_k0.30": 15307.3,
+      "total_k0.50": 16241.4
+    },
+    "docvqa": {
+      "full": 7365.7,
+      "k0.25": 568.3,
+      "k0.30": 630.9,
+      "k0.50": 953.0,
+      "total_k0.25": 15086.5,
+      "total_k0.30": 15327.6,
+      "total_k0.50": 16266.6
+    },
+    "realworldqa": {
+      "full": 7450.2,
+      "k0.25": 496.7,
+      "k0.30": 545.4,
+      "k0.50": 774.8,
+      "total_k0.25": 15230.6,
+      "total_k0.30": 15454.2,
+      "total_k0.50": 16413.9
+    },
+    "pope": {
+      "full": 7338.3,
+      "k0.25": 756.6,
+      "k0.30": 888.7,
+      "k0.50": 1284.9,
+      "total_k0.25": 15163.0,
+      "total_k0.30": 15437.2,
+      "total_k0.50": 16404.3
+    },
+    "gqa": {
+      "full": 7339.3,
+      "k0.25": 755.4,
+      "k0.30": 880.5,
+      "k0.50": 1251.3
+    },
+    "mmmu": {
+      "full": 7983.6,
+      "k0.25": 1319.1,
+      "k0.30": 1395.7,
+      "k0.50": 1713.5
+    },
+    "refcoco": {
+      "full": 7541.9,
+      "k0.25": 765.9,
+      "k0.30": 835.4,
+      "k0.50": 1143.7
+    }
   },
-
   "sam3": {
     "_samples": 8,
     "_note": "One vision encoder serves every SAM 3 task, so all its rows share these values.",
-    "coco":        {"full": 5809.1, "k0.25": 755.8, "k0.30": 815.3, "k0.50": 1071.1}
+    "coco": {
+      "full": 5809.1,
+      "k0.25": 755.8,
+      "k0.30": 815.3,
+      "k0.50": 1071.1,
+      "total_k0.25": 11992.3,
+      "total_k0.30": 12147.2,
+      "total_k0.50": 12779.1
+    }
   },
-
   "qwen25vl_32b": {
     "_samples": 6,
     "_note": "Ceiling only: the in-process reporter measures the stock forward; no interleaved driver.",
-    "realworldqa": {"full": 128712.1},
-    "gqa":         {"full": 22239.0},
-    "refcoco":     {"full": 30361.0}
+    "realworldqa": {
+      "full": 128712.1
+    },
+    "gqa": {
+      "full": 22239.0
+    },
+    "refcoco": {
+      "full": 30361.0
+    }
   }
 }

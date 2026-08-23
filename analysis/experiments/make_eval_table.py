@@ -160,6 +160,31 @@ def inproc_flops(model: str, dataset: str, key: str) -> Optional[float]:
     return (_INPROC.get(model, {}) or {}).get(dataset, {}).get(key)
 
 
+def offload_total(base: str, key: str) -> Optional[float]:
+    """Per-instruction TOTAL FLOPs of an arm: approximate pass plus every correction round.
+
+    total/full is the compute OVERHEAD the schedule pays. It is a different question from the
+    critical share, and the two move in opposite directions -- deferring less past the last byte
+    generally costs more work overall.
+    """
+    p = os.path.join(FLOPS_DIR, f"{base}_g4_{key}.json")
+    if not (os.path.exists(p) and os.path.getsize(p) > 0):
+        return None
+    try:
+        j = json.load(open(p))
+        return j["mean_total_gflops"] / max(int(j.get("batch_size", 1) or 1), 1)
+    except Exception:
+        return None
+
+
+def get_total(spec, key: str) -> Optional[float]:
+    if spec is None:
+        return None
+    if spec[0] == "inproc":
+        return inproc_flops(spec[1], spec[2], f"total_{key}")
+    return offload_total(spec[1], key)
+
+
 def offload_flops(base: str, key: str) -> Optional[float]:
     """Per-INSTRUCTION FLOPs from a worker-written JSON.
 
@@ -236,7 +261,8 @@ def emit_latex(table, keeps) -> str:
         col += 2
     cmids.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
     sub = " & ".join(["Acc. (\\%) & Crit. Comp."] * (len(keeps) + 1))
-    ncol = 3 + 2 * (len(keeps) + 1) - 1
+    # 2 label columns + Low-res. + two per Ours block + two for Full-res.
+    ncol = 2 + 1 + 2 * (len(keeps) + 1)
     L = []
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
@@ -297,15 +323,38 @@ def emit_status(keeps, groups: int) -> str:
     return "\n".join(L)
 
 
+def emit_overhead(keeps) -> str:
+    hdr = ["model", "dataset", "full (TF)"]
+    for k in keeps:
+        hdr += [f"total{int(k*100)} (TF)", f"x full"]
+    L = ["| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
+    for model, rows in SPEC:
+        for label, _, fl_key in rows:
+            full = get_flops(fl_key, "full")
+            cells = [model, label, f"{full/1000:.2f}" if full else "--"]
+            for k in keeps:
+                t = get_total(fl_key, f"k{k:.2f}")
+                cells += [f"{t/1000:.2f}" if t else "--",
+                          f"{t/full:.2f}x" if (t and full) else "--"]
+            L.append("| " + " | ".join(cells) + " |")
+    return "\n".join(L)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--format", choices=["latex", "md"], default="latex")
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--overhead", action="store_true",
+                    help="report TOTAL compute (approx + all corrections) against the ceiling, "
+                         "i.e. what the schedule costs rather than what it defers")
     a = ap.parse_args()
     if a.status:
         print(emit_status(a.keeps, a.groups))
+        return
+    if a.overhead:
+        print(emit_overhead(a.keeps))
         return
     table = build_rows(a.keeps, a.groups)
     print(emit_latex(table, a.keeps) if a.format == "latex" else emit_md(table, a.keeps))

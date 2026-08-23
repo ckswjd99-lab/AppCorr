@@ -47,6 +47,34 @@ def selection(axis, px, px2, keep, cache):
     return sel, axis.token_mask_to_patch_mask(sel)
 
 
+
+def _save(path, model, dataset, full_gf, arms, samples, groups):
+    """Append one (model, dataset) block to a JSON record.
+
+    Written on every run because the alternative is scraping stdout: total FLOPs existed only in a
+    log until it was needed for the overhead column, and had to be recovered by grep.
+    """
+    import json as _json, os as _os
+    rec = {}
+    if _os.path.exists(path):
+        try:
+            rec = _json.load(open(path))
+        except Exception:
+            rec = {}
+    rec.setdefault("_meta", {}).update({"groups": groups, "unit": "GFLOPs/instruction",
+                                        "note": "backbone prefill only; decode excluded"})
+    m = rec.setdefault(model, {})
+    m["_samples"] = samples
+    d = m.setdefault(dataset, {})
+    d["full"] = round(full_gf, 1)
+    for keep, crit, tot in arms:
+        d[f"k{keep:.2f}"] = round(crit, 1)
+        d[f"total_k{keep:.2f}"] = round(tot, 1)
+    _os.makedirs(_os.path.dirname(_os.path.abspath(path)), exist_ok=True)
+    with open(path, "w") as f:
+        _json.dump(rec, f, indent=2)
+
+
 @torch.no_grad()
 def main():
     ap = argparse.ArgumentParser()
@@ -56,6 +84,8 @@ def main():
     ap.add_argument("--level", type=int, default=2)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--datasets", nargs="+", default=list(DATASETS))
+    ap.add_argument("--out-json",
+                    default="analysis/results/flops/inprocess_flops.json")
     a = ap.parse_args()
 
     from datasets import load_dataset
@@ -145,6 +175,10 @@ def main():
                   f"critical {crit:9.1f}  total {tot:9.1f} GFLOPs   "
                   f"critical/full = {100*crit/full_g:5.1f}%   "
                   f"(critical/own total {100*crit/tot:4.1f}%)")
+        _save(a.out_json, "ov2", ds_name, full_g,
+              [(k, c, t) for d, k, c, t, _ in rows if d == ds_name],
+              len(idxs), a.groups)
+
 
     print("\n\n═══ LLaVA-OneVision-2-8B  ·  interleaved g=%d  ·  critical vs full inference ═══"
           % a.groups)
