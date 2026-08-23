@@ -2,6 +2,8 @@
 # Accuracy campaign for the evaluation table: floor / ours(30%) / ours(50%) / ceiling, on every
 # dataset both VLMs can actually load.
 #
+# Two recompute rates, 25% and 50% -- the pair the evaluation table reports.
+#
 # Ordered CHEAPEST FIRST, deliberately. The full matrix is on the order of days on one GPU, so the
 # order decides what exists if it is stopped early -- and a completed cheap dataset is worth more
 # than four half-finished expensive ones. Cost is roughly n x image size: POPE's 9000 small images
@@ -40,7 +42,7 @@ for DS in $DATASETS; do
   for M in $MODELS; do
     arm_run "$M" "$DS" ceiling --arm ceiling
     arm_run "$M" "$DS" floor   --arm floor
-    for K in 0.30 0.50; do
+    for K in 0.25 0.50; do
       arm_run "$M" "$DS" "interleaved_g${BANDS}_k${K}" \
               --arm interleaved --keep "$K" --groups "$BANDS"
     done
