@@ -368,6 +368,76 @@ class Gemma3UnifiedAxis(nn.Module):
             out.append(selected_patches & band.unsqueeze(0))
         return out
 
+    # --- VFM-style walk: approx/correct the vision half only, then ONE exact prefill --------- #
+
+    @torch.no_grad()
+    def vfm_forward(self, px_full, px_approx, input_ids, token_type_ids,
+                    patch_selection, groups):
+        """Interleave the VISION half exactly as `interleaved_forward` does, then prefill ONCE.
+
+        Why this exists on Gemma 3 specifically. Counted in FLOPs, its vision tower is 5.45 TF
+        against 1.73 TF for the LLM's share of the image tokens -- vision is 73.5% of the backbone
+        and 3.2x the image-token prefill. (Wall clock reverses that ordering, 9.39 ms against
+        16.96 ms, because a 290-token prefill runs small, poorly-utilised matrices; the two
+        rankings genuinely disagree and must not be mixed.) So approximating the LLM half buys
+        little compute here while costing whatever accuracy the reconstruction loses.
+
+        The trade this makes, stated plainly rather than discovered later: the prefill cannot start
+        until the vision features are final, so ALL of it lands after the last arrival. Critical
+        computation goes UP -- to at least the prefill's 26.5% of the backbone -- while total
+        compute goes down and accuracy should rise. `interleaved_forward` makes the opposite trade.
+        This is not the OV2 streaming trick: that one splits the prefill into causal chunks, which
+        Gemma 3 cannot do because its image tokens attend bidirectionally.
+
+        The vision schedule is deliberately IDENTICAL to `interleaved_forward`'s -- same bounds,
+        same bands, same per-round group -- so a comparison between the two arms isolates the LLM
+        change and nothing else.
+
+        Returns (hidden_pre_finish, cache) on the same contract as `llm_correct`: the caller
+        applies `llm_finish` before the lm_head.
+        """
+        n_vis = self.n_vision
+        bounds = self.layer_bounds(groups)
+        groups_p = self.spatial_groups(patch_selection, groups)
+
+        x_appr = self.vision_prepare(px_approx)
+        x_full = self.vision_prepare(px_full)
+
+        cache: Dict[str, Any] = {}
+        arrived_p = torch.zeros_like(patch_selection)
+
+        # Vision stages only. The bounds are the shared axis's, so the vision frontier stops at
+        # `n_vis` and any LLM stages a bound reaches past it are simply not walked here.
+        v_bounds = [min(b, n_vis) for b in bounds]
+
+        with self._arrival(0), self._stage("approx"):
+            vh, cache = self.vision_approx(x_appr, cache, layers=(0, v_bounds[0]))
+        v_front = v_bounds[0]
+
+        for r in range(groups):
+            arrived_p = arrived_p | groups_p[r]
+            stream = torch.where(arrived_p.unsqueeze(-1), x_full, x_appr)
+            with self._arrival(r + 1):
+                if v_front > 0 and bool(groups_p[r].any()):
+                    with self._stage("vision_correct"):
+                        vh, cache = self.vision_correct(stream, groups_p[r], cache,
+                                                        layers=(0, v_front))
+                nxt = v_bounds[r + 1] if r + 1 < len(v_bounds) else n_vis
+                if v_front < nxt:
+                    with self._stage("approx"):
+                        vh, cache = self.vision_approx(vh, cache, layers=(v_front, nxt))
+                    v_front = nxt
+
+        # ONE exact prefill over the final vision features. `llm_approx` is the stock computation
+        # -- it reproduces the stock stack at rel 8e-7 -- and is called "approx" only because it
+        # normally runs on approximate INPUT. Handed corrected features it IS an exact prefill, and
+        # it fills the same per-layer K/V the drivers already decode from.
+        feats = self.project(vh)
+        emb, ctx = self.llm_prepare(input_ids, feats, token_type_ids)
+        with self._arrival(groups), self._stage("llm_prefill"):
+            hidden, cache = self.llm_approx(emb, ctx, cache)
+        return hidden, cache
+
     # --- interleaved walk ------------------------------------------------------------------------ #
 
     @torch.no_grad()
