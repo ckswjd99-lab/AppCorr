@@ -1,16 +1,30 @@
 """LLaVA-OneVision-2 as ONE approx/correct axis: 24 encoder layers then 36 Qwen3 decoder layers.
 
-Why unify. The cost split here is not Gemma 3's, and it is not close. Both halves scale with the
-same token count -- the merger folds exactly 4 patches into 1 LLM token at every resolution -- so
-the ratio is a constant that falls out of the shapes:
+Why unify. The LLM half carries most of the backbone's work on this model, so approx/correcting
+the vision tower alone would leave most of the forward untouched.
+
+Counting only the projection and MLP terms, the ratio looks like a constant:
 
     vision   24L x (4 x N) patches x 1024^2
     LLM      36L x  N      tokens  x 4096^2
     LLM/vision = (36 x 16) / (24 x 4) = 6.0x
 
-Six to one, at 448x448 and at 1988x1988 alike. Approx/correcting the vision tower alone would
-overlap 14% of the forward. Gemma 3's equivalent ratio was 1.8x, so the unified axis is *more*
-load-bearing here than on any fork so far, not less.
+It is not a constant, because that omits attention, which is quadratic in tokens and so grows on
+the vision side as the image grows. Measured in FLOPs with attention included:
+
+    ChartQA (2410 patches, seq 648)     vision 18.0%   LLM 82.0%   LLM/vision 4.56x
+    DocVQA (18580 patches, seq 4688)    vision 36.6%   LLM 63.4%   LLM/vision 1.73x
+
+So 6.0x is the small-image limit and the true range is 1.7-4.6x. Either way the LLM half is the
+larger share, which is what the unified axis is for.
+
+Gemma 3 is the opposite and the comparison is worth stating carefully, because the two orderings
+disagree. In FLOPs its vision tower is 5.45 TF against 1.73 TF for the LLM's share of the image
+tokens -- vision is 73.5% of that backbone, 3.2x the image-token prefill. In WALL CLOCK the order
+reverses (9.39 ms vision against 16.96 ms prefill, the 1.8x this docstring previously quoted as
+though it were a FLOP ratio): the vision tower is wide and efficient on a GPU while a 290-token
+prefill runs small, poorly-utilised matrices. Quote whichever matches the claim being made, and do
+not mix them.
 
 Three things are structurally easier than Gemma 3 and one is harder.
 
