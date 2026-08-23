@@ -23,7 +23,11 @@ export CUDA_VISIBLE_DEVICES=${GPU:-0}
 # already cost a sweep in run_ov2_multidataset.sh; the assert in ov2_oracle.py catches it now, but
 # the fix is to not use the name.
 BANDS=${BANDS:-4}
-DATASETS=${DATASETS:-"realworldqa mmmu chartqa gqa pope textvqa infovqa refcoco docvqa"}
+# Ordered by INTERPRETABILITY first, cost second. Cheapest-first spent 14 hours on GQA, POPE and
+# RefCOCO -- rows whose floor-ceiling gap is 1-4pp, where a preservation rate has no resolution --
+# before reaching TextVQA, InfoVQA and DocVQA, the wide-gap rows the table rests on. GQA and
+# RefCOCO are extras beyond the table's rows and now run last.
+DATASETS=${DATASETS:-"textvqa infovqa docvqa pope gqa refcoco realworldqa mmmu chartqa"}
 MODELS=${MODELS:-"ov2 gemma3"}
 
 arm_run () {   # arm_run <model> <dataset> <tag> <extra args...>
