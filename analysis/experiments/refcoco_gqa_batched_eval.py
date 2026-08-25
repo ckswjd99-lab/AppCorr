@@ -137,10 +137,17 @@ def build_first_token_context(executor, encoder, raw_config, config, image_np, p
         ], instructions=[])
         executor.preprocess(image_np[None], task, context, config)
         executor.prepare_tokens(task, context, config)
+        # `mm_token_type_ids` (found 2026-08-25, see docs/memo/qwen25vl_baseline_mrope_bug.md):
+        # without it, HF's `compute_3d_position_ids` cannot compute real M-RoPE and falls back to
+        # plain sequential 1D positions replicated across all 3 mrope axes -- same bug as
+        # `qwen25vl_executor.py::full_inference` had, independently, since this baseline branch
+        # calls stock directly rather than going through that method.
+        mm_token_type_ids = context["image_mask_1d"].long().unsqueeze(0)
         with torch.no_grad():
             outputs = executor.model(
                 input_ids=context["input_ids"], attention_mask=context["attention_mask"],
                 pixel_values=context["pixel_values"], image_grid_thw=context["image_grid_thw"],
+                mm_token_type_ids=mm_token_type_ids,
                 use_cache=False,
             )
             first_token = outputs.logits[:, -1, :].argmax(dim=-1)
@@ -174,10 +181,16 @@ def build_first_token_context(executor, encoder, raw_config, config, image_np, p
     return first_token, context
 
 
-def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device):
+def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device, image_token_id):
     """items: list of dicts with input_ids[1,T], attention_mask[1,T], first_token[1],
     pixel_values[P,C], image_grid_thw[1,3]. One batched model.generate() call, left-padded.
-    Returns list of decoded continuation strings, one per item, in the same order."""
+    Returns list of decoded continuation strings, one per item, in the same order.
+
+    `mm_token_type_ids` (found 2026-08-25, see docs/memo/qwen25vl_baseline_mrope_bug.md): without
+    it, `generate()`'s own position-id derivation falls back to plain sequential positions,
+    degrading every continuation token for every arm equally. Derived per-item from `input_ids ==
+    image_token_id` (same definition `_build_prompt`/`preprocess` use), then left-padded/appended
+    identically to `padded_ids`/`attn_mask` so it lines up with the batch's real tokens."""
     pad_id = tokenizer.pad_token_id
     if pad_id is None:
         pad_id = tokenizer.eos_token_id
@@ -201,6 +214,9 @@ def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device):
         L = s.shape[0]
         padded_ids[i, max_len - L:] = s
         attn_mask[i, max_len - L:] = 1
+    # first_token is always a generated text token, never an image token, so deriving from the
+    # padded/extended ids directly (rather than tracking it separately) is exact.
+    mm_token_type_ids = (padded_ids == image_token_id).long()
 
     pixel_values = torch.cat([it["pixel_values"] for it in items], dim=0)
     image_grid_thw = torch.cat([it["image_grid_thw"] for it in items], dim=0)
@@ -209,6 +225,7 @@ def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device):
         gen_ids = model.generate(
             input_ids=padded_ids, attention_mask=attn_mask,
             pixel_values=pixel_values, image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
             max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=pad_id,
         )
 
@@ -304,7 +321,7 @@ def main():
         if not batch_items:
             return
         texts = batched_generate_fallback(executor.model, processor.tokenizer, batch_items,
-                                           args.max_new_tokens, args.device)
+                                           args.max_new_tokens, args.device, executor.image_token_id)
         for (idx, gt, grid_hw), pred_text in zip(batch_meta, texts):
             if args.dataset == "refcoco":
                 ok, iou = refcoco_score_answer(pred_text, gt)

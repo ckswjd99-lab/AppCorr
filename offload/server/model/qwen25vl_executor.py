@@ -20,6 +20,7 @@ patches), read once in `preprocess()` and cached in `context`.
 batch_size is forced to 1 (same convention as every prior driver this session).
 """
 
+import os
 from typing import Any, Dict
 
 import torch
@@ -30,7 +31,20 @@ from .base import ModelExecutor
 MODEL_ID_32B = "Qwen/Qwen2.5-VL-32B-Instruct"
 
 
+def _trace_save(name: str, tensor: torch.Tensor):
+    """Bisection probe (temporary): if APPCORR_QWEN_TRACE_DIR is set, dump a tensor at a named
+    checkpoint so two arms' runs can be diffed offline. Gated, no-op otherwise."""
+    trace_dir = os.environ.get("APPCORR_QWEN_TRACE_DIR")
+    if not trace_dir:
+        return
+    label = os.environ.get("APPCORR_QWEN_TRACE_LABEL", "run")
+    os.makedirs(trace_dir, exist_ok=True)
+    torch.save(tensor.detach().cpu(), os.path.join(trace_dir, f"{label}_{name}.pt"))
+
+
 class Qwen25VLExecutor(ModelExecutor):
+    _position_ids_verified = False  # one-shot latch for the mm_token_type_ids independence assertion
+
     def __init__(self, device: torch.device):
         super().__init__(device)
         self.processor = None
@@ -87,6 +101,8 @@ class Qwen25VLExecutor(ModelExecutor):
         proc_out = self.processor.image_processor(images=[canvas], return_tensors="pt")
         context["pixel_values"] = proc_out["pixel_values"].to(device=self.device, dtype=torch.bfloat16)
         context["image_grid_thw"] = proc_out["image_grid_thw"].to(self.device)
+        _trace_save("pixel_values", context["pixel_values"])
+        _trace_save("image_grid_thw", context["image_grid_thw"])
 
         num_groups = context["pixel_values"].shape[0] // self.vision_tower.spatial_merge_unit
         if "group_map" not in context:
@@ -127,6 +143,7 @@ class Qwen25VLExecutor(ModelExecutor):
         position_ids, _ = self.model.model.get_rope_index(
             input_ids, mm_token_type_ids, image_grid_thw=grid_thw, attention_mask=attention_mask
         )
+        _trace_save("position_ids", position_ids)
         context["input_ids"] = input_ids
         context["attention_mask"] = attention_mask
         context["image_mask_1d"] = image_mask_1d
@@ -197,7 +214,13 @@ class Qwen25VLExecutor(ModelExecutor):
         )
         context["vision_cache"] = vcache
         merged = self.vision_tower.get_merged_output(x_v, vctx)
+        _trace_save("vision_merged", merged)
+        if os.environ.get("APPCORR_QWEN_TRACE_DIR"):
+            total_merge_groups = group_map.shape[1]
+            print(f"[TRACE-VISION] group_idx selected {group_idx.numel()}/{total_merge_groups} merge-groups "
+                  f"(group_id={group_id})", flush=True)
         context["llm_input_embeds"] = self._splice_image_embeds(context, merged)
+        _trace_save("inputs_embeds", context["llm_input_embeds"])
 
         # LLM: correct the permanent group (all non-image positions) UNION the image-token
         # positions corresponding to the merge-groups that just got corrected, for this round's
@@ -244,6 +267,7 @@ class Qwen25VLExecutor(ModelExecutor):
                 x_feature, token_idx, cache, tag=f"llm_layer{i}", position_ids=context["position_ids"],
                 cos_sel=cos_sel, sin_sel=sin_sel, is_full_causal=is_full_causal, attn_mask=attn_mask,
             )
+            _trace_save(f"layer{i}_out", x_feature)
         context["llm_current_feature"] = x_feature
         context["llm_cache"] = cache
 
@@ -270,7 +294,14 @@ class Qwen25VLExecutor(ModelExecutor):
         of scope for validating the core approx/correct mechanism, and RealWorldQA answers are
         short enough (1 letter to a few words) that this fallback's cost is bounded and does not
         change what the FIRST token (already fixed before the fallback runs) was."""
-        first_token = self.decode_first_token(context.get("llm_current_feature"))
+        prefill_hidden = context.get("llm_current_feature")
+        _trace_save("prefill_hidden", prefill_hidden)
+        first_token = self.decode_first_token(prefill_hidden)
+        with torch.no_grad():
+            _hidden = self.model.model.language_model.norm(prefill_hidden)
+            _logits_last = self.model.lm_head(_hidden[:, -1, :].to(self.model.lm_head.weight.dtype))
+        _trace_save("first_token_logits", _logits_last)
+        _trace_save("first_token_id", first_token)
 
         if first_token.item() == self.processor.tokenizer.eos_token_id:
             answer_text = ""
@@ -280,11 +311,16 @@ class Qwen25VLExecutor(ModelExecutor):
                 extended_mask = torch.cat(
                     [context["attention_mask"], torch.ones_like(first_token.unsqueeze(0))], dim=1
                 )
+                mm_token_type_ids = context["image_mask_1d"].long().unsqueeze(0)
+                extended_mm_token_type_ids = torch.cat(
+                    [mm_token_type_ids, torch.zeros_like(first_token.unsqueeze(0))], dim=1
+                )
                 gen_ids = self.model.generate(
                     input_ids=extended_ids,
                     attention_mask=extended_mask,
                     pixel_values=context["pixel_values"],
                     image_grid_thw=context["image_grid_thw"],
+                    mm_token_type_ids=extended_mm_token_type_ids,
                     max_new_tokens=63,
                     do_sample=False,
                 )
@@ -309,16 +345,131 @@ class Qwen25VLExecutor(ModelExecutor):
             return
         if "input_ids" not in context:
             self._build_prompt(context)
+
+        # `mm_token_type_ids` (NOT `position_ids` directly) is the fix: without it,
+        # `compute_3d_position_ids` cannot compute real M-RoPE and falls through to plain
+        # sequential 1D positions replicated across all 3 mrope axes, discarding every image
+        # token's real (temporal, height, width) grid position. Passing `mm_token_type_ids` lets
+        # the model derive positions itself via its own `get_rope_index` call, so this stays a
+        # genuine independent stock reference rather than sharing a tensor with the fork by
+        # construction -- see the assertion below, which proves the two derivations agree rather
+        # than assuming it. Found 2026-08-25: this is why `full_inference` disagreed with a
+        # bit-exact-correct g=1 fork correction -- see docs/memo/qwen25vl_baseline_mrope_bug.md.
+        mm_token_type_ids = context["image_mask_1d"].long().unsqueeze(0)
+
+        if os.environ.get("APPCORR_QWEN_TRACE_DIR"):
+            # Side computation for tracing only -- does not feed into `outputs` below, matches
+            # exactly how the LLM-fork unit test's `build_inputs_embeds` derives the stock image
+            # embedding (`model.model.visual(...).pooler_output`), so it is comparable to the
+            # fork's post-merger `merged` tensor at the same stage (post-merge, pre-splice).
+            with torch.no_grad():
+                _stock_vision_out = self.model.model.visual(
+                    context["pixel_values"], grid_thw=context["image_grid_thw"]
+                )
+            _trace_save("vision_merged", _stock_vision_out.pooler_output)
+            # Same masked_scatter the stock forward does internally, replicated here purely to
+            # capture the post-splice/pre-layer-0 `inputs_embeds` -- comparable to the fork's
+            # `context["llm_input_embeds"]` at the identical stage.
+            _embed_tokens = self.model.model.language_model.embed_tokens(context["input_ids"])
+            _image_mask = context["image_mask_1d"].unsqueeze(0).unsqueeze(-1).expand_as(_embed_tokens)
+            _inputs_embeds = _embed_tokens.masked_scatter(_image_mask, _stock_vision_out.pooler_output.to(_embed_tokens.dtype))
+            _trace_save("inputs_embeds", _inputs_embeds)
+
+        _layer_hooks = []
+        _orig_apply_rope = None
+        if os.environ.get("APPCORR_QWEN_TRACE_DIR"):
+            def _make_hook(idx):
+                def _hook(module, inp, out):
+                    hs = out[0] if isinstance(out, tuple) else out
+                    _trace_save(f"layer{idx}_out", hs)
+                return _hook
+            layer0 = self.model.model.language_model.layers[0]
+            _layer_hooks.append(layer0.register_forward_hook(_make_hook(0)))
+            _layer_hooks.append(layer0.input_layernorm.register_forward_hook(
+                lambda m, i, o: _trace_save("layer0_input_layernorm_out", o)))
+            _layer_hooks.append(layer0.self_attn.register_forward_hook(
+                lambda m, i, o: _trace_save("layer0_attn_out", o[0] if isinstance(o, tuple) else o)))
+            _layer_hooks.append(layer0.mlp.register_forward_hook(
+                lambda m, i, o: _trace_save("layer0_mlp_out", o)))
+
+            def _v_proj_hook(module, inp, out):
+                B, T, _ = out.shape
+                h_kv = layer0.self_attn.num_key_value_heads
+                head_dim = layer0.self_attn.head_dim
+                _trace_save("layer0_v", out.view(B, T, h_kv, head_dim).transpose(1, 2))
+            _layer_hooks.append(layer0.self_attn.v_proj.register_forward_hook(_v_proj_hook))
+
+            # apply_multimodal_rotary_pos_emb is a plain function call inside Qwen2_5_VLAttention
+            # .forward, not a module -- monkeypatch it for the duration of this one forward call to
+            # capture layer 0's post-RoPE q/k (layers run strictly in order, so the first call is
+            # always layer 0). Restored unconditionally after, even on exception.
+            import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl as _qwen_mod
+            _orig_apply_rope = _qwen_mod.apply_multimodal_rotary_pos_emb
+            _rope_call_count = [0]
+
+            def _traced_apply_rope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
+                q_out, k_out = _orig_apply_rope(q, k, cos, sin, mrope_section, unsqueeze_dim=unsqueeze_dim)
+                if _rope_call_count[0] == 0:
+                    _trace_save("layer0_q_postrope", q_out)
+                    _trace_save("layer0_k_postrope", k_out)
+                _rope_call_count[0] += 1
+                return q_out, k_out
+            _qwen_mod.apply_multimodal_rotary_pos_emb = _traced_apply_rope
+
+        # Independence assertion (unconditional -- one [3,1,N] int-tensor compare, negligible
+        # cost): confirm HF's own internally-derived M-RoPE position_ids (now that
+        # `mm_token_type_ids` reaches the model) match the fork's `context["position_ids"]` from
+        # `_build_prompt`'s explicit `get_rope_index` call. This is what makes the fix a genuine
+        # independent reference rather than "the baseline agrees with the fork because we handed
+        # it the fork's own tensor" -- if this ever fails, the fork and the model's own derivation
+        # disagree about positions for a NEW reason, and nothing downstream should be trusted
+        # until that is understood.
+        _orig_compute_3d = self.model.model.compute_3d_position_ids
+        _captured_position_ids = [None]
+        def _capturing_compute_3d(*a, **kw):
+            pos = _orig_compute_3d(*a, **kw)
+            _captured_position_ids[0] = pos
+            return pos
+        self.model.model.compute_3d_position_ids = _capturing_compute_3d
+
         with torch.no_grad():
             outputs = self.model(
                 input_ids=context["input_ids"],
                 attention_mask=context["attention_mask"],
                 pixel_values=context["pixel_values"],
                 image_grid_thw=context["image_grid_thw"],
+                mm_token_type_ids=mm_token_type_ids,
                 use_cache=False,
+                output_hidden_states=bool(os.environ.get("APPCORR_QWEN_TRACE_DIR")),
             )
+            for _h in _layer_hooks:
+                _h.remove()
+            if _orig_apply_rope is not None:
+                import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl as _qwen_mod
+                _qwen_mod.apply_multimodal_rotary_pos_emb = _orig_apply_rope
+            self.model.model.compute_3d_position_ids = _orig_compute_3d
+
+            _actual_pos = _captured_position_ids[0]
+            if _actual_pos is None or not torch.equal(_actual_pos, context["position_ids"]):
+                raise AssertionError(
+                    "full_inference: HF's internally-derived position_ids (via mm_token_type_ids) "
+                    "no longer match context['position_ids'] (the fork's get_rope_index call) -- "
+                    "the two derivations have diverged for a reason beyond the known "
+                    "can_compute_mrope fall-through. Do not trust any number past this point."
+                )
+            if not Qwen25VLExecutor._position_ids_verified:
+                Qwen25VLExecutor._position_ids_verified = True
+                print("[full_inference] verified: HF-internal position_ids == fork's "
+                      "context['position_ids']", flush=True)
+
+            if os.environ.get("APPCORR_QWEN_TRACE_DIR"):
+                # hidden_states[-1] is the last decoder layer's raw output, pre-final-norm --
+                # the same point `context["llm_current_feature"]` captures on the fork side.
+                _trace_save("prefill_hidden", outputs.hidden_states[-1])
             logits_last = outputs.logits[:, -1, :]
             first_token = logits_last.argmax(dim=-1)
+            _trace_save("first_token_logits", logits_last)
+            _trace_save("first_token_id", first_token)
 
             if first_token.item() == self.processor.tokenizer.eos_token_id:
                 answer_text = ""
@@ -327,11 +478,15 @@ class Qwen25VLExecutor(ModelExecutor):
                 extended_mask = torch.cat(
                     [context["attention_mask"], torch.ones_like(first_token.unsqueeze(0))], dim=1
                 )
+                extended_mm_token_type_ids = torch.cat(
+                    [mm_token_type_ids, torch.zeros_like(first_token.unsqueeze(0))], dim=1
+                )
                 gen_ids = self.model.generate(
                     input_ids=extended_ids,
                     attention_mask=extended_mask,
                     pixel_values=context["pixel_values"],
                     image_grid_thw=context["image_grid_thw"],
+                    mm_token_type_ids=extended_mm_token_type_ids,
                     max_new_tokens=63,
                     do_sample=False,
                 )
