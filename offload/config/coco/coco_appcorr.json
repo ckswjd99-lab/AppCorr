@@ -37,6 +37,5 @@
         "server_pscore_weight": 1.0,
         "pscore_fusion": "geo_mean",
         "global_source_mode": "final_correct"
-    },
-    "device": "cuda:0"
+    }
 }
