@@ -77,4 +77,14 @@ class ApproxCorrectQwen25VLVisionBlock(nn.Module):
         x_out = x + blocks_out_sum.to(dtype=x.dtype)
         x_out[token_idx] = (x_attn_active + mlp_out_new).to(dtype=x_out.dtype)
 
+        # Persist the CORRECTED increment over the approximate one -- rule 3 of
+        # docs/memo/interleaved_correction_contract.md, unconditional. Without it a later round
+        # rebuilds this token from the stale approximate increment and discards what this round
+        # fixed, so interleaved keeps only its final round. One-shot cannot expose it. Note the
+        # indexing here is `[token_idx]`, not `[:, token_idx]`: this fork's residual stream carries
+        # no batch dimension, unlike the LLM fork beside it.
+        new_sum = blocks_out_sum.clone()
+        new_sum[token_idx] = ((x_attn_active - x_active) + mlp_out_new).to(new_sum.dtype)
+        cache_feature[f"{tag}_blocks_out_sum"] = new_sum
+
         return x_out, cache_feature

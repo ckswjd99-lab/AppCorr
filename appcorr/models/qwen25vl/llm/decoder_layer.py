@@ -242,4 +242,22 @@ class ApproxCorrectQwen25VLDecoderLayer(nn.Module):
         x_out = x + residual
         x_out[:, token_idx] = (x_attn_active + mlp_out_new).to(dtype=x_out.dtype)
 
+        # Persist this block's CORRECTED increment over the approximate one, so a later round that
+        # replays this block for a different token group rebuilds the corrected value here instead
+        # of the stale approximate one. Rule 3 of docs/memo/interleaved_correction_contract.md, and
+        # unconditional: skipping it is not a setting, it is the bug -- every round restarts at
+        # stage 0 and reconstructs a token outside the current group as `x + blocks_out_sum`.
+        #
+        # This fork carried the pre-`ac0238f` shape: it read the key and never wrote back. One-shot
+        # correction cannot expose it (no later round reads the stale value), which is why it
+        # survives into new forks; only interleaved is wrong. DINOv3 was fixed as `ac0238f`, CLIP
+        # and SAM 3 since, and these two Qwen forks were the last carrying it.
+        #
+        # `x_attn_active - x_active` is the attention contribution; plus `mlp_out_new` it is exactly
+        # the increment `approx()` above stores under the same key, so the two paths stay
+        # interchangeable. Both terms are already materialised, so it costs nothing.
+        new_sum = blocks_out_sum.clone()
+        new_sum[:, token_idx] = ((x_attn_active - x_active) + mlp_out_new).to(new_sum.dtype)
+        cache_feature[f"{tag}_blocks_out_sum"] = new_sum
+
         return x_out, cache_feature
