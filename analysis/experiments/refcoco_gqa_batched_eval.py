@@ -249,7 +249,23 @@ def main():
     raw_config = load_base_config_dict(args)
     label = args.label or f"{args.dataset}_batched"
     model_path = raw_config["dataset_kwargs"]["model_path"]
-    is_baseline = raw_config["transmission_policy_name"] != "ProgressiveLaplacian"
+
+    # Found 2026-08-25 (docs/memo/qwen25vl_baseline_mrope_bug.md): the old gate
+    # (`!= "ProgressiveLaplacian"`) misclassified `"Laplacian"` (the approx-only FLOOR -- single
+    # pyramid level, no correction) as baseline too, since it also isn't literally
+    # "ProgressiveLaplacian". That routed the floor arm's images straight to
+    # `executor.model(...)` on the RAW full-resolution array, skipping encode/decode entirely --
+    # confirmed by running it: predictions were character-for-character identical to the real
+    # sequential baseline. Floor silently computed ceiling.
+    #
+    # Allowlist instead of a negative string match, per CLAUDE.md's rule that an unrecognised
+    # config is a fault to raise on, not a case to guess a default for: baselines are the arms
+    # that transmit losslessly and run stock, nothing else. Anything not in this set is a real
+    # transmission policy and MUST resolve via `get_transmission()` -- which raises loudly on an
+    # unregistered name -- rather than silently falling into either branch.
+    BASELINE_TRANSMISSION_POLICIES = {"FullImageCompression", "Raw"}
+    policy_name = raw_config["transmission_policy_name"]
+    is_baseline = policy_name in BASELINE_TRANSMISSION_POLICIES
 
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
     from datasets import load_dataset
@@ -264,7 +280,11 @@ def main():
     ip = processor.image_processor
     min_pixels, max_pixels = ip.size["shortest_edge"], ip.size["longest_edge"]
     factor = ip.patch_size * ip.merge_size * 4
-    encoder = get_transmission(raw_config["transmission_policy_name"]) if not is_baseline else None
+    # `get_transmission(policy_name)` raises on an unregistered name -- the "raise on a name in
+    # neither set" behavior CLAUDE.md asks for, for free: anything not in the baseline allowlist
+    # above must resolve here or the run fails loudly, before any GPU work, rather than silently
+    # taking either branch.
+    encoder = None if is_baseline else get_transmission(policy_name)
 
     if args.dataset == "refcoco":
         ds = load_dataset("lmms-lab/RefCOCO", split="val")
