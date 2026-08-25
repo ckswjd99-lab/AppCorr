@@ -1,16 +1,17 @@
 {
   "model": "dinov3_detector",
   "batch_size": 1,
-  "mean_total_gflops_per_image": 818.733809664,
-  "mean_critical_gflops_per_image": 497.929715712,
+  "mean_total_gflops_per_image": 71148.487737344,
+  "mean_critical_gflops_per_image": 1907.215859712,
   "requests": 3,
-  "mean_total_gflops": 818.733809664,
-  "mean_critical_gflops": 497.929715712,
-  "mean_overlappable_gflops": 320.804093952,
-  "critical_fraction": 0.6081704576440361,
+  "mean_total_gflops": 71148.487737344,
+  "mean_critical_gflops": 1907.215859712,
+  "mean_overlappable_gflops": 69241.271877632,
+  "critical_fraction": 0.026806133487373502,
   "mean_stage_gflops": {
-    "APPROX_FORWARD": 156.71033856,
-    "CORRECT_FORWARD": 198.067617792,
-    "HEAD_INFERENCE": 463.955853312
+    "APPROX_FORWARD": 62299.51840256,
+    "CORRECT_FORWARD": 8385.013481472,
+    "HEAD_INFERENCE": 463.955853312,
+    "PREPARE_TOKENS": 54.584672256
   }
 }

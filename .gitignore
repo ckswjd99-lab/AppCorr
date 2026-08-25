@@ -225,3 +225,9 @@ analysis/qwen_vl_prefill/_textvqa_samples/
 # Regenerable CLIP caption-embedding cache (128 MB). Rebuild with:
 #   python analysis/experiments/build_coco_caption_embeds.py
 analysis/results/coco_retrieval/*.pt
+
+# SAM 3 per-image prediction dumps (~19 MB each). Intermediate output: the oracle writes them so a
+# scoring crash costs a re-score rather than a re-run, and `make_eval_table.py` reads the .log, not
+# these. They also trip GitHub push protection -- COCO RLE mask `counts` are high-entropy strings
+# that its scanner reports as an "Oculus Access Token".
+*.preds.json

@@ -1,15 +1,16 @@
 {
   "model": "dinov3_segmentor_m2f",
   "batch_size": 1,
-  "mean_total_gflops_per_image": 97226.39941632,
-  "mean_critical_gflops_per_image": 6587.154432,
+  "mean_total_gflops_per_image": 115222.78774101332,
+  "mean_critical_gflops_per_image": 6501.185181013333,
   "requests": 3,
-  "mean_total_gflops": 97226.39941632,
-  "mean_critical_gflops": 6587.154432,
-  "mean_overlappable_gflops": 90639.24498432,
-  "critical_fraction": 0.06775067750677506,
+  "mean_total_gflops": 115222.78774101332,
+  "mean_critical_gflops": 6501.185181013333,
+  "mean_overlappable_gflops": 108721.60256,
+  "critical_fraction": 0.05642273814469817,
   "mean_stage_gflops": {
-    "CORRECT_FORWARD": 9880.731648,
-    "PREPARE_TOKENS": 87345.66776832
+    "APPROX_FORWARD": 84315.5767296,
+    "CORRECT_FORWARD": 30907.211011413332,
+    "PREPARE_TOKENS": 656471.1578118827
   }
 }
