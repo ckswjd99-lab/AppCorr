@@ -21,12 +21,14 @@ run () {  # run <tag> <config> <extra...>
   echo "[done ] $tag rc=$?  $(grep -ao 'mean_critical=[0-9.]* GF' "$OUT/$tag.log" | tail -1)"
 }
 
-for K in 0.25 0.30 0.50; do
+# 0.30 dropped: the table reports 25% and 50% only. It was here from an earlier sweep and
+# each extra keep point is a full re-measurement of every arm.
+for K in 0.25 0.50; do
   run "dinov3_nyu_g4_k${K}"    offload/config/nyu/nyu_interleaved_static.json \
-      --set device=cuda:0 --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
+      --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
   run "dinov3_ade20k_g4_k${K}" offload/config/ade20k/ade20k_m2f_interleaved_static.json \
       --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
 done
-run "dinov3_nyu_ceiling"    offload/config/nyu/nyu_sequential.json --set device=cuda:0
+run "dinov3_nyu_ceiling"    offload/config/nyu/nyu_sequential.json
 run "dinov3_ade20k_ceiling" offload/config/ade20k/ade20k_m2f_sequential.json
 echo "FLOPS RETRY COMPLETE $(date)"
