@@ -24,7 +24,8 @@
     "groups": 4,
     "level": 2,
     "dtype": "bfloat16",
-    "unit": "GFLOPs/instruction"
+    "unit": "GFLOPs/instruction",
+    "note": "backbone prefill only; decode excluded"
   },
   "ov2": {
     "_samples": 12,
@@ -200,6 +201,30 @@
     },
     "refcoco": {
       "full": 30361.0
+    }
+  },
+  "gemma3_vfm": {
+    "_samples": 24,
+    "chartqa": {
+      "full": 7371.7,
+      "k0.25": 2430.7,
+      "total_k0.25": 14791.5,
+      "k0.50": 2641.1,
+      "total_k0.50": 15881.7
+    },
+    "textvqa": {
+      "full": 7324.8,
+      "k0.25": 2157.4,
+      "total_k0.25": 14764.8,
+      "k0.50": 2520.5,
+      "total_k0.50": 15855.6
+    },
+    "infovqa": {
+      "full": 7367.0,
+      "k0.25": 2274.2,
+      "total_k0.25": 14758.8,
+      "k0.50": 2616.9,
+      "total_k0.50": 15793.4
     }
   }
 }
