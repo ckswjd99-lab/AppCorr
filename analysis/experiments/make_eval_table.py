@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Dict, Optional
 
@@ -139,6 +140,63 @@ LITERALS = {
 }
 
 
+# The VFM "ours" arms, produced by run_vfm_accuracy_campaign.sh / run_vfm_bounds.sh, which write a
+# `Final Summary: {...}` line to a log rather than a summary JSON. Keyed by (model label, dataset
+# label) -> (log tag prefix, metric key, scale).
+#
+# Scale is per-row and NOT guessable from the value: ImageNet reports `top1_acc` already in percent,
+# COCO reports `mAP` as a fraction, and NYU/VGGT report raw error values that must not be scaled at
+# all. Getting one wrong yields a number off by 100x that still looks like a plausible metric for
+# some other task, so each is written out rather than inferred.
+VFM_OURS = {
+    ("DINOv3 (7B)", r"ImageNet-1k (Top-1 $\uparrow$)"): ("dinov3_imagenet", "top1_acc", 1.0),
+    ("DINOv3 (7B)", r"COCO Detector (mAP $\uparrow$)"): ("dinov3_coco", "mAP", 100.0),
+    ("DINOv3 (7B)", r"ADE20K m2f (mIoU $\uparrow$)"):   ("dinov3_ade20k", "mIoU", 1.0),
+    ("DINOv3 (7B)", r"NYUv2 (AbsRel $\downarrow$)"):    ("dinov3_nyu", "abs_rel", 1.0),
+    ("VGGT-Omega (7B)", r"Co3Dv2 (Depth AbsRel $\downarrow$)"): ("vggt_co3d", "abs_rel", 1.0),
+    ("VGGT-Omega (7B)", r"Co3Dv2 (Rot. deg $\downarrow$)"):     ("vggt_co3d", "rot_deg", 1.0),
+    ("VGGT-Omega (7B)", r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)"): ("vggt_co3d", "delta_1.10", 100.0),
+    # SAM 3's other five rows share one vision encoder but are different TASKS, and only the COCO
+    # tracker arm was run -- so they stay `--` rather than repeating this number.
+    ("SAM 3 (0.85B)", "COCO Tracker (Mask AP)"): ("sam3_coco", "mask_AP", 100.0),
+    ("OpenCLIP (2.5B)", "ImageNet-1k (Top-1)"): ("openclip_imagenet", "top1_acc", 1.0),
+    ("OpenCLIP (2.5B)", "ImageNet-1k (Top-5)"): ("openclip_imagenet", "top5_acc", 1.0),
+    ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): ("cocoret", "i2t_R@1", 1.0),
+    ("OpenCLIP (2.5B)", "COCO Ret. val2017 (t2i R@1)"): ("cocoret", "t2i_R@1", 1.0),
+}
+
+VFM_DIR = os.path.join(RESULTS, "vfm_accuracy")
+
+
+def vfm_accuracy(tag: str, key: str, scale: float) -> Optional[float]:
+    """Read one metric out of a `Final Summary: {...}` line.
+
+    A run that died still leaves a log, and several have exited rc=0 while producing nothing
+    (a missing dataset loader, an invalid device ordinal). Absence of the summary line is the
+    only reliable "this arm did not happen" signal, so it is what this returns None on.
+
+    Both quoting styles appear: the offload drivers print a Python dict (single quotes), the SAM 3
+    oracle prints JSON (double quotes).
+    """
+    path = os.path.join(VFM_DIR, f"{tag}.log")
+    if not (os.path.exists(path) and os.path.getsize(path) > 0):
+        return None
+    try:
+        text = open(path, errors="ignore").read()
+    except Exception:
+        return None
+    summaries = re.findall(r"Final Summary: (\{.*?\})", text)
+    if not summaries:
+        return None
+    m = re.search(rf"['\"]{re.escape(key)}['\"]\s*:\s*(-?[0-9.eE+]+)", summaries[-1])
+    if not m:
+        return None
+    try:
+        return float(m.group(1)) * scale
+    except ValueError:
+        return None
+
+
 def load_accuracy(model: str, dataset: str, tag: str) -> Optional[float]:
     p = os.path.join(RESULTS, f"{model}_{dataset}", f"{tag}.json")
     if not (os.path.exists(p) and os.path.getsize(p) > 0):
@@ -233,20 +291,55 @@ def build_rows(keeps, groups: int):
             f = "{:.2f}"
             if "fmt" in lit:
                 f = lit["fmt"]
+            lower_better = r"\downarrow" in label
 
-            def acc(tag, lit_key=None):
+            def acc_raw(tag, lit_key=None):
                 v = load_accuracy(*acc_key, tag) if acc_key else None
                 if v is None and lit_key and lit_key in lit:
                     v = lit[lit_key]
-                    return f.format(v)
-                return f.format(v) if v is not None else "--"
+                return v
+
+            ceiling_v = acc_raw("ceiling", "ceiling")
+
+            def acc_with_pres(tag, lit_key=None):
+                """Accuracy, with (preservation vs.\\ ceiling %) in parentheses.
+
+                Preservation is this-value-relative-to-ceiling, not the other way round: for a
+                lower-is-better metric that means ceiling/value, so a value further from the
+                ceiling in the bad direction still reads as a preservation < 100%. Applied to
+                Low-res. and Ours -- Full-res. is the reference point itself, always 100%.
+                """
+                v = acc_raw(tag, lit_key)
+                if v is None:
+                    return "--"
+                s = f.format(v)
+                if ceiling_v:
+                    pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
+                    s += f" ({pres:.1f}\\%)"
+                return s
+
+            vfm = VFM_OURS.get((model, label))
+
+            def ours(k):
+                """Ours at keep `k`. VLM rows read a summary JSON; VFM rows read a campaign log."""
+                if vfm is not None:
+                    tag, key, scale = vfm
+                    v = vfm_accuracy(f"{tag}_k{k:.2f}", key, scale)
+                    if v is None:
+                        return "--"
+                    out = f.format(v)
+                    if ceiling_v:
+                        pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
+                        out += f" ({pres:.1f}\\%)"
+                    return out
+                return acc_with_pres(f"interleaved_g{groups}_k{k:.2f}")
 
             full_gf = get_flops(fl_key, "full")
-            cells = [acc("floor", "floor")]
+            cells = [acc_with_pres("floor", "floor")]
             for k in keeps:
-                cells.append(acc(f"interleaved_g{groups}_k{k:.2f}"))
+                cells.append(ours(k))
                 cells.append(fmt_tf(get_flops(fl_key, f"k{k:.2f}"), full_gf))
-            cells.append(acc("ceiling", "ceiling"))
+            cells.append(f.format(ceiling_v) if ceiling_v is not None else "--")
             cells.append(fmt_tf(full_gf, None))
             block.append((label, cells))
         out.append((model, block))

@@ -38,7 +38,9 @@ run () {   # run <tag> <config> <nr> [--set ...]
 }
 
 # ---- DINOv3: classification, detection, segmentation, depth ---------------------------------- #
-for K in 0.25 0.30 0.50; do
+# 0.30 dropped: the table reports 25% and 50% only. It was here from an earlier sweep and
+# each extra keep point is a full re-measurement of every arm.
+for K in 0.25 0.50; do
   run "dinov3_imagenet_g4_k${K}"  offload/config/imnet/imnet_interleaved_g4.json          "$NR" --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
   run "dinov3_ade20k_g4_k${K}"    offload/config/ade20k/ade20k_m2f_interleaved_static.json "$NR" --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
   run "dinov3_nyu_g4_k${K}"       offload/config/nyu/nyu_interleaved_static.json           "$NR" --set appcorr_kwargs.token_keep_thres=none --set appcorr_kwargs.token_keep_ratio=$K
@@ -50,7 +52,7 @@ run "dinov3_nyu_ceiling"      offload/config/nyu/nyu_sequential.json            
 run "dinov3_coco_ceiling"     offload/config/coco/coco_sequential.json             "$NR"
 
 # ---- VGGT-Omega: Co3D -------------------------------------------------------------------------- #
-for K in 0.25 0.30 0.50; do
+for K in 0.25 0.50; do
   # The root goes through `--set dataset_kwargs.data_root`, not `-d`: an earlier edit dropped the
   # -d flag from this line while rewriting the keep overrides, and the loader then received None.
   run "vggt_co3d_g4_k${K}" offload/config/co3d/co3d_interleaved.json "$NR" \
