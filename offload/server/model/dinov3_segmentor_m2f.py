@@ -129,8 +129,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         return short_side
 
     def backbone_modules(self):
-        """The ViT trunk only -- the Mask2Former decode head sits outside the backbone."""
-        return [getattr(self.model, "backbone", None)]
+        """The ViT trunk only; the ViT-Adapter SPM, the Mask2Former head and the pixel decoder
+        are the header.
+
+        Reached the way the rest of this file reaches it. It used to be
+        `getattr(self.model, "backbone", None)` -- an attribute this model does not have -- so it
+        returned [None] and no Linear/Conv hook was installed. See dinov3_detector for the full
+        account; the same wrong guess was in three executors and only ImageNet's happened to match.
+        """
+        return [self.model.segmentation_model[0].backbone]
 
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Segmentor-M2F Model (MMap): {model_name}...")
@@ -1250,6 +1257,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         self._ensure_group_maps_and_plans(context, config)
         all_cached_dindices = context.get("m2f_cached_dindices")
         all_group_plans = context.get("m2f_group_plans")
+        _known_groups = self._all_groups(all_cached_dindices)
 
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
@@ -1302,10 +1310,9 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
             if correct_all_groups:
                 target_gids = sorted(cached_dindices.keys())
-            elif group_id in cached_dindices:
-                target_gids = [group_id]
             else:
-                target_gids = sorted(cached_dindices.keys())
+                target_gids = self._round_targets(
+                    group_id, cached_dindices, _known_groups, src_idx)
 
             all_dindices_for_src = [cached_dindices[gid] for gid in target_gids if cached_dindices.get(gid) is not None]
             if not all_dindices_for_src:
@@ -1453,6 +1460,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         new_intermediate_raw: List[List[torch.Tensor] | None] = [None] * len(all_x_backbones)
         buckets: Dict[Any, List[Dict[str, Any]]] = {}
         pending: List[Dict[str, Any]] = []
+        _known_groups = self._all_groups(all_cached_dindices)
 
         for src_idx, (x_feature, input_tokens, rope, cache) in enumerate(
             zip(current_features, all_x_backbones, all_rope_sincos, all_cache_features)
@@ -1468,10 +1476,9 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
             if correct_all_groups:
                 target_gids = sorted(cached_dindices.keys())
-            elif group_id in cached_dindices:
-                target_gids = [group_id]
             else:
-                target_gids = sorted(cached_dindices.keys())
+                target_gids = self._round_targets(
+                    group_id, cached_dindices, _known_groups, src_idx)
 
             all_dindices_for_src = [cached_dindices[gid] for gid in target_gids if cached_dindices.get(gid) is not None]
             if not all_dindices_for_src:
@@ -1835,6 +1842,50 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             else:
                 merged.append(corrected)
         return merged
+
+    @staticmethod
+    def _all_groups(all_cached_dindices) -> set:
+        """Every group id present anywhere in this request, across all sources/crops."""
+        if not isinstance(all_cached_dindices, list):
+            return set()
+        out = set()
+        for d in all_cached_dindices:
+            if isinstance(d, dict):
+                out.update(d.keys())
+        return out
+
+    @staticmethod
+    def _round_targets(group_id: int, src_groups, known_groups, src_idx: int) -> List[int]:
+        """Which of THIS source's groups round `group_id` corrects: `[group_id]`, or nothing.
+
+        ADE20K is the only model whose server-side sources are overlapping sliding crops of one
+        image while the transmission assigns each token to a group *by which crop covers it*. The
+        crops overlap, so the two partitions are not one-to-one: crop 0 may hold only group 1 while
+        crop 1 holds groups 1 and 2. A crop therefore legitimately contains no token of the group
+        that just arrived, and the right answer is "nothing to correct in this source this round".
+
+        That expected-empty case used to fall into `else: target_gids = sorted(cached_dindices)` --
+        "re-correct everything this crop has, over the full depth", every round. It was 66.7% of
+        ADE20K's correction FLOPs and 100% of its reported critical FLOPs, it made interleaved cost
+        1.5x one-shot when the whole claim is that it is cheaper (ProgVFM 3.3; SAM 3 measures
+        0.60x), and it put a different algorithm in ADE20K's row than in every row beside it. See
+        docs/memo/openclip_correction_and_residual_round.md.
+
+        Returning `[]` routes it into the callers' existing `if not all_dindices_for_src: continue`.
+        A `group_id` that exists in NO source is a different thing -- the scheduler asked for a
+        round that the transmission never produced -- and raises rather than silently correcting
+        something else, per CLAUDE.md's no-fallback rule.
+        """
+        if group_id in src_groups:
+            return [group_id]
+        if group_id in known_groups:
+            return []  # expected: this crop holds no token of this group
+        raise RuntimeError(
+            f"m2f correct_forward: round group_id={group_id} exists in no source "
+            f"(src {src_idx} has {sorted(src_groups)}, request has {sorted(known_groups)}). "
+            "The schedule and the transmission disagree about how many groups there are; "
+            "correcting some other group instead would hide that."
+        )
 
     @staticmethod
     def _union_dindices(dindices: List[torch.Tensor]) -> torch.Tensor:
