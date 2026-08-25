@@ -27,6 +27,5 @@
         "server_pscore": "patch_attn_prob_layermean",
         "server_pscore_weight": 1.0,
         "pscore_fusion": "geo_mean"
-    },
-    "device": "cuda:0"
+    }
 }

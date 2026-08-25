@@ -27,7 +27,6 @@
     "appcorr_kwargs": {
         "enabled": false
     },
-    "device": "cuda:0",
     "exp_id": "co3d_full",
     "transmission_kwargs": {
         "pyramid_levels": [
