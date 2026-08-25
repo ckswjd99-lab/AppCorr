@@ -278,13 +278,22 @@ class OpenCLIPExecutor(ModelExecutor):
             context["output"] = image_embeds
 
     def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
+        """One entry per sample in the batch, keyed by its index within the batch.
+
+        This used to return `{0: output[0]}` -- the first sample only -- while the configs run at
+        `batch_size: 32`. `worker.py` fills the rest with `final_map.get(i, [])`, and the ImageNet
+        evaluator skips an empty prediction for the correct-count but still counts it in the
+        denominator, so the reported accuracy was capped at exactly 1/32 = 3.125%. Measured: top5
+        3.125% (one per batch, 20 batches), top1 2.97% (19 of those 20 correct) -- i.e. the model was
+        fine at ~95% on what it actually scored, and the loss was entirely in this collection step.
+        It hit ceiling, floor and every corrected arm equally, so nothing about the accuracy ordering
+        between them was visible either.
+        """
         if "output" not in context:
             return {}
         output = context["output"]
-        if self.clip_task == "zeroshot":
-            return {0: output[0].cpu().numpy().tolist()}
-        else:
-            return {0: output[0].cpu().numpy().tolist()}
+        rows = output.cpu().numpy().tolist()
+        return {i: row for i, row in enumerate(rows)}
 
     def decide_exit(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
         return {}

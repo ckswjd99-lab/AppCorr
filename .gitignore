@@ -221,3 +221,7 @@ AGENTS.md
 CLAUDE.md
 analysis/qwen_vl_prefill/_vsr_images/
 analysis/qwen_vl_prefill/_textvqa_samples/
+
+# Regenerable CLIP caption-embedding cache (128 MB). Rebuild with:
+#   python analysis/experiments/build_coco_caption_embeds.py
+analysis/results/coco_retrieval/*.pt
