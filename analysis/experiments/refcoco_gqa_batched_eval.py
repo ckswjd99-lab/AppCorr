@@ -77,6 +77,11 @@ def parse_args():
     p.add_argument("--grouping-strategy", type=str, default=None)
     p.add_argument("--num-groups", type=int, default=None)
     p.add_argument("--keep-rate", type=float, default=None)
+    p.add_argument("--token-keep-ratio", type=float, default=None,
+                    help="Server-side vision-recompute selection fraction (appcorr_kwargs.token_keep_ratio, "
+                         "read by Qwen25VLExecutor._prune_patch_idx) -- NOT the same knob as --keep-rate, "
+                         "which sets transmission_kwargs.keep_rate (a client-side send/coverage fraction). "
+                         "Omit to leave the executor's vision-side pruning off (keeps every arrived token).")
     p.add_argument("--pscore-threshold", type=float, default=None,
                     help="For --grouping-strategy top_energy_threshold: absolute residual-energy "
                          "cutoff (merge-groups with pscore >= this are corrected) -- the number of "
@@ -107,6 +112,8 @@ def load_base_config_dict(args):
         raw.setdefault("transmission_kwargs", {})["keep_rate"] = args.keep_rate
     if args.pscore_threshold is not None:
         raw.setdefault("transmission_kwargs", {})["pscore_threshold"] = args.pscore_threshold
+    if args.token_keep_ratio is not None:
+        raw.setdefault("appcorr_kwargs", {})["token_keep_ratio"] = args.token_keep_ratio
     return raw
 
 
