@@ -143,6 +143,27 @@ def main() -> None:
     check("g=4 critical fraction == 1/5 of what it did", by["g4"].critical_fraction, 0.2, 1e-9)
     check("g=1 interleaved == one-shot", by["g1"].critical, by["oneshot"].critical)
 
+    # --- 3b: PREPARE_TOKENS is excluded from total/critical, not just relabelled ------------------ #
+    # ADE20K's m2f segmentor re-runs its (expensive) token embed on every interleaved round --
+    # `ADE20KWindowInterleavedPolicy` prepends `OpType.PREPARE_TOKENS` to every group's task -- which
+    # measured at 6.75x the model's own ceiling and identical between keep=0.25 and keep=0.50, i.e.
+    # scaling with round count rather than with what was actually corrected. Not backbone compute,
+    # so it must not move `total`/`critical`, but `by_stage()` must still show it or the next one of
+    # these goes undiagnosed the same way.
+    with flops.session(m, enabled=True) as fl3b:
+        with torch.no_grad():
+            with fl3b.request("with_prep"):
+                with fl3b.arrival(0), fl3b.stage("PREPARE_TOKENS"):
+                    m(x)
+                with fl3b.arrival(0), fl3b.stage("approx"):
+                    m(x)
+                with fl3b.arrival(1), fl3b.stage("correct"):
+                    m(x)
+    rq = fl3b.requests[0]
+    check("PREPARE_TOKENS excluded from total", rq.total, 2 * one)
+    check("PREPARE_TOKENS excluded from critical", rq.critical, one)
+    check("PREPARE_TOKENS still visible in by_stage", rq.by_stage().get("PREPARE_TOKENS"), one)
+
     # --- 4: off is off --------------------------------------------------------------------------- #
     print()
     orig = torch.nn.functional.scaled_dot_product_attention

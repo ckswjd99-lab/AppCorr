@@ -79,7 +79,21 @@ class RequestFlops:
 
     `stage` is free-form and only for reporting -- "approx", "correct", "prefill", "vision". The
     critical/overlappable split never looks at it; that split is decided by the arrival index alone.
+
+    One stage IS excluded from `total`/`critical`, not just reported differently: `PREPARE_TOKENS`
+    (the offload pipeline's `OpType.PREPARE_TOKENS.name`, used verbatim as the stage label for every
+    model -- see `worker.py`'s `fl.stage(instr.op_type.name)`). For ADE20K's m2f segmentor this stage
+    re-runs the ViT-Adapter's SPM from scratch on EVERY interleaved round (`ADE20KWindowInterleavedPolicy`
+    prepends `PREPARE_TOKENS` to every group's task list), measured at 6.75x the model's entire
+    ceiling forward and identical to the last digit between keep=0.25 and keep=0.50 -- i.e. it scales
+    with round count, not with what is actually being corrected. That is real waste worth fixing
+    before a latency pass (cache the embedding across a request's rounds instead of recomputing it),
+    but it is not backbone compute, which is the only thing this counter exists to report. Cheap
+    executors (plain ViT patch-embed) barely notice excluding it; only ADE20K's number was ever
+    dominated by it. TODO: fix the re-embed-per-round waste itself instead of just not counting it.
     """
+
+    EXCLUDED_STAGES = frozenset({"PREPARE_TOKENS"})
 
     request_id: object = None
     buckets: Dict[Tuple[int, str], Bucket] = field(default_factory=dict)
@@ -103,13 +117,14 @@ class RequestFlops:
 
     @property
     def total(self) -> int:
-        return sum(b.total for b in self.buckets.values())
+        return sum(b.total for (_, s), b in self.buckets.items() if s not in self.EXCLUDED_STAGES)
 
     @property
     def critical(self) -> int:
         """FLOPs that could not start until the whole image was in hand."""
         last = self.final_arrival
-        return sum(b.total for (a, _), b in self.buckets.items() if a == last)
+        return sum(b.total for (a, s), b in self.buckets.items()
+                   if a == last and s not in self.EXCLUDED_STAGES)
 
     @property
     def overlappable(self) -> int:
@@ -121,6 +136,9 @@ class RequestFlops:
         return (self.critical / t) if t else 0.0
 
     def by_stage(self) -> Dict[str, int]:
+        """Every stage, INCLUDING `EXCLUDED_STAGES` -- this is the debugging view that should
+        catch the next `PREPARE_TOKENS`-shaped surprise, so it stays complete even though
+        `total`/`critical` do not."""
         out: Dict[str, int] = {}
         for (_, stage), b in self.buckets.items():
             out[stage] = out.get(stage, 0) + b.total

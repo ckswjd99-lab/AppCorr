@@ -45,8 +45,14 @@ class DINOv3DeptherExecutor(ModelExecutor):
         raise ValueError(f"Unsupported autocast dtype: {name}")
 
     def backbone_modules(self):
-        """The ViT trunk only; the DPT-style depth head is excluded."""
-        return [getattr(self.model, "backbone", None)]
+        """The ViT trunk only; the DPT-style depth head is excluded.
+
+        Reached the way the rest of this file reaches it. It used to be
+        `getattr(self.model, "backbone", None)` -- an attribute this model does not have -- so it
+        returned [None] and no Linear/Conv hook was installed. See dinov3_detector for the full
+        account; the same wrong guess was in three executors and only ImageNet's happened to match.
+        """
+        return [self.model.encoder.backbone]
 
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Depther Model (MMap): {model_name}...")

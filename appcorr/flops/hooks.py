@@ -61,9 +61,19 @@ def install(counter: FlopCounter, roots: Iterable[nn.Module]) -> List[torch.util
     """
     handles: List[torch.utils.hooks.RemovableHandle] = []
     seen = set()
+    roots = list(roots)
+    if not roots or any(r is None for r in roots):
+        # A None root used to be skipped silently. That turns "backbone_modules() could not find the
+        # trunk" into "count nothing from it" -- and because `patch_attention` is global, attention
+        # keeps being counted, so the arm reports a smaller but entirely plausible number instead of
+        # zero. `dinov3_detector` returned [None] for months and COCO measured 1874 GF/image against
+        # a closed-form ~54,900. Research code: crash instead (CLAUDE.md).
+        raise ValueError(
+            f"flops.install: backbone root is None (roots={roots!r}). The executor's "
+            "backbone_modules() did not resolve the trunk; fix the accessor rather than letting "
+            "the count silently omit it."
+        )
     for root in roots:
-        if root is None:
-            continue
         for mod in root.modules():
             if id(mod) in seen:
                 continue
