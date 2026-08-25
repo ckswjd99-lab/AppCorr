@@ -344,14 +344,32 @@ def main():
         batch_items.clear()
         batch_meta.clear()
 
+    import os as _os
     for idx in indices:
         image_np, prompt, gt, grid_hw = load_example(idx)
+        if _os.environ.get("APPCORR_MEM_TRACE"):
+            print(f"[mem] BEFORE idx={idx}: allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+                  f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB", flush=True)
         first_token, context = build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline)
+        if _os.environ.get("APPCORR_MEM_TRACE"):
+            print(f"[mem] AFTER  idx={idx}: allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+                  f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB", flush=True)
         batch_items.append({
             "input_ids": context["input_ids"], "first_token": first_token,
             "pixel_values": context["pixel_values"], "image_grid_thw": context["image_grid_thw"],
         })
         batch_meta.append((idx, gt, grid_hw))
+        # Explicit release, not `torch.cuda.empty_cache()`: `context` is a live reference (its
+        # vision_cache/kv_cache/llm_input_embeds tensors, ~27GB/image on a 32B model), and Python's
+        # `first_token, context = build_first_token_context(...)` assignment only rebinds `context`
+        # AFTER the RHS is fully evaluated -- so the PREVIOUS iteration's context stayed alive for
+        # the ENTIRE duration of building the next image's context, guaranteeing two images' state
+        # resident simultaneously. Confirmed via torch.cuda.memory_allocated() (APPCORR_MEM_TRACE=1):
+        # allocated stayed at 93.81GB from immediately after image 1 through the start of image 2's
+        # build, not falling back toward the 66.91GB baseline. `del` here breaks that -- only the
+        # four tensors batch_items actually needs stay referenced; everything else in `context`
+        # (which is nearly all of it) is freed before the next image's forward pass starts.
+        del context
         if len(batch_items) >= args.batch_size:
             flush_batch()
     flush_batch()
