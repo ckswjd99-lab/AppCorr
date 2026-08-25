@@ -91,4 +91,31 @@ class ApproxCorrectCLIPEncoderLayer(nn.Module):
         x_out = x_out.clone()
         x_out[:, token_idx] = (x_attn_active + mlp_out_new).to(dtype=x_out.dtype)
 
+        # Write this block's *corrected* increment back over the approximate one, so a later round
+        # that replays this block for a different token group reproduces the corrected value here
+        # instead of falling back to the stale approximate increment. This is rule 3 of
+        # docs/memo/interleaved_correction_contract.md, and it is unconditional -- skipping it is
+        # not a configuration, it is the bug.
+        #
+        # This fork carried the PRE-fix shape: it read `blocks_out_sum` and never wrote back. DINOv3
+        # got the fix as `ac0238f`; CLIP and (inherited from CLIP) SAM 3 did not, and the contract
+        # memo says so in as many words. One-shot correction cannot expose it -- there is no later
+        # round to read the stale value -- which is why it survived here unnoticed.
+        #
+        # Symptom that found it: interleaved g=4 at keep=0.25 scored 78.44 top-1 against an
+        # approx-only FLOOR of 79.22 (640-image subset), i.e. correcting made it worse than not
+        # correcting. That is the documented signature: `prepare_tokens` re-embeds from the image as
+        # decoded so far, so an earlier group ends up as `refined x + degraded increment` --
+        # self-inconsistent, and measurably below the consistent floor.
+        #
+        # `x_attn_active - x_active` is the attention contribution; adding `mlp_out_new` gives
+        # exactly the increment `approx()` above would have stored (see its two writes to the same
+        # key), so the two paths stay interchangeable. Both terms are already materialised, so it
+        # costs nothing, and it is a no-op for one-shot correction.
+        blocks_out_sum = blocks_out_sum.clone()
+        blocks_out_sum[:, token_idx] = (
+            (x_attn_active - x_active) + mlp_out_new
+        ).to(blocks_out_sum.dtype)
+        cache_feature[f"{tag}_blocks_out_sum"] = blocks_out_sum
+
         return x_out, cache_feature
