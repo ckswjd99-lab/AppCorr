@@ -107,15 +107,24 @@ class Qwen25VLExecutor(ModelExecutor):
         num_groups = context["pixel_values"].shape[0] // self.vision_tower.spatial_merge_unit
         if "group_map" not in context:
             context["group_map"] = torch.full((1, num_groups), -1, device=self.device, dtype=torch.long)
+        if "pscore_map" not in context:
+            # Per-merge-group importance hint (Patch.pscore_hint -- residual energy, already
+            # computed client-side by every transmission policy that sets `mobile_pscore`; see
+            # progressive.py's `_compute_patch_pscore_hint`). Used by `_prune_patch_idx` for the
+            # vision-side keep rate. 0.0 for groups whose patches haven't arrived yet, matching
+            # `group_map`'s -1 sentinel convention.
+            context["pscore_map"] = torch.zeros((1, num_groups), device=self.device, dtype=torch.float32)
         if "question" not in context:
             for p in task.payload:
                 if getattr(p, "text_payload", ""):
                     context["question"] = p.text_payload
                     break
         group_map = context["group_map"]
+        pscore_map = context["pscore_map"]
         for p in task.payload:
             if 0 <= p.spatial_idx < num_groups:
                 group_map[0, p.spatial_idx] = p.group_id
+                pscore_map[0, p.spatial_idx] = float(p.pscore_hint)
 
     def _build_prompt(self, context: Dict[str, Any]):
         """Builds the text prompt + multimodal input scaffolding ONCE per request. Always exact
@@ -197,6 +206,42 @@ class Qwen25VLExecutor(ModelExecutor):
         context["llm_current_feature"] = x_feature
         context["llm_cache"] = cache
 
+    def _prune_patch_idx(self, group_idx: torch.Tensor, context: Dict[str, Any], config: Any) -> torch.Tensor:
+        """Vision-side keep rate: within the merge-groups that just arrived (`group_idx`), keep
+        only the top-`token_keep_ratio` fraction by residual-energy importance
+        (`Patch.pscore_hint`, see `preprocess`'s `pscore_map`) and correct only those; the rest
+        stay at whatever the current approx state already has them at (never separately
+        re-corrected -- same "static per-round selection" semantics as OpenCLIP's
+        `_prune_patch_idx`, `openclip_executor.py:147-211`, this is adapted from).
+
+        Reads `token_keep_ratio` from the RAW `config.appcorr_kwargs`, NOT
+        `normalize_appcorr_kwargs`'s output -- that function defaults the ratio to 0.2, so reading
+        the normalized value would silently turn every existing Qwen config that never mentions
+        this knob into a 20%-keep run. No-op (returns group_idx unchanged) unless the config
+        explicitly sets a ratio < 1.0.
+        """
+        raw_appcorr = getattr(config, "appcorr_kwargs", None) or {}
+        token_keep_ratio = (float(raw_appcorr["token_keep_ratio"])
+                            if "token_keep_ratio" in raw_appcorr else None)
+        if token_keep_ratio is None or token_keep_ratio >= 1.0:
+            return group_idx
+
+        pscore_map = context.get("pscore_map")
+        if pscore_map is None:
+            return group_idx
+        scores = pscore_map[0, group_idx].float()
+        if bool((scores == 0).all()):
+            # No real residual-energy hint for this group (e.g. mobile_pscore not configured on
+            # the transmission policy) -- pruning would be meaningless, so skip it rather than
+            # keep an arbitrary subset.
+            return group_idx
+
+        n = int(group_idx.numel())
+        k = max(1, min(int(round(n * token_keep_ratio)), n))
+        keep_mask = torch.zeros(n, dtype=torch.bool, device=group_idx.device)
+        keep_mask.scatter_(0, scores.topk(k).indices, True)
+        return group_idx[keep_mask]
+
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         start_l, end_l = params.get("layers", (0, self.num_llm_layers))
         group_id = params.get("group_id", 1)
@@ -204,6 +249,10 @@ class Qwen25VLExecutor(ModelExecutor):
         group_idx = torch.where(group_map[0] == group_id)[0]
         if group_idx.numel() == 0:
             return
+        _n_before_prune = group_idx.numel()
+        group_idx = self._prune_patch_idx(group_idx, context, config)
+        if os.environ.get("APPCORR_QWEN_TRACE_DIR"):
+            print(f"[TRACE-PRUNE] group_id={group_id} before={_n_before_prune} after={group_idx.numel()}", flush=True)
 
         # Vision tower: correct the newly-arrived merge-groups to FULL depth (all 32 layers), from
         # the CURRENT canvas (already reconstructed by the transmission layer's decode, matching
