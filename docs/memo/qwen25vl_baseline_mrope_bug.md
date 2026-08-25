@@ -159,20 +159,39 @@ for both arms equally (this doesn't explain the g=1 divergence, since the first 
 fixed before either generate() fallback runs, but it does mean generation quality itself has been
 understated across the board).
 
-## A second, separate, still-open finding from verifying the fix on `refcoco_gqa_batched_eval.py`
+## A second, separate finding from verifying the fix on `refcoco_gqa_batched_eval.py`: a per-image memory leak, found and fixed
 
 Running this driver across more than one image in a single process (independent of `--batch-size`,
-reproduced at both `--batch-size 5` and `--batch-size 1`) OOMs on the second image — 32B occupies
-~65GB, but after one image's correction pass the process holds ~92GB, consistent with the prior
-image's `context`/cache not being fully released before the next image's is built. Confirmed the
-*fix itself* is correct on the one image that does complete (`idx=0`, `--batch-size 1`, both arms:
-`'485,0,644,137 bowl behind the others can only see '`, bit-for-bit identical text) — the
-batch_size=5 run's slightly different bbox digits on the same image were batch-size-dependent bf16
-noise (the script's own docstring already anticipates this: "mod ordinary bf16 batch-size-invariance
-noise"), not an identity failure, and disappeared entirely once both arms ran at the same batch
-size. But the OOM itself is a separate, real, pre-existing bug that blocks any RefCOCO/GQA run at
-real scale (hundreds to thousands of images) regardless of the M-RoPE fix, and hasn't been
-root-caused yet.
+reproduced at both `--batch-size 5` and `--batch-size 1`) OOM'd on the second image — 32B occupies
+~65GB, but after one image's correction pass the process held ~93.8GB. Confirmed the *fix itself*
+was already correct on the one image that completed pre-fix (`idx=0`, `--batch-size 1`, both arms:
+`'485,0,644,137 bowl behind the others can only see '`, bit-for-bit identical text) — a
+`--batch-size 5` run's slightly different bbox digits on the same image were batch-size-dependent
+bf16 noise (the script's own docstring already anticipates this: "mod ordinary bf16
+batch-size-invariance noise"), not an identity failure, and disappeared entirely once both arms ran
+at the same batch size.
+
+**Root cause, found by instrumenting rather than theorizing** (`torch.cuda.memory_allocated()`/
+`memory_reserved()` before and after each image, gated behind `APPCORR_MEM_TRACE=1`): allocated
+memory stayed pinned at 93.81GB from immediately after image 1 through the *start* of image 2's
+build — never falling back toward the 66.91GB model-only baseline. A live reference, not
+fragmentation (reserved was already saturated too, so `torch.cuda.empty_cache()` would not have
+helped). The culprit is pure Python semantics: `first_token, context = build_first_token_context(...)`
+only rebinds the name `context` *after* the right-hand side is fully evaluated, so the *previous*
+iteration's `context` dict (its `vision_cache`/`kv_cache`/`llm_input_embeds` tensors, ~27GB/image on
+the 32B model) stayed alive, referenced by that name, for the *entire* duration of building the next
+image's context — guaranteeing two images' state resident simultaneously on every iteration, at any
+batch size. Exactly the "if the release happens after the next image's context is already built,
+both live simultaneously" shape predicted before instrumenting.
+
+**Fixed** with an explicit `del context` right after the four tensors `batch_items` actually needs
+are extracted from it — not `torch.cuda.empty_cache()`, which would have masked the leak and cost a
+sync every image without addressing why the reference was live. Verified: a 5-sample RefCOCO run at
+`--batch-size 1` that previously OOM'd on image 2 now completes all 5 (`allocated` returns to
+66.94GB — the model-only baseline — before every image), and re-ran the g=1 identity gate on this
+driver at those 5 samples: **sequential and interleaved@g=1 match exactly, sample for sample,
+including `mean_iou` to four decimals (0.8124 both).** This was blocking any real-scale RefCOCO/GQA
+run regardless of the M-RoPE fix being correct; it no longer does.
 
 ## The permanent gate
 
