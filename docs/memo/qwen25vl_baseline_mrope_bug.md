@@ -200,3 +200,54 @@ the same strided samples, asserts exact per-sample text equality (never the aggr
 non-zero on any mismatch. This is the check that would have caught both the rule-3 increment-persist
 bug (fixed earlier the same day, commit `e43e549`) and this one, and the next fork or config change
 in this file should be run against it before any number from it is trusted.
+
+## Re-establishing the baselines at full scale surfaced three more, unrelated bugs
+
+Fixing the M-RoPE gap and re-running at real scale (not sampling) is what surfaced these — none of
+them would have been visible from a small-n check, and two of them are exactly the "the harness is
+wrong, not the method" class this memo is already full of.
+
+**RefCOCO baseline re-established, N=8811: 88.19% (was 85.75%, +2.44pp — moved toward published
+Qwen2.5-VL figures).** GQA baseline re-established, N=12578: 60.80% (was 60.84%, -0.04pp). A
+per-sample diff against a controlled old-bug re-run showed the flat GQA aggregate hides real churn
+(1,016/12,578 = 8.08% of predictions changed, 234 wrong→right vs 225 right→wrong, near-cancelling) —
+confirmed genuine (not run-to-run noise) via a determinism control: the same fixed code run twice on
+an identical 3,000-sample subset differed on 1 sample. A spatial-question split (crude regex
+classifier) did NOT confirm "position info matters more where the question is spatial" — churn
+concentration was only 1.27x and the net movement was actually negative on spatial questions. Recorded
+honestly as: the fix is proven correct as an identity (bit-exact against a correctly-called stock
+forward), RefCOCO corroborates it where positions structurally must matter, GQA churns substantially
+with no confirmed directional story — not claiming GQA improved.
+
+**Memory leak in `refcoco_gqa_batched_eval.py` (fixed, `e3e42ed`) and `refcoco_attn_fused_eval.py`
+(fixed, `512ef38`, found by grep once the pattern was known).** `first_token, context =
+build_first_token_context(...)` only rebinds `context` after the RHS is fully evaluated, so the
+PREVIOUS image's context (~27GB of vision/kv cache on the 32B model) stayed alive through the
+ENTIRE next image's build — OOMs on image 2+, at any `--batch-size`. Root-caused via
+`torch.cuda.memory_allocated()`/`memory_reserved()` instrumentation, not by reading: allocated
+stayed pinned at 93.81GB from right after image 1 through the start of image 2's build. Fixed with
+an explicit `del context`, not `empty_cache()` (this was a live reference, not fragmentation).
+
+**The floor (approx-only) config was silently computing the ceiling (fixed, `79acedb`).**
+`is_baseline = transmission_policy_name != "ProgressiveLaplacian"` also matched `"Laplacian"` (the
+approx-only floor's policy — single pyramid level, no correction), routing it into the same branch
+as the real baseline: raw full-resolution image straight into `executor.model(...)`, encode/decode
+never touched. Confirmed by running it: floor's prediction was character-for-character identical to
+the real baseline's on the same image. Fixed with an allowlist of the two arms that actually
+transmit losslessly and run stock (`FullImageCompression`, `Raw`) instead of a negative string
+match; anything else must resolve via `get_transmission()`, which now raises loudly on an
+unregistered name rather than silently taking either branch.
+
+**"Interleaved g=4 at keep 0.25/0.50" cannot currently be run — this is a missing mechanism, not a
+bug.** Every real multi-round grouping strategy in `progressive.py`
+(`grid`/`sequential`/`block_grid`/`expansion`) has no `keep_rate` concept at all — every token gets
+corrected eventually, only round *order* differs. `keep_rate` only exists under
+`top_energy`/`top_energy_threshold`, whose own code comment states it's paired with `num_groups=1`
+by design (a static one-shot selection, not a progressive schedule). Server-side token pruning
+independent of transmission grouping — the thing every other model in this repo's table has
+(DINOv3's five executors, OpenCLIP, VGGT all select which arrived tokens to recompute inside the
+executor, independent of how transmission grouped them) — does not exist for Qwen; the fork's
+`correct()` takes `token_idx` and stops there. Building it is real design work, flagged to the user
+rather than improvised. VGGT is a live cautionary precedent: its own unvalidated pruning path scored
+*worse than its own floor*, while the same config at `keep_ratio=1.0` landed correctly between
+bounds — so "just add pruning to Qwen" would not be free even once built.
