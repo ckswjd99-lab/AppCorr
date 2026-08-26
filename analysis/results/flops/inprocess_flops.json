@@ -191,5 +191,19 @@
   "refcoco": {
    "full": 30361.0
   }
+ },
+ "qwen35_moe": {
+  "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
+  "_samples": 12,
+  "chartqa": {
+   "full": 3898.0,
+   "k0.50": 1091.2,
+   "total_k0.50": 5374.4
+  },
+  "realworldqa": {
+   "full": 11681.3,
+   "k0.50": 3079.7,
+   "total_k0.50": 16230.1
+  }
  }
 }

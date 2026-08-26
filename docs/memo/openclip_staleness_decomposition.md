@@ -36,3 +36,11 @@ per-position sensitivity probe would settle it; not run.
 
 Table implication, undecided (user's call): an OpenCLIP one-shot row would show the real trade --
 larger critical compute, +5.8pp i2t over the interleaved row at the same keep.
+
+## Table handling of near-zero-gap rows (2026-08-26, user decision)
+
+Rows where floor ~= ceiling (OV2 RefCOCO 0.00pp; Gemma3 GQA -0.11pp / RealWorldQA 0.78pp / POPE
+1.20pp; OV2 GQA 1.10pp) produce meaningless preservation ratios (>100%, or ratios of noise). The
+options were: blank the ratio cells, drop the rows, or leave as-is. **User's call: leave them
+exactly as they are; they will handle presentation themselves later.** Do not "fix" these rows in
+make_eval_table.py.
