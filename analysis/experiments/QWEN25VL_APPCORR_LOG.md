@@ -1205,3 +1205,47 @@ task-relevance is the sole lever (sections 9, 12, 14 all agree). The best pscore
 investigation, vision+llmattn_36 (log1p residual + 64 vision per-head attentions from layers
 7/15/23/31 + LLM layer-36 text->image attention), reaches within 1pp of full-image baseline (85.75%)
 while recomputing only ~50% of merge-groups, regardless of which of the three selection rules is used.**
+
+---
+
+## 2026-08-27: Full-split server-side pruning arms (post-M-RoPE-fix bounds, energy x attention scoring)
+
+Server-side vision keep rate (`_prune_patch_idx`, energy x received-attention scoring, commit
+28be3cf) at interleaved g=4 `sequential` grouping, full RefCOCO val, batch_size=1, evaluated by
+`refcoco_gqa_batched_eval.py`. Bounds are the re-established post-M-RoPE-fix full-split runs
+(bs=16), restricted to each arm's own OOM-kept sample set.
+
+**keep=0.25** (kept n=8803, OOM-skipped 8/8811 = 0.09%: [1279, 2745, 4720, 6321, 6757, 7312, 7870, 7995]):
+
+| arm | Acc@0.5 | mIoU |
+|---|---|---|
+| floor (approx-only) | 79.70 | 70.38 |
+| **ours (keep=0.25)** | **86.10** | **78.22** |
+| ceiling (lossless) | 88.22 | 80.26 |
+| preservation | 97.59% | 97.46% |
+| recovery | 75.07% | 79.33% |
+
+The 2000-sample stride subset had put recovery at 84.5% -- **the subset overestimated recovery by
+~9pp while preservation moved only ~0.9pp (98.46% -> 97.59%)**. The floor-ceiling gap is nearly
+identical between subset and full (8.70pp vs 8.52pp), so the recovery shift comes from small
+numerator movements amplified by the ~8pp denominator, not from an unrepresentative subset. This is
+a live demonstration of why preservation is reported before recovery in this project: with a
+single-digit gap, recovery amplifies noise that preservation absorbs.
+
+Caveats that must travel with these numbers: (a) ours ran at bs=1, bounds at bs=16 -- measured on
+200 shared indices, bs changes Acc@0.5 not at all and mIoU by 0.001, but only 76% of predictions
+are text-identical (real +/-1-8px coordinate churn below the IoU threshold); (b) the OOM skips
+systematically exclude the largest (672x672) images -- ceiling scores 50.0% and floor 62.5% on the
+8 skipped vs 88.2%/79.7% on the kept, so these are genuinely hard images, excluded from all three
+arms equally; (c) a cuDNN fused-MHA workspace failure surfaces memory exhaustion as a plain
+RuntimeError ("mha_graph.execute"), not torch.cuda.OutOfMemoryError -- handled as an OOM-skip
+variant since 73f-series commit, matched narrowly so real RuntimeErrors still crash.
+
+Attention-term ablation (2000-sample subset, keep=0.25): energy-only and energy x attention give
+IDENTICAL correct-counts (1721/1998) -- but NOT identical predictions: 36 samples flip 0->1, 36
+flip 1->0, 575/1998 prediction texts differ. A genuine null (the term reaches the score and moves
+selections; the accuracy effect cancels), not a dead mechanism -- distinguished from the
+aggregate-ties-hiding-churn failure mode by per-sample diffing, the same method that exposed the
+M-RoPE bug.
+
+keep=0.50 full-split run in progress.
