@@ -42,7 +42,7 @@ FLOPS_DIR = os.path.join(RESULTS, "flops")
 # (model label, [(dataset label, accuracy key, flops key)]). `accuracy key` is (dir_prefix, dataset)
 # or None when no accuracy arm exists; `flops key` selects the FLOPs source.
 SPEC = [
-    ("LLaVA-OV2 (8.5B)", [
+    ("LLaVA-OV2 (8.5B)$^\\ddagger$", [
         ("ChartQA (Relaxed Acc.)", ("ov2", "chartqa"),     ("inproc", "ov2", "chartqa")),
         ("InfoVQA (ANLS)",         ("ov2", "infovqa"),     ("inproc", "ov2", "infovqa")),
         ("TextVQA (VQA Acc.)",     ("ov2", "textvqa"),     ("inproc", "ov2", "textvqa")),
@@ -53,7 +53,7 @@ SPEC = [
         ("MMMU val (Acc.)",        ("ov2", "mmmu"),        ("inproc", "ov2", "mmmu")),
         ("RefCOCO val (Acc.@0.5)", ("ov2", "refcoco"),     ("inproc", "ov2", "refcoco")),
     ]),
-    ("Gemma 3 (4.3B)", [
+    ("Gemma 3 (4.3B)$^\\ddagger$", [
         ("ChartQA (Relaxed Acc.)", ("gemma3", "chartqa"),     ("inproc", "gemma3", "chartqa")),
         ("InfoVQA (ANLS)",         ("gemma3", "infovqa"),     ("inproc", "gemma3", "infovqa")),
         ("TextVQA (VQA Acc.)",     ("gemma3", "textvqa"),     ("inproc", "gemma3", "textvqa")),
@@ -429,7 +429,10 @@ def emit_latex(table, keeps) -> str:
              r"computation. Ours uses interleaved $g{=}4$. "
              r"$^\dagger$Qwen3.5's arm is streaming (vision approx/correct + chunked LLM prefill, "
              r"$g{=}4$): it progressively recomputes 100\% of tokens and has no keep-rate knob, so "
-             r"the placement of its compute figures in a keep-labeled column is nominal.}")
+             r"the placement of its compute figures in a keep-labeled column is nominal. "
+             r"$^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive per-round "
+             r"selection arm (2026-08-26); their accuracy cells are still the earlier "
+             r"upfront-selection arm's, pending re-evaluation.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
