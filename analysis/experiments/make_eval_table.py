@@ -395,6 +395,11 @@ def build_rows(keeps, groups: int):
             cells = [acc_with_pres("floor", "floor")]
             for k in keeps:
                 cells.append(ours(k))
+                # Comp. = the arm's TOTAL backbone compute (approximate pass + every correction
+                # round, overlapped work included), vs Crit. Comp. = only what waits on the last
+                # byte. The two move in opposite directions -- deferring less costs more overall --
+                # which is why both columns exist side by side.
+                cells.append(fmt_tf(get_total(fl_key, f"k{k:.2f}"), full_gf))
                 cells.append(fmt_tf(get_flops(fl_key, f"k{k:.2f}"), full_gf))
             cells.append(f.format(ceiling_v) if ceiling_v is not None else "--")
             cells.append(fmt_tf(full_gf, None))
@@ -404,21 +409,23 @@ def build_rows(keeps, groups: int):
 
 
 def emit_latex(table, keeps) -> str:
-    heads = " & ".join(f"\\multicolumn{{2}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
+    heads = " & ".join(f"\\multicolumn{{3}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
     cmids, col = [], 4
     for _ in keeps:
-        cmids.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
-        col += 2
+        cmids.append(f"\\cmidrule(lr){{{col}-{col+2}}}")
+        col += 3
     cmids.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
-    sub = " & ".join(["Acc. (\\%) & Crit. Comp."] * (len(keeps) + 1))
-    # 2 label columns + Low-res. + two per Ours block + two for Full-res.
-    ncol = 2 + 1 + 2 * (len(keeps) + 1)
+    sub = " & ".join(["Acc. (\\%) & Comp. & Crit. Comp."] * len(keeps)
+                     + ["Acc. (\\%) & Comp."])
+    # 2 label columns + Low-res. + three per Ours block + two for Full-res.
+    ncol = 2 + 1 + 3 * len(keeps) + 2
     L = []
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
     L.append(r"\caption{Evaluation Results across Different Configurations. Crit.\ Comp.\ is "
              r"backbone prefill FLOPs per instruction that can only begin once the whole image has "
-             r"arrived (decode excluded); parentheses give the ratio to the Full-res.\ critical "
+             r"arrived (decode excluded); Comp.\ is the arm's total backbone compute including "
+             r"work overlapped with transmission. Parentheses give the ratio to the Full-res.\ "
              r"computation. Ours uses interleaved $g{=}4$. "
              r"$^\dagger$Qwen3.5's arm is streaming (vision approx/correct + chunked LLM prefill, "
              r"$g{=}4$): it progressively recomputes 100\% of tokens and has no keep-rate knob, so "
@@ -451,8 +458,8 @@ def emit_latex(table, keeps) -> str:
 def emit_md(table, keeps) -> str:
     hdr = ["model", "dataset", "low-res"]
     for k in keeps:
-        hdr += [f"ours{int(k*100)} acc", f"ours{int(k*100)} crit"]
-    hdr += ["full acc", "full crit"]
+        hdr += [f"ours{int(k*100)} acc", f"ours{int(k*100)} comp", f"ours{int(k*100)} crit"]
+    hdr += ["full acc", "full comp"]
     L = ["| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
     for model, rows in table:
         for label, cells in rows:
