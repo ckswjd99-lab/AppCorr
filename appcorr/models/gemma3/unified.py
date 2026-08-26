@@ -176,8 +176,16 @@ class Gemma3UnifiedAxis(nn.Module):
         SigLIP has no CLS token, so the result already lines up with patch indices; InternVL's
         equivalent has to drop position 0.
         """
-        layer = self.vision_layers[layer_idx]
-        q, k, _ = layer._qkv(layer.layer_norm1(hidden))
+        # Scoped out of the FLOP accounting on purpose -- see `RequestFlops.EXCLUDED_STAGES`.
+        # The attention weights this needs are computed by the layer anyway, a few lines below; the
+        # honest implementation would read them out of that forward rather than redo the QK product.
+        # Recomputing is a convenience, not a cost of the technique, so charging the technique for it
+        # would overstate what AppCorr actually spends. Note the projections are re-run too (the
+        # docstring's "same projections the layer is about to use" describes the intent, not the
+        # code), which is why the scope has to wrap the projection call and not just the QK matmul.
+        with self._stage("PSCORE"):
+            layer = self.vision_layers[layer_idx]
+            q, k, _ = layer._qkv(layer.layer_norm1(hidden))
         scale = layer.self_attn.scale
         b, heads, seq, _ = q.shape
         # [B, heads, 4096, 4096] in fp32 would be ~1 GB per head-batch; accumulate in query chunks.

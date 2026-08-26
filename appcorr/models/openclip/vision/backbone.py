@@ -63,6 +63,7 @@ class ApproxCorrectCLIPVisionTower(nn.Module):
         cache_feature: Dict[str, Any],
         tag_prefix: str,
         collect_cls_attn: bool = True,
+        collect_attn_mean: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Runs blocks[start_l:end_l] in approx mode, caching per-layer K/V + block-delta-sum for
         later `.correct()` rounds. Layer-range chunked (mirrors the DINOv3 classifier executor's
@@ -74,7 +75,8 @@ class ApproxCorrectCLIPVisionTower(nn.Module):
         for i in range(start_l, end_l):
             blk = self.blocks[i]
             x_feature, cache_feature = blk.approx(x_feature, cache_feature, tag=f"{tag_prefix}_layer{i}",
-                                                  collect_cls_attn=collect_cls_attn)
+                                                  collect_cls_attn=collect_cls_attn,
+                                                  collect_attn_mean=collect_attn_mean)
         return x_feature, cache_feature
 
     def correct_forward(
@@ -103,6 +105,24 @@ class ApproxCorrectCLIPVisionTower(nn.Module):
             blk = self.blocks[i]
             x_feature, cache_feature = blk.correct(x_feature, token_idx, cache_feature, tag=f"{tag_prefix}_layer{i}")
         return x_feature, cache_feature
+
+    def finalize_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str) -> Dict[str, Any]:
+        """Layer-average of the RECEIVED-attention column mean cached by `approx_forward`'s
+        `collect_attn_mean` -- the `patch_attn_prob_layermean` server pscore, the same signal DINOv3
+        and Gemma 3 use. Sibling of `finalize_cls_attn_layermean`; same "only approx() writes these,
+        so any chunk boundary is a safe place to call it" property, for the same reason."""
+        per_layer = [
+            cache_feature[k] for k in sorted(
+                (k for k in cache_feature
+                 if k.startswith(f"{tag_prefix}_layer") and k.endswith("_attn_mean")),
+                key=lambda k: int(k[len(f"{tag_prefix}_layer"):-len("_attn_mean")]),
+            )
+        ]
+        if not per_layer:
+            return cache_feature
+        layermean = torch.stack(per_layer, dim=0).mean(dim=0)  # [B, N]
+        cache_feature[f"{tag_prefix}_attn_layermean"] = layermean[:, self.num_prefix_tokens:]
+        return cache_feature
 
     def finalize_cls_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str) -> Dict[str, Any]:
         """Averages the per-layer CLS->patch attention (cached by `approx_forward`'s
