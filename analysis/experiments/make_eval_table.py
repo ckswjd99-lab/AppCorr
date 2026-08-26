@@ -207,15 +207,18 @@ VFM_OURS = {
     ("VGGT-Omega (7B)", r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)"): ("vggt_co3d", "delta_1.10", 100.0),
     # SAM 3's six rows share one vision encoder -- which is why their Crit. Comp. column repeats the
     # same FLOPs by construction -- but they are different TASKS, so accuracy is measured per task.
-    # Metric keys differ by evaluator: COCO/LVIS report `mask_AP` as a FRACTION (x100), SA-Co reports
-    # `cgF1` already in percent. Writing the scale per row rather than inferring it is deliberate;
-    # guessing wrong gives a number 100x off that still looks like a plausible metric.
+    # Metric keys differ by evaluator, but every SAM 3 summary -- mask_AP AND cgF1 -- is a
+    # 0..1 FRACTION (verified against the measured logs: crowded k0.25 prints cgF1 0.5594).
+    # An earlier version of this block asserted cgF1 was "already in percent" and gave it scale
+    # 1.0, which rendered 0.56 in a column of 55-60s and read as a collapsed model. Writing the
+    # scale per row stays deliberate for exactly that reason -- a wrong scale still looks like a
+    # plausible metric, so each entry is checked against its own log line, not inferred.
     ("SAM 3 (0.85B)", "COCO Tracker (Mask AP)"):  ("sam3_coco", "mask_AP", 100.0),
     ("SAM 3 (0.85B)", "COCO Detector (Mask AP)"): ("sam3_cocodet", "mask_AP", 100.0),
     ("SAM 3 (0.85B)", "LVIS Detector (Mask AP)"): ("sam3_lvis", "mask_AP", 100.0),
-    ("SAM 3 (0.85B)", "SA-Co crowded (cgF1)"):    ("sam3_saco_crowded", "cgF1", 1.0),
-    ("SAM 3 (0.85B)", "SA-Co sa1b (cgF1)"):       ("sam3_saco_sa1b", "cgF1", 1.0),
-    ("SAM 3 (0.85B)", "SA-Co attributes (cgF1)"): ("sam3_saco_attributes", "cgF1", 1.0),
+    ("SAM 3 (0.85B)", "SA-Co crowded (cgF1)"):    ("sam3_saco_crowded", "cgF1", 100.0),
+    ("SAM 3 (0.85B)", "SA-Co sa1b (cgF1)"):       ("sam3_saco_sa1b", "cgF1", 100.0),
+    ("SAM 3 (0.85B)", "SA-Co attributes (cgF1)"): ("sam3_saco_attributes", "cgF1", 100.0),
     ("OpenCLIP (2.5B)", "ImageNet-1k (Top-1)"): ("openclip_imagenet", "top1_acc", 1.0),
     ("OpenCLIP (2.5B)", "ImageNet-1k (Top-5)"): ("openclip_imagenet", "top5_acc", 1.0),
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): ("cocoret", "i2t_R@1", 1.0),
