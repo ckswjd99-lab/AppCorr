@@ -63,6 +63,15 @@ SPEC = [
         ("GQA testdev (Exact Match)", ("gemma3", "gqa"),      ("inproc", "gemma3", "gqa")),
         ("MMMU val (Acc.)",        ("gemma3", "mmmu"),        ("inproc", "gemma3", "mmmu")),
     ]),
+    # Qwen3.5's arm is STREAMING (vision approx/correct + chunked LLM prefill), not interleaved
+    # correction: it progressively recomputes 100% of tokens and has no keep-rate knob -- the
+    # operating point is the round count (g=4 measured). Its FLOPs sit under the k0.50 keys purely
+    # so the existing column machinery renders them; the dagger footnote in the caption says so.
+    # Accuracy cells stay empty until the dataset driver runs.
+    ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
+        ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
+        ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
+    ]),
     ("Qwen2.5-VL (33.5B)", [
         ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
         ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
@@ -410,7 +419,10 @@ def emit_latex(table, keeps) -> str:
     L.append(r"\caption{Evaluation Results across Different Configurations. Crit.\ Comp.\ is "
              r"backbone prefill FLOPs per instruction that can only begin once the whole image has "
              r"arrived (decode excluded); parentheses give the ratio to the Full-res.\ critical "
-             r"computation. Ours uses interleaved $g{=}4$.}")
+             r"computation. Ours uses interleaved $g{=}4$. "
+             r"$^\dagger$Qwen3.5's arm is streaming (vision approx/correct + chunked LLM prefill, "
+             r"$g{=}4$): it progressively recomputes 100\% of tokens and has no keep-rate knob, so "
+             r"the placement of its compute figures in a keep-labeled column is nominal.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
