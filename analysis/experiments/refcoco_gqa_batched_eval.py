@@ -380,22 +380,6 @@ def main():
                   f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB", flush=True)
         try:
             first_token, context = build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline)
-        except RuntimeError as e:
-            # cuDNN's fused-MHA path surfaces memory exhaustion as a plain RuntimeError
-            # ("Expected mha_graph.execute(...).is_good() to be true"), NOT as
-            # torch.cuda.OutOfMemoryError -- its workspace allocation fails inside cuDNN and the
-            # graph execute reports failure without a Python-level OOM ever being raised. Seen
-            # 2026-08-27 killing a full-split keep=0.50 run at sample 260 that the OOM handler
-            # below would otherwise have survived. Match narrowly on the known message rather than
-            # swallowing every RuntimeError: any other RuntimeError is a real bug and must still
-            # crash the run.
-            if "mha_graph" not in str(e):
-                raise
-            print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- cuDNN MHA workspace "
-                  f"failure (OOM variant), skipping this sample", flush=True)
-            oom_skipped.append(idx)
-            torch.cuda.empty_cache()
-            continue
         except torch.cuda.OutOfMemoryError:
             # Found 2026-08-26 on interleaved g=4 + keep-rate runs: NOT the earlier `context`-
             # retention leak (this file's `del context` below already fixes that; `allocated`
@@ -412,6 +396,26 @@ def main():
             # summary) and continue; `empty_cache()` clears whatever partial state the failed
             # attempt left before the next image.
             print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- CUDA OOM, skipping this sample", flush=True)
+            oom_skipped.append(idx)
+            torch.cuda.empty_cache()
+            continue
+        except RuntimeError as e:
+            # ORDER MATTERS and it bit us once already: torch.cuda.OutOfMemoryError IS a subclass
+            # of RuntimeError, so this clause MUST come after the OutOfMemoryError one -- a first
+            # version of this handler put RuntimeError first, which intercepted every genuine CUDA
+            # OOM, failed its "mha_graph" message check, re-raised, and killed a full-split run at
+            # the exact image the OOM handler existed to survive.
+            #
+            # What this clause is for: cuDNN's fused-MHA path surfaces memory exhaustion as a
+            # plain RuntimeError ("Expected mha_graph.execute(...).is_good() to be true"), NOT as
+            # torch.cuda.OutOfMemoryError -- its workspace allocation fails inside cuDNN and the
+            # graph execute reports failure without a Python-level OOM ever being raised. Seen
+            # 2026-08-27 killing a full-split keep=0.50 run at sample 260. Match narrowly on the
+            # known message: any other RuntimeError is a real bug and must still crash the run.
+            if "mha_graph" not in str(e):
+                raise
+            print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- cuDNN MHA workspace "
+                  f"failure (OOM variant), skipping this sample", flush=True)
             oom_skipped.append(idx)
             torch.cuda.empty_cache()
             continue
