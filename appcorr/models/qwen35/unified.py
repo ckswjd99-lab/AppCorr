@@ -39,6 +39,11 @@ import torch.nn as nn
 from .vision.backbone import ApproxCorrectQwen35VisionTower
 
 MODEL_ID_35B = "Qwen/Qwen3.5-35B-A3B"
+# The FP8 variant is the only 122B that fits one 183GB device (bf16 would need ~244GB). Same
+# vision tower as the 35B (verified identical configs), same qwen3_5_moe architecture -- the
+# tower's unwindowed assert and the per-checkpoint gate are what stand between "same in the
+# config" and "same in the shipped weights".
+MODEL_ID_122B_FP8 = "Qwen/Qwen3.5-122B-A10B-FP8"
 
 
 class Qwen35Axis(nn.Module):
