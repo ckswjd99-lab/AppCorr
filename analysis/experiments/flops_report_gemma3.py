@@ -126,30 +126,15 @@ def main():
 
         for keep in a.keeps:
             def interleaved(axis, fl, ids, tti, px, px2, keep=keep):
-                cache = {}
-                with fl.arrival(0), fl.stage("approx"):
-                    vh, cache = axis.vision_approx(axis.vision_prepare(px2), cache,
-                                                   collect_attn=True)
-                score = patch_energy(px, px2, patch)
-                attn = cache.get("vision_patch_attn_layermean")
-                if attn is not None:
-                    score = (score / score.mean().clamp_min(1e-12)) * \
-                        (attn / attn.mean().clamp_min(1e-12)).to(score.device)
-                feats_appr = axis.project(vh)
-                _, ctx = axis.llm_prepare(ids, feats_appr, tti)
-                n_img = ctx["image_positions"].numel()
-                # The composing selection: tokens lead, patches derived, so the per-round patch
-                # groups map onto token groups (the identity interleaving depends on).
-                pooled = axis.pool_patch_score(score)
-                tk = max(1, int(round(keep * n_img)))
-                sel = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
-                    1, pooled.topk(tk, dim=-1).indices, True)
-                pm = axis.token_mask_to_patch_mask(sel, score.shape[1])
-                tm = torch.zeros(ids.shape[0], ids.shape[1], dtype=torch.bool, device=dev)
-                tm[:, ctx["image_positions"]] = sel
-                is_text = torch.ones_like(tm)
-                is_text[:, ctx["image_positions"]] = False
-                axis.interleaved_forward(px, px2, ids, tti, pm, tm | is_text, a.groups)
+                # PROGRESSIVE per-round selection (canonical as of 2026-08-26, user decision).
+                # The old path ran the full vision tower TWICE -- once for the pscore's attention
+                # term, once as the walk's own approx pass -- because the whole selection was
+                # fixed upfront. Only round r's choice needs to exist before round r, so the
+                # attention term now rides the walk itself (running layer mean over layers walked
+                # so far) and the separate scoring pass is gone. On this model that pass was 72%
+                # of a full forward. Energy stays pixel-level and upfront, as the client hint.
+                energy = patch_energy(px, px2, patch)
+                axis.interleaved_forward_progressive(px, px2, ids, tti, energy, keep, a.groups)
 
             agg = run(interleaved)
             crit, tot = agg["mean_critical_gflops"], agg["mean_total_gflops"]

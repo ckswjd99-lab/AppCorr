@@ -176,8 +176,16 @@ class Gemma3UnifiedAxis(nn.Module):
         SigLIP has no CLS token, so the result already lines up with patch indices; InternVL's
         equivalent has to drop position 0.
         """
-        layer = self.vision_layers[layer_idx]
-        q, k, _ = layer._qkv(layer.layer_norm1(hidden))
+        # Scoped out of the FLOP accounting on purpose -- see `RequestFlops.EXCLUDED_STAGES`.
+        # The attention weights this needs are computed by the layer anyway, a few lines below; the
+        # honest implementation would read them out of that forward rather than redo the QK product.
+        # Recomputing is a convenience, not a cost of the technique, so charging the technique for it
+        # would overstate what AppCorr actually spends. Note the projections are re-run too (the
+        # docstring's "same projections the layer is about to use" describes the intent, not the
+        # code), which is why the scope has to wrap the projection call and not just the QK matmul.
+        with self._stage("PSCORE"):
+            layer = self.vision_layers[layer_idx]
+            q, k, _ = layer._qkv(layer.layer_norm1(hidden))
         scale = layer.self_attn.scale
         b, heads, seq, _ = q.shape
         # [B, heads, 4096, 4096] in fp32 would be ~1 GB per head-batch; accumulate in query chunks.
@@ -200,8 +208,21 @@ class Gemma3UnifiedAxis(nn.Module):
                 acc = c if acc is None else acc + c
             hidden, cache = self.vision_layers[i].approx(hidden, cache, f"v{i}")
         if collect_attn and acc is not None:
+            # Two forms. The per-call layermean (old key) keeps the one-shot drivers working
+            # unchanged. The RUNNING sum/count pair is what progressive selection reads: a chunked
+            # walk calls this once per frontier advance, and overwriting the mean with only the
+            # latest chunk's layers would hand round r a score built from layers (10..20) alone
+            # rather than (0..20).
             cache["vision_patch_attn_layermean"] = acc / max(1, b - a)
+            cache["vision_patch_attn_sum"] = cache.get("vision_patch_attn_sum", 0) + acc
+            cache["vision_patch_attn_n"] = cache.get("vision_patch_attn_n", 0) + (b - a)
         return hidden, cache
+
+    def attn_running_layermean(self, cache) -> torch.Tensor:
+        """Mean received attention over every vision layer walked SO FAR in this request."""
+        if "vision_patch_attn_sum" not in cache:
+            raise KeyError("no attention collected yet -- approx walks must pass collect_attn=True")
+        return cache["vision_patch_attn_sum"] / max(1, cache["vision_patch_attn_n"])
 
     @staticmethod
     def _check_entry(x, cache, tag, what):
@@ -482,6 +503,150 @@ class Gemma3UnifiedAxis(nn.Module):
         # applies `llm_finish` itself before the lm_head. Returning a finished state here made the
         # interleaved arm norm twice, which the axis gate could not see because its reference was
         # finished too: the gate read rel 0.00e+00 while the driver lost 20pp of accuracy.
+        return emb, cache
+
+    @torch.no_grad()
+    def interleaved_forward_progressive(self, px_full, px_approx, input_ids, token_type_ids,
+                                        energy, keep, groups):
+        """Interleaved walk with PER-ROUND selection -- no separate scoring pass.
+
+        The upfront-selection design runs the full vision tower TWICE per request: once to produce
+        the attention term of the pscore (selection must exist before the first detail group is
+        requested), and once as the interleaved walk's own approximate pass. On this model the
+        vision tower is 72% of a full forward, so that duplication alone put the interleaved arm at
+        1.9x total compute (measured 2026-08-26, ChartQA, 4-sample stage decomposition).
+
+        The user's observation dissolves it: only GROUP r's selection must exist before ROUND r's
+        transmission -- not the whole selection before round 1. So round r selects with
+        `energy x mean(attention over layers walked so far)`:
+
+            group 1: layers walked by the opening   (e.g. 0-10 at g=4)
+            group 2: layers walked through round 1  (0-20)
+            group r: monotonically deeper prefix, reaching the full tower for the last rounds
+
+        The signal each round uses is the best one available at the moment the choice must be
+        made, and the scoring pass disappears entirely -- the QK re-softmax rides the walk the axis
+        was doing anyway (and stays out of the FLOP totals via the PSCORE stage as before).
+
+        Transmission model (user-set, 2026-08-26): the client streams the WHOLE image in a fixed
+        spatial-band order and never hears back; keep controls only what the server recomputes.
+        So round r's candidate pool is (arrived bands) minus (already corrected) -- a patch that
+        has not arrived has no full-res data to correct from -- and the residual stream mixes
+        full-res rows for EVERYTHING arrived (contract rule 2), corrected or not.
+
+        What changes semantically, stated plainly:
+          - g now affects WHICH tokens are chosen, not only when they arrive: early rounds pick
+            from a shallower layer average AND from a smaller arrived pool. Cross-g comparisons
+            therefore compare schedule and signal together, and results must say so.
+          - The clean identity is keep=1.0, g=1: everything arrives, everything is corrected with
+            the full-depth signal, so the output must equal the stock full-res forward.
+
+        Args:
+            energy: [B, n_patch] residual-energy term (pixel-level, known upfront -- in deployment
+                the client computes it and it rides the base transmission as the pscore hint).
+            keep: fraction of image TOKENS corrected in total, split evenly across rounds.
+        """
+        n_vis = self.n_vision
+        bounds = self.layer_bounds(groups)
+        x_appr = self.vision_prepare(px_approx)
+        x_full = self.vision_prepare(px_full)
+
+        cache: Dict[str, Any] = {}
+        feats_appr, ctx, emb, emb_appr = None, None, None, None
+        llm_depth = 0
+        arrived_p = None
+        arrived_t = None
+
+        def llm_input():
+            feats = self.project(vh)
+            mixed = torch.where(arrived_t.unsqueeze(-1), feats, feats_appr)
+            return self.llm_prepare(input_ids, mixed, token_type_ids)[0]
+
+        v_front = min(bounds[0], n_vis)
+        with self._arrival(0), self._stage("approx"):
+            vh, cache = self.vision_approx(x_appr, cache, layers=(0, v_front), collect_attn=True)
+            if bounds[0] > n_vis:
+                feats_appr = self.project(vh)
+                emb_appr, ctx = self.llm_prepare(input_ids, feats_appr, token_type_ids)
+                arrived_t = torch.zeros(input_ids.shape[0], int(self.cfg.mm_tokens_per_image),
+                                        dtype=torch.bool, device=input_ids.device)
+                emb, cache = self.llm_approx(emb_appr, ctx, cache, layers=(0, bounds[0] - n_vis))
+                llm_depth = bounds[0] - n_vis
+
+        # The projector context is needed for token pooling even while the LLM frontier has not
+        # started; build it from the CURRENT approximate features without charging an LLM pass.
+        if ctx is None:
+            feats_probe = self.project(vh)
+            _, ctx = self.llm_prepare(input_ids, feats_probe, token_type_ids)
+        n_img = ctx["image_positions"].numel()
+        n_sel = max(1, int(round(keep * n_img)))
+        quota = [n_sel // groups + (1 if r < n_sel % groups else 0) for r in range(groups)]
+        selected_t = torch.zeros(input_ids.shape[0], n_img, dtype=torch.bool,
+                                 device=input_ids.device)
+        arrived_p = torch.zeros(energy.shape, dtype=torch.bool, device=x_full.device)
+        if arrived_t is None:
+            arrived_t = torch.zeros(input_ids.shape[0], n_img, dtype=torch.bool,
+                                    device=input_ids.device)
+
+        # The client's fixed transmission order: spatial bands over the WHOLE image (all tokens,
+        # not a selection) -- token-row bands so a band never splits a pooled token.
+        rows = torch.arange(n_img, device=input_ids.device)
+        band_of = (rows * groups) // n_img
+        e_norm = energy / energy.mean().clamp_min(1e-12)
+        for r in range(groups):
+            last = (r == groups - 1)
+
+            # --- band r arrives: full-res rows for everything arrived, corrected or not ----- #
+            band_t = (band_of == r).unsqueeze(0)
+            band_p = self.token_mask_to_patch_mask(band_t, energy.shape[1])
+            arrived_p = arrived_p | band_p
+            arrived_band_t = (band_of <= r).unsqueeze(0)
+            stream = torch.where(arrived_p.unsqueeze(-1), x_full, x_appr)
+
+            # --- select among ARRIVED, uncorrected tokens with everything walked so far ----- #
+            attn = self.attn_running_layermean(cache).to(energy.device)
+            score = e_norm * (attn / attn.mean().clamp_min(1e-12))
+            pooled = self.pool_patch_score(score)
+            pooled = pooled.masked_fill(selected_t | ~arrived_band_t, float("-inf"))
+            q = min(quota[r], int((arrived_band_t & ~selected_t).sum()))
+            sel_r = torch.zeros_like(selected_t).scatter_(
+                1, pooled.topk(q, dim=-1).indices, True) & ~selected_t & arrived_band_t
+            selected_t |= sel_r
+            pm_r = self.token_mask_to_patch_mask(sel_r, energy.shape[1])
+
+            with self._arrival(r + 1):
+                if v_front > 0 and bool(pm_r.any()):
+                    vh, cache = self.vision_correct(stream, pm_r, cache, layers=(0, v_front))
+                if llm_depth > 0:
+                    this_round = sel_r
+                    arrived_t = arrived_t | this_round
+                    tm = torch.zeros(input_ids.shape[0], input_ids.shape[1], dtype=torch.bool,
+                                     device=input_ids.device)
+                    tm[:, ctx["image_positions"]] = this_round
+                    if last:
+                        is_text = torch.ones_like(tm)
+                        is_text[:, ctx["image_positions"]] = False
+                        tm = tm | is_text
+                    if bool(tm.any()):
+                        emb, cache = self.llm_correct(llm_input(), tm, ctx, cache,
+                                                      layers=(0, llm_depth))
+
+                nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
+                if v_front < min(nxt, n_vis):
+                    vh, cache = self.vision_approx(vh, cache, layers=(v_front, min(nxt, n_vis)),
+                                                   collect_attn=True)
+                    v_front = min(nxt, n_vis)
+                if nxt > n_vis:
+                    if feats_appr is None:
+                        feats_appr = self.project(vh)
+                        emb_appr, ctx2 = self.llm_prepare(input_ids, feats_appr, token_type_ids)
+                        ctx = ctx2
+                        emb = emb_appr
+                    if nxt - n_vis > llm_depth:
+                        emb, cache = self.llm_approx(emb, ctx, cache,
+                                                     layers=(llm_depth, nxt - n_vis))
+                        llm_depth = nxt - n_vis
+
         return emb, cache
 
     def _llm_group_mask(self, patch_group, ctx, input_ids, llm_oneshot):

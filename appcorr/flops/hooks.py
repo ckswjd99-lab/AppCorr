@@ -78,13 +78,64 @@ def install(counter: FlopCounter, roots: Iterable[nn.Module]) -> List[torch.util
             if id(mod) in seen:
                 continue
             seen.add(id(mod))
-            if isinstance(mod, nn.Linear):
+            special = _SPECIAL_HOOKS.get(type(mod).__name__)
+            if special is not None:
+                # with_kwargs: the decoder layer calls GatedDeltaNet with hidden_states as a
+                # KEYWORD, so the positional tuple a plain hook sees is empty.
+                handles.append(mod.register_forward_hook(
+                    (lambda m, a, kw, o, c=counter, fn=special:
+                        c.record(linear=fn(m, list(a) + list(kw.values())))),
+                    with_kwargs=True))
+            elif isinstance(mod, nn.Linear):
                 handles.append(mod.register_forward_hook(
                     lambda m, i, o, c=counter: c.record(linear=_linear_flops(m, o))))
             elif isinstance(mod, nn.modules.conv._ConvNd):
                 handles.append(mod.register_forward_hook(
                     lambda m, i, o, c=counter: c.record(conv=_conv_flops(m, o))))
     return handles
+
+
+# --- modules whose compute the generic hooks cannot see --------------------------------------- #
+#
+# The generic hooks catch `nn.Linear` and `nn.Conv*` MODULES. Qwen3.5's MoE experts are neither:
+# `Qwen3_5MoeExperts` holds raw `nn.Parameter` weight stacks and calls `F.linear` per hit expert,
+# so without a handler the DOMINANT FLOPs of a 256-expert decoder would count as zero -- the
+# silent-undercount mirror of Gemma 3's PSCORE double-count. These handlers charge the algorithmic
+# cost from the routing tensors, the same altitude at which `record_attention` charges SDPA.
+#
+# Registered by CLASS NAME so this file does not import transformers. The name is looked up on
+# every module of every installed root; a rename in transformers makes the handler silently stop
+# matching, which the sanity gate (flops_sanity_gate.py's 2*params*tokens cross-check) would
+# surface as a ceiling far below closed form.
+
+def _qwen35_experts_flops(mod, inputs) -> int:
+    """Active-expert cost only -- `forward` loops over HIT experts, so charging all 256 would
+    overcount 32x. Per (token, routed expert): gate_up [2I x H] and down [H x I] = 3*I*H MACs.
+    The router's own `F.linear` ([H x num_experts], also hook-invisible) is charged here too via
+    the token count, saving a second handler for a term 60x smaller."""
+    hidden_states, top_k_index = inputs[0], inputs[1]  # positional call site, order stable
+    n_tok = hidden_states.shape[0]
+    routed = top_k_index.numel()          # n_tok * top_k
+    i_dim, h_dim = mod.intermediate_dim, mod.hidden_dim
+    return 2 * routed * 3 * i_dim * h_dim + 2 * n_tok * h_dim * mod.num_experts
+
+
+def _qwen35_deltanet_core_flops(mod, inputs) -> int:
+    """The delta-rule recurrence itself. The layer's projections (in_proj_*, out_proj, conv1d) are
+    ordinary modules the generic hooks already count; what they miss is the per-token state update
+    (k (x) v outer product) and readout (q . S): 2 * dk * dv MACs per value head per token. This is
+    the ALGORITHMIC cost -- the chunked torch fallback and the fused kernel both do extra
+    intra-chunk work that is an implementation detail, exactly as SDPA's recompute tricks are not
+    charged either."""
+    hs = inputs[0]                       # hidden_states, kwargs-first at this call site
+    n_tok = hs.shape[1] if hs.dim() == 3 else hs.shape[0]
+    return 2 * n_tok * mod.num_v_heads * 2 * mod.head_k_dim * mod.head_v_dim
+
+
+_SPECIAL_HOOKS = {
+    "Qwen3_5MoeExperts": _qwen35_experts_flops,
+    "Qwen3_5MoeGatedDeltaNet": _qwen35_deltanet_core_flops,
+}
 
 
 def remove(handles: Iterable[torch.utils.hooks.RemovableHandle]) -> None:

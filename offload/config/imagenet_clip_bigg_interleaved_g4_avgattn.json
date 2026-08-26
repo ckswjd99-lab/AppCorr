@@ -1,0 +1,34 @@
+{
+    "exp_id": "imagenet_clip_bigg_interleaved_g4_avgattn",
+    "model_name": "openclip_zeroshot",
+    "dataset_name": "imagenet-1k",
+    "dataset_kwargs": {
+        "clip_task": "zeroshot"
+    },
+    "batch_size": 32,
+    "image_shape": [
+        224,
+        224,
+        3
+    ],
+    "patch_size": [
+        14,
+        14
+    ],
+    "scheduler_policy_name": "GroupTrigger",
+    "transmission_policy_name": "ProgressiveLaplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [
+            2,
+            0
+        ],
+        "grouping_strategy": "grid",
+        "num_groups": 4,
+        "total_layers": 48,
+        "compression_level": 1
+    },
+    "appcorr_kwargs": {
+        "generated_from_client": true,
+        "server_pscore": "patch_attn_prob_layermean"
+    }
+}

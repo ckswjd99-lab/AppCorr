@@ -91,9 +91,23 @@ class RequestFlops:
     but it is not backbone compute, which is the only thing this counter exists to report. Cheap
     executors (plain ViT patch-embed) barely notice excluding it; only ADE20K's number was ever
     dominated by it. TODO: fix the re-embed-per-round waste itself instead of just not counting it.
+
+    `PSCORE` is excluded for a different and more deliberate reason. The patch-importance score is
+    residual energy times the attention each token RECEIVES, and those attention weights are already
+    computed by the layer's own forward -- a faithful implementation would read them out of it. The
+    forks recompute them instead because pulling the value out of a fused attention call is fiddly,
+    so that recomputation is an artefact of how this was written, not a cost AppCorr would pay in a
+    real deployment. Charging the technique for it overstates what it spends.
+
+    Most forks avoid the issue by accident rather than design: OpenCLIP and Gemma 3 score with a bare
+    `torch.softmax(q @ k.T)` and DINOv3 with a Triton kernel, none of which is an `nn.Linear` or
+    `F.scaled_dot_product_attention`, so the hooks never see them. Gemma 3 is the exception that made
+    this scope necessary -- its `_incoming_attention` re-runs the q/k PROJECTIONS, which ARE
+    `nn.Linear` and were being counted twice. If a future fork routes its score through SDPA it will
+    start being charged silently; wrap it in this stage.
     """
 
-    EXCLUDED_STAGES = frozenset({"PREPARE_TOKENS"})
+    EXCLUDED_STAGES = frozenset({"PREPARE_TOKENS", "PSCORE"})
 
     request_id: object = None
     buckets: Dict[Tuple[int, str], Bucket] = field(default_factory=dict)

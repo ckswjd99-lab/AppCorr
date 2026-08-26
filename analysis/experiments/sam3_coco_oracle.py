@@ -219,14 +219,26 @@ class swap_vision:
         px_l2 = self.px_l2
         want_attn = self.arm == "corrected" and self.pscore == "energy_attn"
         x_approx = self.tower.prepare_tokens(px_l2)
+        interleaved = (self.arm == "corrected"
+                       and (self.groups > 1 or self.force_interleaved))
         # Default for the floor arm: it never opens a later arrival, so index 0 is also the
         # maximum and the whole request is critical -- correct, since the degraded image is its
         # entire transmission.
         self._last_arrival_hint = 0
-        with self._arrival(0), self._stage("approx"):
-            hidden, cache = self.tower.approx_forward(x_approx, {}, collect_attn=want_attn)
+        if interleaved:
+            # PROGRESSIVE per-round selection (canonical 2026-08-26). The old shape ran this
+            # full-depth approx for the score and then "redid the approximate pass in ranges" for
+            # the walk -- and on SAM 3 the vision encoder IS the whole measured backbone, so the
+            # duplication alone was +100% of a full forward (measured total 206% at keep=0.25).
+            # Only round r's selection must exist before round r, so the attention term now rides
+            # the walk's own frontier; nothing else runs. The one-shot arm below never had the
+            # duplication (its scoring pass IS its approx pass) and is untouched.
+            hidden, cache = self._interleaved_progressive(x_approx, px_l2, want_attn)
+        else:
+            with self._arrival(0), self._stage("approx"):
+                hidden, cache = self.tower.approx_forward(x_approx, {}, collect_attn=want_attn)
 
-        if self.arm == "corrected":
+        if self.arm == "corrected" and not interleaved:
             energy = residual_energy(self.px, px_l2, self.tower.patch_size)
             attn = cache.get("vision_layer_patch_attn_layermean") if want_attn else None
             idx = select_tokens(energy, attn, self.keep_ratio).to(self.px.device)
@@ -237,83 +249,12 @@ class swap_vision:
             mixed[:, idx] = flat_f[:, idx]
             mixed = mixed.reshape(b, h, w, c)
 
-            if self.groups <= 1 and not self.force_interleaved:
-                self._last_arrival_hint = 1
-                with self._arrival(1), self._stage("correct"):
-                    hidden, _ = self.tower.correct_forward(mixed, idx, cache)
-            else:
-                # Interleaved: redo the approximate pass in ranges so each round's cache reflects
-                # only the depth reached so far, then correct the arrived groups over that depth.
-                # Every round starts from the same input stream -- that is how the executor calls
-                # it, and it is what makes persisting the corrected increment necessary.
-                bounds = layer_bounds(self.tower.num_layers, self.tower.global_layers,
-                                      self.groups, self.bounds)
-                per_group = block_grid_groups(h, w, self.groups, idx.device)
-                # Restrict each spatial group to the tokens the score actually selected, so the
-                # union over all rounds is exactly the one-shot set. Getting this wrong is not
-                # visible in the score: an earlier version indexed groups from 1 and silently
-                # dropped group 0, correcting 41.3% while reporting a 55% keep ratio -- fewer
-                # tokens than one-shot yet scoring higher, which is how it was caught.
-                keep_mask = torch.zeros(h * w, dtype=torch.bool, device=idx.device)
-                keep_mask[idx] = True
-                per_group = [g[keep_mask[g]] for g in per_group]
-
-                # The input stream may only carry full-resolution values for tokens that have
-                # ALREADY arrived. Handing the whole `mixed` to the approximate pass, or to a
-                # round whose arrived set is smaller than `idx`, feeds the model data from the
-                # future: the un-arrived selected tokens sit in the residual stream at full
-                # resolution (`correct` reconstructs untouched positions as `flat + increment`,
-                # reading `flat` everywhere, not just at the corrected indices). That inflates
-                # every interleaved arm against one-shot, which never has the gap because its
-                # corrected set IS `idx`.
-                def stream(tok):
-                    """Layer-0 input with full resolution at every token that has ARRIVED.
-
-                    Two separate things, easy to conflate: what the *stream* carries and what a
-                    round *recomputes*. The stream is cumulative -- a corrected token's layer-0
-                    value simply IS its full-resolution patch embedding, and `correct` rebuilds
-                    untouched positions as `flat + increment`, reading `flat` everywhere. Handing
-                    it the full `idx` instead would put un-arrived tokens in at full resolution,
-                    which is data from the future.
-                    """
-                    m = flat_a.clone()
-                    if tok.numel():
-                        m[:, tok] = flat_f[:, tok]
-                    return m.reshape(b, h, w, c)
-
-                cache = {}
-                # Nothing has arrived yet, so the opening pass is the pure approximate one --
-                # the same input one-shot starts from. It needs only the base image: arrival 0.
-                with self._arrival(0), self._stage("approx"):
-                    hidden, cache = self.tower.approx_forward(
-                        x_approx, cache, layers=(0, bounds[0]))
-                arrived = []
-                last_arrival = 0
-                for r in range(len(bounds)):
-                    arrived.append(per_group[r])
-                    # THIS ROUND'S GROUP ONLY -- never the accumulated set. Earlier groups are
-                    # already corrected and stay corrected: their recomputed K/V sits in the
-                    # cache, their corrected increment was persisted, and the approximate pass
-                    # over the next layer range carried them forward. Re-listing them recomputes
-                    # what is already right and, on the last round, collapses the whole schedule
-                    # into one-shot correction. The VGGT path records the same mistake
-                    # (`offload/server/model/vggt_omega.py`), where interleaved and one-shot then
-                    # agreed to 16 decimals.
-                    tok = per_group[r]
-                    # Round r cannot start before group r lands: arrival r+1. Only the highest
-                    # index survives as critical, which at g=4 is the r=3 body.
-                    last_arrival = r + 1
-                    with self._arrival(last_arrival):
-                        if tok.numel():
-                            with self._stage("correct"):
-                                hidden, cache = self.tower.correct_forward(
-                                    stream(torch.cat(arrived).sort().values), tok, cache,
-                                    layers=(0, bounds[r]))
-                        if r + 1 < len(bounds):
-                            with self._stage("approx"):
-                                hidden, cache = self.tower.approx_forward(
-                                    hidden, cache, layers=(bounds[r], bounds[r + 1]))
-                self._last_arrival_hint = last_arrival
+            # One-shot only from here: interleaved went through _interleaved_progressive
+            # above, so the else-branch that used to "redo the approximate pass in ranges"
+            # (the +100% duplication) is gone with it.
+            self._last_arrival_hint = 1
+            with self._arrival(1), self._stage("correct"):
+                hidden, _ = self.tower.correct_forward(mixed, idx, cache)
 
         # The neck consumes the FINAL hidden state, so it waits on whatever the last
         # arrival was; giving it an index of its own would invent an arrival the
@@ -324,6 +265,82 @@ class swap_vision:
         self.original = self.model.vision_encoder.forward
         self.model.vision_encoder.forward = lambda *a, **k: out
         return self
+
+    def _interleaved_progressive(self, x_approx, px_l2, want_attn):
+        """The interleaved walk with per-round selection riding its own frontier.
+
+        Transmission model (user-set): the client streams the WHOLE image in fixed block-grid
+        bands and never hears back; keep controls only what the server recomputes. Round r selects
+        its quota among arrived-and-uncorrected tokens with `energy x running attention layermean`
+        over the layers walked so far -- group 1 chooses with the opening range's attention, later
+        groups with a deeper prefix. At g=1 with keep=1.0 this reduces to the one-shot arm exactly
+        (full-depth signal, everything arrived, everything corrected), which is the gate.
+        """
+        bounds = layer_bounds(self.tower.num_layers, self.tower.global_layers,
+                              self.groups, self.bounds)
+        b, h, w, c = x_approx.shape
+        n_tok = h * w
+        energy = residual_energy(self.px, px_l2, self.tower.patch_size)
+        x_full = self.tower.prepare_tokens(self.px)
+        flat_a = x_approx.reshape(b, n_tok, c)
+        flat_f = x_full.reshape(b, n_tok, c)
+
+        # The client's fixed band order: the same block-grid partition the old schedule used for
+        # its groups, now covering ALL tokens rather than a pre-made selection.
+        bands = block_grid_groups(h, w, self.groups, x_approx.device)
+
+        n_sel = max(1, int(round(n_tok * self.keep_ratio)))
+        quota = [n_sel // self.groups + (1 if r < n_sel % self.groups else 0)
+                 for r in range(self.groups)]
+        selected = torch.zeros(n_tok, dtype=torch.bool, device=x_approx.device)
+        arrived = torch.zeros(n_tok, dtype=torch.bool, device=x_approx.device)
+        e_norm = (energy / energy.mean().clamp_min(1e-12)).to(x_approx.device)
+
+        def running_attn(cache):
+            per_layer = [cache[k] for k in cache
+                         if k.startswith("vision_layer") and k.endswith("_patch_attn")]
+            if not per_layer:
+                return None
+            return torch.stack(per_layer).mean(0).flatten()
+
+        # Opening approximate range: needs only the base image -- arrival 0.
+        cache: Dict[str, Any] = {}
+        with self._arrival(0), self._stage("approx"):
+            hidden, cache = self.tower.approx_forward(
+                x_approx, cache, layers=(0, bounds[0]), collect_attn=want_attn)
+
+        last_arrival = 0
+        for r in range(len(bounds)):
+            arrived[bands[r]] = True
+            # Stream rule (contract rule 2): full-resolution rows for everything arrived,
+            # corrected or not.
+            mixed = flat_a.clone()
+            mixed[:, arrived] = flat_f[:, arrived]
+            mixed = mixed.reshape(b, h, w, c)
+
+            score = e_norm.clone()
+            if want_attn:
+                attn = running_attn(cache)
+                if attn is not None:
+                    score = e_norm * (attn / attn.mean().clamp_min(1e-12))
+            score = score.masked_fill(selected | ~arrived, float("-inf"))
+            q = min(quota[r], int((arrived & ~selected).sum()))
+            tok = score.topk(q).indices.sort().values if q > 0 else score.new_empty(0, dtype=torch.long)
+            selected[tok] = True
+
+            last_arrival = r + 1
+            with self._arrival(last_arrival):
+                if tok.numel():
+                    with self._stage("correct"):
+                        hidden, cache = self.tower.correct_forward(
+                            mixed, tok, cache, layers=(0, bounds[r]))
+                if r + 1 < len(bounds):
+                    with self._stage("approx"):
+                        hidden, cache = self.tower.approx_forward(
+                            hidden, cache, layers=(bounds[r], bounds[r + 1]),
+                            collect_attn=want_attn)
+        self._last_arrival_hint = last_arrival
+        return hidden, cache
 
     def __exit__(self, *exc):
         if self.original is not None:

@@ -168,8 +168,13 @@ class OV2UnifiedAxis(nn.Module):
 
         There is no CLS token on this encoder, so the result already lines up with patch indices.
         """
-        layer = self.vision_layers[layer_idx]
-        q, k, _ = layer._qkv(layer.layer_norm1(hidden), freqs)
+        # Scoped out of the FLOP totals: the projections are re-run purely for convenience (the
+        # layer computes the same q/k moments later), and they ARE nn.Linear, so without the scope
+        # the hooks double-count them -- the same defect the PSCORE stage was created for on
+        # Gemma 3. See `RequestFlops.EXCLUDED_STAGES`.
+        with self._stage("PSCORE"):
+            layer = self.vision_layers[layer_idx]
+            q, k, _ = layer._qkv(layer.layer_norm1(hidden), freqs)
         scale = layer.self_attn.scale
         b, heads, seq, _ = q.shape
         col = torch.zeros(b, seq, device=hidden.device, dtype=torch.float32)
@@ -521,6 +526,143 @@ class OV2UnifiedAxis(nn.Module):
         # lm_head. Returning a finished state here made the Gemma 3 interleaved arm norm twice,
         # which its axis gate could not see because the gate's reference was finished too -- rel
         # 0.00e+00 while the driver lost 20pp.
+        return emb, cache, stats
+
+    @torch.no_grad()
+    def interleaved_forward_progressive(self, px_full, px_approx, patch_positions, input_ids,
+                                        energy, keep, groups):
+        """Interleaved walk with PER-ROUND selection -- the canonical policy (2026-08-26).
+
+        Port of `appcorr/models/gemma3/unified.py::interleaved_forward_progressive`; see its
+        docstring for the design and its provenance. The short version: the upfront design ran the
+        vision tower twice per request (a scoring pass for the pscore's attention term, then the
+        walk's own approx pass), because the whole selection had to exist before round 1. Only
+        round r's choice must exist before round r, so the attention term now rides the walk's own
+        frontier as a running layer mean, and the scoring pass is gone. Here vision is 13.5% of the
+        axis, so the duplication cost +13.5% of a full forward (Gemma 3's was +72%; same defect,
+        different visibility).
+
+        Transmission model: the client streams the WHOLE image in fixed token-row bands and never
+        hears back; `keep` controls only what the server recomputes. Round r selects its quota
+        among arrived-and-uncorrected tokens; the stream mixes full-res rows for everything arrived
+        (contract rule 2). The clean identity is keep=1.0, g=1: everything arrives, everything is
+        corrected with the full-depth signal, so the output must match `interleaved_forward` fed
+        the all-ones selection -- and through it, the exact forward.
+
+        Returns (pre-finish hidden, cache, stats) -- same contract as `interleaved_forward`.
+        """
+        n_vis = self.n_vision
+        n_patch = int(px_full.shape[0]) if px_full.dim() == 2 else int(px_full.shape[1])
+        seq_len = int(input_ids.shape[1])
+        freqs = self.rope_freqs(patch_positions)
+        bounds = self.layer_bounds(groups, n_patch, seq_len)
+        n_tok = self.n_tokens(n_patch)
+
+        x_appr = self.vision_prepare(px_approx)
+        x_full = self.vision_prepare(px_full)
+
+        cache: Dict[str, Any] = {}
+        arrived_p = torch.zeros(1, n_patch, dtype=torch.bool, device=x_full.device)
+        arrived_t = None
+        feats_appr = None
+        ctx = None
+        emb = None
+        vh = None
+        llm_depth = 0
+        stats = {"layer_corrections": 0}
+
+        def llm_input():
+            feats = self.project(vh, patch_positions)
+            mixed = torch.where(arrived_t.unsqueeze(-1), feats, feats_appr)
+            return self.llm_prepare(input_ids, mixed)[0]
+
+        def cross_projector():
+            nonlocal feats_appr, ctx, arrived_t, emb
+            feats_appr = self.project(vh, patch_positions)
+            emb_appr, ctx = self.llm_prepare(input_ids, feats_appr)
+            arrived_t = torch.zeros(input_ids.shape[0], n_tok, dtype=torch.bool,
+                                    device=input_ids.device)
+            emb = emb_appr
+
+        v_front = min(bounds[0], n_vis)
+        with self._arrival(0), self._stage("approx"):
+            vh, cache = self.vision_approx(x_appr, freqs, cache, layers=(0, v_front),
+                                           collect_attn=True)
+            if bounds[0] > n_vis:
+                cross_projector()
+                emb, cache = self.llm_approx(emb, ctx, cache, layers=(0, bounds[0] - n_vis))
+                llm_depth = bounds[0] - n_vis
+
+        if ctx is None:
+            _, ctx = self.llm_prepare(input_ids, self.project(vh, patch_positions))
+        if arrived_t is None:
+            arrived_t = torch.zeros(input_ids.shape[0], n_tok, dtype=torch.bool,
+                                    device=input_ids.device)
+
+        n_sel = max(1, int(round(keep * n_tok)))
+        quota = [n_sel // groups + (1 if r < n_sel % groups else 0) for r in range(groups)]
+        selected_t = torch.zeros(input_ids.shape[0], n_tok, dtype=torch.bool,
+                                 device=input_ids.device)
+        rows = torch.arange(n_tok, device=input_ids.device)
+        band_of = (rows * groups) // n_tok
+        e_norm = energy / energy.mean().clamp_min(1e-12)
+
+        for r in range(groups):
+            last = (r == groups - 1)
+
+            band_t = (band_of == r).unsqueeze(0)
+            arrived_p = arrived_p | self.token_mask_to_patch_mask(band_t)
+            arrived_band_t = (band_of <= r).unsqueeze(0)
+            stream = torch.where(arrived_p.unsqueeze(-1), x_full, x_appr)
+
+            attn = cache["vision_patch_attn_layermean"].to(energy.device)
+            score = e_norm * (attn / attn.mean().clamp_min(1e-12))
+            pooled = self.pool_patch_score(score)
+            pooled = pooled.masked_fill(selected_t | ~arrived_band_t, float("-inf"))
+            q = min(quota[r], int((arrived_band_t & ~selected_t).sum()))
+            sel_r = torch.zeros_like(selected_t).scatter_(
+                1, pooled.topk(q, dim=-1).indices, True) & ~selected_t & arrived_band_t
+            selected_t |= sel_r
+            pm_r = self.token_mask_to_patch_mask(sel_r)
+
+            with self._arrival(r + 1):
+                if v_front > 0 and bool(pm_r.any()):
+                    with self._stage("vision_correct"):
+                        vh, cache = self.vision_correct(stream, pm_r, freqs, cache,
+                                                        layers=(0, v_front))
+                    stats["layer_corrections"] += v_front
+
+                if llm_depth > 0:
+                    this_round = sel_r
+                    arrived_t = arrived_t | this_round
+                    tm = torch.zeros(input_ids.shape[0], seq_len, dtype=torch.bool,
+                                     device=input_ids.device)
+                    tm[:, ctx["image_positions"]] = this_round
+                    if last:
+                        is_text = torch.ones_like(tm)
+                        is_text[:, ctx["image_positions"]] = False
+                        tm = tm | is_text
+                    if bool(tm.any()):
+                        with self._stage("llm_correct"):
+                            emb, cache = self.llm_correct(llm_input(), tm, ctx, cache,
+                                                          layers=(0, llm_depth))
+                        stats["layer_corrections"] += llm_depth
+
+                nxt = bounds[r + 1] if r + 1 < len(bounds) else self.n_stages
+                with self._stage("approx"):
+                    if v_front < min(nxt, n_vis):
+                        vh, cache = self.vision_approx(vh, freqs, cache,
+                                                       layers=(v_front, min(nxt, n_vis)),
+                                                       collect_attn=True)
+                        v_front = min(nxt, n_vis)
+                    if nxt > n_vis:
+                        if feats_appr is None:
+                            cross_projector()
+                        if nxt - n_vis > llm_depth:
+                            emb, cache = self.llm_approx(emb, ctx, cache,
+                                                         layers=(llm_depth, nxt - n_vis))
+                            llm_depth = nxt - n_vis
+
         return emb, cache, stats
 
     # --- streaming prefill ------------------------------------------------------------------------ #

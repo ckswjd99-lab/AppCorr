@@ -134,22 +134,20 @@ class Aggregator(nn.Module):
             # Interleaved rounds carry only part of the residual, so the candidates are the tokens
             # whose refined values have arrived. Row counts differ wildly under per-frame grouping
             # -- the delivered view has ~1049 available tokens and the rest have only their 17
-            # camera/register tokens -- so rows are padded to the widest, not trimmed to the
-            # narrowest. Trimming to the minimum silently discards every patch the round delivered
-            # and corrects nothing but the register tokens.
+            # camera/register tokens. Rows used to be padded to the widest by repeating the last
+            # index; duplicates are numerically idempotent, but the plan keeps `ratio x padded
+            # width` per row, so a 17-token row padded to 1049 was CORRECTED at the wide row's
+            # width every round. Measured: correction cost g x the intended amount (0.83x of a
+            # full forward at keep=0.25, where ~0.2x was the design), because at g=4 per-frame
+            # grouping three of every four rows were pure padding. Rows are now bucketed by
+            # candidate count and corrected per bucket, with the tag's cache rows gathered for the
+            # call and every mutated entry scattered back -- the m2f batch-cache lesson: scatter
+            # back EVERYTHING gathered, or the write lands in a temporary and is thrown away.
             counts = avail.sum(1)
-            k = int(counts.max().item())
-            if k <= 0:
+            if int(counts.max().item()) <= 0:
                 return x, cache_feature
-            rows_idx = []
-            for r in avail:
-                idx = torch.nonzero(r, as_tuple=True)[0]
-                if idx.numel() < k:
-                    # repeat the last index: duplicates are idempotent here, since correction
-                    # recomputes a token to the same value however many times it is listed
-                    idx = torch.cat([idx, idx[-1:].expand(k - idx.numel())])
-                rows_idx.append(idx)
-            dindice = torch.stack(rows_idx)
+            return Aggregator._correct_row_buckets(blk, x, avail, counts, rope,
+                                                   cache_feature, tag, kwargs)
         else:
             dindice = torch.arange(n_tok, device=x.device, dtype=torch.long).unsqueeze(0).expand(rows, -1)
         extra = {} if rope is not None else {"num_pretokens": 0}
@@ -164,6 +162,102 @@ class Aggregator(nn.Module):
         if hints is not None:
             extra["mobile_pscore_hint"] = hints.get(tag.rstrip("0123456789"))
         return blk.correct(x, dindice, rope, cache_feature, tag=tag, **kwargs, **extra)
+
+    @staticmethod
+    def _correct_row_buckets(blk, x, avail, counts, rope, cache_feature, tag, kwargs):
+        """Correct ragged rows bucket-by-bucket instead of padding every row to the widest.
+
+        Rows are grouped by candidate count; each bucket gets its own `blk.correct` call at its own
+        true width, on a row-slice of the stream and a row-slice of this tag's cache. Numerically
+        this changes nothing (the padded duplicates were idempotent); it changes what is COMPUTED.
+
+        Cache handling follows the m2f batch-cache pattern: every tensor under this tag whose
+        leading dim matches the row count is gathered for the call and scattered back afterwards --
+        including keys the call CREATED. Global (non-row) entries such as the plan-stat totals are
+        left in place and accumulate across buckets exactly as they did across padded rows.
+        """
+        rows, n_tok = x.shape[0], x.shape[1]
+        hints = kwargs.get("mobile_pscore_hints")
+        call_kwargs = {k: v for k, v in kwargs.items()
+                       if k not in ("mobile_pscore_hints", "arrived_masks")}
+        extra = {} if rope is not None else {"num_pretokens": 0}
+        if hints is not None:
+            extra["mobile_pscore_hint"] = hints.get(tag.rstrip("0123456789"))
+
+        x_out = x.clone()
+        prefix = f"{tag}_"
+        import os as _os
+        if _os.environ.get("APPCORR_VGGT_TRACE"):
+            print(f"[bkt-entry] tag={tag} rows={rows} counts={counts.tolist()}", flush=True)
+        for k in sorted(set(counts.tolist())):
+            if k <= 0:
+                continue
+            rows_sel = torch.nonzero(counts == k, as_tuple=True)[0]
+            dindice = torch.stack([
+                torch.nonzero(avail[r], as_tuple=True)[0] for r in rows_sel.tolist()
+            ])
+            # Row-slice EVERY tensor whose leading dim is the row axis, not just this tag's: the
+            # plan resolver pools server pscores ACROSS layers (pe0..pe9), so slicing only the
+            # current tag left pe0 at the bucket width while pe1..9 stayed full -- "inconsistent
+            # shapes" inside the very first bucket call. Tensors of other stacks that happen to
+            # share the row count are sliced too; the block never reads them, and scattering an
+            # untouched slice back is a no-op.
+            sub_cache = {}
+            row_keys = []
+            for ck, cv in cache_feature.items():
+                if torch.is_tensor(cv) and cv.dim() >= 1 and cv.shape[0] == rows:
+                    sub_cache[ck] = cv[rows_sel]
+                    row_keys.append(ck)
+                else:
+                    sub_cache[ck] = cv
+            rope_sel = rope   # rope is per-token, shared across rows
+            hint = extra.get("mobile_pscore_hint")
+            extra_b = dict(extra)
+            if hint is not None and torch.is_tensor(hint) and hint.dim() >= 1 and hint.shape[0] == rows:
+                extra_b["mobile_pscore_hint"] = hint[rows_sel]
+            import os as _os
+            _dump = _os.environ.get("APPCORR_SEL_DUMP")
+            if _dump:
+                # Pairs with the block-level dump line that follows: the block records LOCAL row
+                # ids (it sees only this bucket's slice), this records the local->global mapping.
+                with open(_dump, "a") as _f:
+                    _f.write(f"MAP\t{tag}\t{rows_sel.tolist()}\n")
+            x_b, sub_cache = blk.correct(x[rows_sel], dindice, rope_sel, sub_cache,
+                                         tag=tag, **call_kwargs, **extra_b)
+            x_out[rows_sel] = x_b
+            # Scatter back EVERY row-shaped entry under this tag -- both the ones gathered and the
+            # ones the call created (their dim0 equals this bucket's row count).
+            n_b = rows_sel.numel()
+            import os as _os
+            _trace = _os.environ.get("APPCORR_VGGT_TRACE")
+            for ck, cv in sub_cache.items():
+                if not torch.is_tensor(cv):
+                    if ck not in cache_feature:
+                        cache_feature[ck] = cv
+                    continue
+                if ck in row_keys:
+                    base = cache_feature[ck]
+                    if cv.shape[0] != n_b or cv.shape[1:] != base.shape[1:]:
+                        # The call REPLACED this entry with a different shape -- a derived/plan
+                        # cache (they are keyed by dindice content and rebuilt per call), not a
+                        # row-axed state tensor. Writing it back raggedly is what produced
+                        # "value [1032] cannot broadcast to [1, 0]"; and storing a bucket-local
+                        # version globally would hand the next bucket a wrong-shaped entry. The
+                        # row-axed state that must persist (k/v, blocks_out_sum, per-layer scores)
+                        # always keeps its trailing shape, so it never lands here.
+                        continue
+                    base = base.clone() if not base.is_contiguous() else base
+                    base[rows_sel] = cv
+                    cache_feature[ck] = base
+                elif cv.dim() >= 1 and cv.shape[0] == n_b and ck not in cache_feature:
+                    full = cv.new_zeros((rows,) + tuple(cv.shape[1:]))
+                    full[rows_sel] = cv
+                    cache_feature[ck] = full
+                else:
+                    # Neither a gathered row key nor a fresh row-shaped creation: a global entry
+                    # (plan stats, scalars) the call updated -- store as-is.
+                    cache_feature[ck] = cv
+        return x_out, cache_feature
 
     def _run_patch_embed(self, images, cache_feature=None, approx_kwargs=None, correct=False):
         """The patch-embed ViT's 24 blocks: stock, approx, or correct.
