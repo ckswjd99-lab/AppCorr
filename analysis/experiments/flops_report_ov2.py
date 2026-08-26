@@ -152,20 +152,12 @@ def main():
 
         for keep in a.keeps:
             def interleaved(axis, fl, ids, pp, px, px2, keep=keep):
-                freqs = axis.rope_freqs(pp)
-                # The score's attention term is collected on the approximate pass, which is arrival
-                # 0 work -- it reads only the base image.
-                cache = {}
-                with fl.arrival(0), fl.stage("approx"):
-                    vh, cache = axis.vision_approx(axis.vision_prepare(px2), freqs, cache,
-                                                   collect_attn=True)
-                sel, pm = selection(axis, px, px2, keep, cache)
-                emb, ctx = axis.llm_prepare(ids, axis.project(vh, pp))
-                tm = torch.zeros(1, ids.shape[1], dtype=torch.bool, device=ids.device)
-                tm[:, ctx["image_positions"]] = sel
-                is_text = torch.ones_like(tm)
-                is_text[:, ctx["image_positions"]] = False
-                axis.interleaved_forward(px, px2, pp, ids, pm, tm | is_text, a.groups)
+                # PROGRESSIVE per-round selection (canonical 2026-08-26; see the gemma3 report for
+                # the full rationale). The old path here ran a full-tower scoring pass before the
+                # walk (+13.5% of a full forward on this model) and its pscore projections were
+                # double-counted besides (nn.Linear outside the PSCORE scope).
+                energy = patch_energy(px, px2)
+                axis.interleaved_forward_progressive(px, px2, pp, ids, energy, keep, a.groups)
 
             agg, _ = run(interleaved)
             crit = agg["mean_critical_gflops"]

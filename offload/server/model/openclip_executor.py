@@ -136,13 +136,44 @@ class OpenCLIPExecutor(ModelExecutor):
         start_l, end_l = params.get("layers", (0, len(self.tower.blocks)))
         x_feature = context["input_tokens"] if start_l == 0 else context.get("current_feature", context["input_tokens"])
         cache = context.get("cache_feature", {})
-        x_feature, cache = self.tower.approx_forward(x_feature, start_l, end_l, cache, tag_prefix="vision")
+        want_mean = self._pscore_kind(config) == "patch_attn_prob_layermean"
+        x_feature, cache = self.tower.approx_forward(x_feature, start_l, end_l, cache,
+                                                     tag_prefix="vision",
+                                                     collect_cls_attn=not want_mean,
+                                                     collect_attn_mean=want_mean)
         # Refresh the importance signal after every approx chunk (not just the final one) -- a
         # partial-depth average is a usable, if less refined, proxy, and later groups' pruning
         # decisions benefit from using whatever depth has been seen so far rather than waiting.
-        cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        cache = (self.tower.finalize_attn_layermean(cache, tag_prefix="vision")
+                 if self._pscore_kind(config) == "patch_attn_prob_layermean"
+                 else self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision"))
         context["current_feature"] = x_feature
         context["cache_feature"] = cache
+
+    @staticmethod
+    def _pscore_kind(config: Any) -> str:
+        """Which attention signal feeds the server side of the importance score.
+
+        `cls_attn_prob_layermean` (default, and what every OpenCLIP result before 2026-08-26 used):
+            the CLS token's attention row. Defensible for CLIP specifically -- the image embedding
+            IS the CLS output -- but that argument holds at the final layer and weakens once the
+            rows are averaged across layers, and it discards all patch-to-patch interaction.
+        `patch_attn_prob_layermean`: the column mean, i.e. attention RECEIVED per token. The signal
+            DINOv3 and Gemma 3 use, and the one that needs no CLS token.
+
+        Read from the RAW config, not the normalised one: `normalize_appcorr_kwargs` supplies its own
+        default for `server_pscore`, so reading the normalised value would silently switch existing
+        configs onto whatever that default happens to be.
+        """
+        raw = getattr(config, "appcorr_kwargs", None) or {}
+        kind = str(raw.get("server_pscore", "cls_attn_prob_layermean"))
+        if kind not in ("cls_attn_prob_layermean", "patch_attn_prob_layermean"):
+            raise ValueError(
+                f"openclip: unknown server_pscore {kind!r}; expected 'cls_attn_prob_layermean' or "
+                "'patch_attn_prob_layermean'. Research code -- an unrecognised selection signal is a "
+                "fault, not something to fall back from."
+            )
+        return kind
 
     def _prune_patch_idx(self, patch_idx: torch.Tensor, context: Dict[str, Any], config: Any) -> torch.Tensor:
         """Applies the validated `residual_energy x avg_cls_attn` thresholded importance score
@@ -169,7 +200,9 @@ class OpenCLIPExecutor(ModelExecutor):
             return patch_idx
 
         cache = context.get("cache_feature", {})
-        layermean = cache.get("vision_cls_attn_layermean")
+        key = ("vision_cls_attn_layermean" if self._pscore_kind(config) == "cls_attn_prob_layermean"
+               else "vision_attn_layermean")
+        layermean = cache.get(key)
         hint_map = context.get("mobile_pscore_hint_map")
         if layermean is None or hint_map is None:
             return patch_idx
@@ -242,7 +275,9 @@ class OpenCLIPExecutor(ModelExecutor):
         x_feature = context["input_tokens"]
         cache = context.get("cache_feature", {})
         x_feature, cache = self.tower.correct_forward(x_feature, patch_idx, start_l, end_l, cache, tag_prefix="vision")
-        cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        cache = (self.tower.finalize_attn_layermean(cache, tag_prefix="vision")
+                 if self._pscore_kind(config) == "patch_attn_prob_layermean"
+                 else self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision"))
         context["current_feature"] = x_feature
         context["cache_feature"] = cache
 

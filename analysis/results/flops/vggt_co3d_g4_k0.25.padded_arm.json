@@ -1,0 +1,17 @@
+{
+  "model": "vggt_omega",
+  "batch_size": 8,
+  "mean_total_gflops_per_image": 4875.939938304,
+  "mean_critical_gflops_per_image": 436.393476096,
+  "requests": 2,
+  "mean_total_gflops": 39007.519506432,
+  "mean_critical_gflops": 3491.147808768,
+  "mean_overlappable_gflops": 35516.371697664,
+  "critical_fraction": 0.08949935430250416,
+  "mean_stage_gflops": {
+    "APPROX_FORWARD": 21301.248393216,
+    "CORRECT_FORWARD": 17588.794949632,
+    "HEAD_INFERENCE": 0.606076928,
+    "PREPARE_TOKENS": 116.870086656
+  }
+}

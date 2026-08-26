@@ -53,13 +53,14 @@ class ApproxCorrectCLIPEncoderLayer(nn.Module):
         return x
 
     def approx(self, x: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-               collect_cls_attn: bool = False):
+               collect_cls_attn: bool = False, collect_attn_mean: bool = False):
         """Full block forward over all N tokens; caches the total block delta
         (`{tag}_blocks_out_sum` = attn contribution + MLP contribution) so `.correct()` can
         reconstruct stale positions exactly via `x_in + blocks_out_sum`, and caches raw K/V (via
         `self.attn.approx`) so `.correct()` can splice in fresh K/V for corrected positions."""
         x_attn, cache_feature = self.attn.approx(self.layer_norm1(x), cache_feature, tag,
-                                                 collect_cls_attn=collect_cls_attn)
+                                                 collect_cls_attn=collect_cls_attn,
+                                                 collect_attn_mean=collect_attn_mean)
         cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
 
         x_mid = x + x_attn
