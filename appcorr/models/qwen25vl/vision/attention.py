@@ -103,6 +103,33 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
         out = torch.cat(outs, dim=0).reshape(seq_length, -1)
         return self.proj(out)
 
+    @torch.no_grad()
+    def incoming_attention(self, x: torch.Tensor, segment_ranges, position_embeddings) -> torch.Tensor:
+        """Column mass of this layer's attention -- how much the rest of ITS OWN SEGMENT reads FROM
+        each token -- head- and query-averaged, matching Gemma3's `_incoming_attention` (no CLS
+        token there either; this project's standing server_pscore is residual-energy x received-
+        attention, never CLS-based). Computed PER SEGMENT (`segment_ranges`) since Qwen's attention
+        domains are segment-local (per-image or per-window; a token never attends outside its own
+        segment), so pooling has to respect that boundary rather than averaging across the whole
+        permuted sequence at once. [T] -- one value per token in `x`, permuted-sequence order.
+
+        Redundant QK product against the one `approx()` already computes -- same one-time cost
+        Gemma3's docstring accepts ("one extra QK product and no extra weights"), not threaded out
+        of the SDPA call since that call doesn't materialize `attn_prob` at all.
+        """
+        q, k, _ = self._qkv_heads(x)
+        cos, sin = position_embeddings
+        q, k = apply_rotary_pos_emb_vision(q, k, cos, sin)
+        q = q.transpose(0, 1)  # [H, T, Dh]
+        k = k.transpose(0, 1)
+        col = torch.zeros(x.shape[0], device=x.device, dtype=torch.float32)
+        for start, length in segment_ranges:
+            sl = slice(start, start + length)
+            q_seg, k_seg = q[:, sl], k[:, sl]  # [H, L, Dh]
+            w = torch.softmax((q_seg.float() @ k_seg.float().transpose(-1, -2)) * self.scaling, dim=-1)  # [H, L, L]
+            col[sl] = w.sum(dim=1).mean(dim=0) / length  # mean over queries (within segment), then heads
+        return col
+
     def approx(self, x: torch.Tensor, segment_ranges, position_embeddings, cache_feature: Dict[str, Any], tag: str):
         """Full attention over all T tokens (per-segment, per stock's own dispatch), caching raw K/V
         (post-RoPE) as `cache_feature[f"{tag}_kv"]`, shape [T, num_heads, 2, head_dim]."""
