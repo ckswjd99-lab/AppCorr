@@ -372,12 +372,33 @@ def main():
         batch_meta.clear()
 
     import os as _os
+    oom_skipped = []
     for idx in indices:
         image_np, prompt, gt, grid_hw = load_example(idx)
         if _os.environ.get("APPCORR_MEM_TRACE"):
             print(f"[mem] BEFORE idx={idx}: allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
                   f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB", flush=True)
-        first_token, context = build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline)
+        try:
+            first_token, context = build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline)
+        except torch.cuda.OutOfMemoryError:
+            # Found 2026-08-26 on interleaved g=4 + keep-rate runs: NOT the earlier `context`-
+            # retention leak (this file's `del context` below already fixes that; `allocated`
+            # returns to the model-only baseline every image, confirmed via APPCORR_MEM_TRACE with
+            # no drift right up to the crash) and NOT generic allocator fragmentation either
+            # (`empty_cache()` per image dropped `reserved` from a ~96GB plateau to a flat ~67GB,
+            # and the crash still happened at the identical image). It is a genuine peak-memory
+            # image: idx=4720 in this dataset resizes to 672x672 (451,584px), ~1.5x the ~301,056px
+            # most images in this range resize to -- g=4 correction's per-round attention
+            # masks/caches scale with sequence length (image-token count), so an unusually large
+            # image's peak legitimately exceeds the ~28GB headroom above the 66.94GB model-resident
+            # baseline that ordinary-sized images fit in. Rather than lose an entire multi-hour run
+            # to one outlier image, skip it (recorded, not silently dropped -- reported in the
+            # summary) and continue; `empty_cache()` clears whatever partial state the failed
+            # attempt left before the next image.
+            print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- CUDA OOM, skipping this sample", flush=True)
+            oom_skipped.append(idx)
+            torch.cuda.empty_cache()
+            continue
         if _os.environ.get("APPCORR_MEM_TRACE"):
             print(f"[mem] AFTER  idx={idx}: allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
                   f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB", flush=True)
@@ -386,7 +407,7 @@ def main():
             "pixel_values": context["pixel_values"], "image_grid_thw": context["image_grid_thw"],
         })
         batch_meta.append((idx, gt, grid_hw))
-        # Explicit release, not `torch.cuda.empty_cache()`: `context` is a live reference (its
+        # Explicit release, not just `torch.cuda.empty_cache()`: `context` is a live reference (its
         # vision_cache/kv_cache/llm_input_embeds tensors, ~27GB/image on a 32B model), and Python's
         # `first_token, context = build_first_token_context(...)` assignment only rebinds `context`
         # AFTER the RHS is fully evaluated -- so the PREVIOUS iteration's context stayed alive for
@@ -397,6 +418,11 @@ def main():
         # four tensors batch_items actually needs stay referenced; everything else in `context`
         # (which is nearly all of it) is freed before the next image's forward pass starts.
         del context
+        # Keeps `reserved` from drifting upward across many differently-shaped per-round tensors
+        # (varying image_grid_thw x varying token_idx per g round) -- does not by itself prevent
+        # the genuine large-image OOM above, but keeps the baseline headroom as large as possible
+        # for everything else.
+        torch.cuda.empty_cache()
         if len(batch_items) >= args.batch_size:
             flush_batch()
     flush_batch()
@@ -412,6 +438,9 @@ def main():
     else:
         print(f"    accuracy: {acc:.2f}%  ({correct}/{processed})")
     print(f"    total wall time: {total_wall:.1f}s ({total_wall/max(processed,1):.2f}s/sample avg)")
+    if oom_skipped:
+        print(f"    SKIPPED (CUDA OOM, not scored, not counted in the accuracy above): "
+              f"{len(oom_skipped)}/{len(indices)} -- indices: {oom_skipped}")
 
 
 if __name__ == "__main__":
