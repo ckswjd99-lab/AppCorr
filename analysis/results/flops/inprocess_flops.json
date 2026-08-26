@@ -187,16 +187,28 @@
  },
  "qwen25vl_32b": {
   "_samples": 6,
-  "_note": "Ceiling only: the in-process reporter measures the stock forward; no interleaved driver.",
   "realworldqa": {
-   "full": 128712.1
+   "full": 121078.4,
+   "k0.25": 11347.4,
+   "total_k0.25": 166448.0,
+   "k0.50": 18661.5,
+   "total_k0.50": 195704.3
   },
   "gqa": {
-   "full": 22239.0
+   "full": 21506.2,
+   "k0.25": 3796.2,
+   "total_k0.25": 36687.8,
+   "k0.50": 4976.7,
+   "total_k0.50": 41409.6
   },
   "refcoco": {
-   "full": 30361.0
-  }
+   "full": 31780.0,
+   "k0.25": 6171.6,
+   "total_k0.25": 56461.4,
+   "k0.50": 7878.5,
+   "total_k0.50": 63289.1
+  },
+  "_note": "GH200 flops_report_qwen25vl_arms.py 2026-08-27 (n=6/dataset), real executor path under flops.session; PSCORE + PREPARE_TOKENS excluded; wiring gates: critical == correct/4 exactly, total == approx+correct, ceiling within 0.8% of the standalone measurement."
  },
  "qwen35_moe": {
   "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
