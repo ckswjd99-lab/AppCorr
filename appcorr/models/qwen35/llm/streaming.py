@@ -61,6 +61,7 @@ def stream_prefill(
     boundaries: Optional[Sequence[int]] = None,
     past_key_values: Optional[Any] = None,
     flop_counter: Optional[Any] = None,
+    position_ids: Optional[torch.Tensor] = None,
     **model_kwargs: Any,
 ) -> Tuple[torch.Tensor, Any]:
     """Prefill `[1, T, ...]` in contiguous chunks, returning the FINAL chunk's logits and the cache.
@@ -73,6 +74,13 @@ def stream_prefill(
         boundaries: chunk edges including 0 and T, e.g. `[0, 256, 512, 900]` for three chunks. A
             single chunk `[0, T]` reproduces an ordinary one-shot prefill and is the identity case
             the gate checks.
+        position_ids: FULL-SEQUENCE positions, last dim T, sliced per chunk. REQUIRED for any
+            multimodal prompt on this family: Qwen3.5 gives image tokens interleaved 3D M-RoPE
+            positions (shape (4, B, T) via `get_rope_index`), and the arange fallback below
+            replicates a 1D counter across all four axes -- plausible logits, wrong image geometry,
+            and invisible to any A/B whose two arms share the fallback (the trap Qwen2.5-VL's
+            M-RoPE bug already sprang once). The fallback exists for TEXT-ONLY sequences, where
+            1D-replicated is what get_rope_index itself produces.
         flop_counter: optional `FlopCounter`. Each chunk is recorded under its own arrival index, so
             the critical/overlappable split falls out of the schedule with no special casing: only
             the final chunk carries the highest index and is therefore critical.
@@ -100,7 +108,10 @@ def stream_prefill(
         # Positions continue where the previous chunk stopped -- the whole point of the contiguity
         # check above. Passed explicitly rather than left to the model's cache-length inference,
         # which is what breaks first when a caller streams something non-contiguous.
-        position_ids = torch.arange(lo, hi, device=seq.device).unsqueeze(0)
+        if position_ids is not None:
+            chunk_pos = position_ids[..., lo:hi]
+        else:
+            chunk_pos = torch.arange(lo, hi, device=seq.device).unsqueeze(0)
         chunk_kwargs = dict(model_kwargs)
         if input_ids is not None:
             chunk_kwargs["input_ids"] = input_ids[:, lo:hi]
@@ -110,7 +121,7 @@ def stream_prefill(
         ctx = flop_counter.arrival(r) if flop_counter is not None else _null()
         with ctx:
             out = model(
-                position_ids=position_ids,
+                position_ids=chunk_pos,
                 past_key_values=past_key_values,
                 use_cache=True,
                 **chunk_kwargs,
