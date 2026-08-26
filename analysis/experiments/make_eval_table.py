@@ -72,7 +72,7 @@ SPEC = [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
     ]),
-    ("Qwen2.5-VL (33.5B)", [
+    ("Qwen2.5-VL (33.5B)$^\\S$", [
         ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
         ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
         ("GQA testdev (Exact Match)", None, ("inproc", "qwen25vl_32b", "gqa")),
@@ -93,7 +93,7 @@ SPEC = [
         (r"NYUv2 (AbsRel $\downarrow$)",    None, ("offload", "dinov3_nyu")),
         (r"Co3Dv2 (Rot. deg $\downarrow$)", None, None),
     ]),
-    ("VGGT-Omega (7B)$^\\ddagger$", [
+    ("VGGT-Omega (7B)", [
         (r"Co3Dv2 (Depth AbsRel $\downarrow$)", None, ("offload", "vggt_co3d")),
         (r"Co3Dv2 (Rot. deg $\downarrow$)",     None, ("offload", "vggt_co3d")),
         (r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)", None, ("offload", "vggt_co3d")),
@@ -146,8 +146,15 @@ LITERALS = {
     # Re-measured 2026-08-26 on the M-RoPE-fixed code, full splits, both bounds through the same
     # driver. RefCOCO N=8811, GQA N=12578. These REPLACE the pre-fix values (which were
     # 85.75/74.76, 76.20/65.02, 60.84/55.16) -- see the block comment above.
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.68, "ceiling": 88.19},
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.36, "ceiling": 80.24},
+    # RefCOCO ours: GH200 full-split (8811 images) 2026-08-27, energy x attention, bs=1 vs
+    # bs=16 bounds (measured Acc-identical, 0.001 mIoU); OOM-skipped 0.09% (k0.25) / 2.3%
+    # (k0.50) of the largest images, with bounds restricted to each keep's kept set for the
+    # preservation numbers reported alongside. The section-mark footnote in the caption carries
+    # this to the reader.
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.68, "ceiling": 88.19,
+                                                          "k0.25": 86.10, "k0.50": 87.27},
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.36, "ceiling": 80.24,
+                                                          "k0.25": 78.22, "k0.50": 79.38},
     ("Qwen2.5-VL (33.5B)", "GQA testdev (Exact Match)"): {"floor": 55.24, "ceiling": 60.80},
     # 72B dropped 2026-08-26: not worth the run. It also does not fit -- the GH200 box has ~66 GB
     # free against a ~130 GB pull, so the row could only ever have carried a prose ceiling.
@@ -345,9 +352,13 @@ def fmt_tf(gf: Optional[float], full: Optional[float]) -> str:
 def build_rows(keeps, groups: int):
     out = []
     for model, rows in SPEC:
+        # Footnote marks ($^\dagger$ etc.) are display-only; every lookup table is keyed by the
+        # BASE model name. Keying lookups on the decorated name silently blanks the whole block --
+        # adding $^\S$ to Qwen2.5 turned its bounds into "--" before this split existed.
+        base_model = model.split("$")[0]
         block = []
         for label, acc_key, fl_key in rows:
-            lit = LITERALS.get((model, label), {})
+            lit = LITERALS.get((base_model, label), {})
             f = "{:.2f}"
             if "fmt" in lit:
                 f = lit["fmt"]
@@ -378,7 +389,7 @@ def build_rows(keeps, groups: int):
                     s += f" ({pres:.1f}\\%)"
                 return s
 
-            vfm = VFM_OURS.get((model, label))
+            vfm = VFM_OURS.get((base_model, label))
 
             def ours(k):
                 """Ours at keep `k`. VLM rows read a summary JSON; VFM rows read a campaign log."""
@@ -392,7 +403,7 @@ def build_rows(keeps, groups: int):
                         pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
                         out += f" ({pres:.1f}\\%)"
                     return out
-                return acc_with_pres(f"interleaved_g{groups}_k{k:.2f}")
+                return acc_with_pres(f"interleaved_g{groups}_k{k:.2f}", lit_key=f"k{k:.2f}")
 
             full_gf = get_flops(fl_key, "full")
             cells = [acc_with_pres("floor", "floor")]
@@ -433,10 +444,11 @@ def emit_latex(table, keeps) -> str:
              r"$^\dagger$Qwen3.5's arm is streaming (vision approx/correct + chunked LLM prefill, "
              r"$g{=}4$): it progressively recomputes 100\% of tokens and has no keep-rate knob, so "
              r"the placement of its compute figures in a keep-labeled column is nominal. "
-             r"$^\ddagger$Gemma 3, LLaVA-OV2, and VGGT-Omega compute figures are from the "
-             r"corrected schedules (2026-08-26: progressive per-round selection; VGGT's de-padded "
-             r"ragged correction); their accuracy cells are still the earlier arms', pending "
-             r"re-evaluation.}")
+             r"$^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive "
+             r"per-round selection arm (2026-08-26); their accuracy cells are still the earlier "
+             r"upfront arm's, pending re-evaluation. $^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
+             r"(measured equivalent), excluding OOM images (0.09\% at 25\%, 2.3\% at 50\%) with "
+             r"bounds restricted to the same kept sets.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
