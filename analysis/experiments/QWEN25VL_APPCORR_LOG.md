@@ -1249,3 +1249,28 @@ aggregate-ties-hiding-churn failure mode by per-sample diffing, the same method 
 M-RoPE bug.
 
 keep=0.50 full-split run in progress.
+
+**keep=0.50 full split** (kept n=8604, OOM-skipped 207/8811 = 2.3%, matching the subset's 2.3% rate;
+skip list in the run log, all 672x672-class peak-memory images; includes the cuDNN mha_graph OOM
+variant and the except-order fix -- OutOfMemoryError subclasses RuntimeError, ordering documented
+in the eval script):
+
+| arm | Acc@0.5 | mIoU |
+|---|---|---|
+| floor (approx-only) | 79.79 | 70.45 |
+| **ours (keep=0.50)** | **87.27** | **79.38** |
+| ceiling (lossless) | 88.11 | 80.23 |
+| preservation | 99.05% | 98.94% |
+| recovery | 89.94% | 91.33% |
+
+Unlike the subset (where keep=0.50 tied ceiling at ~100% recovery), the full split resolves a real
+0.84pp gap to ceiling -- the subset's ~100% was the noise floor, as flagged at the time. Bias check
+on the 207 skipped: ceiling 91.3 / floor 75.4 on skipped vs 88.1 / 79.8 on kept -- on THIS larger
+skip set the largest images are EASIER for ceiling and harder for floor (the keep=0.25 n=8 check
+pointed the other way; n=8 was noise, n=207 is the believable direction). Excluded equally from
+all three arms, so ours-vs-bounds comparisons remain internally valid; the exclusion slightly
+shrinks the reported floor-ceiling gap versus the true full-split gap.
+
+Final full-split summary (both keeps, energy x attention scoring, preservation first):
+  keep=0.25: preservation 97.59% / 97.46% (Acc/mIoU), recovery 75.07% / 79.33%, skips 0.09%
+  keep=0.50: preservation 99.05% / 98.94%,             recovery 89.94% / 91.33%, skips 2.3%
