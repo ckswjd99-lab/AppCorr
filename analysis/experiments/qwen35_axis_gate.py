@@ -45,11 +45,17 @@ def greedy_stock(axis, inputs, n=24):
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default=MODEL_ID_35B,
+                    help="checkpoint to gate; FP8 checkpoints load with dtype='auto'")
+    args = ap.parse_args()
     torch.manual_seed(0)
-    proc = AutoProcessor.from_pretrained(MODEL_ID_35B)
+    proc = AutoProcessor.from_pretrained(args.model)
     model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_ID_35B, dtype=torch.bfloat16, device_map="cuda:0").eval()
+        args.model, dtype="auto", device_map="cuda:0").eval()
     axis = Qwen35Axis(model, proc)
+    print(f"  model: {args.model}  (param dtype: {next(model.parameters()).dtype})")
 
     # Degradation must actually remove information, or every TV distance in this file collapses
     # into one noise band and the gates compare nothing. The first draft used 32px blocks -- which

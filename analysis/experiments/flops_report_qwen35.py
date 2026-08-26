@@ -54,17 +54,18 @@ def degrade(img: Image.Image) -> Image.Image:
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default=MODEL_ID_35B)
     ap.add_argument("--samples", type=int, default=12)
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--datasets", nargs="+", default=["chartqa"])
     ap.add_argument("--out-json", default="analysis/results/flops/qwen35_flops.json")
     args = ap.parse_args()
 
-    proc = AutoProcessor.from_pretrained(MODEL_ID_35B)
+    proc = AutoProcessor.from_pretrained(args.model)
     model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_ID_35B, dtype=torch.bfloat16, device_map="cuda:0").eval()
+        args.model, dtype="auto", device_map="cuda:0").eval()
 
-    result = {"_model": MODEL_ID_35B, "_samples": args.samples, "_groups": args.groups}
+    result = {"_model": args.model, "_samples": args.samples, "_groups": args.groups}
     for ds_name in args.datasets:
         samples = load_samples(ds_name, args.samples)
         counters = {k: FlopCounter() for k in ("ceiling", "floor", "streaming")}

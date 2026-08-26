@@ -27,11 +27,12 @@ from appcorr.models.qwen35.unified import Qwen35Axis, MODEL_ID_35B
 from PIL import Image
 
 
-def degrade(img: Image.Image) -> Image.Image:
-    """The transmission's level-2 base: 4x down, back up. Content degrades, geometry does not --
-    the token grid must match the full-res image or the band mixing is meaningless."""
+def degrade(img: Image.Image, level: int = 2) -> Image.Image:
+    """The transmission's level-`level` base: 2^level x down, back up. Content degrades, geometry
+    does not -- the token grid must match the full-res image or the band mixing is meaningless."""
+    f = 2 ** level
     w, h = img.size
-    return img.resize((max(1, w // 4), max(1, h // 4)), Image.BICUBIC).resize((w, h), Image.BICUBIC)
+    return img.resize((max(1, w // f), max(1, h // f)), Image.BICUBIC).resize((w, h), Image.BICUBIC)
 
 
 @torch.no_grad()
@@ -68,15 +69,18 @@ def prefill_stock(axis, inputs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True)
+    ap.add_argument("--model", default=MODEL_ID_35B,
+                    help="checkpoint id; e.g. Qwen/Qwen3.5-122B-A10B-FP8")
+    ap.add_argument("--level", type=int, default=2, help="pyramid level of the degraded base")
     ap.add_argument("--arms", nargs="+", default=["floor", "streaming", "ceiling"])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--samples", type=int, default=0, help="0 = full split")
     ap.add_argument("--out", default="analysis/results/qwen35_accuracy")
     args = ap.parse_args()
 
-    proc = AutoProcessor.from_pretrained(MODEL_ID_35B)
+    proc = AutoProcessor.from_pretrained(args.model)
     model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_ID_35B, dtype=torch.bfloat16, device_map="cuda:0").eval()
+        args.model, dtype="auto", device_map="cuda:0").eval()
     axis = Qwen35Axis(model, proc)
     spec = get_spec(args.dataset)
     ds = spec.load(load_dataset)
@@ -86,7 +90,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     for arm in args.arms:
-        path = os.path.join(args.out, f"{args.dataset}_{arm}"
+        slug = "" if args.model == MODEL_ID_35B else "_" + args.model.split("/")[-1].lower()
+        path = os.path.join(args.out, f"{args.dataset}{slug}_{arm}"
                             + (f"_g{args.groups}" if arm == "streaming" else "") + ".jsonl")
         done = set()
         if os.path.exists(path):
@@ -105,10 +110,10 @@ def main():
                 if arm == "ceiling":
                     lg, kv, dp = prefill_stock(axis, inputs)
                 elif arm == "floor":
-                    base_inputs = axis.build_inputs(degrade(img), q).to("cuda:0")
+                    base_inputs = axis.build_inputs(degrade(img, args.level), q).to("cuda:0")
                     lg, kv, dp = prefill_stock(axis, base_inputs)
                 else:
-                    base_px = axis.build_inputs(degrade(img), q)["pixel_values"].to("cuda:0")
+                    base_px = axis.build_inputs(degrade(img, args.level), q)["pixel_values"].to("cuda:0")
                     lg, kv, st = axis.streaming_forward(inputs, base_px, args.groups)
                     dp = st["decode_start_pos"]
                 pred = greedy(axis, lg, kv, dp)
