@@ -93,7 +93,7 @@ SPEC = [
         (r"NYUv2 (AbsRel $\downarrow$)",    None, ("offload", "dinov3_nyu")),
         (r"Co3Dv2 (Rot. deg $\downarrow$)", None, None),
     ]),
-    ("VGGT-Omega (7B)", [
+    ("VGGT-Omega (7B)$^\\ddagger$", [
         (r"Co3Dv2 (Depth AbsRel $\downarrow$)", None, ("offload", "vggt_co3d")),
         (r"Co3Dv2 (Rot. deg $\downarrow$)",     None, ("offload", "vggt_co3d")),
         (r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)", None, ("offload", "vggt_co3d")),
@@ -430,9 +430,10 @@ def emit_latex(table, keeps) -> str:
              r"$^\dagger$Qwen3.5's arm is streaming (vision approx/correct + chunked LLM prefill, "
              r"$g{=}4$): it progressively recomputes 100\% of tokens and has no keep-rate knob, so "
              r"the placement of its compute figures in a keep-labeled column is nominal. "
-             r"$^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive per-round "
-             r"selection arm (2026-08-26); their accuracy cells are still the earlier "
-             r"upfront-selection arm's, pending re-evaluation.}")
+             r"$^\ddagger$Gemma 3, LLaVA-OV2, and VGGT-Omega compute figures are from the "
+             r"corrected schedules (2026-08-26: progressive per-round selection; VGGT's de-padded "
+             r"ragged correction); their accuracy cells are still the earlier arms', pending "
+             r"re-evaluation.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
