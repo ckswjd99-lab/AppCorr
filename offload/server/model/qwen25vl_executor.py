@@ -158,7 +158,26 @@ class Qwen25VLExecutor(ModelExecutor):
         context["image_mask_1d"] = image_mask_1d
         context["position_ids"] = position_ids
         context["permanent_group_idx"] = (~image_mask_1d).nonzero(as_tuple=True)[0]
-        context["image_token_positions"] = image_mask_1d.nonzero(as_tuple=True)[0]  # merge-group g -> this[g]
+        image_token_positions = image_mask_1d.nonzero(as_tuple=True)[0]  # merge-group g -> this[g]
+        # Structural precondition for chunked prefill (docs/memo/qwen25vl_baseline_mrope_bug.md's
+        # neighbor design work): merge-group native order (spatial_idx) must equal LLM sequence
+        # order with no gaps, so a `sequential`-grouping band is a contiguous prefill chunk with no
+        # row/token mapping layer needed. Verified on 3 real single-image RefCOCO prompts at 3
+        # resolutions -- but it is a claim about PROMPT LAYOUT, not about resolution, and the
+        # obvious way it breaks is a prompt with more than one image (two image blocks separated by
+        # text): image_token_positions stops being one contiguous run, chunk boundaries stop being
+        # contiguous, and a chunked prefill would silently read holes. Assert here rather than only
+        # in the one script that checked it once -- an unmet structural assumption in this kind of
+        # code should crash, not produce a plausible number from a discontiguous range.
+        if image_token_positions.numel() > 0:
+            gaps = image_token_positions[1:] - image_token_positions[:-1]
+            assert bool((gaps == 1).all()), (
+                f"image_token_positions is not one contiguous run ({image_token_positions.numel()} "
+                f"tokens, first={int(image_token_positions[0])}, last={int(image_token_positions[-1])}) "
+                f"-- chunked prefill assumes a single-image prompt with image tokens forming one "
+                f"unbroken block; a multi-image prompt would violate this."
+            )
+        context["image_token_positions"] = image_token_positions
 
     def prepare_tokens(self, task: Task, context: Dict[str, Any], config: Any):
         if "pixel_values" not in context:
@@ -189,10 +208,24 @@ class Qwen25VLExecutor(ModelExecutor):
             # build the initial multimodal embedding sequence from the (approx-only) image.
             vctx = context["vision_ctx"]
             x_v, cache_v = self.vision_tower.approx_forward(
-                context["vision_current_feature"], 0, len(self.vision_tower.blocks), vctx, {}, tag_prefix="vision"
+                context["vision_current_feature"], 0, len(self.vision_tower.blocks), vctx, {}, tag_prefix="vision",
+                collect_attn=True,
             )
             context["vision_current_feature"] = x_v
             context["vision_cache"] = cache_v
+            attn_layermean = cache_v.get("vision_patch_attn_layermean")
+            if attn_layermean is not None:
+                # Server-side pscore (received attention, this project's standing residual-energy
+                # x attention pattern -- see attention.py's `incoming_attention`). Pooled from raw
+                # patch rows to merge-group granularity (mean over each group's `spatial_merge_unit`
+                # rows, matching how `correct_forward` addresses merge-groups), then un-permuted
+                # from window-permuted order back to ORIGINAL merge-group order (`spatial_idx`) via
+                # `inv_window_index` -- the same gather `get_merged_output` uses for the same
+                # reason: everything downstream (`pscore_map`, `group_map`) is indexed by the
+                # ORIGINAL merge-group index, never the permuted one.
+                unit = self.vision_tower.spatial_merge_unit
+                permuted_pooled = attn_layermean.reshape(-1, unit).mean(dim=-1)
+                context["server_pscore_map"] = permuted_pooled[vctx["inv_window_index"]].unsqueeze(0)
             merged = self.vision_tower.get_merged_output(x_v, vctx)
             context["llm_input_embeds"] = self._splice_image_embeds(context, merged)
             x_feature = context["llm_input_embeds"]
@@ -208,11 +241,15 @@ class Qwen25VLExecutor(ModelExecutor):
 
     def _prune_patch_idx(self, group_idx: torch.Tensor, context: Dict[str, Any], config: Any) -> torch.Tensor:
         """Vision-side keep rate: within the merge-groups that just arrived (`group_idx`), keep
-        only the top-`token_keep_ratio` fraction by residual-energy importance
-        (`Patch.pscore_hint`, see `preprocess`'s `pscore_map`) and correct only those; the rest
-        stay at whatever the current approx state already has them at (never separately
-        re-corrected -- same "static per-round selection" semantics as OpenCLIP's
-        `_prune_patch_idx`, `openclip_executor.py:147-211`, this is adapted from).
+        only the top-`token_keep_ratio` fraction by this project's standing importance score
+        (residual energy x received attention -- see `attention.py`'s `incoming_attention` and
+        `docs/memo/qwen25vl_baseline_mrope_bug.md`'s note on why Qwen originally shipped with
+        energy alone: no CLS token was never the actual blocker, the vision fork just had no
+        attention-collection point yet) and correct only those; the rest stay at whatever the
+        current approx state already has them at (never separately re-corrected -- same
+        "static per-round selection" semantics as OpenCLIP's `_prune_patch_idx`,
+        `openclip_executor.py:147-211`, this is adapted from, including its
+        `combined = server_score * mobile_score` combination).
 
         Reads `token_keep_ratio` from the RAW `config.appcorr_kwargs`, NOT
         `normalize_appcorr_kwargs`'s output -- that function defaults the ratio to 0.2, so reading
@@ -229,12 +266,21 @@ class Qwen25VLExecutor(ModelExecutor):
         pscore_map = context.get("pscore_map")
         if pscore_map is None:
             return group_idx
-        scores = pscore_map[0, group_idx].float()
-        if bool((scores == 0).all()):
+        mobile_score = pscore_map[0, group_idx].float()
+        if bool((mobile_score == 0).all()):
             # No real residual-energy hint for this group (e.g. mobile_pscore not configured on
             # the transmission policy) -- pruning would be meaningless, so skip it rather than
             # keep an arbitrary subset.
             return group_idx
+
+        server_pscore_map = context.get("server_pscore_map")
+        if server_pscore_map is not None:
+            scores = mobile_score * server_pscore_map[0, group_idx].float()
+        else:
+            # Round 0's approx pass never ran collect_attn (should not happen given
+            # approx_forward always requests it), or this group's attention statistic could not be
+            # computed -- fall back to energy alone rather than block pruning entirely.
+            scores = mobile_score
 
         n = int(group_idx.numel())
         k = max(1, min(int(round(n * token_keep_ratio)), n))
