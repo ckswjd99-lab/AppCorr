@@ -27,12 +27,18 @@ from appcorr.models.qwen35.unified import Qwen35Axis, MODEL_ID_35B
 from PIL import Image
 
 
-def degrade(img: Image.Image, level: int = 2) -> Image.Image:
+def degrade(img: Image.Image, level: int = 2, filt: str = "bicubic") -> Image.Image:
     """The transmission's level-`level` base: 2^level x down, back up. Content degrades, geometry
-    does not -- the token grid must match the full-res image or the band mixing is meaningless."""
+    does not -- the token grid must match the full-res image or the band mixing is meaningless.
+
+    `filt` selects the DOWNSAMPLING filter: 'bicubic' is what every qwen35 number in the table was
+    measured with; 'box' (area average) matches the gemma3/ov2 oracles and approximates the
+    canonical cv2.pyrDown pyramid more closely. The 2026-08-28 convention audit flagged the
+    divergence; the BOX-vs-BICUBIC sensitivity probe decides whether the table needs re-measuring."""
     f = 2 ** level
     w, h = img.size
-    return img.resize((max(1, w // f), max(1, h // f)), Image.BICUBIC).resize((w, h), Image.BICUBIC)
+    down = Image.BOX if filt == "box" else Image.BICUBIC
+    return img.resize((max(1, w // f), max(1, h // f)), down).resize((w, h), Image.BICUBIC)
 
 
 @torch.no_grad()
@@ -72,6 +78,7 @@ def main():
     ap.add_argument("--model", default=MODEL_ID_35B,
                     help="checkpoint id; e.g. Qwen/Qwen3.5-122B-A10B-FP8")
     ap.add_argument("--level", type=int, default=2, help="pyramid level of the degraded base")
+    ap.add_argument("--degrade-filter", choices=["bicubic", "box"], default="bicubic")
     ap.add_argument("--arms", nargs="+", default=["floor", "streaming", "ceiling"])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--keep", type=float, default=1.0,
@@ -116,10 +123,10 @@ def main():
                 if arm == "ceiling":
                     lg, kv, dp = prefill_stock(axis, inputs)
                 elif arm == "floor":
-                    base_inputs = axis.build_inputs(degrade(img, args.level), q).to("cuda:0")
+                    base_inputs = axis.build_inputs(degrade(img, args.level, args.degrade_filter), q).to("cuda:0")
                     lg, kv, dp = prefill_stock(axis, base_inputs)
                 else:
-                    base_px = axis.build_inputs(degrade(img, args.level), q)["pixel_values"].to("cuda:0")
+                    base_px = axis.build_inputs(degrade(img, args.level, args.degrade_filter), q)["pixel_values"].to("cuda:0")
                     lg, kv, st = axis.streaming_forward(inputs, base_px, args.groups,
                                                         keep=args.keep)
                     dp = st["decode_start_pos"]
@@ -135,8 +142,8 @@ def main():
                 continue
             correct += ok
             scored += 1
-            f.write(json.dumps({"i": int(i), "pred": pred, "gold": gold,
-                                "ok": int(ok), "val": float(val)}) + "\n")
+            f.write(json.dumps({"i": int(i), "pred": pred, "gold": gold, "ok": int(ok),
+                                "val": (float(val) if val is not None else None)}) + "\n")
             if scored % 50 == 0:
                 f.flush()
                 print(f"[{arm}] {scored} scored, running {correct / scored * 100:.2f}%", flush=True)
