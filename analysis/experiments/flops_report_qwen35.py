@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--samples", type=int, default=12)
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--datasets", nargs="+", default=["chartqa"])
+    ap.add_argument("--keeps", type=float, nargs="+", default=[1.0],
+                    help="streaming keep ratios to measure; 1.0 reproduces the original arm")
     ap.add_argument("--out-json", default="analysis/results/flops/qwen35_flops.json")
     args = ap.parse_args()
 
@@ -68,7 +70,8 @@ def main():
     result = {"_model": args.model, "_samples": args.samples, "_groups": args.groups}
     for ds_name in args.datasets:
         samples = load_samples(ds_name, args.samples)
-        counters = {k: FlopCounter() for k in ("ceiling", "floor", "streaming")}
+        arms = ["ceiling", "floor"] + [f"streaming_k{k:.2f}" for k in args.keeps]
+        counters = {k: FlopCounter() for k in arms}
         axis_by = {k: Qwen35Axis(model, proc, flop_counter=c) for k, c in counters.items()}
         # Hooks installed per arm inside the loop (visual + language model); lm_head excluded
         # as everywhere.
@@ -77,7 +80,7 @@ def main():
             inputs = axis_by["ceiling"].build_inputs(img, q).to("cuda:0")
             inputs_base = axis_by["ceiling"].build_inputs(base, q).to("cuda:0")
             with torch.no_grad():
-                for arm in ("ceiling", "floor", "streaming"):
+                for arm in arms:
                     c = counters[arm]
                     axis = axis_by[arm]
                     handles = hooks.install(c, [model.model.visual, model.model.language_model])
@@ -87,21 +90,24 @@ def main():
                         elif arm == "floor":
                             axis.approx_only_forward(inputs, inputs_base["pixel_values"])
                         else:
-                            axis.streaming_forward(inputs, inputs_base["pixel_values"], args.groups)
+                            axis.streaming_forward(inputs, inputs_base["pixel_values"],
+                                                   args.groups, keep=float(arm.split("_k")[1]))
                     hooks.remove(handles)
         agg = {k: c.aggregate() for k, c in counters.items()}
         full = agg["ceiling"]["mean_total_gflops"]
-        st = agg["streaming"]
-        result[ds_name] = {
-            "full": round(full, 1),
-            "floor": round(agg["floor"]["mean_total_gflops"], 1),
-            f"crit_g{args.groups}": round(st["mean_critical_gflops"], 1),
-            f"total_g{args.groups}": round(st["mean_total_gflops"], 1),
-        }
-        print(f"{ds_name:<14} full {full:9.1f}  floor {result[ds_name]['floor']:9.1f}  "
-              f"streaming crit {st['mean_critical_gflops']:8.1f} "
-              f"total {st['mean_total_gflops']:9.1f}  crit/full = "
-              f"{st['mean_critical_gflops'] / full * 100:5.1f}%")
+        row = {"full": round(full, 1),
+               "floor": round(agg["floor"]["mean_total_gflops"], 1)}
+        for k in args.keeps:
+            st = agg[f"streaming_k{k:.2f}"]
+            # k=1.00 keeps the original key names so existing consumers keep reading them.
+            suffix = f"_g{args.groups}" if k == 1.0 else f"_g{args.groups}_k{k:.2f}"
+            row[f"crit{suffix}"] = round(st["mean_critical_gflops"], 1)
+            row[f"total{suffix}"] = round(st["mean_total_gflops"], 1)
+            print(f"{ds_name:<14} k={k:.2f} full {full:9.1f}  floor {row['floor']:9.1f}  "
+                  f"streaming crit {st['mean_critical_gflops']:8.1f} "
+                  f"total {st['mean_total_gflops']:9.1f}  crit/full = "
+                  f"{st['mean_critical_gflops'] / full * 100:5.1f}%")
+        result[ds_name] = row
 
     os.makedirs(os.path.dirname(args.out_json), exist_ok=True)
     json.dump(result, open(args.out_json, "w"), indent=1)

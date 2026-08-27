@@ -30,8 +30,8 @@ from experiments.ov2_degradation import hw_from_grid, l2_from_native
 from appcorr.models.ov2.unified import OV2UnifiedAxis
 
 MODEL = "lmms-lab-encoder/LLaVA-OneVision-2-8B-Instruct"
-AXIS_ARMS = ("corrected", "corrected_split", "corrected_patchled", "interleaved", "parity",
-             "streaming")
+AXIS_ARMS = ("corrected", "corrected_split", "corrected_patchled", "interleaved", "progressive",
+             "parity", "streaming")
 
 
 def encode(proc, img, prompt, device):
@@ -96,6 +96,17 @@ def run_axis(axis, model, proc, img, prompt, arm, keep, level, device, dtype,
                  "prefill_tokens": sst["prefill_tokens"],
                  "vision_layer_passes": sst["vision_layer_passes"]}
         return generate_from_kv(model, proc, hidden, kv, ids, max_new_tokens), stats
+
+    if arm == "progressive":
+        # Canonical per-round selection (2026-08-26): the walk scores round r with
+        # energy x running attn layermean itself -- no driver-side scoring pass, no upfront
+        # selection. The driver supplies only the raw energy term.
+        energy = patch_energy(px, px2)
+        hidden, cache, pst = axis.interleaved_forward_progressive(px, px2, pp, ids, energy,
+                                                                  keep, groups)
+        stats = {"n_patch": int(n_patch), "image_tokens": int(n_img), "groups": groups,
+                 "keep": keep, **{k: v for k, v in pst.items() if isinstance(v, (int, float))}}
+        return generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens), stats
 
     # --- approximate pass over the WHOLE axis, on the approximate image ------------------------ #
     # The cache every correction reads from has to be built here, on the approximate input.
