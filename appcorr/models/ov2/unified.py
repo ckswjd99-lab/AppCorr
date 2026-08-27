@@ -211,7 +211,11 @@ class OV2UnifiedAxis(nn.Module):
     #
     # The original 1.25x bound was tight enough to reject streaming's last band, where the stream is
     # 100% full-resolution by construction -- a false positive on the arm that needs the guard least.
-    _ENTRY_STD_RATIO = 1.6
+    # Then 1.6 rejected DocVQA's streaming bands (measured 1.61 on a 10,004-patch document): dense
+    # text is exactly where degradation crushes std the most, so full-vs-approx legitimately spreads
+    # wider than ChartQA's 1.03-1.27 calibration range. The bug this guard exists for measures
+    # 2.0-2.4x after a SINGLE layer, so 1.9 still separates cleanly.
+    _ENTRY_STD_RATIO = 1.9
 
     @classmethod
     def _check_entry(cls, x, cache, tag, what):
