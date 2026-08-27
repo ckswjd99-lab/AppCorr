@@ -220,7 +220,13 @@ LITERALS = {
     # within 0.06 of the literal, which is what validates the new loader against the prior protocol
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
-    ("OpenVLA (7B)", "LIBERO-Spatial (Success Rate)"): {"ceiling": 79.00},
+    # LIBERO-Spatial streaming: July 2026 campaign (chunked causal prefill, sequential grouping,
+    # frontiers 32x4, 500 episodes = 10 tasks x 50 trials, post initial-state-fix driver). The
+    # primary jsonl was written to /tmp and lost to a reboot -- these digits survive in the
+    # campaign session records only. User accepted them for the table (2026-08-27); re-measurement
+    # is the queued VLA-track task that will restore primary evidence. Same-harness baseline 82.8.
+    ("OpenVLA (7B)", "LIBERO-Spatial (Success Rate)"): {"ceiling": 82.80, "floor": 17.20,
+                                                        "stream": 81.60},
     ("OpenVLA (7B)", "LIBERO-Object (Success Rate)"):  {"ceiling": 89.00},
     ("OpenVLA (7B)", "LIBERO-Goal (Success Rate)"):    {"ceiling": 73.00},
     ("OpenVLA (7B)", "LIBERO-Long (Success Rate)"):    {"ceiling": 54.00},
