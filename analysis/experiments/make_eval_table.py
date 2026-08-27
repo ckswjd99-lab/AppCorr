@@ -446,6 +446,11 @@ def build_rows(keeps, groups: int):
                         pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
                         out += f" ({pres:.1f}\\%)"
                     return out
+                # Prefer the canonical progressive arm's accuracy where it has been re-measured;
+                # fall back to the upfront arm's file (the ddagger caveat) until then.
+                v = acc_with_pres(f"progressive_g{groups}_k{k:.2f}", lit_key=f"k{k:.2f}")
+                if v != "--":
+                    return v
                 return acc_with_pres(f"interleaved_g{groups}_k{k:.2f}", lit_key=f"k{k:.2f}")
 
             full_gf = get_flops(fl_key, "full")
@@ -515,8 +520,9 @@ def emit_latex(table, keeps) -> str:
              r"LLM). $^\dagger$Qwen3.5's Ours columns are keep-limited STREAMING arms (band-wise "
              r"top-$k$ selection), not interleaved correction. "
              r"$^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive "
-             r"per-round selection arm (2026-08-26); their accuracy cells are still the earlier "
-             r"upfront arm's, pending re-evaluation. $^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
+             r"per-round selection arm (2026-08-26); accuracy cells are the progressive arm's "
+             r"where re-measured (2026-08-28 sweep) and the earlier upfront arm's otherwise. "
+             r"$^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
              r"(measured equivalent), excluding OOM images (0.09\% at 25\%, 2.3\% at 50\%) with "
              r"bounds restricted to the same kept sets. $^\\P$122B-FP8 accuracy is unmeasurable "
              r"on this hardware (FP8 kernels produce incorrect outputs on sm\_100); its compute "

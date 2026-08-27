@@ -100,6 +100,15 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
                                    return_dict=True, return_tensors="pt")["pixel_values"].to(device, dtype)
     assert px2.shape == px.shape, f"degradation changed the input shape: {px.shape} vs {px2.shape}"
 
+    if arm == "progressive":
+        # Canonical per-round selection (2026-08-26): no driver-side scoring pass, no upfront
+        # selection -- the walk scores round r with energy x running attn layermean itself. The
+        # driver supplies only the raw energy term; keep governs the per-round quota.
+        energy = patch_energy(px, px2, patch)
+        hidden, cache = axis.interleaved_forward_progressive(px, px2, ids, tti, energy, keep, groups)
+        stats = {"groups": groups, "keep": keep}
+        return _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens), stats
+
     # --- approximate pass over the WHOLE axis, on the approximate image ----------------------- #
     # The cache every correction reads from has to be built here, on the approximate input. Rebuilding
     # it on corrected features (as an earlier version did) makes the "approximate" state depend on
@@ -286,8 +295,8 @@ def main():
     ap.add_argument("--model", default="google/gemma-3-4b-it")
     ap.add_argument("--dataset", default="chartqa")
     ap.add_argument("--arm",
-                    choices=["ceiling", "floor", "corrected", "interleaved", "parity",
-                             "corrected_split", "corrected_patchled"],
+                    choices=["ceiling", "floor", "corrected", "interleaved", "progressive",
+                             "parity", "corrected_split", "corrected_patchled"],
                     default="ceiling")
     ap.add_argument("--groups", type=int, default=4,
                     help="interleaved rounds; the arm corrects the SAME tokens as `corrected`, "
