@@ -168,7 +168,7 @@ LITERALS = {
                                                       "k0.25": 77.52, "k0.50": 77.25,
                                                       "stream": 77.25},
     ("Qwen3.5-MoE (35B-A3B)", "ChartQA (Relaxed Acc.)"): {"floor": 60.76, "ceiling": 88.56,
-                                                          "k0.25": 83.68},
+                                                          "k0.25": 83.68, "k0.50": 86.80},
     ("Qwen3.5-MoE (35B-A3B)", "VSR zeroshot (Acc.)"): {"floor": 88.46, "ceiling": 89.77,
                                                        "k0.25": 88.63, "k0.50": 88.95},
     # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
