@@ -42,6 +42,11 @@ def main():
     ap.add_argument("--degrade-max-px", type=int, default=None,
                     help="model-sampled pixel area cap for the pyramid-direction rule "
                          "(e.g. Mistral/Pixtral 1540*1540; Gemma4 2520*256). None = native.")
+    ap.add_argument("--force-answer-channel", action="store_true",
+                    help="append ' to=user<|message|>' to the generation prompt so channel-"
+                         "protocol models answer directly instead of deliberating in to=self "
+                         "(reasoning_strength=low still deliberates; 64 tokens truncate before "
+                         "the channel switch -- the MMVP 30% incident)")
     ap.add_argument("--reasoning-strength", default=None,
                     help="template kwarg for channel-protocol models (Muse Glimmer ATEM: "
                          "low/medium/high/xhigh; default template value is high, which fills "
@@ -50,6 +55,11 @@ def main():
 
     if a.transformers_path:
         sys.path.insert(0, a.transformers_path)
+    if "muse-glimmer" in a.model.lower():
+        # ATEM channel protocol: without these the output is to=self deliberation
+        # and short generations never reach the answer (the 49%/30% incidents).
+        a.force_answer_channel = True
+        a.reasoning_strength = a.reasoning_strength or "low"
     import torch
     import transformers
     from PIL import Image
@@ -98,6 +108,13 @@ def main():
         enc = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
                                        return_dict=True, return_tensors="pt",
                                        **tmpl_kw).to("cuda:0")
+        if a.force_answer_channel:
+            tail = proc.tokenizer(" to=user<|message|>", add_special_tokens=False,
+                                  return_tensors="pt").input_ids.to("cuda:0")
+            enc["input_ids"] = torch.cat([enc["input_ids"], tail], dim=1)
+            if "attention_mask" in enc:
+                enc["attention_mask"] = torch.cat(
+                    [enc["attention_mask"], torch.ones_like(tail)], dim=1)
         if "pixel_values" in enc and enc["pixel_values"].is_floating_point():
             enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
         with torch.no_grad():
