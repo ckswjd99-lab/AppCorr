@@ -203,6 +203,9 @@ LITERALS = {
     # recovered 2K-res images scored 62%, harder than average). k0.50/streaming pending.
     ("Qwen2.5-VL (33.5B)", "CV-Bench (Acc.)"): {"ceiling": 79.87, "floor": 72.52,
                                                 "k0.25": 75.09},
+    # full 2638, BOX floor (post-convention-audit), shared greedy decode.
+    ("Qwen3.5-MoE (35B-A3B)", "CV-Bench (Acc.)"): {"floor": 84.08, "ceiling": 85.06,
+                                                   "stream": 84.87},
     # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
