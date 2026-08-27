@@ -30,6 +30,30 @@ runq () {  # dataset arms... (keep handled per-call via env K)
 }
 
 mkdir -p "$OUT"
+
+# Probe #2 (5 min): BOX vs the cv2-pyramid archetype, same 50 paired indices.
+# GH200's floors ride the canonical pyramid; if box==pyr here, BOX stands as the
+# sanctioned oracle approximation and the box re-measurements below are the
+# uniform standard. If pyr also flips materially vs box, STOP and escalate --
+# the whole oracle family would need the archetype, which is a user decision.
+PROBE=analysis/results/degrade_filter_probe
+python analysis/experiments/qwen35_accuracy.py --dataset realworldqa \
+    --arms floor --samples 50 --degrade-filter pyr \
+    --out "$PROBE/pyr" > "$PROBE/pyr.log" 2>&1
+echo "PS: probe qwen35/rwqa floor filt=pyr rc=$? $(grep -aoE '"acc": [0-9.]+' $PROBE/pyr.log | head -1) $(date)"
+python - <<'PYEOF'
+import json
+def load(p):
+    return {json.loads(l)["i"]: json.loads(l) for l in open(p) if l.strip() and "skip" not in l}
+a = load("analysis/results/degrade_filter_probe/box/realworldqa_floor.jsonl")
+c = load("analysis/results/degrade_filter_probe/pyr/realworldqa_floor.jsonl")
+common = sorted(set(a) & set(c))
+flips = [i for i in common if a[i]["ok"] != c[i]["ok"]]
+pdiff = sum(1 for i in common if a[i]["pred"].strip() != c[i]["pred"].strip())
+print(f"PS: PROBE2_RESULT box-vs-pyr n={len(common)} score_flips={len(flips)} pred_text_diff={pdiff}",
+      flush=True)
+PYEOF
+
 # Short first, then wide-gap; streaming arms consume the degraded base too.
 runq mmvp floor streaming
 runq realworldqa floor streaming
