@@ -52,6 +52,7 @@ SPEC = [
         ("GQA testdev (Exact Match)", ("ov2", "gqa"),      ("inproc", "ov2", "gqa")),
         ("MMMU val (Acc.)",        ("ov2", "mmmu"),        ("inproc", "ov2", "mmmu")),
         ("RefCOCO val (Acc.@0.5)", ("ov2", "refcoco"),     ("inproc", "ov2", "refcoco")),
+        ("VSR zeroshot (Acc.)",    ("ov2", "vsr"),         None),
     ]),
     ("Gemma 3 (4.3B)$^\\ddagger$", [
         ("ChartQA (Relaxed Acc.)", ("gemma3", "chartqa"),     ("inproc", "gemma3", "chartqa")),
@@ -62,6 +63,7 @@ SPEC = [
         ("DocVQA (ANLS)",          ("gemma3", "docvqa"),      ("inproc", "gemma3", "docvqa")),
         ("GQA testdev (Exact Match)", ("gemma3", "gqa"),      ("inproc", "gemma3", "gqa")),
         ("MMMU val (Acc.)",        ("gemma3", "mmmu"),        ("inproc", "gemma3", "mmmu")),
+        ("VSR zeroshot (Acc.)",    ("gemma3", "vsr"),         None),
     ]),
     # Qwen3.5's arm is STREAMING (vision approx/correct + chunked LLM prefill), not interleaved
     # correction: it progressively recomputes 100% of tokens and has no keep-rate knob -- the
@@ -71,6 +73,7 @@ SPEC = [
     ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
+        ("VSR zeroshot (Acc.)",    None, None),
     ]),
     ("Qwen2.5-VL (33.5B)$^\\S$", [
         ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
@@ -108,6 +111,12 @@ SPEC = [
         # agreement a cross-check instead of an assumption.
         ("COCO Ret. val2017 (i2t R@1)", None, ("offload", "openclip_cocoret")),
         ("COCO Ret. val2017 (t2i R@1)", None, ("offload", "openclip_cocoret")),
+        # One-shot (g=1) at the same keep: the diagnosis decomposition's headline. CLIP is the one
+        # model where interleaving costs real accuracy (staleness 5.76pp > selection 3.06pp at
+        # keep=0.50); this row shows the trade the g=4 row hides. Measured on the full 5000-image
+        # split, 2026-08-26 (docs/memo/openclip_staleness_decomposition.md).
+        ("COCO Ret. one-shot g=1 (i2t R@1)", None, None),
+        ("COCO Ret. one-shot g=1 (t2i R@1)", None, None),
     ]),
     ("OpenVLA (7B)", [
         ("LIBERO-Spatial (Success Rate)", None, None),
@@ -147,7 +156,14 @@ LITERALS = {
     # decode across all three arms. Single streaming arm (g=4) sits under the k0.50 columns per the
     # dagger footnote's nominal-placement rule.
     ("Qwen3.5-MoE (35B-A3B)", "RealWorldQA (Acc.)"): {"floor": 74.51, "ceiling": 77.39,
-                                                      "k0.50": 77.25},
+                                                      "k0.25": 77.52, "k0.50": 77.25},
+    ("Qwen3.5-MoE (35B-A3B)", "ChartQA (Relaxed Acc.)"): {"floor": 60.76, "ceiling": 88.56,
+                                                          "k0.25": 83.68},
+    ("Qwen3.5-MoE (35B-A3B)", "VSR zeroshot (Acc.)"): {"floor": 88.46, "ceiling": 89.77,
+                                                       "k0.25": 88.63, "k0.50": 88.95},
+    # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
     # Re-measured 2026-08-26 on the M-RoPE-fixed code, full splits, both bounds through the same
     # driver. RefCOCO N=8811, GQA N=12578. These REPLACE the pre-fix values (which were
     # 85.75/74.76, 76.20/65.02, 60.84/55.16) -- see the block comment above.
@@ -235,6 +251,8 @@ VFM_OURS = {
     ("OpenCLIP (2.5B)", "ImageNet-1k (Top-5)"): ("openclip_imagenet", "top5_acc", 1.0),
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): ("cocoret", "i2t_R@1", 1.0),
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (t2i R@1)"): ("cocoret", "t2i_R@1", 1.0),
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): ("cocoret_g1", "i2t_R@1", 1.0),
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): ("cocoret_g1", "t2i_R@1", 1.0),
 }
 
 VFM_DIR = os.path.join(RESULTS, "vfm_accuracy")
