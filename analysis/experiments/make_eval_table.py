@@ -42,18 +42,6 @@ FLOPS_DIR = os.path.join(RESULTS, "flops")
 # (model label, [(dataset label, accuracy key, flops key)]). `accuracy key` is (dir_prefix, dataset)
 # or None when no accuracy arm exists; `flops key` selects the FLOPs source.
 SPEC = [
-    ("LLaVA-OV2 (8.5B)$^\\ddagger$", [
-        ("ChartQA (Relaxed Acc.)", ("ov2", "chartqa"),     ("inproc", "ov2", "chartqa")),
-        ("InfoVQA (ANLS)",         ("ov2", "infovqa"),     ("inproc", "ov2", "infovqa")),
-        ("TextVQA (VQA Acc.)",     ("ov2", "textvqa"),     ("inproc", "ov2", "textvqa")),
-        ("DocVQA (ANLS)",          ("ov2", "docvqa"),      ("inproc", "ov2", "docvqa")),
-        ("RealWorldQA (Acc.)",     ("ov2", "realworldqa"), ("inproc", "ov2", "realworldqa")),
-        ("POPE (Acc.)",            ("ov2", "pope"),        ("inproc", "ov2", "pope")),
-        ("GQA testdev (Exact Match)", ("ov2", "gqa"),      ("inproc", "ov2", "gqa")),
-        ("MMMU val (Acc.)",        ("ov2", "mmmu"),        ("inproc", "ov2", "mmmu")),
-        ("RefCOCO val (Acc.@0.5)", ("ov2", "refcoco"),     ("inproc", "ov2", "refcoco")),
-        ("VSR zeroshot (Acc.)",    ("ov2", "vsr"),         None),
-    ]),
     ("Gemma 3 (4.3B)$^\\ddagger$", [
         ("ChartQA (Relaxed Acc.)", ("gemma3", "chartqa"),     ("inproc", "gemma3", "chartqa")),
         ("InfoVQA (ANLS)",         ("gemma3", "infovqa"),     ("inproc", "gemma3", "infovqa")),
@@ -70,6 +58,24 @@ SPEC = [
     # operating point is the round count (g=4 measured). Its FLOPs sit under the k0.50 keys purely
     # so the existing column machinery renders them; the dagger footnote in the caption says so.
     # Accuracy cells stay empty until the dataset driver runs.
+    ("LLaVA-OV2 (8.5B)$^\\ddagger$", [
+        ("ChartQA (Relaxed Acc.)", ("ov2", "chartqa"),     ("inproc", "ov2", "chartqa")),
+        ("InfoVQA (ANLS)",         ("ov2", "infovqa"),     ("inproc", "ov2", "infovqa")),
+        ("TextVQA (VQA Acc.)",     ("ov2", "textvqa"),     ("inproc", "ov2", "textvqa")),
+        ("DocVQA (ANLS)",          ("ov2", "docvqa"),      ("inproc", "ov2", "docvqa")),
+        ("RealWorldQA (Acc.)",     ("ov2", "realworldqa"), ("inproc", "ov2", "realworldqa")),
+        ("POPE (Acc.)",            ("ov2", "pope"),        ("inproc", "ov2", "pope")),
+        ("GQA testdev (Exact Match)", ("ov2", "gqa"),      ("inproc", "ov2", "gqa")),
+        ("MMMU val (Acc.)",        ("ov2", "mmmu"),        ("inproc", "ov2", "mmmu")),
+        ("RefCOCO val (Acc.@0.5)", ("ov2", "refcoco"),     ("inproc", "ov2", "refcoco")),
+        ("VSR zeroshot (Acc.)",    ("ov2", "vsr"),         None),
+    ]),
+    ("Qwen2.5-VL (33.5B)$^\\S$", [
+        ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
+        ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
+        ("GQA testdev (Exact Match)", None, ("inproc", "qwen25vl_32b", "gqa")),
+        ("RealWorldQA (Acc.)",        None, ("inproc", "qwen25vl_32b", "realworldqa")),
+    ]),
     ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
@@ -84,19 +90,11 @@ SPEC = [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_122b", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_122b", "realworldqa")),
     ]),
-    ("Qwen2.5-VL (33.5B)$^\\S$", [
-        ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
-        ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
-        ("GQA testdev (Exact Match)", None, ("inproc", "qwen25vl_32b", "gqa")),
-        ("RealWorldQA (Acc.)",        None, ("inproc", "qwen25vl_32b", "realworldqa")),
-    ]),
-    ("SAM 3 (0.85B)", [
-        ("COCO Tracker (Mask AP)",  None, ("inproc", "sam3", "coco")),
-        ("COCO Detector (Mask AP)", None, ("inproc", "sam3", "coco")),
-        ("LVIS Detector (Mask AP)", None, ("inproc", "sam3", "coco")),
-        ("SA-Co crowded (cgF1)",    None, ("inproc", "sam3", "coco")),
-        ("SA-Co sa1b (cgF1)",       None, ("inproc", "sam3", "coco")),
-        ("SA-Co attributes (cgF1)", None, ("inproc", "sam3", "coco")),
+    ("OpenVLA (7B)", [
+        ("LIBERO-Spatial (Success Rate)", None, None),
+        ("LIBERO-Object (Success Rate)",  None, None),
+        ("LIBERO-Goal (Success Rate)",    None, None),
+        ("LIBERO-Long (Success Rate)",    None, None),
     ]),
     ("DINOv3 (7B)", [
         (r"ImageNet-1k (Top-1 $\uparrow$)", None, ("offload", "dinov3_imagenet")),
@@ -105,12 +103,13 @@ SPEC = [
         (r"NYUv2 (AbsRel $\downarrow$)",    None, ("offload", "dinov3_nyu")),
         (r"Co3Dv2 (Rot. deg $\downarrow$)", None, None),
     ]),
-    ("VGGT-Omega (7B)", [
-        (r"Co3Dv2 (Depth AbsRel $\downarrow$)", None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 (Rot. deg $\downarrow$)",     None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)", None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 (3D Point Err. $\downarrow$)", None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 (3D Inlier $<10\%$)",         None, ("offload", "vggt_co3d")),
+    ("SAM 3 (0.85B)", [
+        ("COCO Tracker (Mask AP)",  None, ("inproc", "sam3", "coco")),
+        ("COCO Detector (Mask AP)", None, ("inproc", "sam3", "coco")),
+        ("LVIS Detector (Mask AP)", None, ("inproc", "sam3", "coco")),
+        ("SA-Co crowded (cgF1)",    None, ("inproc", "sam3", "coco")),
+        ("SA-Co sa1b (cgF1)",       None, ("inproc", "sam3", "coco")),
+        ("SA-Co attributes (cgF1)", None, ("inproc", "sam3", "coco")),
     ]),
     ("OpenCLIP (2.5B)", [
         ("ImageNet-1k (Top-1)",        None, ("offload", "openclip_imagenet")),
@@ -127,11 +126,12 @@ SPEC = [
         ("COCO Ret. one-shot g=1 (i2t R@1)", None, None),
         ("COCO Ret. one-shot g=1 (t2i R@1)", None, None),
     ]),
-    ("OpenVLA (7B)", [
-        ("LIBERO-Spatial (Success Rate)", None, None),
-        ("LIBERO-Object (Success Rate)",  None, None),
-        ("LIBERO-Goal (Success Rate)",    None, None),
-        ("LIBERO-Long (Success Rate)",    None, None),
+    ("VGGT-Omega (7B)", [
+        (r"Co3Dv2 (Depth AbsRel $\downarrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (Rot. deg $\downarrow$)",     None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (3D Point Err. $\downarrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (3D Inlier $<10\%$)",         None, ("offload", "vggt_co3d")),
     ]),
 ]
 

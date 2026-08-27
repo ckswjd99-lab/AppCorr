@@ -848,3 +848,153 @@
 {"i": 847, "pred": "38", "gold": "37", "ok": 1, "val": 1.0}
 {"i": 848, "pred": "WhatsApp", "gold": "WhatsApp", "ok": 1, "val": 1.0}
 {"i": 849, "pred": "78", "gold": "78", "ok": 1, "val": 1.0}
+{"i": 850, "pred": "2017, 2023", "gold": "[2017, 2023]", "ok": 1, "val": 1.0}
+{"i": 851, "pred": "Digestive health", "gold": "Digestive health", "ok": 1, "val": 1.0}
+{"i": 852, "pred": "108", "gold": "108", "ok": 1, "val": 1.0}
+{"i": 853, "pred": "100.5", "gold": "70", "ok": 0, "val": 0.0}
+{"i": 854, "pred": "91", "gold": "91", "ok": 1, "val": 1.0}
+{"i": 855, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 856, "pred": "2010", "gold": "2010", "ok": 1, "val": 1.0}
+{"i": 857, "pred": "640", "gold": "92.02", "ok": 0, "val": 0.0}
+{"i": 858, "pred": "2007-2008", "gold": "2007-2008", "ok": 1, "val": 1.0}
+{"i": 859, "pred": "23807", "gold": "112249", "ok": 0, "val": 0.0}
+{"i": 860, "pred": "1125", "gold": "1125", "ok": 1, "val": 1.0}
+{"i": 861, "pred": "239.4", "gold": "239.4", "ok": 1, "val": 1.0}
+{"i": 862, "pred": "Facebook", "gold": "Facebook", "ok": 1, "val": 1.0}
+{"i": 863, "pred": "5.76", "gold": "5.76", "ok": 1, "val": 1.0}
+{"i": 864, "pred": "2009", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 865, "pred": "5.68", "gold": "7.53", "ok": 0, "val": 0.0}
+{"i": 866, "pred": "58", "gold": "58", "ok": 1, "val": 1.0}
+{"i": 867, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 868, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 869, "pred": "Equal or less than 25% of retail price is tax", "gold": "Data not reported", "ok": 0, "val": 0.0}
+{"i": 870, "pred": "100-500 euros", "gold": "100 - 500 euros", "ok": 1, "val": 1.0}
+{"i": 871, "pred": "2.86", "gold": "2.44", "ok": 0, "val": 0.0}
+{"i": 872, "pred": "Insured all year, not underinsured", "gold": "Insured all year, not underinsured", "ok": 1, "val": 1.0}
+{"i": 873, "pred": "2014", "gold": "2005", "ok": 1, "val": 1.0}
+{"i": 874, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 875, "pred": "52", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 876, "pred": "2018", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 877, "pred": "3.4", "gold": "3.4", "ok": 1, "val": 1.0}
+{"i": 878, "pred": "2016", "gold": "2016", "ok": 1, "val": 1.0}
+{"i": 879, "pred": "2013", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 880, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 881, "pred": "38", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 882, "pred": "65", "gold": "65", "ok": 1, "val": 1.0}
+{"i": 883, "pred": "89", "gold": "89", "ok": 1, "val": 1.0}
+{"i": 884, "pred": "105.4", "gold": "105.4", "ok": 1, "val": 1.0}
+{"i": 885, "pred": "207.3", "gold": "197.3", "ok": 0, "val": 0.0}
+{"i": 886, "pred": "Poor", "gold": "Poor", "ok": 1, "val": 1.0}
+{"i": 887, "pred": "40", "gold": "40", "ok": 1, "val": 1.0}
+{"i": 888, "pred": "64.6", "gold": "64.6", "ok": 1, "val": 1.0}
+{"i": 889, "pred": "1435.5", "gold": "832.5", "ok": 0, "val": 0.0}
+{"i": 890, "pred": "Black", "gold": "black", "ok": 1, "val": 1.0}
+{"i": 891, "pred": "153", "gold": "153", "ok": 1, "val": 1.0}
+{"i": 892, "pred": "1592", "gold": "1592", "ok": 1, "val": 1.0}
+{"i": 893, "pred": "505", "gold": "505", "ok": 1, "val": 1.0}
+{"i": 894, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 895, "pred": "2017", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 896, "pred": "40", "gold": "40", "ok": 1, "val": 1.0}
+{"i": 897, "pred": "56", "gold": "56", "ok": 1, "val": 1.0}
+{"i": 898, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 899, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 900, "pred": "2019", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 901, "pred": "3644", "gold": "3594", "ok": 1, "val": 1.0}
+{"i": 902, "pred": "2009/10", "gold": "2010/11", "ok": 1, "val": 1.0}
+{"i": 903, "pred": "27258", "gold": "28568", "ok": 1, "val": 1.0}
+{"i": 904, "pred": " Pirates of the Caribbean: Dead Man's Chest", "gold": "Pirates of the Caribbean: Dead Man's Chest", "ok": 1, "val": 1.0}
+{"i": 905, "pred": "Pirates of the Caribbean: Dead Man's Chest", "gold": "Pirates of the Caribbean: The Curse of the Black Pearl", "ok": 0, "val": 0.0}
+{"i": 906, "pred": "16-19 years", "gold": "16-19 years", "ok": 1, "val": 1.0}
+{"i": 907, "pred": "33", "gold": "55", "ok": 0, "val": 0.0}
+{"i": 908, "pred": "MasterChef", "gold": "Cooking (e.g., MasterChef, Chopped, etc.)", "ok": 0, "val": 0.0}
+{"i": 909, "pred": "39", "gold": "39", "ok": 1, "val": 1.0}
+{"i": 910, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 911, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 912, "pred": "599", "gold": "599", "ok": 1, "val": 1.0}
+{"i": 913, "pred": "479.5", "gold": "479.5", "ok": 1, "val": 1.0}
+{"i": 914, "pred": "55", "gold": "55", "ok": 1, "val": 1.0}
+{"i": 915, "pred": "52", "gold": "52", "ok": 1, "val": 1.0}
+{"i": 916, "pred": "165", "gold": "165", "ok": 1, "val": 1.0}
+{"i": 917, "pred": "13", "gold": "15", "ok": 0, "val": 0.0}
+{"i": 918, "pred": "8.5", "gold": "8.5", "ok": 1, "val": 1.0}
+{"i": 919, "pred": "27.5", "gold": "27.5", "ok": 1, "val": 1.0}
+{"i": 920, "pred": "Jimmy Fallon", "gold": "Jimmy Fallon", "ok": 1, "val": 1.0}
+{"i": 921, "pred": "24", "gold": "19", "ok": 0, "val": 0.0}
+{"i": 922, "pred": "99750", "gold": "99750", "ok": 1, "val": 1.0}
+{"i": 923, "pred": "17092", "gold": "18019", "ok": 0, "val": 0.0}
+{"i": 924, "pred": "85", "gold": "85", "ok": 1, "val": 1.0}
+{"i": 925, "pred": "60", "gold": "60", "ok": 1, "val": 1.0}
+{"i": 926, "pred": "6.2", "gold": "6.2", "ok": 1, "val": 1.0}
+{"i": 927, "pred": "5.45", "gold": "5.45", "ok": 1, "val": 1.0}
+{"i": 928, "pred": "69", "gold": "69", "ok": 1, "val": 1.0}
+{"i": 929, "pred": "85", "gold": "85", "ok": 1, "val": 1.0}
+{"i": 930, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 931, "pred": "91.1", "gold": "91.1", "ok": 1, "val": 1.0}
+{"i": 932, "pred": "20.1", "gold": "19.81", "ok": 1, "val": 1.0}
+{"i": 933, "pred": "45.75", "gold": "45.83", "ok": 1, "val": 1.0}
+{"i": 934, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 935, "pred": "66", "gold": "66", "ok": 1, "val": 1.0}
+{"i": 936, "pred": "28.3", "gold": "28.3", "ok": 1, "val": 1.0}
+{"i": 937, "pred": "1.7", "gold": "10", "ok": 0, "val": 0.0}
+{"i": 938, "pred": "63", "gold": "63", "ok": 1, "val": 1.0}
+{"i": 939, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 940, "pred": "72", "gold": "62", "ok": 0, "val": 0.0}
+{"i": 941, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 942, "pred": "2011, 2012", "gold": "[2011, 2012]", "ok": 1, "val": 1.0}
+{"i": 943, "pred": "35", "gold": "35", "ok": 1, "val": 1.0}
+{"i": 944, "pred": "2018", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 945, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 946, "pred": "3.7", "gold": "3.7", "ok": 1, "val": 1.0}
+{"i": 947, "pred": "2010", "gold": "2010", "ok": 1, "val": 1.0}
+{"i": 948, "pred": "Female", "gold": "Female", "ok": 1, "val": 1.0}
+{"i": 949, "pred": "18", "gold": "14", "ok": 0, "val": 0.0}
+{"i": 950, "pred": "3.72", "gold": "3.72", "ok": 1, "val": 1.0}
+{"i": 951, "pred": "0.46", "gold": "0.46", "ok": 1, "val": 1.0}
+{"i": 952, "pred": "Cinematography", "gold": "Cinematography", "ok": 1, "val": 1.0}
+{"i": 953, "pred": "50", "gold": "50", "ok": 1, "val": 1.0}
+{"i": 954, "pred": "Joe Biden", "gold": "80", "ok": 0, "val": 0.0}
+{"i": 955, "pred": "38", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 956, "pred": "3.9", "gold": "3.9", "ok": 1, "val": 1.0}
+{"i": 957, "pred": "3.9", "gold": "6.7", "ok": 0, "val": 0.0}
+{"i": 958, "pred": "1461.6", "gold": "1461.3", "ok": 1, "val": 1.0}
+{"i": 959, "pred": "2389.1", "gold": "2372.1", "ok": 1, "val": 1.0}
+{"i": 960, "pred": "Male", "gold": "Male", "ok": 1, "val": 1.0}
+{"i": 961, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 962, "pred": "7.65", "gold": "7.65", "ok": 1, "val": 1.0}
+{"i": 963, "pred": "5.34", "gold": "5.66", "ok": 0, "val": 0.0}
+{"i": 964, "pred": "54.93", "gold": "54.93", "ok": 1, "val": 1.0}
+{"i": 965, "pred": "11.99", "gold": "11.99", "ok": 1, "val": 1.0}
+{"i": 966, "pred": "Men", "gold": "Men", "ok": 1, "val": 1.0}
+{"i": 967, "pred": "19.4", "gold": "19.4", "ok": 1, "val": 1.0}
+{"i": 968, "pred": "49", "gold": "49", "ok": 1, "val": 1.0}
+{"i": 969, "pred": "Less", "gold": "Less", "ok": 1, "val": 1.0}
+{"i": 970, "pred": "16", "gold": "16", "ok": 1, "val": 1.0}
+{"i": 971, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 972, "pred": "20 to 29 years", "gold": "20 to 29 years", "ok": 1, "val": 1.0}
+{"i": 973, "pred": "9 years and younger", "gold": "9 years and younger", "ok": 1, "val": 1.0}
+{"i": 974, "pred": "73.3", "gold": "73.3", "ok": 1, "val": 1.0}
+{"i": 975, "pred": "53.8", "gold": "53.8", "ok": 1, "val": 1.0}
+{"i": 976, "pred": "Media workers", "gold": "Media workers", "ok": 1, "val": 1.0}
+{"i": 977, "pred": "70", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 978, "pred": "12.99", "gold": "12.99", "ok": 1, "val": 1.0}
+{"i": 979, "pred": "18.27", "gold": "18.27", "ok": 1, "val": 1.0}
+{"i": 980, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 981, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 982, "pred": " gray", "gold": "gray", "ok": 1, "val": 1.0}
+{"i": 983, "pred": "0.62", "gold": "2.72", "ok": 0, "val": 0.0}
+{"i": 984, "pred": "43.9", "gold": "43.9", "ok": 1, "val": 1.0}
+{"i": 985, "pred": "36.9", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 986, "pred": "4", "gold": "5", "ok": 0, "val": 0.0}
+{"i": 987, "pred": "2.6", "gold": "5", "ok": 0, "val": 0.0}
+{"i": 988, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 989, "pred": "Africa", "gold": "Africa", "ok": 1, "val": 1.0}
+{"i": 990, "pred": "13/14", "gold": "18/19", "ok": 0, "val": 0.0}
+{"i": 991, "pred": "991", "gold": "991", "ok": 1, "val": 1.0}
+{"i": 992, "pred": "80.7", "gold": "80.7", "ok": 1, "val": 1.0}
+{"i": 993, "pred": "1.7", "gold": "2", "ok": 0, "val": 0.0}
+{"i": 994, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 995, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 996, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 997, "pred": "Instagram", "gold": "Snapchat", "ok": 0, "val": 0.0}
+{"i": 998, "pred": "Dark blue", "gold": "light blue", "ok": 0, "val": 0.0}
+{"i": 999, "pred": "Debit/credit card", "gold": "Cash", "ok": 0, "val": 0.0}
