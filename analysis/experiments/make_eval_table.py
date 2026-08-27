@@ -202,7 +202,8 @@ LITERALS = {
     # floor is the completed full-2638 rerun after the chunked-attention fix (the 111
     # recovered 2K-res images scored 62%, harder than average). k0.50/streaming pending.
     ("Qwen2.5-VL (33.5B)", "CV-Bench (Acc.)"): {"ceiling": 79.87, "floor": 72.52,
-                                                "k0.25": 75.09},
+                                                "k0.25": 75.09, "k0.50": 77.52,
+                                                "stream": 78.96},
     # full 2638, BOX floor (post-convention-audit), shared greedy decode.
     ("Qwen3.5-MoE (35B-A3B)", "CV-Bench (Acc.)"): {"floor": 84.08, "ceiling": 85.06,
                                                    "stream": 84.87},
