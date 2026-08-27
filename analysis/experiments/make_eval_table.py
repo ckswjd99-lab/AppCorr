@@ -183,10 +183,13 @@ LITERALS = {
     # (k0.50) of the largest images, with bounds restricted to each keep's kept set for the
     # preservation numbers reported alongside. The section-mark footnote in the caption carries
     # this to the reader.
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.68, "ceiling": 88.19,
-                                                          "k0.25": 86.10, "k0.50": 87.27},
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.36, "ceiling": 80.24,
-                                                          "k0.25": 78.22, "k0.50": 79.38},
+    # k0.50 is the text-split-schedule full-split rerun (2026-08-27, n=8604): the schedule A/B at
+    # full scale came out -0.02pp (flips 21:23), so the 33pp compute saving costs nothing
+    # measurable. k0.25 kept from the every-round run (its own subset A/B: -0.05pp neutral).
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.79, "ceiling": 88.11,
+                                                          "k0.25": 86.10, "k0.50": 87.25},
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.45, "ceiling": 80.23,
+                                                          "k0.25": 78.22, "k0.50": 79.35},
     ("Qwen2.5-VL (33.5B)", "GQA testdev (Exact Match)"): {"floor": 55.24, "ceiling": 60.80},
     # 72B dropped 2026-08-26: not worth the run. It also does not fit -- the GH200 box has ~66 GB
     # free against a ~130 GB pull, so the row could only ever have carried a prose ceiling.
