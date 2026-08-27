@@ -223,5 +223,18 @@
    "k1.00": 3079.7,
    "total_k1.00": 16230.1
   }
+ },
+ "qwen35_122b": {
+  "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, streaming k1.0.",
+  "chartqa": {
+   "full": 6044.4,
+   "k1.00": 1747.5,
+   "total_k1.00": 7520.9
+  },
+  "realworldqa": {
+   "full": 17964.4,
+   "k1.00": 4810.6,
+   "total_k1.00": 22513.2
+  }
  }
 }
