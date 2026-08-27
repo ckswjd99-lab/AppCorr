@@ -124,7 +124,10 @@ def main():
                                                         keep=args.keep)
                     dp = st["decode_start_pos"]
                 pred = greedy(axis, lg, kv, dp)
-                ok, val = spec.score(pred, gold)
+                try:
+                    ok, val = spec.score(pred, gold)
+                except NotImplementedError:  # wildvision: judge-only prediction dump
+                    ok, val = 0, None
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 f.write(json.dumps({"i": int(i), "skip": "oom"}) + "\n")

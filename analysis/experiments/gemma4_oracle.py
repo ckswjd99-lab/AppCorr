@@ -121,8 +121,11 @@ def main():
         img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
         text = run_one(axis, fork, model, proc, img, prompt, a.arm, a.keep,
                        a.max_new_tokens)
-        ok, sc = spec.score(text, gold)
-        correct += ok
+        try:
+            ok, sc = spec.score(text, gold)
+            correct += ok
+        except NotImplementedError:   # wildvision: judge-only, dump predictions
+            ok, sc = None, None
         total += 1
         per.append({"idx": idx, "pred": text, "gold": str(gold)[:120], "score": sc})
         if total % 25 == 0 or total == len(idxs):
