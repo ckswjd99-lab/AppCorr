@@ -1309,3 +1309,12 @@ k0.50 n=269 3-way (+0.00pp, flips 8:8), and both against energy-only baselines. 
 accuracy does not. Matches OpenCLIP's COCO finding (CLS-vs-avg attention ~0.2-0.4pp, directionless).
 The standing energy x attention score is kept for cross-model consistency (it costs ~0.1% of total,
 PSCORE-excluded from FLOPs), but on this model the attention factor is demonstrably not load-bearing.
+
+**k0.50 full-split under text-split landed; schedule-neutrality settled at full scale.**
+Single-variable A/B (both arms ATTN-scored, identical 207-skip sets, common n=8604):
+every-round 87.27% -> text-split 87.25% (-0.02pp, flips 21:23, net -2). The subset's -0.82pp
+headline was confound (energy-only comparator) plus noise; the n=269 -0.37pp was noise. Final
+table numbers (text-split schedule, kept n=8604): floor 79.79/70.45, OURS 87.25/79.35, ceiling
+88.11/80.23 -> preservation 99.02%/98.90%, recovery 89.66%/91.01% (Acc@0.5/mIoU). k0.25 full-split
+86.10 stands unchanged (schedule-neutral per its own subset A/B). inprocess_flops.json updated to
+text-split totals (refcoco 144.8/166.3%, gqa 147.7/169.6%, rwqa 130.3/154.5%; critical unchanged).
