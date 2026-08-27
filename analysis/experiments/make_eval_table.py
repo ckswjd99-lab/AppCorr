@@ -199,7 +199,10 @@ LITERALS = {
                                                "stream": 81.67},
     # GH200 campaign (2026-08-28): cvbench ceiling full 2638, zero skips, FINAL.
     # Floor arrives after their chunked-attention fix rerun; do not backfill early values.
-    ("Qwen2.5-VL (33.5B)", "CV-Bench (Acc.)"): {"ceiling": 79.87},
+    # floor is the completed full-2638 rerun after the chunked-attention fix (the 111
+    # recovered 2K-res images scored 62%, harder than average). k0.50/streaming pending.
+    ("Qwen2.5-VL (33.5B)", "CV-Bench (Acc.)"): {"ceiling": 79.87, "floor": 72.52,
+                                                "k0.25": 75.09},
     # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
