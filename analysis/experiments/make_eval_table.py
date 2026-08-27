@@ -80,6 +80,24 @@ SPEC = [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
         ("VSR zeroshot (Acc.)",    None, None),
+        ("MMVP (Acc.)",            None, None),
+        ("CV-Bench (Acc.)",        None, None),
+    ]),
+    # Gemma 4 31B: one-shot corrected arm (level-3 driver, 2026-08-28); accuracy cells fill
+    # from analysis/results/gemma4_*/ files (ceiling/floor/corrected_k*.json). No FLOPs yet.
+    ("Gemma 4 (31B)", [
+        ("MMVP (Acc.)",            ("gemma4", "mmvp"),    None),
+        ("CV-Bench (Acc.)",        ("gemma4", "cvbench"), None),
+    ]),
+    # New 30B-class models (2026-08-28 sweep): bounds via the generic oracle; ours arms pending
+    # their axis ports. WildVision is judge-only (prediction dumps) and has no accuracy row.
+    ("Mistral Small 3.1 (24B)", [
+        ("MMVP (Acc.)",            ("mistral24b", "mmvp"),    None),
+        ("CV-Bench (Acc.)",        ("mistral24b", "cvbench"), None),
+    ]),
+    ("Muse Glimmer (29.6B)", [
+        ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    None),
+        ("CV-Bench (Acc.)",        ("museglimmer30b", "cvbench"), None),
     ]),
     # 122B-FP8: the FP8 GEMM kernel stack (deep-gemm, sm_90) produces garbage on this B200
     # (sm_100), so ACCURACY is unmeasurable here until a Blackwell kernel or a dequant path
@@ -172,6 +190,9 @@ LITERALS = {
                                                           "stream": 88.32},
     ("Qwen3.5-MoE (35B-A3B)", "VSR zeroshot (Acc.)"): {"floor": 88.46, "ceiling": 89.77,
                                                        "k0.25": 88.63, "k0.50": 88.95},
+    # MMVP full 300 (2026-08-28 real-photo sweep): floor / streaming g=4 / ceiling.
+    ("Qwen3.5-MoE (35B-A3B)", "MMVP (Acc.)"): {"floor": 79.00, "ceiling": 82.00,
+                                               "stream": 81.67},
     # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
@@ -446,12 +467,16 @@ def build_rows(keeps, groups: int):
                         pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
                         out += f" ({pres:.1f}\\%)"
                     return out
-                # Prefer the canonical progressive arm's accuracy where it has been re-measured;
-                # fall back to the upfront arm's file (the ddagger caveat) until then.
-                v = acc_with_pres(f"progressive_g{groups}_k{k:.2f}", lit_key=f"k{k:.2f}")
-                if v != "--":
-                    return v
-                return acc_with_pres(f"interleaved_g{groups}_k{k:.2f}", lit_key=f"k{k:.2f}")
+                # Tag preference: canonical progressive arm where re-measured; the upfront
+                # interleaved arm's file otherwise (ddagger caveat); the one-shot corrected
+                # arm last (gemma4-class models whose interleaved walk is not ported yet).
+                for tag in (f"progressive_g{groups}_k{k:.2f}",
+                            f"interleaved_g{groups}_k{k:.2f}",
+                            f"corrected_k{k:.2f}"):
+                    v = acc_with_pres(tag, lit_key=f"k{k:.2f}")
+                    if v != "--":
+                        return v
+                return "--"
 
             full_gf = get_flops(fl_key, "full")
             cells = [acc_with_pres("floor", "floor")]
