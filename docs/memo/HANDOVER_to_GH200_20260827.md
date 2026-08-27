@@ -81,6 +81,13 @@ context transfer; the user talks to GH200 directly from here on.
   outputs are garbage on sm_100 regardless.
 - The orphan hazard: two multi-day orphan campaigns were found writing into live
   result files. On any fresh session: `ps -eo pid,ppid | awk '$2==1'` scan first.
+- no_grad is the WORKER's job, so any in-process driver that calls
+  approx_forward/correct_forward directly must supply it itself. The failure mode
+  is a silent ~1.4x activation-memory tax that presents as a plausible-looking
+  "large-image OOM ceiling" (GH200 found this 2026-08-28: every OOM-skip in the
+  Qwen2.5 record — 8, 207, 143 — was this, not image size; 95GB -> 68GB peak once
+  wrapped). B200 drivers audited clean (ov2/qwen35/sam3/gemma3 oracles all
+  decorated). Check the guard FIRST when an eval "hits a memory ceiling".
 
 ## Final state at shutdown (23:15 sweep, 2026-08-27)
 Everything is committed and pushed (HEAD 3c64def at sweep time). Landed tonight:
