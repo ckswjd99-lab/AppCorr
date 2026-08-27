@@ -208,7 +208,8 @@
       "k0.50": 7878.5,
       "total_k0.50": 52857.1
     },
-    "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)"
+    "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)",
+    "_note": "text-split schedule totals (GH200 2026-08-27: pre-image text every round, post-image text final round only; the every-round schedule re-corrected the whole text block g times, 0.56x of full, keep-independent). criticals unchanged by construction. k0.25 accuracy verified schedule-neutral on the 2000-subset (-0.05pp); k0.50 full-split accuracy re-verification lands ~21:20 and may adjust that one accuracy cell."
   },
   "qwen35_moe": {
     "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
@@ -216,153 +217,33 @@
     "chartqa": {
       "full": 3898.0,
       "k0.50": 1091.2,
-      "total_k0.50": 5374.4
+      "total_k0.50": 5374.4,
+      "k1.00": 1101.1,
+      "total_k1.00": 5384.2,
+      "k0.25": 824.9,
+      "total_k0.25": 4280.9
     },
     "realworldqa": {
       "full": 11681.3,
       "k0.50": 3079.7,
-      "total_k0.50": 16230.1
+      "total_k0.50": 16230.1,
+      "k1.00": 3089.6,
+      "total_k1.00": 16240.0,
+      "k0.25": 2239.5,
+      "total_k0.25": 12842.6
+    }
+  },
+  "qwen35_122b": {
+    "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, streaming k1.0.",
+    "chartqa": {
+      "full": 6044.4,
+      "k1.00": 1747.5,
+      "total_k1.00": 7520.9
+    },
+    "realworldqa": {
+      "full": 17964.4,
+      "k1.00": 4810.6,
+      "total_k1.00": 22513.2
     }
   }
-<<<<<<< HEAD
-=======
- },
- "gemma3": {
-  "_samples": 16,
-  "chartqa": {
-   "full": 7369.9,
-   "k0.25": 690.7,
-   "k0.50": 1135.6,
-   "total_k0.25": 8806.1,
-   "total_k0.50": 9991.0
-  },
-  "textvqa": {
-   "full": 7327.2,
-   "k0.25": 648.3,
-   "k0.50": 1093.2,
-   "total_k0.25": 8719.1,
-   "total_k0.50": 9902.0
-  },
-  "infovqa": {
-   "full": 7358.8,
-   "k0.25": 679.7,
-   "k0.50": 1124.6,
-   "total_k0.25": 8783.4,
-   "total_k0.50": 9967.7
-  },
-  "docvqa": {
-   "full": 7346.9,
-   "k0.25": 667.9,
-   "k0.50": 1112.8,
-   "total_k0.25": 8759.3,
-   "total_k0.50": 9943.2
-  },
-  "realworldqa": {
-   "full": 7418.9,
-   "k0.25": 739.2,
-   "k0.50": 1184.1,
-   "total_k0.25": 8909.3,
-   "total_k0.50": 10100.0
-  },
-  "pope": {
-   "full": 7338.7,
-   "k0.25": 659.7,
-   "k0.50": 1104.6,
-   "total_k0.25": 8743.7,
-   "total_k0.50": 9928.4
-  },
-  "gqa": {
-   "full": 7326.7,
-   "k0.25": 647.9,
-   "k0.50": 1092.8,
-   "total_k0.25": 8718.5,
-   "total_k0.50": 9901.6
-  },
-  "mmmu": {
-   "full": 7773.0,
-   "k0.25": 1089.7,
-   "k0.50": 1534.8,
-   "total_k0.25": 9644.5,
-   "total_k0.50": 10865.9
-  },
-  "refcoco": {
-   "full": 7531.3,
-   "k0.25": 850.4,
-   "k0.50": 1295.4,
-   "total_k0.25": 9143.2,
-   "total_k0.50": 10344.1
-  }
- },
- "sam3": {
-  "_samples": 8,
-  "_note": "progressive per-round selection (2026-08-26): totals dropped from 206/220% to 114/128% of full when the duplicated scoring approx was removed. Source: sam3_progressive.log, 16 images.",
-  "coco": {
-   "full": 5809.1,
-   "k0.25": 747.6,
-   "k0.50": 1084.6,
-   "total_k0.25": 6610.3,
-   "total_k0.50": 7405.2
-  }
- },
- "qwen25vl_32b": {
-  "_samples": 6,
-  "realworldqa": {
-   "full": 121078.4,
-   "k0.25": 11347.4,
-   "total_k0.25": 157765.2,
-   "k0.50": 18661.5,
-   "total_k0.50": 187066.1
-  },
-  "gqa": {
-   "full": 21506.2,
-   "k0.25": 3796.2,
-   "total_k0.25": 31764.7,
-   "k0.50": 4976.7,
-   "total_k0.50": 36474.5
-  },
-  "refcoco": {
-   "full": 31780.0,
-   "k0.25": 6171.6,
-   "total_k0.25": 46017.4,
-   "k0.50": 7878.5,
-   "total_k0.50": 52850.1
-  },
-  "_note": "text-split schedule totals (GH200 2026-08-27: pre-image text every round, post-image text final round only; the every-round schedule re-corrected the whole text block g times, 0.56x of full, keep-independent). criticals unchanged by construction. k0.25 accuracy verified schedule-neutral on the 2000-subset (-0.05pp); k0.50 full-split accuracy re-verification lands ~21:20 and may adjust that one accuracy cell."
- },
- "qwen35_moe": {
-  "_note": "streaming arm at keep=1.0 (its own column block as of 2026-08-27); the earlier nominal k0.50 placement is retired. keep-arm (0.25/0.50) FLOPs not yet measured (report lacks --keep; accuracy keep arms ARE measured).",
-  "_samples": 12,
-  "chartqa": {
-   "full": 3907.9,
-   "k1.00": 1101.1,
-   "total_k1.00": 5384.2,
-   "k0.25": 824.9,
-   "total_k0.25": 4280.9,
-   "k0.50": 917.8,
-   "total_k0.50": 4647.6
-  },
-  "realworldqa": {
-   "full": 11691.2,
-   "k1.00": 3089.6,
-   "total_k1.00": 16240.0,
-   "k0.25": 2239.5,
-   "total_k0.25": 12842.6,
-   "k0.50": 2523.4,
-   "total_k0.50": 13974.1
-  }
- },
- "qwen35_122b": {
-  "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, streaming k1.0.",
-  "chartqa": {
-   "full": 6044.4,
-   "k1.00": 1747.5,
-   "total_k1.00": 7520.9
-  },
-  "realworldqa": {
-   "full": 17964.4,
-   "k1.00": 4810.6,
-   "total_k1.00": 22513.2
-  }
- }
->>>>>>> origin/develop/qwen35-appcorr
 }
