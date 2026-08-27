@@ -1274,3 +1274,38 @@ shrinks the reported floor-ceiling gap versus the true full-split gap.
 Final full-split summary (both keeps, energy x attention scoring, preservation first):
   keep=0.25: preservation 97.59% / 97.46% (Acc/mIoU), recovery 75.07% / 79.33%, skips 0.09%
   keep=0.50: preservation 99.05% / 98.94%,             recovery 89.94% / 91.33%, skips 2.3%
+
+---
+
+## 2026-08-27 (cont.): text-split correction schedule; scoring-null promoted to conclusion
+
+**FLOPs waste audit found and fixed the total-compute anomaly.** Qwen's totals sat at 177-199% of
+full while every other fixed model converged to 114-143%. Stage/round decomposition (vision correct
+in its own stage, text-vs-image row split from logged per-round token_idx): the entire excess was
+re-correcting the FULL text block every round -- keep-independent 0.56x of a ceiling forward, 56%
+of correct-stage LLM cost for 14.5% of rows. Vision correction and image-row LLM correction were
+exactly keep-proportional (2.0x from k0.25 to k0.50); approx was exactly 1.0x full. The
+reconstruction 1.00+0.017+0.20+0.56=1.78 (k0.25) / 1.99 (k0.50) matched the measured 177.7/199.1%
+to the digit.
+
+**Fix: positional text split** (commit with this note). Pre-image text corrected every round
+(causal image rows consume its K/V); post-image text (question+generation prompt) final round only
+(no consumer of intermediate corrections; rounds restart from fresh embeddings; only the final
+round's state feeds decode). Totals after: refcoco 144.8/166.3%, gqa 147.7/169.6%, rwqa
+130.3/154.5%. Predicted-vs-measured saving on refcoco: 10.5 vs 10.4 TF. Critical unchanged by
+construction. Side effect: lower per-round peak memory -- k0.25 subset now scores 2000/2000, zero
+OOM skips (was 2/2000).
+
+Gates: g=1 identity 10/10 (schedule-invariant at g=1 by construction, confirmed). Subset A/B
+k0.25 single-variable: -0.05pp (flips 4:5) -- schedule-neutral. k0.50: confounded headline -0.82pp
+(the only complete every-round subset is energy-only-scored); PARTIAL269 3-way puts scoring at
++0.00pp (8:8) and schedule at -0.37pp (1:2, underpowered) -- full-split rerun under text-split
+running to settle which number the table carries.
+
+**CONCLUSION (promoted): the received-attention term in the pruning score does not change Qwen2.5
+accuracy.** Three independent measurements agree: k0.25 full-subset (identical correct-count
+1721/1998, flips 36:36, 575 texts changed -- a genuine null with real churn, not a dead mechanism),
+k0.50 n=269 3-way (+0.00pp, flips 8:8), and both against energy-only baselines. Selection moves;
+accuracy does not. Matches OpenCLIP's COCO finding (CLS-vs-avg attention ~0.2-0.4pp, directionless).
+The standing energy x attention score is kept for cross-model consistency (it costs ~0.1% of total,
+PSCORE-excluded from FLOPs), but on this model the attention factor is demonstrably not load-bearing.
