@@ -42,6 +42,22 @@ FLOPS_DIR = os.path.join(RESULTS, "flops")
 # (model label, [(dataset label, accuracy key, flops key)]). `accuracy key` is (dir_prefix, dataset)
 # or None when no accuracy arm exists; `flops key` selects the FLOPs source.
 SPEC = [
+    ("Gemma 3 (4.3B)$^\\ddagger$", [
+        ("ChartQA (Relaxed Acc.)", ("gemma3", "chartqa"),     ("inproc", "gemma3", "chartqa")),
+        ("InfoVQA (ANLS)",         ("gemma3", "infovqa"),     ("inproc", "gemma3", "infovqa")),
+        ("TextVQA (VQA Acc.)",     ("gemma3", "textvqa"),     ("inproc", "gemma3", "textvqa")),
+        ("POPE (Acc.)",            ("gemma3", "pope"),        ("inproc", "gemma3", "pope")),
+        ("RealWorldQA (Acc.)",     ("gemma3", "realworldqa"), ("inproc", "gemma3", "realworldqa")),
+        ("DocVQA (ANLS)",          ("gemma3", "docvqa"),      ("inproc", "gemma3", "docvqa")),
+        ("GQA testdev (Exact Match)", ("gemma3", "gqa"),      ("inproc", "gemma3", "gqa")),
+        ("MMMU val (Acc.)",        ("gemma3", "mmmu"),        ("inproc", "gemma3", "mmmu")),
+        ("VSR zeroshot (Acc.)",    ("gemma3", "vsr"),         None),
+    ]),
+    # Qwen3.5's arm is STREAMING (vision approx/correct + chunked LLM prefill), not interleaved
+    # correction: it progressively recomputes 100% of tokens and has no keep-rate knob -- the
+    # operating point is the round count (g=4 measured). Its FLOPs sit under the k0.50 keys purely
+    # so the existing column machinery renders them; the dagger footnote in the caption says so.
+    # Accuracy cells stay empty until the dataset driver runs.
     ("LLaVA-OV2 (8.5B)$^\\ddagger$", [
         ("ChartQA (Relaxed Acc.)", ("ov2", "chartqa"),     ("inproc", "ov2", "chartqa")),
         ("InfoVQA (ANLS)",         ("ov2", "infovqa"),     ("inproc", "ov2", "infovqa")),
@@ -52,31 +68,40 @@ SPEC = [
         ("GQA testdev (Exact Match)", ("ov2", "gqa"),      ("inproc", "ov2", "gqa")),
         ("MMMU val (Acc.)",        ("ov2", "mmmu"),        ("inproc", "ov2", "mmmu")),
         ("RefCOCO val (Acc.@0.5)", ("ov2", "refcoco"),     ("inproc", "ov2", "refcoco")),
+        ("VSR zeroshot (Acc.)",    ("ov2", "vsr"),         None),
     ]),
-    ("Gemma 3 (4.3B)$^\\ddagger$", [
-        ("ChartQA (Relaxed Acc.)", ("gemma3", "chartqa"),     ("inproc", "gemma3", "chartqa")),
-        ("InfoVQA (ANLS)",         ("gemma3", "infovqa"),     ("inproc", "gemma3", "infovqa")),
-        ("TextVQA (VQA Acc.)",     ("gemma3", "textvqa"),     ("inproc", "gemma3", "textvqa")),
-        ("POPE (Acc.)",            ("gemma3", "pope"),        ("inproc", "gemma3", "pope")),
-        ("RealWorldQA (Acc.)",     ("gemma3", "realworldqa"), ("inproc", "gemma3", "realworldqa")),
-        ("DocVQA (ANLS)",          ("gemma3", "docvqa"),      ("inproc", "gemma3", "docvqa")),
-        ("GQA testdev (Exact Match)", ("gemma3", "gqa"),      ("inproc", "gemma3", "gqa")),
-        ("MMMU val (Acc.)",        ("gemma3", "mmmu"),        ("inproc", "gemma3", "mmmu")),
-    ]),
-    # Qwen3.5's arm is STREAMING (vision approx/correct + chunked LLM prefill), not interleaved
-    # correction: it progressively recomputes 100% of tokens and has no keep-rate knob -- the
-    # operating point is the round count (g=4 measured). Its FLOPs sit under the k0.50 keys purely
-    # so the existing column machinery renders them; the dagger footnote in the caption says so.
-    # Accuracy cells stay empty until the dataset driver runs.
-    ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
-        ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
-        ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
-    ]),
-    ("Qwen2.5-VL (33.5B)", [
+    ("Qwen2.5-VL (33.5B)$^\\S$", [
         ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
         ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
         ("GQA testdev (Exact Match)", None, ("inproc", "qwen25vl_32b", "gqa")),
         ("RealWorldQA (Acc.)",        None, ("inproc", "qwen25vl_32b", "realworldqa")),
+    ]),
+    ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
+        ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
+        ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
+        ("VSR zeroshot (Acc.)",    None, None),
+    ]),
+    # 122B-FP8: the FP8 GEMM kernel stack (deep-gemm, sm_90) produces garbage on this B200
+    # (sm_100), so ACCURACY is unmeasurable here until a Blackwell kernel or a dequant path
+    # exists. COMPUTE figures are still valid: FLOP counts are shape- and token-count-determined
+    # (the MoE handler charges n_tok x top_k whichever experts the router picks), independent of
+    # the values flowing through.
+    ("Qwen3.5-MoE (122B-A10B FP8)$^\\dagger\\P$", [
+        ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_122b", "chartqa")),
+        ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_122b", "realworldqa")),
+    ]),
+    ("OpenVLA (7B)", [
+        ("LIBERO-Spatial (Success Rate)", None, None),
+        ("LIBERO-Object (Success Rate)",  None, None),
+        ("LIBERO-Goal (Success Rate)",    None, None),
+        ("LIBERO-Long (Success Rate)",    None, None),
+    ]),
+    ("DINOv3 (7B)", [
+        (r"ImageNet-1k (Top-1 $\uparrow$)", None, ("offload", "dinov3_imagenet")),
+        (r"COCO Detector (mAP $\uparrow$)", None, ("offload", "dinov3_coco")),
+        (r"ADE20K m2f (mIoU $\uparrow$)",   None, ("offload", "dinov3_ade20k")),
+        (r"NYUv2 (AbsRel $\downarrow$)",    None, ("offload", "dinov3_nyu")),
+        (r"Co3Dv2 (Rot. deg $\downarrow$)", None, None),
     ]),
     ("SAM 3 (0.85B)", [
         ("COCO Tracker (Mask AP)",  None, ("inproc", "sam3", "coco")),
@@ -86,20 +111,6 @@ SPEC = [
         ("SA-Co sa1b (cgF1)",       None, ("inproc", "sam3", "coco")),
         ("SA-Co attributes (cgF1)", None, ("inproc", "sam3", "coco")),
     ]),
-    ("DINOv3 (7B)", [
-        (r"ImageNet-1k (Top-1 $\uparrow$)", None, ("offload", "dinov3_imagenet")),
-        (r"COCO Detector (mAP $\uparrow$)", None, ("offload", "dinov3_coco")),
-        (r"ADE20K m2f (mIoU $\uparrow$)",   None, ("offload", "dinov3_ade20k")),
-        (r"NYUv2 (AbsRel $\downarrow$)",    None, ("offload", "dinov3_nyu")),
-        (r"Co3Dv2 (Rot. deg $\downarrow$)", None, None),
-    ]),
-    ("VGGT-Omega (7B)$^\\ddagger$", [
-        (r"Co3Dv2 (Depth AbsRel $\downarrow$)", None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 (Rot. deg $\downarrow$)",     None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)", None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 (3D Point Err. $\downarrow$)", None, ("offload", "vggt_co3d")),
-        (r"Co3Dv2 (3D Inlier $<10\%$)",         None, ("offload", "vggt_co3d")),
-    ]),
     ("OpenCLIP (2.5B)", [
         ("ImageNet-1k (Top-1)",        None, ("offload", "openclip_imagenet")),
         ("ImageNet-1k (Top-5)",        None, ("offload", "openclip_imagenet")),
@@ -108,12 +119,19 @@ SPEC = [
         # agreement a cross-check instead of an assumption.
         ("COCO Ret. val2017 (i2t R@1)", None, ("offload", "openclip_cocoret")),
         ("COCO Ret. val2017 (t2i R@1)", None, ("offload", "openclip_cocoret")),
+        # One-shot (g=1) at the same keep: the diagnosis decomposition's headline. CLIP is the one
+        # model where interleaving costs real accuracy (staleness 5.76pp > selection 3.06pp at
+        # keep=0.50); this row shows the trade the g=4 row hides. Measured on the full 5000-image
+        # split, 2026-08-26 (docs/memo/openclip_staleness_decomposition.md).
+        ("COCO Ret. one-shot g=1 (i2t R@1)", None, None),
+        ("COCO Ret. one-shot g=1 (t2i R@1)", None, None),
     ]),
-    ("OpenVLA (7B)", [
-        ("LIBERO-Spatial (Success Rate)", None, None),
-        ("LIBERO-Object (Success Rate)",  None, None),
-        ("LIBERO-Goal (Success Rate)",    None, None),
-        ("LIBERO-Long (Success Rate)",    None, None),
+    ("VGGT-Omega (7B)", [
+        (r"Co3Dv2 (Depth AbsRel $\downarrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (Rot. deg $\downarrow$)",     None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 ($\delta < 1.10$ $\uparrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (3D Point Err. $\downarrow$)", None, ("offload", "vggt_co3d")),
+        (r"Co3Dv2 (3D Inlier $<10\%$)",         None, ("offload", "vggt_co3d")),
     ]),
 ]
 
@@ -143,11 +161,35 @@ SPEC = [
 # re-measured too, so nothing here is updated until BOTH bounds are back: quoting a new ceiling
 # against an old floor would invent a gap neither measurement supports.
 LITERALS = {
+    # Qwen3.5 accuracy, full RealWorldQA split (765), 2026-08-27, thinking disabled, shared greedy
+    # decode across all three arms. Single streaming arm (g=4) sits under the k0.50 columns per the
+    # dagger footnote's nominal-placement rule.
+    ("Qwen3.5-MoE (35B-A3B)", "RealWorldQA (Acc.)"): {"floor": 74.51, "ceiling": 77.39,
+                                                      "k0.25": 77.52, "k0.50": 77.25,
+                                                      "stream": 77.25},
+    ("Qwen3.5-MoE (35B-A3B)", "ChartQA (Relaxed Acc.)"): {"floor": 60.76, "ceiling": 88.56,
+                                                          "k0.25": 83.68, "k0.50": 86.80,
+                                                          "stream": 88.32},
+    ("Qwen3.5-MoE (35B-A3B)", "VSR zeroshot (Acc.)"): {"floor": 88.46, "ceiling": 89.77,
+                                                       "k0.25": 88.63, "k0.50": 88.95},
+    # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
     # Re-measured 2026-08-26 on the M-RoPE-fixed code, full splits, both bounds through the same
     # driver. RefCOCO N=8811, GQA N=12578. These REPLACE the pre-fix values (which were
     # 85.75/74.76, 76.20/65.02, 60.84/55.16) -- see the block comment above.
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.68, "ceiling": 88.19},
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.36, "ceiling": 80.24},
+    # RefCOCO ours: GH200 full-split (8811 images) 2026-08-27, energy x attention, bs=1 vs
+    # bs=16 bounds (measured Acc-identical, 0.001 mIoU); OOM-skipped 0.09% (k0.25) / 2.3%
+    # (k0.50) of the largest images, with bounds restricted to each keep's kept set for the
+    # preservation numbers reported alongside. The section-mark footnote in the caption carries
+    # this to the reader.
+    # k0.50 is the text-split-schedule full-split rerun (2026-08-27, n=8604): the schedule A/B at
+    # full scale came out -0.02pp (flips 21:23), so the 33pp compute saving costs nothing
+    # measurable. k0.25 kept from the every-round run (its own subset A/B: -0.05pp neutral).
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.79, "ceiling": 88.11,
+                                                          "k0.25": 86.10, "k0.50": 87.25},
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.45, "ceiling": 80.23,
+                                                          "k0.25": 78.22, "k0.50": 79.35},
     ("Qwen2.5-VL (33.5B)", "GQA testdev (Exact Match)"): {"floor": 55.24, "ceiling": 60.80},
     # 72B dropped 2026-08-26: not worth the run. It also does not fit -- the GH200 box has ~66 GB
     # free against a ~130 GB pull, so the row could only ever have carried a prose ceiling.
@@ -182,7 +224,13 @@ LITERALS = {
     # within 0.06 of the literal, which is what validates the new loader against the prior protocol
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
-    ("OpenVLA (7B)", "LIBERO-Spatial (Success Rate)"): {"ceiling": 79.00},
+    # LIBERO-Spatial streaming: July 2026 campaign (chunked causal prefill, sequential grouping,
+    # frontiers 32x4, 500 episodes = 10 tasks x 50 trials, post initial-state-fix driver). The
+    # primary jsonl was written to /tmp and lost to a reboot -- these digits survive in the
+    # campaign session records only. User accepted them for the table (2026-08-27); re-measurement
+    # is the queued VLA-track task that will restore primary evidence. Same-harness baseline 82.8.
+    ("OpenVLA (7B)", "LIBERO-Spatial (Success Rate)"): {"ceiling": 82.80, "floor": 17.20,
+                                                        "stream": 81.60},
     ("OpenVLA (7B)", "LIBERO-Object (Success Rate)"):  {"ceiling": 89.00},
     ("OpenVLA (7B)", "LIBERO-Goal (Success Rate)"):    {"ceiling": 73.00},
     ("OpenVLA (7B)", "LIBERO-Long (Success Rate)"):    {"ceiling": 54.00},
@@ -223,6 +271,8 @@ VFM_OURS = {
     ("OpenCLIP (2.5B)", "ImageNet-1k (Top-5)"): ("openclip_imagenet", "top5_acc", 1.0),
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): ("cocoret", "i2t_R@1", 1.0),
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (t2i R@1)"): ("cocoret", "t2i_R@1", 1.0),
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): ("cocoret_g1", "i2t_R@1", 1.0),
+    ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): ("cocoret_g1", "t2i_R@1", 1.0),
 }
 
 VFM_DIR = os.path.join(RESULTS, "vfm_accuracy")
@@ -345,9 +395,13 @@ def fmt_tf(gf: Optional[float], full: Optional[float]) -> str:
 def build_rows(keeps, groups: int):
     out = []
     for model, rows in SPEC:
+        # Footnote marks ($^\dagger$ etc.) are display-only; every lookup table is keyed by the
+        # BASE model name. Keying lookups on the decorated name silently blanks the whole block --
+        # adding $^\S$ to Qwen2.5 turned its bounds into "--" before this split existed.
+        base_model = model.split("$")[0]
         block = []
         for label, acc_key, fl_key in rows:
-            lit = LITERALS.get((model, label), {})
+            lit = LITERALS.get((base_model, label), {})
             f = "{:.2f}"
             if "fmt" in lit:
                 f = lit["fmt"]
@@ -378,7 +432,7 @@ def build_rows(keeps, groups: int):
                     s += f" ({pres:.1f}\\%)"
                 return s
 
-            vfm = VFM_OURS.get((model, label))
+            vfm = VFM_OURS.get((base_model, label))
 
             def ours(k):
                 """Ours at keep `k`. VLM rows read a summary JSON; VFM rows read a campaign log."""
@@ -392,7 +446,12 @@ def build_rows(keeps, groups: int):
                         pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
                         out += f" ({pres:.1f}\\%)"
                     return out
-                return acc_with_pres(f"interleaved_g{groups}_k{k:.2f}")
+                # Prefer the canonical progressive arm's accuracy where it has been re-measured;
+                # fall back to the upfront arm's file (the ddagger caveat) until then.
+                v = acc_with_pres(f"progressive_g{groups}_k{k:.2f}", lit_key=f"k{k:.2f}")
+                if v != "--":
+                    return v
+                return acc_with_pres(f"interleaved_g{groups}_k{k:.2f}", lit_key=f"k{k:.2f}")
 
             full_gf = get_flops(fl_key, "full")
             cells = [acc_with_pres("floor", "floor")]
@@ -404,6 +463,27 @@ def build_rows(keeps, groups: int):
                 # which is why both columns exist side by side.
                 cells.append(fmt_tf(get_total(fl_key, f"k{k:.2f}"), full_gf))
                 cells.append(fmt_tf(get_flops(fl_key, f"k{k:.2f}"), full_gf))
+            # Streaming (keep=1.0) block: the causal-LLM category (LLM prefills exactly once,
+            # vision corrects everything progressively). Accuracy comes from a "stream" literal
+            # (Qwen3.5's jsonl-driven runs) or a streaming_g4.json beside the row's other arms
+            # (OV2's oracle); compute from the k1.00 inproc keys. Non-causal models leave all
+            # three cells empty -- Gemma 3's image tokens are bidirectional, and the VFMs have no
+            # LLM to stream.
+            sv = None
+            if "stream" in lit:
+                sv = lit["stream"]
+            elif acc_key:
+                sv = load_accuracy(*acc_key, "streaming_g4")
+            if sv is None:
+                cells.append("--")
+            else:
+                out_s = f.format(sv)
+                if ceiling_v:
+                    pres = 100.0 * ((ceiling_v / sv) if lower_better else (sv / ceiling_v))
+                    out_s += f" ({pres:.1f}\\%)"
+                cells.append(out_s)
+            cells.append(fmt_tf(get_total(fl_key, "k1.00"), full_gf))
+            cells.append(fmt_tf(get_flops(fl_key, "k1.00"), full_gf))
             cells.append(f.format(ceiling_v) if ceiling_v is not None else "--")
             cells.append(fmt_tf(full_gf, None))
             block.append((label, cells))
@@ -413,15 +493,18 @@ def build_rows(keeps, groups: int):
 
 def emit_latex(table, keeps) -> str:
     heads = " & ".join(f"\\multicolumn{{3}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
+    heads += " & \\multicolumn{3}{c}{Streaming (k={=}1.0)}"
     cmids, col = [], 4
     for _ in keeps:
         cmids.append(f"\\cmidrule(lr){{{col}-{col+2}}}")
         col += 3
+    cmids.append(f"\\cmidrule(lr){{{col}-{col+2}}}")     # streaming block
+    col += 3
     cmids.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
-    sub = " & ".join(["Acc. (\\%) & Comp. & Crit. Comp."] * len(keeps)
+    sub = " & ".join(["Acc. (\\%) & Comp. & Crit. Comp."] * (len(keeps) + 1)
                      + ["Acc. (\\%) & Comp."])
-    # 2 label columns + Low-res. + three per Ours block + two for Full-res.
-    ncol = 2 + 1 + 3 * len(keeps) + 2
+    # 2 labels + Low-res. + three per Ours block + three for Streaming + two for Full-res.
+    ncol = 2 + 1 + 3 * len(keeps) + 3 + 2
     L = []
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
@@ -430,13 +513,20 @@ def emit_latex(table, keeps) -> str:
              r"arrived (decode excluded); Comp.\ is the arm's total backbone compute including "
              r"work overlapped with transmission. Parentheses give the ratio to the Full-res.\ "
              r"computation. Ours uses interleaved $g{=}4$. "
-             r"$^\dagger$Qwen3.5's arm is streaming (vision approx/correct + chunked LLM prefill, "
-             r"$g{=}4$): it progressively recomputes 100\% of tokens and has no keep-rate knob, so "
-             r"the placement of its compute figures in a keep-labeled column is nominal. "
-             r"$^\ddagger$Gemma 3, LLaVA-OV2, and VGGT-Omega compute figures are from the "
-             r"corrected schedules (2026-08-26: progressive per-round selection; VGGT's de-padded "
-             r"ragged correction); their accuracy cells are still the earlier arms', pending "
-             r"re-evaluation.}")
+             r"The Streaming (k$=$1.0) block is the causal-LLM category: the LLM prefills exactly "
+             r"once in arrival-order chunks while the vision encoder corrects everything "
+             r"progressively -- total $\approx$ full + one vision pass, critical $\approx 1/g$. "
+             r"Only causal models qualify (Gemma 3's image tokens are bidirectional; VFMs have no "
+             r"LLM). $^\dagger$Qwen3.5's Ours columns are keep-limited STREAMING arms (band-wise "
+             r"top-$k$ selection), not interleaved correction. "
+             r"$^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive "
+             r"per-round selection arm (2026-08-26); accuracy cells are the progressive arm's "
+             r"where re-measured (2026-08-28 sweep) and the earlier upfront arm's otherwise. "
+             r"$^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
+             r"(measured equivalent), excluding OOM images (0.09\% at 25\%, 2.3\% at 50\%) with "
+             r"bounds restricted to the same kept sets. $^\\P$122B-FP8 accuracy is unmeasurable "
+             r"on this hardware (FP8 kernels produce incorrect outputs on sm\_100); its compute "
+             r"figures are shape-determined and unaffected.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
@@ -451,7 +541,11 @@ def emit_latex(table, keeps) -> str:
     for i, (model, rows) in enumerate(table):
         if i:
             L.append(r"\midrule")
-        L.append(f"\\multirow{{{len(rows)}}}{{*}}{{{model}}}")
+        # "Name (size)" wraps to two lines inside the multirow cell -- the size (and any footnote
+        # marks after it) drops to the second line, keeping the model column narrow.
+        m = re.match(r"^(.*?) (\(.*)$", model)
+        cell = f"\\shortstack[l]{{{m.group(1)}\\\\{m.group(2)}}}" if m else model
+        L.append(f"\\multirow{{{len(rows)}}}{{*}}{{{cell}}}")
         for label, cells in rows:
             L.append(f"& {label} & " + " & ".join(cells) + r" \\")
     L.append(r"\bottomrule")
