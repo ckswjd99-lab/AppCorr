@@ -81,3 +81,86 @@ context transfer; the user talks to GH200 directly from here on.
   outputs are garbage on sm_100 regardless.
 - The orphan hazard: two multi-day orphan campaigns were found writing into live
   result files. On any fresh session: `ps -eo pid,ppid | awk '$2==1'` scan first.
+
+## Storage constraint on GH200 (user directive, 2026-08-27)
+GH200 storage is tight — plan around models ALREADY downloaded there; anything new
+must be minimal. Consequences for the backlog above:
+- Feasible now, zero download: Qwen2.5-VL streaming executor mode (the checkpoint is
+  already local to you) — this is your top GPU item. Also all non-GPU work: table,
+  analysis, memos, paper prose.
+- Feasible only if space allows (check `df -h` + your HF cache inventory first, and
+  report to the user before downloading anything): Gemma3-4B (~9 GB) and OV2-8.5B
+  (~18 GB) for the ddagger accuracy re-evals.
+- NOT feasible on GH200 (stay queued for the B200 post-maintenance): Qwen3.5-35B
+  (~70 GB), 122B (~130+ GB), the VFM tracks (DINOv3/SAM3/OpenCLIP/VGGT — the
+  datasets are the heavy part and live on the B200), OpenVLA/OFT (sim env + EGL).
+GH200's role as main is therefore: run what fits locally, and act as coordinator /
+queue-planner for the B200 work until a session returns there.
+
+## Appendix: distilled standing knowledge (B200 session memory, re-stated)
+User: conversation in Korean, code/comments/memos in English. "(SQ)" prefix = quick
+answer from context, no tool work. Working-style rules are in the main body above.
+
+Project facts worth carrying:
+- ProgVFM paper (MLSys'27 draft) is the theoretical base: pscore = contrib_i
+  (Eq 6, residual x per-head attention, fitted weights); interleaved-is-cheaper (3.3).
+- Progressive per-round selection is canonical (user decision 2026-08-26); upfront
+  selection was a botched implementation that double-ran the vision tower.
+- Interleaved correction contract: docs/memo/interleaved_correction_contract.md —
+  round r corrects group r only; corrected increments are NOT written back into
+  blocks_out_sum (known defect class); read it before touching any multi-round path.
+- Streaming beats approx-then-correct wherever the LLM is causal (OV2 verified:
+  ChartQA 85.0 stream vs 81.0 interleaved, g-independent). Gemma3 cannot stream
+  (bidirectional image tokens); pi0-FAST prefix is bidirectional (+12% CE / -4pp);
+  lerobot+transformers-4.57.1 double-scales Gemma embeds (neutralize sqrt scaling).
+- Qwen3.5: GatedDeltaNet linear attention (30/40 layers) makes LLM correction
+  ill-defined, so streaming is the only LLM arm. MoE FLOPs are count-based
+  (n_tok x top_k), charged via class-name special hooks (raw-Parameter experts are
+  invisible to module hooks). M-RoPE: get_rope_index returns (3,B,T), pass as-is;
+  decode needs explicit positions (rope_deltas caching trap); enable_thinking=False
+  for evals (truncated think-mode output scored 18%).
+- 122B-FP8: deep-gemm targets sm_90; on the B200 (sm_100) every arm returns garbage,
+  so the earlier "chunking is lossy under FP8" claim is RETRACTED (measured on a
+  broken model). What survives: single-chunk==stock at TV 0.0000 (harness exact).
+  Spectrum framing stands as hypothesis only: a context-dependent quantizer feeding
+  a discontinuous amplifier (MoE routing) makes chunk-boundary numerics a cliff
+  rather than noise; pre-flight any quantized streaming with single-chunk==stock
+  then a boundary sweep. Accuracy paths if pursued: 2-GPU bf16 device_map, or a
+  dequant-to-bf16 shim over FP8Linear (recommended), or Blackwell kernel support.
+- Qwen2.5-VL: correction is cuda:0-only on the B200 (Triton dies on cuda:1);
+  upfront selection is FREE there (its vision runs full-depth at arrival 0), so it
+  keeps upfront while gemma3/ov2/sam3 moved to progressive.
+- SAM 3: 55% recompute recovers ~90% (COCO/LVIS) at 0.60x compute; object size is
+  the only variable predicting damage; presence token is task-dependent. SA-Co:
+  cgF1 + 3-annotator oracle merge are official SAM3 code; we own prompt-sourcing
+  and image download only; start with Gold.
+- VGGT-Omega: read docs/memo/vggt_omega_status.md first; serving-path numbers only;
+  DINOv3 blocks now shared; ours-below-floor anomaly open (padding-independent).
+- Gemma3 facts: image tokens bidirectional (no streaming); pre_global does NOT
+  transfer (sliding window never bites at 277 tokens); at 896px vision is 72% of
+  the full-forward axis (this superseded the old "prefill is 1.8x vision" note).
+- OpenVLA July LIBERO-Spatial (82.8 ceiling / 81.6 stream / 17.2 floor): setting
+  authenticated via commits (initial-state fix predates measurement, 500 ep,
+  parity-gated) but the primary jsonl was lost to /tmp; user accepted the numbers
+  for the table with a provenance comment. OFT: implementation + gates committed,
+  results lost, re-measurement pending (B200).
+- 2D locality is the unifying research axis: process/transmit/correct in 2D-local
+  blocks; 2D-local causal order is lossless (raster not required); overlap recovers
+  grounding overhead. 7B grounding generation is degenerate — use VQA for
+  model-size scaling. nr=400-style subsets are sanity-only; close comparisons need
+  full splits. VSR is degradation-insensitive (low-frequency spatial relations) —
+  the boundary-condition row for where AppCorr pays.
+- Environment: the HF token env var must be UNSET, not empty (empty string makes a
+  broken auth header); Triton needs _configure_compile_environment() in every
+  executor (and ~/.triton/cache is empty by redirect, not disuse); py-spy blocked
+  (no ptrace) so use a SIGUSR1 faulthandler; /tmp is noexec on the B200; datasets
+  .filter caches by lambda fingerprint so filesystem-dependent filters need
+  load_from_cache_file=False; B200 rendering: no Vulkan, EGL device 2; instance
+  reset procedure in /NHNHOME/share/cjpark/backup/RESTORE.md.
+- Methodology rules (user feedback, standing): floor + ceiling with every sweep;
+  preservation before recovery; effect size + interval (bootstrap the gap, paired
+  counts when skewed); never claim a mechanism unmeasured — label hypotheses and
+  check with a monotone quantity; the harness must never share the variable under
+  test between arms; check running jobs every few minutes; no train/eval index
+  overlap for fitted pscores; one task per GPU; apply validated techniques
+  proactively when extending to analogous signals.
