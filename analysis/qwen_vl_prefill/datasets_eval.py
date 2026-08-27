@@ -343,9 +343,139 @@ class VSRSpec:
         return int(pred == gold), float(pred == gold)
 
 
+class CVBenchSpec:
+    """CV-Bench (NYU, 2638 test): pure perception/geometry MCQ over real photos
+    (ADE20K/COCO/Omni3D sources). The dataset ships a ready 'prompt' (question +
+    lettered choices) and answers like '(C)' -- scored on the extracted letter."""
+    name = "cvbench"
+    hf = "nyu-visionx/CV-Bench"
+    split = "test"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = ex["prompt"].strip() + "\nAnswer with the option's letter only."
+        gold = re.sub(r"[^A-Da-d]", "", str(ex["answer"])).upper()
+        return image_r, prompt, gold
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\(([A-Da-d])\)", pred_text) or STANDALONE_LETTER_RE.search(pred_text)
+        pred = (m.group(1) if m else "").upper()
+        return int(pred == gold), float(pred == gold)
+
+
+class MMVPSpec:
+    """MMVP (300): subtle visual discrimination on CLIP-blind pairs. The HF repo
+    stores images as '<Index>.jpg' plus Questions.csv (Index, Question, Options
+    '(a) X (b) Y', Correct Answer '(a)'). We read the CSV and open images by
+    index -- the imagefolder ordering is filename-sorted and NOT index-aligned,
+    so never zip the two datasets together."""
+    name = "mmvp"
+    hf = "MMVP/MMVP"
+
+    def load(self, load_dataset):
+        import csv
+        import glob
+        import os
+        from huggingface_hub import snapshot_download
+        root = snapshot_download(self.hf, repo_type="dataset")
+        img_dir = os.path.join(root, "MMVP Images")
+        rows = []
+        with open(os.path.join(root, "Questions.csv"), newline="") as f:
+            for r in csv.DictReader(f):
+                idx = r["Index"].strip()
+                cand = glob.glob(os.path.join(img_dir, f"{idx}.*"))
+                if not cand:
+                    raise RuntimeError(f"MMVP image missing for index {idx}")
+                rows.append({"path": cand[0], "question": r["Question"],
+                             "options": r["Options"], "answer": r["Correct Answer"]})
+        if len(rows) == 0:
+            raise RuntimeError("VACUOUS: MMVP Questions.csv parsed to 0 rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = Image.open(ex["path"]).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = (f"{ex['question'].strip()}\n{ex['options'].strip()}\n"
+                  "Answer with (a) or (b) only.")
+        gold = re.sub(r"[^ab]", "", ex["answer"].lower())
+        return image_r, prompt, gold
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\(([ab])\)", pred_text.lower()) or re.search(r"\b([ab])\b", pred_text.lower())
+        pred = m.group(1) if m else ""
+        return int(pred == gold), float(pred == gold)
+
+
+class MMERealWorldSpec:
+    """MME-RealWorld (lmms-eval export, 23.6k QA): high-resolution real-world
+    perception MCQ (five options (A)-(E), answer is the bare letter). Images ride
+    as base64 jpeg in 'bytes'. Category breakdown lives in ex['category'] --
+    keep it in mind when reading aggregates: OCR/diagram categories are not
+    natural photos even though the imagery is high-res real-world capture."""
+    name = "mmerealworld"
+    hf = "yifanzhang114/MME-RealWorld-Lmms-eval"
+    split = "train"          # the export ships everything under 'train'
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import base64
+        import io
+        image = Image.open(io.BytesIO(base64.b64decode(ex["bytes"]))).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        opts = ex["multi-choice options"]
+        if isinstance(opts, str) and opts.startswith("["):
+            import ast
+            opts = ast.literal_eval(opts)
+        opts = "\n".join(opts) if isinstance(opts, (list, tuple)) else str(opts)
+        prompt = (f"{ex['question'].strip()}\n{opts}\n"
+                  "Answer with the option's letter only.")
+        return image_r, prompt, str(ex["answer"]).strip().upper()
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\(([A-Ea-e])\)", pred_text) or STANDALONE_LETTER_RE.search(pred_text)
+        pred = (m.group(1) if m else "").upper()
+        return int(pred == gold), float(pred == gold)
+
+
+class WildVisionSpec:
+    """WildVision-Bench (500): real user instructions -- OPEN-ENDED, no reference
+    answer, officially judged by a pairwise LLM judge. score() therefore raises:
+    use this spec only for generation dumps (degradation A/Bs, judge runs later),
+    never inside an accuracy loop."""
+    name = "wildvision"
+    hf = "WildVision/wildvision-bench"
+    config = "vision_bench_0701"
+    split = "test"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, self.config, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        return image_r, ex["instruction"].strip(), ""
+
+    def score(self, pred_text, gold):
+        raise NotImplementedError(
+            "WildVision has no reference answers; it needs a pairwise judge. "
+            "Use generation-dump mode, not the accuracy loop.")
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
-         "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec}
+         "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec,
+         "cvbench": CVBenchSpec, "mmvp": MMVPSpec, "mmerealworld": MMERealWorldSpec,
+         "wildvision": WildVisionSpec}
 
 
 def get_spec(name):
