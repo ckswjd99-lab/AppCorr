@@ -82,6 +82,16 @@ context transfer; the user talks to GH200 directly from here on.
 - The orphan hazard: two multi-day orphan campaigns were found writing into live
   result files. On any fresh session: `ps -eo pid,ppid | awk '$2==1'` scan first.
 
+## Final state at shutdown (23:15 sweep, 2026-08-27)
+Everything is committed and pushed (HEAD 3c64def at sweep time). Landed tonight:
+OV2 streaming full splits POPE 87.83 / GQA 63.09 / VSR 78.97 (both GQA and VSR at
+100.2% of ceiling — narrow-gap noise, recorded as-is). The ONLY job killed by the
+maintenance window: OV2 DocVQA streaming retry (was ~sample 1500/5349 at midnight;
+guard bound already fixed at 1.9, commit 570d307). First B200 job after the window:
+  python analysis/experiments/ov2_oracle.py --dataset docvqa --full --level 2 \
+    --arm streaming --groups 4 --out-json analysis/results/ov2_docvqa/streaming_g4.json
+Then regenerate the table and the OV2 streaming row is complete.
+
 ## Storage constraint on GH200 (user directive, 2026-08-27)
 GH200 storage is tight — plan around models ALREADY downloaded there; anything new
 must be minimal. Consequences for the backlog above:
