@@ -3,15 +3,15 @@
  "_samples": 12,
  "_groups": 4,
  "chartqa": {
-  "full": 3898.0,
-  "floor": 3898.0,
-  "crit_g4": 1091.2,
-  "total_g4": 5374.4
+  "full": 3907.9,
+  "floor": 3907.9,
+  "crit_g4": 1101.1,
+  "total_g4": 5384.2
  },
  "realworldqa": {
-  "full": 11681.3,
-  "floor": 11681.3,
-  "crit_g4": 3079.7,
-  "total_g4": 16230.1
+  "full": 11691.2,
+  "floor": 11691.2,
+  "crit_g4": 3089.6,
+  "total_g4": 16240.0
  }
 }
