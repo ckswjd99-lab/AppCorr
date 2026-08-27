@@ -78,7 +78,12 @@ def main():
     ap.add_argument("--model", default=MODEL_ID_35B,
                     help="checkpoint id; e.g. Qwen/Qwen3.5-122B-A10B-FP8")
     ap.add_argument("--level", type=int, default=2, help="pyramid level of the degraded base")
-    ap.add_argument("--degrade-filter", choices=["bicubic", "box"], default="bicubic")
+    # Default flipped to box 2026-08-28 after the paired probe (4/50 flips, 3:1 toward box):
+    # box matches the convention's reference (area average ~ pyramid level). Every degraded-arm
+    # number measured before this date used bicubic and lives in analysis/results/qwen35_accuracy/;
+    # box re-measurements go to qwen35_accuracy_box/ -- NEVER append across the boundary, the
+    # jsonl resume would silently mix filters.
+    ap.add_argument("--degrade-filter", choices=["bicubic", "box"], default="box")
     ap.add_argument("--arms", nargs="+", default=["floor", "streaming", "ceiling"])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--keep", type=float, default=1.0,

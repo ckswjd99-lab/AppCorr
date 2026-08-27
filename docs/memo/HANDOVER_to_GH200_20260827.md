@@ -90,6 +90,19 @@ are laid out there. B200 work (31B needs ~65GB GPU).
   outputs are garbage on sm_100 regardless.
 - The orphan hazard: two multi-day orphan campaigns were found writing into live
   result files. On any fresh session: `ps -eo pid,ppid | awk '$2==1'` scan first.
+- FORK-PORT CHECKLIST (two scale-exposed incidents on 2026-08-28, both drops of
+  reference-implementation guards): (1) worker-provided invariants -- no_grad --
+  do not port themselves; (2) scale-guarded loops -- query-chunked attention
+  stats (gemma3's _incoming_attention chunking) -- do not port themselves. A
+  port that "works" on RefCOCO-scale images can hide a 57GB materialization
+  that only 2K-resolution CV-Bench triggers. Audit both before trusting a port.
+- Degradation convention (audited 2026-08-28): canonical = cv2.pyrDown chain in
+  native coords + sampled-resolution cap (offload/policies/transmission/
+  laplacian.py; pyramid_degradation_native_vs_canvas.md). Oracle drivers use
+  BOX-down + BICUBIC-up as the sanctioned approximation. BICUBIC-down is NOT
+  neutral: paired probe flipped 4/50 RWQA floor answers (3:1 toward box).
+  qwen35 switched to box (re-measurements in qwen35_accuracy_box/); check any
+  new driver's degrade() for BOX + cap before trusting its floors.
 - no_grad is the WORKER's job, so any in-process driver that calls
   approx_forward/correct_forward directly must supply it itself. The failure mode
   is a silent ~1.4x activation-memory tax that presents as a plausible-looking

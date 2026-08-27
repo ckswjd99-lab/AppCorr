@@ -1,0 +1,50 @@
+{"i": 0, "pred": "A", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 15, "pred": "B. 2 cars", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 30, "pred": "green", "gold": "Green", "ok": 1, "val": 1.0}
+{"i": 45, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 60, "pred": "B", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 75, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 90, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 105, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 120, "pred": "no", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 135, "pred": "yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 150, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 165, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 180, "pred": "yes", "gold": "No", "ok": 0, "val": 0.0}
+{"i": 195, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 210, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 225, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 240, "pred": "no", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 255, "pred": "C. More than 20 meters", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 270, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 285, "pred": "yellow", "gold": "Yellow", "ok": 1, "val": 1.0}
+{"i": 300, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 315, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 330, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 345, "pred": "red", "gold": "Red", "ok": 1, "val": 1.0}
+{"i": 360, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 375, "pred": "red", "gold": "Red", "ok": 1, "val": 1.0}
+{"i": 390, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 405, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 420, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 435, "pred": "A", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 450, "pred": "no", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 465, "pred": "yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 480, "pred": "C", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 495, "pred": "A. The barbecue sauce is larger.", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 510, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 525, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 540, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 555, "pred": "yes", "gold": "No", "ok": 0, "val": 0.0}
+{"i": 570, "pred": "A. Yes", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 585, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 600, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 615, "pred": "yes", "gold": "No", "ok": 0, "val": 0.0}
+{"i": 630, "pred": "A. There is only one.", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 645, "pred": "2", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 660, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 675, "pred": "yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 690, "pred": "no", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 705, "pred": "yes", "gold": "No", "ok": 0, "val": 0.0}
+{"i": 720, "pred": "yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 735, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
