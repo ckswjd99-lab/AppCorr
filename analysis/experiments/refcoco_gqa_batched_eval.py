@@ -183,12 +183,23 @@ def build_first_token_context(executor, encoder, raw_config, config, image_np, p
             patch_buffer.extend(group_patches)
             canvas = encoder.decode(patch_buffer, config, canvas=canvas)
             task = Task(task_id=0, request_id=0, payload=group_patches, instructions=[])
-            executor.preprocess(canvas, task, context, config)
-            executor.prepare_tokens(task, context, config)
-            if group_id == 0:
-                executor.approx_forward({"layers": (0, total_layers)}, context, config)
-            else:
-                executor.correct_forward({"layers": (0, total_layers), "group_id": group_id}, context, config)
+            # no_grad is LOAD-BEARING here and its absence was expensive: approx/correct_forward
+            # carry no decorator of their own (the offload worker wraps them), so this driver ran
+            # every correction round WITH autograd tracking -- the graph pinned ~27GB of
+            # activations per image (measured: the same build peaks at 68GB under no_grad vs
+            # 95GB without, on a 95GiB card). That overhead, not the images themselves, was the
+            # entire "672x672 hardware ceiling": every OOM-skip in the earlier full-split runs
+            # (8/8811 at k0.25, 207/8811 at k0.50, 143/2000 on the streaming subset) traces to
+            # it. Found via a three-step discriminator: skipped image passes in isolation ->
+            # in-run trace shows BEFORE clean at 66.94GB but per-build peak ~95GB -> the only
+            # difference from the passing probe was its torch.no_grad() wrapper.
+            with torch.no_grad():
+                executor.preprocess(canvas, task, context, config)
+                executor.prepare_tokens(task, context, config)
+                if group_id == 0:
+                    executor.approx_forward({"layers": (0, total_layers)}, context, config)
+                else:
+                    executor.correct_forward({"layers": (0, total_layers), "group_id": group_id}, context, config)
         with torch.no_grad():
             first_token = executor.decode_first_token(context["llm_current_feature"])
 
