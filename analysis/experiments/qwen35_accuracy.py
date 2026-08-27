@@ -37,6 +37,20 @@ def degrade(img: Image.Image, level: int = 2, filt: str = "bicubic") -> Image.Im
     divergence; the BOX-vs-BICUBIC sensitivity probe decides whether the table needs re-measuring."""
     f = 2 ** level
     w, h = img.size
+    if filt == "pyr":
+        # The protocol archetype itself: cv2.pyrDown chain, cv2.pyrUp back with
+        # per-step dstsize (odd dims round up on pyrDown; the stored size chain
+        # restores them exactly, mirroring laplacian.py's _iterative_upsample_native).
+        import cv2
+        import numpy as np
+        arr = np.asarray(img)
+        sizes = [(arr.shape[1], arr.shape[0])]
+        for _ in range(level):
+            arr = cv2.pyrDown(arr)
+            sizes.append((arr.shape[1], arr.shape[0]))
+        for i in range(level - 1, -1, -1):
+            arr = cv2.pyrUp(arr, dstsize=sizes[i])
+        return Image.fromarray(arr)
     down = Image.BOX if filt == "box" else Image.BICUBIC
     return img.resize((max(1, w // f), max(1, h // f)), down).resize((w, h), Image.BICUBIC)
 
@@ -83,7 +97,7 @@ def main():
     # number measured before this date used bicubic and lives in analysis/results/qwen35_accuracy/;
     # box re-measurements go to qwen35_accuracy_box/ -- NEVER append across the boundary, the
     # jsonl resume would silently mix filters.
-    ap.add_argument("--degrade-filter", choices=["bicubic", "box"], default="box")
+    ap.add_argument("--degrade-filter", choices=["bicubic", "box", "pyr"], default="box")
     ap.add_argument("--arms", nargs="+", default=["floor", "streaming", "ceiling"])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--keep", type=float, default=1.0,
