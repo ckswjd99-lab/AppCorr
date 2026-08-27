@@ -68,12 +68,20 @@ class Qwen35Axis(nn.Module):
     # --- shared prep ---------------------------------------------------------------------------- #
 
     @torch.no_grad()
-    def build_inputs(self, image, question: str) -> Dict[str, Any]:
-        """Chat-template + pixel preprocessing for one (image, question) request."""
+    def build_inputs(self, image, question: str, think: bool = False) -> Dict[str, Any]:
+        """Chat-template + pixel preprocessing for one (image, question) request.
+
+        `think` defaults OFF: Qwen3.5's template opens a `<think>` block when thinking is enabled,
+        and a short greedy decode then spends its whole budget on reasoning preamble without ever
+        reaching the answer -- measured as the 35B scoring 18% on RealWorldQA MCQ, which is a
+        truncated-thought artifact, not a model property. Short-answer evals score the ANSWER, so
+        thinking stays off; pass think=True only from a driver that decodes past the block.
+        """
         msgs = [{"role": "user", "content": [{"type": "image", "image": image},
                                              {"type": "text", "text": question}]}]
         return self.processor.apply_chat_template(
-            msgs, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt"
+            msgs, add_generation_prompt=True, tokenize=True, return_dict=True,
+            return_tensors="pt", enable_thinking=think,
         )
 
     def _image_token_run(self, input_ids: torch.Tensor) -> Tuple[int, int]:
