@@ -143,6 +143,11 @@ SPEC = [
 # re-measured too, so nothing here is updated until BOTH bounds are back: quoting a new ceiling
 # against an old floor would invent a gap neither measurement supports.
 LITERALS = {
+    # Qwen3.5 accuracy, full RealWorldQA split (765), 2026-08-27, thinking disabled, shared greedy
+    # decode across all three arms. Single streaming arm (g=4) sits under the k0.50 columns per the
+    # dagger footnote's nominal-placement rule.
+    ("Qwen3.5-MoE (35B-A3B)", "RealWorldQA (Acc.)"): {"floor": 74.51, "ceiling": 77.39,
+                                                      "k0.50": 77.25},
     # Re-measured 2026-08-26 on the M-RoPE-fixed code, full splits, both bounds through the same
     # driver. RefCOCO N=8811, GQA N=12578. These REPLACE the pre-fix values (which were
     # 85.75/74.76, 76.20/65.02, 60.84/55.16) -- see the block comment above.
