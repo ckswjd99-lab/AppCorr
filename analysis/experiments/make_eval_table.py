@@ -201,6 +201,12 @@ LITERALS = {
     # Floor arrives after their chunked-attention fix rerun; do not backfill early values.
     # floor is the completed full-2638 rerun after the chunked-attention fix (the 111
     # recovered 2K-res images scored 62%, harder than average). k0.50/streaming pending.
+    # MMVP full 300, five arms, zero skips (GH200). Largest Qwen2.5 gap measured (9.34pp --
+    # CLIP-blind discrimination is exactly what a level-2 pyramid destroys). n=300: one sample
+    # = 0.33pp, recovery CI ~ +-5pp -- read recovery coarsely, preservation ordering is solid.
+    ("Qwen2.5-VL (33.5B)", "MMVP (Acc.)"): {"floor": 65.33, "ceiling": 74.67,
+                                            "k0.25": 68.33, "k0.50": 69.00,
+                                            "stream": 71.67},
     ("Qwen2.5-VL (33.5B)", "CV-Bench (Acc.)"): {"ceiling": 79.87, "floor": 72.52,
                                                 "k0.25": 75.09, "k0.50": 77.52,
                                                 "stream": 78.96},
