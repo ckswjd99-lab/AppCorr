@@ -190,25 +190,25 @@
   "realworldqa": {
    "full": 121078.4,
    "k0.25": 11347.4,
-   "total_k0.25": 166448.0,
+   "total_k0.25": 157765.2,
    "k0.50": 18661.5,
-   "total_k0.50": 195704.3
+   "total_k0.50": 187066.1
   },
   "gqa": {
    "full": 21506.2,
    "k0.25": 3796.2,
-   "total_k0.25": 36687.8,
+   "total_k0.25": 31764.7,
    "k0.50": 4976.7,
-   "total_k0.50": 41409.6
+   "total_k0.50": 36474.5
   },
   "refcoco": {
    "full": 31780.0,
    "k0.25": 6171.6,
-   "total_k0.25": 56461.4,
+   "total_k0.25": 46017.4,
    "k0.50": 7878.5,
-   "total_k0.50": 63289.1
+   "total_k0.50": 52850.1
   },
-  "_note": "GH200 flops_report_qwen25vl_arms.py 2026-08-27 (n=6/dataset), real executor path under flops.session; PSCORE + PREPARE_TOKENS excluded; wiring gates: critical == correct/4 exactly, total == approx+correct, ceiling within 0.8% of the standalone measurement."
+  "_note": "text-split schedule totals (GH200 2026-08-27: pre-image text every round, post-image text final round only; the every-round schedule re-corrected the whole text block g times, 0.56x of full, keep-independent). criticals unchanged by construction. k0.25 accuracy verified schedule-neutral on the 2000-subset (-0.05pp); k0.50 full-split accuracy re-verification lands ~21:20 and may adjust that one accuracy cell."
  },
  "qwen35_moe": {
   "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
