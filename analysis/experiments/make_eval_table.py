@@ -75,6 +75,8 @@ SPEC = [
         ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
         ("GQA testdev (Exact Match)", None, ("inproc", "qwen25vl_32b", "gqa")),
         ("RealWorldQA (Acc.)",        None, ("inproc", "qwen25vl_32b", "realworldqa")),
+        ("MMVP (Acc.)",               None, None),
+        ("CV-Bench (Acc.)",           None, None),
     ]),
     ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
@@ -191,8 +193,13 @@ LITERALS = {
     ("Qwen3.5-MoE (35B-A3B)", "VSR zeroshot (Acc.)"): {"floor": 88.46, "ceiling": 89.77,
                                                        "k0.25": 88.63, "k0.50": 88.95},
     # MMVP full 300 (2026-08-28 real-photo sweep): floor / streaming g=4 / ceiling.
+    # NOTE: floor/streaming measured with the bicubic-era filter; BOX re-measurement
+    # (qwen35_accuracy_box/) supersedes these when it lands.
     ("Qwen3.5-MoE (35B-A3B)", "MMVP (Acc.)"): {"floor": 79.00, "ceiling": 82.00,
                                                "stream": 81.67},
+    # GH200 campaign (2026-08-28): cvbench ceiling full 2638, zero skips, FINAL.
+    # Floor arrives after their chunked-attention fix rerun; do not backfill early values.
+    ("Qwen2.5-VL (33.5B)", "CV-Bench (Acc.)"): {"ceiling": 79.87},
     # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): {"floor": 40.37, "ceiling": 50.64},
