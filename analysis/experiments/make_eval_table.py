@@ -75,6 +75,15 @@ SPEC = [
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
         ("VSR zeroshot (Acc.)",    None, None),
     ]),
+    # 122B-FP8: the FP8 GEMM kernel stack (deep-gemm, sm_90) produces garbage on this B200
+    # (sm_100), so ACCURACY is unmeasurable here until a Blackwell kernel or a dequant path
+    # exists. COMPUTE figures are still valid: FLOP counts are shape- and token-count-determined
+    # (the MoE handler charges n_tok x top_k whichever experts the router picks), independent of
+    # the values flowing through.
+    ("Qwen3.5-MoE (122B-A10B FP8)$^\\dagger\\P$", [
+        ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_122b", "chartqa")),
+        ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_122b", "realworldqa")),
+    ]),
     ("Qwen2.5-VL (33.5B)$^\\S$", [
         ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
         ("RefCOCO val (mIoU)",        None, ("inproc", "qwen25vl_32b", "refcoco")),
@@ -471,7 +480,9 @@ def emit_latex(table, keeps) -> str:
              r"per-round selection arm (2026-08-26); their accuracy cells are still the earlier "
              r"upfront arm's, pending re-evaluation. $^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
              r"(measured equivalent), excluding OOM images (0.09\% at 25\%, 2.3\% at 50\%) with "
-             r"bounds restricted to the same kept sets.}")
+             r"bounds restricted to the same kept sets. $^\\P$122B-FP8 accuracy is unmeasurable "
+             r"on this hardware (FP8 kernels produce incorrect outputs on sm\_100); its compute "
+             r"figures are shape-determined and unaffected.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
