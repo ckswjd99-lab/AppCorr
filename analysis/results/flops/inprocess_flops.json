@@ -211,17 +211,17 @@
   "_note": "text-split schedule totals (GH200 2026-08-27: pre-image text every round, post-image text final round only; the every-round schedule re-corrected the whole text block g times, 0.56x of full, keep-independent). criticals unchanged by construction. k0.25 accuracy verified schedule-neutral on the 2000-subset (-0.05pp); k0.50 full-split accuracy re-verification lands ~21:20 and may adjust that one accuracy cell."
  },
  "qwen35_moe": {
-  "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
+  "_note": "streaming arm at keep=1.0 (its own column block as of 2026-08-27); the earlier nominal k0.50 placement is retired. keep-arm (0.25/0.50) FLOPs not yet measured (report lacks --keep; accuracy keep arms ARE measured).",
   "_samples": 12,
   "chartqa": {
    "full": 3898.0,
-   "k0.50": 1091.2,
-   "total_k0.50": 5374.4
+   "k1.00": 1091.2,
+   "total_k1.00": 5374.4
   },
   "realworldqa": {
    "full": 11681.3,
-   "k0.50": 3079.7,
-   "total_k0.50": 16230.1
+   "k1.00": 3079.7,
+   "total_k1.00": 16230.1
   }
  }
 }
