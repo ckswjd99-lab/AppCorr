@@ -296,6 +296,7 @@ class Qwen25VLExecutor(ModelExecutor):
         if group_idx.numel() == 0:
             return
         _n_before_prune = group_idx.numel()
+        group_idx_raw = group_idx  # pre-prune positions -- streaming chunk boundaries need these
         group_idx = self._prune_patch_idx(group_idx, context, config)
         if os.environ.get("APPCORR_QWEN_TRACE_DIR"):
             print(f"[TRACE-PRUNE] group_id={group_id} before={_n_before_prune} after={group_idx.numel()}", flush=True)
@@ -342,11 +343,50 @@ class Qwen25VLExecutor(ModelExecutor):
         perm = context["permanent_group_idx"]
         num_groups = max(int(getattr(config, "transmission_kwargs", {}).get("num_groups", 1)), 1)
         is_final_round = group_id >= num_groups
-        if is_final_round or all_img.numel() == 0:
-            text_idx = perm
+
+        # LLM schedule. Read from the RAW appcorr_kwargs (the `normalize_appcorr_kwargs` trap:
+        # never let a normalizer default silently pick an arm).
+        raw_appcorr = getattr(config, "appcorr_kwargs", None) or {}
+        llm_schedule = str(raw_appcorr.get("llm_schedule", "interleaved"))
+
+        if llm_schedule == "streaming":
+            # STREAMING (exact chunked prefill -- the causal-LLM arm the OV2/Qwen3.5 rows use):
+            # each round prefill the CONTIGUOUS band [frontier, end-of-this-round's-image-band)
+            # exactly once, over the vision state as of this round; earlier chunks' K/V stay
+            # locked (never revisited), later positions' stale round-0 keys are unread thanks to
+            # the causal mask. Round 1 folds the leading text (frontier starts at 0); the final
+            # round extends through the trailing text to N. Correctness of this exact pattern was
+            # gated in fp32 chunked-vs-reference at 4.77e-05 max-abs logit diff (arithmetic-noise
+            # band) before it was promoted here from the diagnostic scripts.
+            #
+            # Chunk boundaries come from the group's RAW (pre-prune) positions -- the vision-side
+            # keep rate selects which VISION tokens get recomputed, but the LLM prefills every
+            # arrived position exactly once over whatever embedding the vision state currently
+            # holds; a selection-shaped LLM chunk would leave unprefilled holes that a later
+            # chunk's causal attention WOULD read.
+            if group_idx_raw.numel() > 0:
+                band = context["image_token_positions"][group_idx_raw.to(context["image_token_positions"].device)]
+                gaps = band[1:] - band[:-1]
+                assert bool((gaps == 1).all()), (
+                    "streaming llm_schedule requires contiguous per-round image bands -- use "
+                    "grouping_strategy='sequential' (grid/top_energy bands interleave positions)."
+                )
+                band_end = int(band.max()) + 1
+            else:
+                band_end = int(context.get("stream_frontier", 0))
+            N_seq = context["position_ids"].shape[-1]
+            start = int(context.get("stream_frontier", 0))
+            end = N_seq if is_final_round else band_end
+            context["stream_frontier"] = end
+            token_idx = torch.arange(start, end, device=all_img.device)
+            if token_idx.numel() == 0:
+                return
         else:
-            text_idx = perm[perm < all_img[0]]
-        token_idx = torch.cat([text_idx, image_token_positions]).unique()
+            if is_final_round or all_img.numel() == 0:
+                text_idx = perm
+            else:
+                text_idx = perm[perm < all_img[0]]
+            token_idx = torch.cat([text_idx, image_token_positions]).unique()
 
         x_feature = context["llm_input_embeds"]
 

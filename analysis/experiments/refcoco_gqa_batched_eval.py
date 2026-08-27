@@ -77,6 +77,10 @@ def parse_args():
     p.add_argument("--grouping-strategy", type=str, default=None)
     p.add_argument("--num-groups", type=int, default=None)
     p.add_argument("--keep-rate", type=float, default=None)
+    p.add_argument("--llm-schedule", choices=["interleaved", "streaming"], default=None,
+                    help="appcorr_kwargs.llm_schedule: 'streaming' = exact contiguous chunked "
+                         "prefill per round (causal-LLM arm; requires sequential grouping); "
+                         "default (unset) keeps the executor's interleaved correction.")
     p.add_argument("--token-keep-ratio", type=float, default=None,
                     help="Server-side vision-recompute selection fraction (appcorr_kwargs.token_keep_ratio, "
                          "read by Qwen25VLExecutor._prune_patch_idx) -- NOT the same knob as --keep-rate, "
@@ -114,6 +118,8 @@ def load_base_config_dict(args):
         raw.setdefault("transmission_kwargs", {})["pscore_threshold"] = args.pscore_threshold
     if args.token_keep_ratio is not None:
         raw.setdefault("appcorr_kwargs", {})["token_keep_ratio"] = args.token_keep_ratio
+    if args.llm_schedule is not None:
+        raw.setdefault("appcorr_kwargs", {})["llm_schedule"] = args.llm_schedule
     return raw
 
 
