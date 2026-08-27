@@ -115,7 +115,7 @@ class Qwen35Axis(nn.Module):
 
     @torch.no_grad()
     def streaming_forward(self, inputs: Dict[str, Any], px_base: torch.Tensor,
-                          groups: int) -> Tuple[torch.Tensor, Any, Dict[str, Any]]:
+                          groups: int, keep: float = 1.0) -> Tuple[torch.Tensor, Any, Dict[str, Any]]:
         """Progressive arrival: vision approximates-then-corrects per band, the LLM streams.
 
         Args:
@@ -125,6 +125,14 @@ class Qwen35Axis(nn.Module):
                 base). Same shape as inputs["pixel_values"].
             groups: arrival rounds. groups=1 must reproduce `full_forward` exactly (in exact
                 arithmetic): one band corrected after everything arrived = no staleness anywhere.
+            keep: fraction of image tokens corrected in total (the standard 0.25/0.50 arms;
+                1.0 = the original streaming arm and the identity-gate case). Band r selects its
+                quota among arrived-and-uncorrected tokens by residual energy x received
+                attention; the attention term rides the base approx pass this arm already runs
+                (full depth -- the base approx is not frontier-chunked, so no extra pass exists to
+                duplicate). Unselected tokens enter the LLM at their approximate reconstruction
+                and, this being streaming, are never revisited -- that permanence is the knob's
+                cost, and what the accuracy arms price.
 
         Returns (final_position_logits, kv_cache, stats).
         """
@@ -154,8 +162,11 @@ class Qwen35Axis(nn.Module):
             if n_tok != n_groups_total:
                 raise ValueError(f"{n_tok} image tokens vs {n_groups_total} merge groups")
             with self._stage("vision_base"):
-                _, cache = self.tower.approx_forward(ctx_base["hidden_states"], 0,
-                                                     len(self.tower.blocks), ctx_base, cache, "v")
+                x_base_out, cache = self.tower.approx_forward(
+                    ctx_base["hidden_states"], 0, len(self.tower.blocks), ctx_base, cache, "v",
+                    collect_attn_mean=(keep < 1.0))
+            if keep < 1.0:
+                cache = self.tower.finalize_attn_layermean(cache, "v", len(self.tower.blocks))
 
         emb_all = self.lm.embed_tokens(ids)
         bands = self._bands(groups, n_groups_total)
@@ -179,6 +190,20 @@ class Qwen35Axis(nn.Module):
         # Where a decode loop on top of the returned cache must continue from: stock advances all
         # three axes together for generated (text) tokens.
         stats_decode_pos = int(pos_3d.max().item()) + 1
+
+        if keep < 1.0:
+            # Per-merge-group score. Energy is pixel-level (the client hint in deployment): mean
+            # squared residual between full and base patch rows, pooled to merge groups.
+            resid = (px_full.float() - px_base.float()).pow(2).mean(dim=-1)      # [n_rows]
+            unit_ = self.tower.spatial_merge_unit
+            energy = resid.reshape(n_groups_total, unit_).mean(dim=1)
+            attn = cache["v_attn_layermean"].to(energy.device)
+            attn = attn.reshape(n_groups_total, unit_).mean(dim=1)
+            score = ((energy / energy.mean().clamp_min(1e-12))
+                     * (attn / attn.mean().clamp_min(1e-12)))
+            n_sel = max(1, int(round(keep * n_groups_total)))
+            quota = [n_sel // groups + (1 if r_ < n_sel % groups else 0) for r_ in range(groups)]
+            selected = torch.zeros(n_groups_total, dtype=torch.bool, device=score.device)
 
         kv = DynamicCache(config=self.cfg.text_config)
         pos_done = 0
@@ -207,16 +232,41 @@ class Qwen35Axis(nn.Module):
                 arrived_rows[g0 * unit:g1 * unit] = True
                 stream = torch.where(arrived_rows.unsqueeze(-1),
                                      ctx_full["hidden_states"], ctx_base["hidden_states"])
-                group_idx = torch.arange(g0, g1, device=px_full.device)
-                with self._stage("vision_correct"):
-                    x_v, cache = self.tower.correct_forward(stream, group_idx, 0,
-                                                            len(self.tower.blocks), ctx_full,
-                                                            cache, "v")
-                stats["corrected_groups"] += g1 - g0
+                if keep < 1.0:
+                    band_mask = torch.zeros(n_groups_total, dtype=torch.bool, device=score.device)
+                    band_mask[g0:g1] = True
+                    cand = band_mask & ~selected
+                    q = min(quota[r], int(cand.sum()))
+                    if q > 0:
+                        group_idx = score.masked_fill(~cand, float("-inf")).topk(q).indices.sort().values
+                        selected[group_idx] = True
+                    else:
+                        group_idx = torch.empty(0, dtype=torch.long, device=score.device)
+                else:
+                    group_idx = torch.arange(g0, g1, device=px_full.device)
+                if group_idx.numel():
+                    with self._stage("vision_correct"):
+                        x_v, cache = self.tower.correct_forward(stream, group_idx, 0,
+                                                                len(self.tower.blocks), ctx_full,
+                                                                cache, "v")
+                stats["corrected_groups"] += int(group_idx.numel()) if keep < 1.0 else (g1 - g0)
                 # Merge ONLY this band. The merger is per-merge-group (norm -> reshape(unit) ->
-                # MLP), so slicing at group granularity is exact.
+                # MLP), so slicing at group granularity is exact. Under keep<1, UNCORRECTED rows
+                # take the PURE approx output -- the same convention gemma3's progressive walk
+                # uses (mixed = corrected rows from the walk, everything else feats_appr), not the
+                # stream+increment reconstruction, which mixes refined layer-0 with degraded
+                # increments (the self-inconsistent combination the CLIP memo measured below floor).
                 with self._stage("merge"):
-                    band_rows = x_v[g0 * unit:g1 * unit]
+                    if keep < 1.0:
+                        row_mask = torch.zeros(n_rows, dtype=torch.bool, device=px_full.device)
+                        if group_idx.numel():
+                            rows_sel = (group_idx.unsqueeze(1) * unit
+                                        + torch.arange(unit, device=group_idx.device)).flatten()
+                            row_mask[rows_sel] = True
+                        src = torch.where(row_mask.unsqueeze(-1), x_v, x_base_out)                             if group_idx.numel() else x_base_out
+                        band_rows = src[g0 * unit:g1 * unit]
+                    else:
+                        band_rows = x_v[g0 * unit:g1 * unit]
                     merged = self.tower.merger(band_rows)
                 emb_all[:, lo + g0:lo + g1] = merged.unsqueeze(0).to(emb_all.dtype)
                 with self._stage("llm_prefill"):

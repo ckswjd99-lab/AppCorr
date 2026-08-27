@@ -74,6 +74,8 @@ def main():
     ap.add_argument("--level", type=int, default=2, help="pyramid level of the degraded base")
     ap.add_argument("--arms", nargs="+", default=["floor", "streaming", "ceiling"])
     ap.add_argument("--groups", type=int, default=4)
+    ap.add_argument("--keep", type=float, default=1.0,
+                    help="fraction of image tokens corrected (streaming arm); 1.0 = correct all")
     ap.add_argument("--samples", type=int, default=0, help="0 = full split")
     ap.add_argument("--out", default="analysis/results/qwen35_accuracy")
     args = ap.parse_args()
@@ -91,8 +93,12 @@ def main():
 
     for arm in args.arms:
         slug = "" if args.model == MODEL_ID_35B else "_" + args.model.split("/")[-1].lower()
-        path = os.path.join(args.out, f"{args.dataset}{slug}_{arm}"
-                            + (f"_g{args.groups}" if arm == "streaming" else "") + ".jsonl")
+        arm_suffix = ""
+        if arm == "streaming":
+            arm_suffix = f"_g{args.groups}"
+            if args.keep < 1.0:
+                arm_suffix += f"_k{args.keep:.2f}"
+        path = os.path.join(args.out, f"{args.dataset}{slug}_{arm}{arm_suffix}.jsonl")
         done = set()
         if os.path.exists(path):
             with open(path) as f:
@@ -114,7 +120,8 @@ def main():
                     lg, kv, dp = prefill_stock(axis, base_inputs)
                 else:
                     base_px = axis.build_inputs(degrade(img, args.level), q)["pixel_values"].to("cuda:0")
-                    lg, kv, st = axis.streaming_forward(inputs, base_px, args.groups)
+                    lg, kv, st = axis.streaming_forward(inputs, base_px, args.groups,
+                                                        keep=args.keep)
                     dp = st["decode_start_pos"]
                 pred = greedy(axis, lg, kv, dp)
                 ok, val = spec.score(pred, gold)
