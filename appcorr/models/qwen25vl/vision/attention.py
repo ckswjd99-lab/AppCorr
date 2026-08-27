@@ -123,11 +123,22 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
         q = q.transpose(0, 1)  # [H, T, Dh]
         k = k.transpose(0, 1)
         col = torch.zeros(x.shape[0], device=x.device, dtype=torch.float32)
+        # Query-chunked accumulation, same reason gemma3's `_incoming_attention` chunks (its
+        # docstring: a full fp32 attention matrix "would be ~1 GB per head-batch"): a full-att
+        # segment on a large image materializes [H, L, L] fp32 -- CV-Bench ships 2240x1680 photos
+        # (~30K patches), where that is 16 x 30K^2 x 4B ~ 57GB and OOMs the box. Softmax is
+        # row-wise, so chunking the query axis is exact, not an approximation. RefCOCO-scale
+        # images (~1.5K patches) fit in one chunk and take the same path.
+        chunk = 1024
         for start, length in segment_ranges:
             sl = slice(start, start + length)
-            q_seg, k_seg = q[:, sl], k[:, sl]  # [H, L, Dh]
-            w = torch.softmax((q_seg.float() @ k_seg.float().transpose(-1, -2)) * self.scaling, dim=-1)  # [H, L, L]
-            col[sl] = w.sum(dim=1).mean(dim=0) / length  # mean over queries (within segment), then heads
+            q_seg, k_seg = q[:, sl].float(), k[:, sl].float()  # [H, L, Dh]
+            acc = torch.zeros(length, device=x.device, dtype=torch.float32)
+            for q0 in range(0, length, chunk):
+                q1 = min(q0 + chunk, length)
+                w = torch.softmax((q_seg[:, q0:q1] @ k_seg.transpose(-1, -2)) * self.scaling, dim=-1)
+                acc += w.sum(dim=1).mean(dim=0)  # sum over this chunk's queries, mean over heads
+            col[sl] = acc / length
         return col
 
     def approx(self, x: torch.Tensor, segment_ranges, position_embeddings, cache_feature: Dict[str, Any], tag: str):
