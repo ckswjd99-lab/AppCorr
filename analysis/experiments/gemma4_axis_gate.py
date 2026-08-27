@@ -26,15 +26,30 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from appcorr.models.gemma4.unified import Gemma4Axis, MODEL_ID_31B  # noqa: E402
 
 
-def l2_degrade(img: Image.Image, factor: int = 4) -> Image.Image:
-    """Downsample by `factor` and re-upsample AT THE ORIGINAL SIZE.
+# Gemma 4's processor resizes aspect-preserving to at most 2520 patches of 16px
+# (max_soft_tokens 280 x 3x3 pool) -- the model never sees more than this many
+# pixels, so the pyramid-direction rule (AGENTS.md; pyramid_degradation_
+# native_vs_canvas.md) caps degradation at the SAMPLED resolution, not native.
+_GEMMA4_MAX_PX = 2520 * 16 * 16
 
-    The processor's resize/patchify depends only on (W, H), so this preserves the
-    native-resolution grid by construction; G3 asserts it anyway.
+
+def l2_degrade(img: Image.Image, factor: int = 4, max_px: int = _GEMMA4_MAX_PX) -> Image.Image:
+    """Level-2 pyramid base at the model-sampled resolution, restored to size.
+
+    BOX for the down (area averaging = the pyramid level, per the convention's
+    reference implementation), BICUBIC for the up. The cap applies AREA-wise
+    because the resize is aspect-preserving: an image larger than what the
+    processor samples degrades relative to the sampled dims -- degrading native
+    pixels the model would discard anyway makes the floor sit too close to the
+    ceiling (the documented canvas-direction failure).
+    The output size equals the input size, so the patch grid is preserved by
+    construction; the gates assert it anyway.
     """
     w, h = img.size
-    small = img.resize((max(1, w // factor), max(1, h // factor)), Image.BICUBIC)
-    return small.resize((w, h), Image.BICUBIC)
+    s = min(1.0, (max_px / (w * h)) ** 0.5)
+    tw = max(1, int(w * s) // factor)
+    th = max(1, int(h * s) // factor)
+    return img.resize((tw, th), Image.BOX).resize((w, h), Image.BICUBIC)
 
 
 def sane(txt: str) -> bool:

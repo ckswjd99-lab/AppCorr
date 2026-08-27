@@ -1,12 +1,12 @@
 {
  "summary": {
-  "model": "google/gemma-4-31B-it",
+  "model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
   "dataset": "mmvp",
-  "arm": "corrected",
-  "keep": 0.5,
+  "arm": "ceiling",
+  "level": 2,
   "num_samples": 300,
-  "accuracy": 0.84,
-  "correct": 252
+  "accuracy": 0.7,
+  "correct": 210
  },
  "per_sample": [
   {
@@ -17,9 +17,9 @@
   },
   {
    "idx": 1,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 2,
@@ -41,15 +41,15 @@
   },
   {
    "idx": 5,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 6,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 7,
@@ -71,9 +71,9 @@
   },
   {
    "idx": 10,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 11,
@@ -83,9 +83,9 @@
   },
   {
    "idx": 12,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 13,
@@ -95,15 +95,15 @@
   },
   {
    "idx": 14,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 15,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "b",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 16,
@@ -215,9 +215,9 @@
   },
   {
    "idx": 34,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 35,
@@ -263,9 +263,9 @@
   },
   {
    "idx": 42,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 43,
@@ -287,15 +287,15 @@
   },
   {
    "idx": 46,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 47,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "b",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 48,
@@ -311,15 +311,15 @@
   },
   {
    "idx": 50,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 51,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 52,
@@ -347,9 +347,9 @@
   },
   {
    "idx": 56,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 57,
@@ -383,9 +383,9 @@
   },
   {
    "idx": 62,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 63,
@@ -395,9 +395,9 @@
   },
   {
    "idx": 64,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 65,
@@ -413,9 +413,9 @@
   },
   {
    "idx": 67,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 68,
@@ -437,15 +437,15 @@
   },
   {
    "idx": 71,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "b",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 72,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 73,
@@ -461,9 +461,9 @@
   },
   {
    "idx": 75,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 76,
@@ -473,9 +473,9 @@
   },
   {
    "idx": 77,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 78,
@@ -509,9 +509,9 @@
   },
   {
    "idx": 83,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "b",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 84,
@@ -551,9 +551,9 @@
   },
   {
    "idx": 90,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 91,
@@ -575,9 +575,9 @@
   },
   {
    "idx": 94,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 95,
@@ -611,9 +611,9 @@
   },
   {
    "idx": 100,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 101,
@@ -653,9 +653,9 @@
   },
   {
    "idx": 107,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 108,
@@ -671,9 +671,9 @@
   },
   {
    "idx": 110,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 111,
@@ -683,9 +683,9 @@
   },
   {
    "idx": 112,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 113,
@@ -695,15 +695,15 @@
   },
   {
    "idx": 114,
-   "pred": "(b)",
+   "pred": "a",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 115,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 116,
@@ -713,9 +713,9 @@
   },
   {
    "idx": 117,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 118,
@@ -743,9 +743,9 @@
   },
   {
    "idx": 122,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 123,
@@ -755,9 +755,9 @@
   },
   {
    "idx": 124,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 125,
@@ -809,9 +809,9 @@
   },
   {
    "idx": 133,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 134,
@@ -827,9 +827,9 @@
   },
   {
    "idx": 136,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 137,
@@ -851,9 +851,9 @@
   },
   {
    "idx": 140,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 141,
@@ -869,9 +869,9 @@
   },
   {
    "idx": 143,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "b",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 144,
@@ -887,9 +887,9 @@
   },
   {
    "idx": 146,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 147,
@@ -905,15 +905,15 @@
   },
   {
    "idx": 149,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 150,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 151,
@@ -935,9 +935,9 @@
   },
   {
    "idx": 154,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 155,
@@ -953,15 +953,15 @@
   },
   {
    "idx": 157,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 158,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 159,
@@ -971,15 +971,15 @@
   },
   {
    "idx": 160,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 161,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 162,
@@ -1013,15 +1013,15 @@
   },
   {
    "idx": 167,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 168,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 169,
@@ -1031,9 +1031,9 @@
   },
   {
    "idx": 170,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 171,
@@ -1043,9 +1043,9 @@
   },
   {
    "idx": 172,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 173,
@@ -1067,9 +1067,9 @@
   },
   {
    "idx": 176,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 177,
@@ -1103,15 +1103,15 @@
   },
   {
    "idx": 182,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 183,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 184,
@@ -1205,9 +1205,9 @@
   },
   {
    "idx": 199,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 200,
@@ -1235,9 +1235,9 @@
   },
   {
    "idx": 204,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 205,
@@ -1271,9 +1271,9 @@
   },
   {
    "idx": 210,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 211,
@@ -1283,9 +1283,9 @@
   },
   {
    "idx": 212,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 213,
@@ -1295,9 +1295,9 @@
   },
   {
    "idx": 214,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 215,
@@ -1307,9 +1307,9 @@
   },
   {
    "idx": 216,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 217,
@@ -1319,9 +1319,9 @@
   },
   {
    "idx": 218,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 219,
@@ -1337,9 +1337,9 @@
   },
   {
    "idx": 221,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 222,
@@ -1379,21 +1379,21 @@
   },
   {
    "idx": 228,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
-  },
-  {
-   "idx": 229,
-   "pred": "(a)",
-   "gold": "b",
    "score": 0.0
   },
   {
-   "idx": 230,
-   "pred": "(a)",
-   "gold": "a",
+   "idx": 229,
+   "pred": "(b)",
+   "gold": "b",
    "score": 1.0
+  },
+  {
+   "idx": 230,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
   },
   {
    "idx": 231,
@@ -1415,9 +1415,9 @@
   },
   {
    "idx": 234,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 235,
@@ -1439,7 +1439,7 @@
   },
   {
    "idx": 238,
-   "pred": "(a)",
+   "pred": "a",
    "gold": "a",
    "score": 1.0
   },
@@ -1451,7 +1451,7 @@
   },
   {
    "idx": 240,
-   "pred": "(a)",
+   "pred": "a",
    "gold": "a",
    "score": 1.0
   },
@@ -1469,9 +1469,9 @@
   },
   {
    "idx": 243,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 244,
@@ -1493,9 +1493,9 @@
   },
   {
    "idx": 247,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 248,
@@ -1511,9 +1511,9 @@
   },
   {
    "idx": 250,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 251,
@@ -1535,9 +1535,9 @@
   },
   {
    "idx": 254,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 255,
@@ -1553,15 +1553,15 @@
   },
   {
    "idx": 257,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "b",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 258,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 259,
@@ -1607,15 +1607,15 @@
   },
   {
    "idx": 266,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "a",
-   "score": 0.0
+   "score": 1.0
   },
   {
    "idx": 267,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 268,
@@ -1691,7 +1691,7 @@
   },
   {
    "idx": 280,
-   "pred": "(a)",
+   "pred": "a",
    "gold": "a",
    "score": 1.0
   },
@@ -1709,9 +1709,9 @@
   },
   {
    "idx": 283,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 284,
@@ -1733,9 +1733,9 @@
   },
   {
    "idx": 287,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 288,
@@ -1763,15 +1763,15 @@
   },
   {
    "idx": 292,
-   "pred": "(a)",
+   "pred": "(b)",
    "gold": "a",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 293,
-   "pred": "(b)",
+   "pred": "(a)",
    "gold": "b",
-   "score": 1.0
+   "score": 0.0
   },
   {
    "idx": 294,
@@ -1799,13 +1799,13 @@
   },
   {
    "idx": 298,
-   "pred": "(b)",
+   "pred": "b",
    "gold": "a",
    "score": 0.0
   },
   {
    "idx": 299,
-   "pred": "(b)",
+   "pred": "b",
    "gold": "b",
    "score": 1.0
   }
