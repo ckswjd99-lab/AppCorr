@@ -338,6 +338,31 @@ def main():
     iou_sum = 0.0
     t_start = time.time()
     print_every = 1 if len(indices) <= 40 else max(len(indices) // 200, 10)
+
+    # Resume from an interrupted run: --log-jsonl is opened in APPEND mode, so if the file already
+    # holds scored samples from a killed run of the SAME label, fold them into the counters and
+    # skip re-scoring them. The label check keeps this from silently absorbing a different
+    # condition's rows -- appending across labels is exactly the contamination the .PARTIAL*
+    # quarantine convention exists to prevent, so a label mismatch aborts instead of guessing.
+    # (OOM-skipped indices are never written, so a resume retries them; they just skip again.)
+    already = {}
+    import os as _os_resume
+    if args.log_jsonl and _os_resume.path.exists(args.log_jsonl):
+        with open(args.log_jsonl, encoding="utf-8") as f:
+            for line in f:
+                r = json.loads(line)
+                if r.get("label") != label:
+                    raise SystemExit(
+                        f"--log-jsonl {args.log_jsonl} already holds rows with label "
+                        f"{r.get('label')!r} != {label!r}; refusing to append across conditions. "
+                        f"Rename the old file (.PARTIAL* convention) or pass a fresh path.")
+                already[r["idx"]] = r
+        if already:
+            for r in already.values():
+                correct += int(r["correct"]); processed += 1; iou_sum += float(r.get("iou", 0.0))
+            print(f"[batched] RESUME: {len(already)} samples already scored in {args.log_jsonl}, "
+                  f"skipping them (running_acc so far {100.0*correct/processed:.2f}%)", flush=True)
+
     log_f = open(args.log_jsonl, "a", encoding="utf-8") if args.log_jsonl else None
 
     batch_items = []
@@ -374,6 +399,8 @@ def main():
     import os as _os
     oom_skipped = []
     for idx in indices:
+        if idx in already:
+            continue
         image_np, prompt, gt, grid_hw = load_example(idx)
         if _os.environ.get("APPCORR_MEM_TRACE"):
             print(f"[mem] BEFORE idx={idx}: allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
