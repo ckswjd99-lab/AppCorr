@@ -39,6 +39,13 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=24)
     ap.add_argument("--out-json", default=None)
     ap.add_argument("--transformers-path", default=None)
+    ap.add_argument("--degrade-max-px", type=int, default=None,
+                    help="model-sampled pixel area cap for the pyramid-direction rule "
+                         "(e.g. Mistral/Pixtral 1540*1540; Gemma4 2520*256). None = native.")
+    ap.add_argument("--reasoning-strength", default=None,
+                    help="template kwarg for channel-protocol models (Muse Glimmer ATEM: "
+                         "low/medium/high/xhigh; default template value is high, which fills "
+                         "short generations with the to=self reasoning channel)")
     a = ap.parse_args()
 
     if a.transformers_path:
@@ -57,10 +64,18 @@ def main():
     proc = AutoProcessor.from_pretrained(a.model)
 
     def degrade(img):
+        # Pyramid convention (AGENTS.md): BOX down (area average = pyramid level),
+        # BICUBIC up, and degrade relative to what the model SAMPLES when the
+        # native image is larger (--degrade-max-px caps the area; long-side caps
+        # go through the same area formula: pass side*side for square canvases).
         w, h = img.size
         f = 2 ** a.level
-        return img.resize((max(1, w // f), max(1, h // f)),
-                          Image.BICUBIC).resize((w, h), Image.BICUBIC)
+        s = 1.0
+        if a.degrade_max_px:
+            s = min(1.0, (a.degrade_max_px / (w * h)) ** 0.5)
+        tw = max(1, int(w * s) // f)
+        th = max(1, int(h * s) // f)
+        return img.resize((tw, th), Image.BOX).resize((w, h), Image.BICUBIC)
 
     spec = get_spec(a.dataset)
     ds = spec.load(load_dataset)
@@ -77,13 +92,26 @@ def main():
         use = degrade(img) if a.arm == "floor" else img
         msgs = [{"role": "user", "content": [{"type": "image", "image": use},
                                              {"type": "text", "text": prompt}]}]
+        tmpl_kw = {}
+        if a.reasoning_strength:
+            tmpl_kw["reasoning_strength"] = a.reasoning_strength
         enc = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
-                                       return_dict=True, return_tensors="pt").to("cuda:0")
+                                       return_dict=True, return_tensors="pt",
+                                       **tmpl_kw).to("cuda:0")
         if "pixel_values" in enc and enc["pixel_values"].is_floating_point():
             enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
         with torch.no_grad():
             out = model.generate(**enc, max_new_tokens=a.max_new_tokens, do_sample=False)
         text = proc.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+        # Channel-protocol models (Muse Glimmer ATEM) emit a `to=self` reasoning
+        # channel before the user-facing answer; score only the to=user channel.
+        # The MMVP 49%-vs-chance incident: with the default high reasoning
+        # strength and short generations, the WHOLE output was reasoning echo and
+        # the letter regex harvested "(a)" from the echoed question.
+        if "to=user" in text:
+            text = text.split("to=user")[-1].strip()
+        elif text.startswith("to=self"):
+            text = text.split("\n")[-1].strip()
         try:
             ok, sc = spec.score(text, gold)
             correct += ok
