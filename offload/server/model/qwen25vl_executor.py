@@ -317,11 +317,36 @@ class Qwen25VLExecutor(ModelExecutor):
         context["llm_input_embeds"] = self._splice_image_embeds(context, merged)
         _trace_save("inputs_embeds", context["llm_input_embeds"])
 
-        # LLM: correct the permanent group (all non-image positions) UNION the image-token
-        # positions corresponding to the merge-groups that just got corrected, for this round's
-        # layer chunk.
+        # LLM: correct THIS round's image tokens plus text, with text split BY POSITION relative
+        # to the (contiguous, asserted in `_build_prompt`) image block:
+        #
+        #   * PRE-image text (system preamble): corrected EVERY round. Causal attention means
+        #     every image row reads these rows' K/V, and the approx pass computed their layer>=1
+        #     K/V against the degraded image state -- refreshing them each round gives the image
+        #     correction better context. Few tokens, negligible cost.
+        #   * POST-image text (question + generation prompt): corrected on the FINAL round ONLY.
+        #     Nothing sits after them in the sequence, so no consumer reads their intermediate
+        #     corrections before decode -- and every round restarts from the fresh
+        #     `llm_input_embeds` with only the final round's state feeding `decode_first_token`,
+        #     so intermediate-round corrections of these rows were pure waste.
+        #
+        # Measured before this split (FLOPs audit, refcoco n=6): re-correcting the full text every
+        # round was 0.56x of a whole ceiling forward -- 56% of the correct-stage LLM cost for
+        # 14.5% of the rows -- entirely keep-independent, and the whole reason Qwen's total sat at
+        # 177-199% of full while every other fixed model converged to 114-143%. This is the same
+        # class as Gemma3's text-last-round schedule, made positionally safer for a causal LLM
+        # (Gemma3's vision tokens are bidirectional; here only the pre-image half is ever read by
+        # image rows, so only that half needs freshening).
         image_token_positions = context["image_token_positions"][group_idx.to(context["image_token_positions"].device)]
-        token_idx = torch.cat([context["permanent_group_idx"], image_token_positions]).unique()
+        all_img = context["image_token_positions"]
+        perm = context["permanent_group_idx"]
+        num_groups = max(int(getattr(config, "transmission_kwargs", {}).get("num_groups", 1)), 1)
+        is_final_round = group_id >= num_groups
+        if is_final_round or all_img.numel() == 0:
+            text_idx = perm
+        else:
+            text_idx = perm[perm < all_img[0]]
+        token_idx = torch.cat([text_idx, image_token_positions]).unique()
 
         x_feature = context["llm_input_embeds"]
 
