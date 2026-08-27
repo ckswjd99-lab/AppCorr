@@ -532,7 +532,11 @@ def emit_latex(table, keeps) -> str:
     for i, (model, rows) in enumerate(table):
         if i:
             L.append(r"\midrule")
-        L.append(f"\\multirow{{{len(rows)}}}{{*}}{{{model}}}")
+        # "Name (size)" wraps to two lines inside the multirow cell -- the size (and any footnote
+        # marks after it) drops to the second line, keeping the model column narrow.
+        m = re.match(r"^(.*?) (\(.*)$", model)
+        cell = f"\\shortstack[l]{{{m.group(1)}\\\\{m.group(2)}}}" if m else model
+        L.append(f"\\multirow{{{len(rows)}}}{{*}}{{{cell}}}")
         for label, cells in rows:
             L.append(f"& {label} & " + " & ".join(cells) + r" \\")
     L.append(r"\bottomrule")
