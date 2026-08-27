@@ -214,14 +214,22 @@
   "_note": "streaming arm at keep=1.0 (its own column block as of 2026-08-27); the earlier nominal k0.50 placement is retired. keep-arm (0.25/0.50) FLOPs not yet measured (report lacks --keep; accuracy keep arms ARE measured).",
   "_samples": 12,
   "chartqa": {
-   "full": 3898.0,
-   "k1.00": 1091.2,
-   "total_k1.00": 5374.4
+   "full": 3907.9,
+   "k1.00": 1101.1,
+   "total_k1.00": 5384.2,
+   "k0.25": 824.9,
+   "total_k0.25": 4280.9,
+   "k0.50": 917.8,
+   "total_k0.50": 4647.6
   },
   "realworldqa": {
-   "full": 11681.3,
-   "k1.00": 3079.7,
-   "total_k1.00": 16230.1
+   "full": 11691.2,
+   "k1.00": 3089.6,
+   "total_k1.00": 16240.0,
+   "k0.25": 2239.5,
+   "total_k0.25": 12842.6,
+   "k0.50": 2523.4,
+   "total_k0.50": 13974.1
   }
  },
  "qwen35_122b": {
