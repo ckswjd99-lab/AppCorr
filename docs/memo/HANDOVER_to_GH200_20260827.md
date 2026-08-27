@@ -47,6 +47,15 @@ context transfer; the user talks to GH200 directly from here on.
   OV2 gqa→vsr streaming, then docvqa retry (guard bound widened to 1.9 after a
   false positive). Resume command per arm is in scripts/streaming_category_chain.sh.
 
+## Gemma 4 31B (added 2026-08-28, user decision)
+The bigger-model extension is `google/gemma-4-31B-it` (OV2 has no larger sibling).
+Weights cached on /NHNHOME (survive maintenance). Level-1 axis DONE and gated
+bitwise (cab2f9e): appcorr/models/gemma4/unified.py + gemma4_axis_gate.py.
+READ docs/memo/gemma4_port_scoping.md before continuing — the mask finding
+(image tokens causal on full layers, block-bidir on sliding only) makes this a
+third point on the causal<->bidirectional axis, and steps 2-6 of the port plan
+are laid out there. B200 work (31B needs ~65GB GPU).
+
 ## Open items, priority order (the backlog GH200 now owns)
 1. Gemma3/OV2 ddagger: progressive-arm accuracy re-evals (the ONLY remaining ddagger).
    Wide-gap datasets first (chartqa/textvqa/docvqa/infovqa). B200 GPU work — queue for
