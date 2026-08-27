@@ -320,7 +320,13 @@ class VSRSpec:
 
     def load(self, load_dataset):
         ds = load_dataset(self.hf, split=self.split)
-        return ds.filter(lambda r: os.path.exists(os.path.join(_VSR_IMG_DIR, r["image"])))
+        # load_from_cache_file=False, non-negotiably: this filter's result depends on the
+        # FILESYSTEM (which images sit in _vsr_images), and `datasets` fingerprints only the
+        # lambda -- a cached run from before the image cache was populated returned 0 rows
+        # forever after, and a driver on top of it "completed" three arms in 38 seconds with
+        # rc=0 and nothing scored.
+        return ds.filter(lambda r: os.path.exists(os.path.join(_VSR_IMG_DIR, r["image"])),
+                         load_from_cache_file=False)
 
     def prepare(self, ex, smart_resize, factor, min_px, max_px):
         image = Image.open(os.path.join(_VSR_IMG_DIR, ex["image"])).convert("RGB")
