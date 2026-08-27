@@ -44,6 +44,7 @@ Run (appcorr env):
 """
 
 import argparse
+import gc
 import json
 import sys
 import time
@@ -430,6 +431,17 @@ def main():
             # attempt left before the next image.
             print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- CUDA OOM, skipping this sample", flush=True)
             oom_skipped.append(idx)
+            # gc.collect() BEFORE empty_cache, and it is load-bearing: the raised exception's
+            # traceback holds the failed build_first_token_context frame, whose local `context`
+            # dict owns ~27GB of vision/KV cache tensors, and the frame<->exception reference
+            # cycle keeps all of it alive after the handler exits until the CYCLIC gc runs --
+            # which, at ~1 Python allocation per second in this loop, can be many samples later.
+            # Observed as an OOM cascade: one genuine large-image OOM, then mid-size images
+            # (560x672, alone needing only ~68GB peak vs the 95GB card) OOMing behind ~26GB of
+            # dead-but-uncollected cache until gc happened to run -- 144/2000 skips where the
+            # per-image analysis predicts ~46. empty_cache() alone cannot help: the tensors were
+            # still (cyclically) referenced, so their memory was allocated, not cached-free.
+            gc.collect()
             torch.cuda.empty_cache()
             continue
         except RuntimeError as e:
@@ -450,6 +462,7 @@ def main():
             print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- cuDNN MHA workspace "
                   f"failure (OOM variant), skipping this sample", flush=True)
             oom_skipped.append(idx)
+            gc.collect()  # same frame<->exception cycle as the OOM handler above
             torch.cuda.empty_cache()
             continue
         if _os.environ.get("APPCORR_MEM_TRACE"):
