@@ -165,7 +165,8 @@ LITERALS = {
     # decode across all three arms. Single streaming arm (g=4) sits under the k0.50 columns per the
     # dagger footnote's nominal-placement rule.
     ("Qwen3.5-MoE (35B-A3B)", "RealWorldQA (Acc.)"): {"floor": 74.51, "ceiling": 77.39,
-                                                      "k0.25": 77.52, "k0.50": 77.25},
+                                                      "k0.25": 77.52, "k0.50": 77.25,
+                                                      "stream": 77.25},
     ("Qwen3.5-MoE (35B-A3B)", "ChartQA (Relaxed Acc.)"): {"floor": 60.76, "ceiling": 88.56,
                                                           "k0.25": 83.68},
     ("Qwen3.5-MoE (35B-A3B)", "VSR zeroshot (Acc.)"): {"floor": 88.46, "ceiling": 89.77,
@@ -447,6 +448,27 @@ def build_rows(keeps, groups: int):
                 # which is why both columns exist side by side.
                 cells.append(fmt_tf(get_total(fl_key, f"k{k:.2f}"), full_gf))
                 cells.append(fmt_tf(get_flops(fl_key, f"k{k:.2f}"), full_gf))
+            # Streaming (keep=1.0) block: the causal-LLM category (LLM prefills exactly once,
+            # vision corrects everything progressively). Accuracy comes from a "stream" literal
+            # (Qwen3.5's jsonl-driven runs) or a streaming_g4.json beside the row's other arms
+            # (OV2's oracle); compute from the k1.00 inproc keys. Non-causal models leave all
+            # three cells empty -- Gemma 3's image tokens are bidirectional, and the VFMs have no
+            # LLM to stream.
+            sv = None
+            if "stream" in lit:
+                sv = lit["stream"]
+            elif acc_key:
+                sv = load_accuracy(*acc_key, "streaming_g4")
+            if sv is None:
+                cells.append("--")
+            else:
+                out_s = f.format(sv)
+                if ceiling_v:
+                    pres = 100.0 * ((ceiling_v / sv) if lower_better else (sv / ceiling_v))
+                    out_s += f" ({pres:.1f}\\%)"
+                cells.append(out_s)
+            cells.append(fmt_tf(get_total(fl_key, "k1.00"), full_gf))
+            cells.append(fmt_tf(get_flops(fl_key, "k1.00"), full_gf))
             cells.append(f.format(ceiling_v) if ceiling_v is not None else "--")
             cells.append(fmt_tf(full_gf, None))
             block.append((label, cells))
@@ -456,15 +478,18 @@ def build_rows(keeps, groups: int):
 
 def emit_latex(table, keeps) -> str:
     heads = " & ".join(f"\\multicolumn{{3}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
+    heads += " & \\multicolumn{3}{c}{Streaming (k={=}1.0)}"
     cmids, col = [], 4
     for _ in keeps:
         cmids.append(f"\\cmidrule(lr){{{col}-{col+2}}}")
         col += 3
+    cmids.append(f"\\cmidrule(lr){{{col}-{col+2}}}")     # streaming block
+    col += 3
     cmids.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
-    sub = " & ".join(["Acc. (\\%) & Comp. & Crit. Comp."] * len(keeps)
+    sub = " & ".join(["Acc. (\\%) & Comp. & Crit. Comp."] * (len(keeps) + 1)
                      + ["Acc. (\\%) & Comp."])
-    # 2 label columns + Low-res. + three per Ours block + two for Full-res.
-    ncol = 2 + 1 + 3 * len(keeps) + 2
+    # 2 labels + Low-res. + three per Ours block + three for Streaming + two for Full-res.
+    ncol = 2 + 1 + 3 * len(keeps) + 3 + 2
     L = []
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
@@ -473,9 +498,12 @@ def emit_latex(table, keeps) -> str:
              r"arrived (decode excluded); Comp.\ is the arm's total backbone compute including "
              r"work overlapped with transmission. Parentheses give the ratio to the Full-res.\ "
              r"computation. Ours uses interleaved $g{=}4$. "
-             r"$^\dagger$Qwen3.5's arm is streaming (vision approx/correct + chunked LLM prefill, "
-             r"$g{=}4$): it progressively recomputes 100\% of tokens and has no keep-rate knob, so "
-             r"the placement of its compute figures in a keep-labeled column is nominal. "
+             r"The Streaming (k$=$1.0) block is the causal-LLM category: the LLM prefills exactly "
+             r"once in arrival-order chunks while the vision encoder corrects everything "
+             r"progressively -- total $\approx$ full + one vision pass, critical $\approx 1/g$. "
+             r"Only causal models qualify (Gemma 3's image tokens are bidirectional; VFMs have no "
+             r"LLM). $^\dagger$Qwen3.5's Ours columns are keep-limited STREAMING arms (band-wise "
+             r"top-$k$ selection), not interleaved correction. "
              r"$^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive "
              r"per-round selection arm (2026-08-26); their accuracy cells are still the earlier "
              r"upfront arm's, pending re-evaluation. $^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
