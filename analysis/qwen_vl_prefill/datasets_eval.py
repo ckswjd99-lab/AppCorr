@@ -471,11 +471,118 @@ class WildVisionSpec:
             "Use generation-dump mode, not the accuracy loop.")
 
 
+
+
+class _VisDroneBase:
+    """VisDrone2019-DET-val (548 drone images, ~2000x1500) via the banu4prasad HF mirror --
+    YOLO-format labels (class cx cy w h, normalized; classes 0-9 = pedestrian, people, bicycle,
+    car, van, truck, tricycle, awning-tricycle, bus, motor). Tiny objects at altitude are exactly
+    what a level-2 pyramid destroys, which is why this is on the resolution-sensitive track.
+    Rows are DERIVED per (image, category) -- both specs group rows by image path so a driver can
+    reuse per-image vision work across the image's questions."""
+    repo = "banu4prasad/VisDrone-Dataset"
+    # question-name -> label-class set (pedestrian+people merged: the walking/standing split is
+    # a detection-annotation nicety no VLM question should depend on)
+    CATS = {"people": {0, 1}, "cars": {3}, "vans": {4}, "trucks": {5},
+            "buses": {8}, "motorcycles": {9}, "bicycles": {2}}
+
+    def _images(self):
+        import glob
+        import os
+        from huggingface_hub import snapshot_download
+        root = snapshot_download(self.repo, repo_type="dataset",
+                                 allow_patterns=["VisDrone2019-DET-val/*"])
+        base = os.path.join(root, "VisDrone2019-DET-val")
+        rows = []
+        for ip in sorted(glob.glob(os.path.join(base, "images", "*.jpg"))):
+            lp = os.path.join(base, "labels",
+                              os.path.basename(ip).rsplit(".", 1)[0] + ".txt")
+            if not os.path.exists(lp):
+                continue
+            boxes = []  # (cls, cx, cy, w, h) normalized
+            with open(lp) as f:
+                for line in f:
+                    t = line.split()
+                    if len(t) == 5:
+                        boxes.append((int(t[0]), *(float(v) for v in t[1:])))
+            rows.append({"path": ip, "boxes": boxes})
+        if not rows:
+            raise RuntimeError("VACUOUS: VisDrone val parsed to 0 images")
+        return rows
+
+
+class VisDroneCountSpec(_VisDroneBase):
+    """Counting: one row per (image, category) with 1 <= N <= 30 ground-truth instances
+    (beyond ~30 the GT itself outruns any VLM's counting; below 1 there is nothing to count).
+    score = (exact match, soft score 1 - min(1, |pred-N|/N)) -- headline is exact-match rate,
+    the soft score plays the mIoU role for graded reporting."""
+    name = "visdrone_count"
+
+    def load(self, load_dataset):
+        rows = []
+        for im in self._images():
+            for cname, clset in self.CATS.items():
+                n = sum(1 for b in im["boxes"] if b[0] in clset)
+                if 1 <= n <= 30:
+                    rows.append({"path": im["path"], "cat": cname, "count": n})
+        if not rows:
+            raise RuntimeError("VACUOUS: no countable (image, category) rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = Image.open(ex["path"]).convert("RGB")
+        prompt = (f"How many {ex['cat']} are in this image? "
+                  "Answer with a single number.")
+        return image, prompt, int(ex["count"])
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\d+", pred_text.replace(",", ""))
+        if not m:
+            return 0, 0.0
+        pred = int(m.group(0))
+        return int(pred == gold), max(0.0, 1.0 - min(1.0, abs(pred - gold) / gold))
+
+
+class VisDroneDetSpec(_VisDroneBase):
+    """Unique-instance grounding: one row per (image, category) with EXACTLY one instance --
+    "the {singular} " is unambiguous there, so free-form bbox output scores like RefCOCO
+    (Acc@IoU0.5, mean IoU) without detection-AP matching machinery. gold is native-pixel
+    x1,y1,x2,y2 (converted from the YOLO-normalized labels at load)."""
+    name = "visdrone_det"
+    SINGULAR = {"people": "person", "cars": "car", "vans": "van", "trucks": "truck",
+                "buses": "bus", "motorcycles": "motorcycle", "bicycles": "bicycle"}
+
+    def load(self, load_dataset):
+        rows = []
+        for im in self._images():
+            for cname, clset in self.CATS.items():
+                inst = [b for b in im["boxes"] if b[0] in clset]
+                if len(inst) == 1:
+                    rows.append({"path": im["path"], "cat": cname, "box": inst[0][1:]})
+        if not rows:
+            raise RuntimeError("VACUOUS: no unique-instance rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = Image.open(ex["path"]).convert("RGB")
+        W, H = image.size
+        cx, cy, w, h = ex["box"]
+        gold = ((cx - w / 2) * W, (cy - h / 2) * H, (cx + w / 2) * W, (cy + h / 2) * H)
+        prompt = (f"Provide the bounding box of the {self.SINGULAR[ex['cat']]} in this image "
+                  "as x1,y1,x2,y2.")
+        return image, prompt, gold
+
+    def score(self, pred_text, gold):
+        i = _iou(_parse_bbox(pred_text), gold)
+        return int(i > 0.5), i
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
          "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec,
          "cvbench": CVBenchSpec, "mmvp": MMVPSpec, "mmerealworld": MMERealWorldSpec,
-         "wildvision": WildVisionSpec}
+         "wildvision": WildVisionSpec,
+         "visdrone_count": VisDroneCountSpec, "visdrone_det": VisDroneDetSpec}
 
 
 def get_spec(name):

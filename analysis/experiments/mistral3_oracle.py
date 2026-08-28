@@ -331,7 +331,7 @@ def main():
     def _score_and_log(idx, img, text):
         nonlocal correct_n, total
         pred_for_score = text.strip()
-        if a.dataset == "refcoco":
+        if a.dataset in ("refcoco", "visdrone_det"):
             m_nums = re.findall(r"-?\d+\.?\d*", pred_for_score)
             if len(m_nums) >= 4 and all(abs(float(v)) <= 1.5 for v in m_nums[:4]):
                 W, H = img.size
@@ -352,6 +352,29 @@ def main():
                   f"acc={correct_n / total:.2%}", flush=True)
 
     _gold_by_idx = {}
+
+    _ours_queue = []
+    _feats_cache = {}
+
+    def _flush_ours():
+        if not _ours_queue:
+            return
+        D = _ours_queue[0][2].shape[-1]
+        Tm = max(e.shape[0] for _, _, e, _ in _ours_queue)
+        B = len(_ours_queue)
+        dev = _ours_queue[0][2].device
+        be = torch.zeros(B, Tm, D, dtype=torch.bfloat16, device=dev)
+        bm = torch.zeros(B, Tm, dtype=torch.long, device=dev)
+        for j, (_, _, e, m) in enumerate(_ours_queue):
+            T = e.shape[0]
+            be[j, Tm - T:] = e          # LEFT padding: content right-aligned
+            bm[j, Tm - T:] = m
+        with torch.no_grad():
+            outg = model.generate(inputs_embeds=be, attention_mask=bm,
+                                  max_new_tokens=a.max_new_tokens, do_sample=False)
+        for j, (qidx, qimg, _, _) in enumerate(_ours_queue):
+            _score_and_log(qidx, qimg, proc.decode(outg[j], skip_special_tokens=True))
+        _ours_queue.clear()
 
     if a.arm in ("ceiling", "floor") and a.bs > 1:
         # Batched bound path: plain stock generate over left-padded batches. The processor's
@@ -393,6 +416,7 @@ def main():
 
     for idx in idxs:
         img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
+        _gold_by_idx[idx] = gold
         enc = axis.build_inputs(img, prompt).to("cuda:0")
         enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
         with torch.no_grad():
@@ -409,19 +433,48 @@ def main():
                                        skip_special_tokens=True)
                 else:
                     qsel = a.arm.endswith("_qsel")
-                    if a.arm.startswith("corrected"):
-                        feats = corrected_feats(axis, fork, enc, enc2, a.keep, qsel=qsel)
+                    # Per-image vision-work reuse: non-qsel feats depend only on
+                    # pixel_values/image_sizes, so for specs that ask several questions about
+                    # one image (visdrone_*: rows are image-major sorted) the fork correction --
+                    # the expensive serial half of an ours sample -- runs once per IMAGE and its
+                    # features are reused across that image's questions. LRU-1 (adjacent rows
+                    # only); qsel is query-aware and excluded by construction.
+                    _row = ds[idx]
+                    _img_key = _row.get("path") if isinstance(_row, dict) else None
+                    if (not qsel and _img_key is not None
+                            and _feats_cache.get("key") == (_img_key, a.arm)):
+                        feats = _feats_cache["feats"]
                     else:
-                        feats = streaming_feats_and_prefill(axis, fork, enc, enc2,
-                                                            a.keep, a.groups, model,
-                                                            qsel=qsel)
+                        if a.arm.startswith("corrected"):
+                            feats = corrected_feats(axis, fork, enc, enc2, a.keep, qsel=qsel)
+                        else:
+                            feats = streaming_feats_and_prefill(axis, fork, enc, enc2,
+                                                                a.keep, a.groups, model,
+                                                                qsel=qsel)
+                        if not qsel and _img_key is not None:
+                            _feats_cache["key"] = (_img_key, a.arm)
+                            _feats_cache["feats"] = feats
                     embeds = axis.scatter_and_prefill_embeds(enc, feats.to(torch.bfloat16))
+                    if a.bs > 1:
+                        # Batched-generate path for the fork arms: the CORRECTION stays bs=1 by
+                        # construction (the vision fork carries no batch dim), but the generate()
+                        # that follows is plain stock decoding over inputs_embeds and batches
+                        # with left padding exactly like the bound arms. Embeds are queued here
+                        # and flushed in the batch loop below; padding rows are zero-embeds
+                        # masked out by attention_mask (never attended, never decoded).
+                        _ours_queue.append((idx, img, embeds[0],
+                                            enc["attention_mask"][0] if enc.get("attention_mask") is not None
+                                            else torch.ones(embeds.shape[1], dtype=torch.long,
+                                                            device=embeds.device)))
+                        if len(_ours_queue) >= a.bs:
+                            _flush_ours()
+                        continue
                     out = model.generate(inputs_embeds=embeds,
                                          attention_mask=enc.get("attention_mask"),
                                          max_new_tokens=a.max_new_tokens, do_sample=False)
                     text = proc.decode(out[0], skip_special_tokens=True)
         pred_for_score = text.strip()
-        if a.dataset == "refcoco":
+        if a.dataset in ("refcoco", "visdrone_det"):
             # Mistral emits 0-1 FRACTION coordinates (three-conventions warning, handover
             # 2026-08-28: match convention before judging capability). gold is native-pixel
             # (identity resize above), so rescale fraction-looking boxes by the native size.
@@ -443,6 +496,8 @@ def main():
             print(f"  [{total}/{len(idxs)}] {dt:.0f}s {dt / total:.2f}s/ex "
                   f"acc={correct_n / total:.2%}", flush=True)
 
+    if a.bs > 1 and a.arm not in ("ceiling", "floor"):
+        _flush_ours()
     summary = {"model": a.model, "dataset": a.dataset, "arm": a.arm,
                "keep": a.keep if a.arm in ("corrected", "streaming") else None,
                "level": a.level, "groups": a.groups if a.arm == "streaming" else None,
