@@ -1357,3 +1357,15 @@ loops (chunked attention statistics) do not port themselves.
 MMVP's 9.34pp gap is the largest of any Qwen2.5 dataset -- CLIP-blind fine-grained discrimination
 is exactly what a level-2 pyramid destroys -- and its k0.50->streaming step (+2.67pp) dwarfs
 k0.25->k0.50 (+0.67pp): the exact-prefill property outweighs vision recompute quantity there.
+
+**Streaming arm finalized (stripped form -- the paper's definition).** Streaming = pure
+single-prefill causality + band-wise progressive vision correction: each contiguous LLM band is
+prefilled exactly once, over the vision state as of its band's arrival; there is NO round-0 LLM
+approx pass (stripped 2026-08-28, user decision -- in this schedule those values are semantically
+dead: no chunk attends an approx-only key, decode reads the final chunk; removal gated bitwise
+12/12 via APPCORR_STREAMING_KEEP_APPROX in-process A/B). The round-0 first-token preview the
+approx pass bought is a SEPARATE operating point, not part of this category -- an approx-then-
+correct arm provides it, at the measured cost difference. Final cell: 89.55/81.50 (101.5/101.6% of
+ceiling -- the staleness-perturbation mechanism, see elimination chain above), total 34.04TF
+(107.1% of full -- at the streaming category identity, below the gemma/ov2 family's ~1.25x because
+Qwen's vision half is a smaller fraction of its axis), critical 10.35TF (32.6%).

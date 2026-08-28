@@ -168,6 +168,12 @@ the user answers.
   exceed the ~28GB headroom beside the resident 32B model. Signature of REAL vs
   false: identical, deterministic skip sets across schedules, stock ceiling
   unaffected. 54/500 on WildVision; judge comparisons restrict to the 446 common.
+- Category-identity audit: when an arm joins a CATEGORY (streaming, one-shot,
+  interleaved), diff its measured cost structure against the category identity
+  FIRST -- the identity is a free auditor. The Qwen2.5 streaming arm ran at
+  200.4% of full against the category's ~1.25x for a full day before the FLOPs
+  cell forced the comparison; the excess was a semantically-dead approx-LLM
+  pass inherited from the chassis (stripped, bitwise-gated, -> 107.1%).
 
 ## Final state at shutdown (23:15 sweep, 2026-08-27)
 Everything is committed and pushed (HEAD 3c64def at sweep time). Landed tonight:
