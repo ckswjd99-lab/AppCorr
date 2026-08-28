@@ -203,6 +203,8 @@ def main():
     ap.add_argument("--num-samples", type=int, default=12)
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--max-new-tokens", type=int, default=24)
+    ap.add_argument("--bs", type=int, default=1,
+                    help="batch size for the STOCK bound arms (ceiling/floor) only -- they are plain generate() calls and batch cleanly with left padding; the fork arms stay bs=1 by construction. Validated bs1-vs-bs8 equivalent on 50 samples before first use.")
     ap.add_argument("--out-json", default=None)
     ap.add_argument("--gate", action="store_true")
     ap.add_argument("--flops", action="store_true",
@@ -318,6 +320,77 @@ def main():
             else list(range(0, len(ds), max(1, len(ds) // n)))[:n])
     correct_n, total, per = 0, 0, []
     t0 = time.time()
+
+    # Incremental per-sample dump: the out-json is written only at the END, so a crash at
+    # sample 8000/8811 used to lose everything. Append-only jsonl beside it, flushed per sample.
+    inc_f = None
+    if a.out_json:
+        os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
+        inc_f = open(a.out_json + ".persample.jsonl", "a", encoding="utf-8")
+
+    def _score_and_log(idx, img, text):
+        nonlocal correct_n, total
+        pred_for_score = text.strip()
+        if a.dataset == "refcoco":
+            m_nums = re.findall(r"-?\d+\.?\d*", pred_for_score)
+            if len(m_nums) >= 4 and all(abs(float(v)) <= 1.5 for v in m_nums[:4]):
+                W, H = img.size
+                vals = (float(m_nums[0]) * W, float(m_nums[1]) * H,
+                        float(m_nums[2]) * W, float(m_nums[3]) * H)
+                pred_for_score = " ".join(f"{v:.1f}" for v in vals)
+        img_gold = _gold_by_idx[idx]
+        ok, sc = spec.score(pred_for_score, img_gold)
+        correct_n += ok
+        total += 1
+        row = {"idx": idx, "pred": text.strip()[:160], "gold": str(img_gold)[:80], "score": sc}
+        per.append(row)
+        if inc_f is not None:
+            inc_f.write(json.dumps(row) + "\n"); inc_f.flush()
+        if total % 50 == 0 or total == len(idxs):
+            dt = time.time() - t0
+            print(f"  [{total}/{len(idxs)}] {dt:.0f}s {dt / total:.2f}s/ex "
+                  f"acc={correct_n / total:.2%}", flush=True)
+
+    _gold_by_idx = {}
+
+    if a.arm in ("ceiling", "floor") and a.bs > 1:
+        # Batched bound path: plain stock generate over left-padded batches. The processor's
+        # chat template is applied per sample (identical to build_inputs), then tokenizer-level
+        # left padding assembles the batch; pixel_values ride as the per-sample list the
+        # Pixtral processor emits for batched multi-image inputs.
+        proc.tokenizer.padding_side = "left"
+        for b0 in range(0, len(idxs), a.bs):
+            chunk = idxs[b0:b0 + a.bs]
+            msgs_list, imgs_list = [], []
+            for idx in chunk:
+                img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
+                if a.arm == "floor":
+                    img = degrade(img, a.level, a.filt)
+                _gold_by_idx[idx] = gold
+                imgs_list.append(img)
+                msgs_list.append([{"role": "user", "content": [{"type": "image", "image": img},
+                                                               {"type": "text", "text": prompt}]}])
+            enc = proc.apply_chat_template(
+                msgs_list, add_generation_prompt=True, tokenize=True,
+                return_dict=True, return_tensors="pt", padding=True).to("cuda:0")
+            enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
+            with torch.no_grad():
+                out = model.generate(**enc, max_new_tokens=a.max_new_tokens, do_sample=False)
+            T = enc["input_ids"].shape[1]
+            for j, idx in enumerate(chunk):
+                text = proc.decode(out[j, T:], skip_special_tokens=True)
+                _score_and_log(idx, imgs_list[j], text)
+        if inc_f is not None:
+            inc_f.close()
+        summary = {"model": a.model, "dataset": a.dataset, "arm": a.arm, "keep": None,
+                   "level": a.level, "groups": None, "num_samples": total,
+                   "accuracy": correct_n / max(total, 1), "correct": correct_n}
+        out = {"summary": summary, "per_sample": per}
+        if a.out_json:
+            json.dump(out, open(a.out_json, "w"), indent=1)
+        print(f"=== Final Summary: {json.dumps(summary)}", flush=True)
+        return
+
     for idx in idxs:
         img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
         enc = axis.build_inputs(img, prompt).to("cuda:0")
@@ -361,7 +434,10 @@ def main():
         ok, sc = spec.score(pred_for_score, gold)
         correct_n += ok
         total += 1
-        per.append({"idx": idx, "pred": text.strip()[:160], "gold": str(gold)[:80], "score": sc})
+        row = {"idx": idx, "pred": text.strip()[:160], "gold": str(gold)[:80], "score": sc}
+        per.append(row)
+        if inc_f is not None:
+            inc_f.write(json.dumps(row) + "\n"); inc_f.flush()
         if total % 50 == 0 or total == len(idxs):
             dt = time.time() - t0
             print(f"  [{total}/{len(idxs)}] {dt:.0f}s {dt / total:.2f}s/ex "
@@ -371,6 +447,8 @@ def main():
                "keep": a.keep if a.arm in ("corrected", "streaming") else None,
                "level": a.level, "groups": a.groups if a.arm == "streaming" else None,
                "num_samples": total, "accuracy": correct_n / total, "correct": correct_n}
+    if inc_f is not None:
+        inc_f.close()
     print(f"\n=== Final Summary: {json.dumps(summary)}", flush=True)
     if a.out_json:
         os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
