@@ -98,12 +98,12 @@ SPEC = [
     # New 30B-class models (2026-08-28 sweep): bounds via the generic oracle; ours arms pending
     # their axis ports. WildVision is judge-only (prediction dumps) and has no accuracy row.
     ("Mistral Small 3.1 (24B)", [
-        ("MMVP (Acc.)",            ("mistral24b", "mmvp"),    None),
-        ("CV-Bench (Acc.)",        ("mistral24b", "cvbench"), None),
+        ("MMVP (Acc.)",            ("mistral24b", "mmvp"),    ("inproc", "mistral24b", "mmvp")),
+        ("CV-Bench (Acc.)",        ("mistral24b", "cvbench"), ("inproc", "mistral24b", "cvbench")),
     ]),
     ("Muse Glimmer (29.6B)", [
-        ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    None),
-        ("CV-Bench (Acc.)",        ("museglimmer30b", "cvbench"), None),
+        ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    ("inproc", "museglimmer30b", "mmvp")),
+        ("CV-Bench (Acc.)",        ("museglimmer30b", "cvbench"), ("inproc", "museglimmer30b", "cvbench")),
     ]),
     # 122B-FP8: the FP8 GEMM kernel stack (deep-gemm, sm_90) produces garbage on this B200
     # (sm_100), so ACCURACY is unmeasurable here until a Blackwell kernel or a dequant path
