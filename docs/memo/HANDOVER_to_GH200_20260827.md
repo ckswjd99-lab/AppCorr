@@ -56,6 +56,46 @@ READ docs/memo/gemma4_port_scoping.md before continuing — the mask finding
 third point on the causal<->bidirectional axis, and steps 2-6 of the port plan
 are laid out there. B200 work (31B needs ~65GB GPU).
 
+## 2026-08-28 EOD state (this supersedes the priority list below where they conflict)
+
+USER PRIORITY SHIFT (evening): MMVP/CV-Bench proved resolution-INSENSITIVE for
+modern models (gaps 1-2.5pp; only Qwen2.5 shows 7-9pp). Prioritize
+resolution-sensitive, real-understanding tasks: RefCOCO-class grounding,
+MME-RealWorld (spec ready, 23.6k, deferred for scale), and the L3 axis --
+the Mistral L3 sweep showed L2's 1.67pp gap opening to 12pp at 1/8, with full
+arm structure recovering (36/69/72%+). Existing rows stay.
+
+Landed today, all pushed:
+- Gemma 4 31B: levels 1-3 (axis, vision fork, one-shot oracle) gated bitwise;
+  mmvp/cvbench 4-arm rows + FLOPs (crit 91-94% = one-shot structure argument
+  for the interleaved/streaming ports).
+- Mistral Small 3.1: FULL port (axis + Pixtral fork, G1/V2 bitwise) +
+  qsel arms. Query-aware selection: +1.33pp on corrected k0.50 at 2x total
+  (extra approx-prefill, overlappable) -- worth retrying on MoE (qwen35) where
+  the extra prefill is ~10% not 100%.
+- Streaming-above-ceiling MECHANISM (GH200 elimination + cross-model): partial
+  vision staleness as beneficial perturbation for grounding; 4 observations,
+  one 4-sigma. Approx-LLM pass STRIPPED from streaming executor (user: keep
+  the stripped variant for the paper); Qwen2.5 RefCOCO streaming cell:
+  89.55 (101.5%) | 34.04TF (107.1%) | 10.35TF (32.6%).
+- RefCOCO capability probes (50): gemma4 48% / mistral 44% (0-1 FRACTIONS!) /
+  MG 16% / vs Qwen ~88-93. THREE different coordinate conventions -- match
+  convention before judging capability (qwen3.5 = 0-1000, rescale in driver).
+- qwen35 RefCOCO ceiling: running acc ~93.1%, jsonl at analysis/results/
+  qwen35_accuracy/refcoco_ceiling.jsonl, RESUME by rerunning the same command
+  (--dataset refcoco --arms ceiling). Floor/streaming/keep arms not started.
+- MG mmvp bounds: 70.0/74.33 (channel-fixed). MG harness needs
+  reasoning_strength=low + forced ' to=user<|message|>' generation prefix
+  (auto by model id in vlm_bounds_oracle).
+
+OPEN DECISION (user, escalated, NOT yet answered): degradation-filter standard.
+Probe chain: bicubic -4flips- box -6flips- pyr(archetype); box is the outlier
+(+4pp floor), pyr==bicubic in the mean. Options A(pyr everywhere, days of
+re-measurement) / B(pyr going forward, footnote the past) / C(document only).
+qwen35 box re-measurements are HALTED pending this; qwen35_accuracy default
+currently =box (flip to pyr if B/A chosen). Do not resume the remeasure until
+the user answers.
+
 ## Open items, priority order (the backlog GH200 now owns)
 1. Gemma3/OV2 ddagger: progressive-arm accuracy re-evals (the ONLY remaining ddagger).
    Wide-gap datasets first (chartqa/textvqa/docvqa/infovqa). B200 GPU work — queue for
