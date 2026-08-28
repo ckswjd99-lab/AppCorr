@@ -35,24 +35,36 @@ def degrade(img: Image.Image, level: int = 2, filt: str = "bicubic") -> Image.Im
     measured with; 'box' (area average) matches the gemma3/ov2 oracles and approximates the
     canonical cv2.pyrDown pyramid more closely. The 2026-08-28 convention audit flagged the
     divergence; the BOX-vs-BICUBIC sensitivity probe decides whether the table needs re-measuring."""
+    # Pyramid-direction cap (both branches of the rule): degrade relative to
+    # min(native, what the model samples). Qwen's smart_resize tops out at
+    # max_pixels=12.8M, so every bench measured so far sat below it and the two
+    # branches coincided -- MME-RealWorld (36M px) is where this first BINDS.
+    QWEN_MAX_PX = 12_845_056
     f = 2 ** level
     w, h = img.size
+    s = min(1.0, (QWEN_MAX_PX / (w * h)) ** 0.5)
+    if s < 1.0:
+        w2, h2 = max(1, int(w * s)), max(1, int(h * s))
+    else:
+        w2, h2 = w, h
     if filt == "pyr":
         # The protocol archetype itself: cv2.pyrDown chain, cv2.pyrUp back with
         # per-step dstsize (odd dims round up on pyrDown; the stored size chain
         # restores them exactly, mirroring laplacian.py's _iterative_upsample_native).
+        # The cap branch fits to the sampled resolution FIRST, then walks the pyramid.
         import cv2
         import numpy as np
-        arr = np.asarray(img)
+        arr = np.asarray(img if s == 1.0 else img.resize((w2, h2), Image.BILINEAR))
         sizes = [(arr.shape[1], arr.shape[0])]
         for _ in range(level):
             arr = cv2.pyrDown(arr)
             sizes.append((arr.shape[1], arr.shape[0]))
         for i in range(level - 1, -1, -1):
             arr = cv2.pyrUp(arr, dstsize=sizes[i])
-        return Image.fromarray(arr)
+        out = Image.fromarray(arr)
+        return out if s == 1.0 else out.resize((w, h), Image.BICUBIC)
     down = Image.BOX if filt == "box" else Image.BICUBIC
-    return img.resize((max(1, w // f), max(1, h // f)), down).resize((w, h), Image.BICUBIC)
+    return img.resize((max(1, w2 // f), max(1, h2 // f)), down).resize((w, h), Image.BICUBIC)
 
 
 @torch.no_grad()
