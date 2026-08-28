@@ -96,6 +96,16 @@ SPEC = [
     ("Gemma 4 (31B)", [
         ("MMVP (Acc.)",            ("gemma4", "mmvp"),    ("inproc", "gemma4", "mmvp")),
         ("CV-Bench (Acc.)",        ("gemma4", "cvbench"), ("inproc", "gemma4", "cvbench")),
+        # Resolution-sensitive track (GH200 campaign, post-Mistral). NOTE the port has bounds +
+        # one-shot corrected only (interleaved/streaming are port-plan steps 4-6, not yet built),
+        # so the Streaming column stays "--" for now by construction.
+        ("RefCOCO val (Acc.@0.5)", ("gemma4", "refcoco"), ("inproc", "gemma4", "refcoco")),
+        ("RefCOCO val (mIoU)",     ("gemma4", "refcoco"), ("inproc", "gemma4", "refcoco")),
+        ("TextVQA (VQA Acc.)",     ("gemma4", "textvqa"), ("inproc", "gemma4", "textvqa")),
+        ("VisDrone Count (Exact Acc.)", ("gemma4", "visdrone_count"), ("inproc", "gemma4", "visdrone_count")),
+        ("VisDrone Count (Soft)",       ("gemma4", "visdrone_count"), ("inproc", "gemma4", "visdrone_count")),
+        ("VisDrone Det (Acc.@0.5)",     ("gemma4", "visdrone_det"),   ("inproc", "gemma4", "visdrone_det")),
+        ("VisDrone Det (mIoU)",         ("gemma4", "visdrone_det"),   ("inproc", "gemma4", "visdrone_det")),
     ]),
     # New 30B-class models (2026-08-28 sweep): bounds via the generic oracle; ours arms pending
     # their axis ports. WildVision is judge-only (prediction dumps) and has no accuracy row.
