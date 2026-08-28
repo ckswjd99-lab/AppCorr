@@ -110,6 +110,24 @@ are laid out there. B200 work (31B needs ~65GB GPU).
   Qwen2.5 record — 8, 207, 143 — was this, not image size; 95GB -> 68GB peak once
   wrapped). B200 drivers audited clean (ov2/qwen35/sam3/gemma3 oracles all
   decorated). Check the guard FIRST when an eval "hits a memory ceiling".
+- Never chain a merge-resolution script && git commit in one shell call: a
+  resolution script that dies BEFORE writing leaves the conflicted file in the
+  tree, and the chained commit ships the conflict markers anyway (GH200 did
+  exactly this 2026-08-28, caught one verification step later). Resolution,
+  parse-verification, and staging are three separate steps, in that order.
+- Fork-port checklist (two same-day instances, both fixes present in the
+  reference all along): (1) worker-provided invariants -- no_grad, see above;
+  (2) scale-guarded loops -- gemma3's `_incoming_attention` chunks its fp32
+  attention-statistic accumulation and documents why; the Qwen2.5 port dropped
+  the chunking and OOM'd at CV-Bench resolution (57GB for one segment's matrix
+  at ~30K patches). When porting, grep the reference for chunk/loop guards and
+  carry the docstring's WHY, not just the math.
+- A REAL capacity ceiling for the fork path does exist, distinct from the two
+  false ones: ~24K-token LLM contexts (WildVision 4032x3024 at the 12.8M-px cap)
+  carry fork caches (vision KV + per-layer blocks_out_sum/KV) that structurally
+  exceed the ~28GB headroom beside the resident 32B model. Signature of REAL vs
+  false: identical, deterministic skip sets across schedules, stock ceiling
+  unaffected. 54/500 on WildVision; judge comparisons restrict to the 446 common.
 
 ## Final state at shutdown (23:15 sweep, 2026-08-27)
 Everything is committed and pushed (HEAD 3c64def at sweep time). Landed tonight:

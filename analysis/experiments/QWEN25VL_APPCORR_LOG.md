@@ -1205,3 +1205,155 @@ task-relevance is the sole lever (sections 9, 12, 14 all agree). The best pscore
 investigation, vision+llmattn_36 (log1p residual + 64 vision per-head attentions from layers
 7/15/23/31 + LLM layer-36 text->image attention), reaches within 1pp of full-image baseline (85.75%)
 while recomputing only ~50% of merge-groups, regardless of which of the three selection rules is used.**
+
+---
+
+## 2026-08-27: Full-split server-side pruning arms (post-M-RoPE-fix bounds, energy x attention scoring)
+
+Server-side vision keep rate (`_prune_patch_idx`, energy x received-attention scoring, commit
+28be3cf) at interleaved g=4 `sequential` grouping, full RefCOCO val, batch_size=1, evaluated by
+`refcoco_gqa_batched_eval.py`. Bounds are the re-established post-M-RoPE-fix full-split runs
+(bs=16), restricted to each arm's own OOM-kept sample set.
+
+**keep=0.25** (kept n=8803, OOM-skipped 8/8811 = 0.09%: [1279, 2745, 4720, 6321, 6757, 7312, 7870, 7995]):
+
+| arm | Acc@0.5 | mIoU |
+|---|---|---|
+| floor (approx-only) | 79.70 | 70.38 |
+| **ours (keep=0.25)** | **86.10** | **78.22** |
+| ceiling (lossless) | 88.22 | 80.26 |
+| preservation | 97.59% | 97.46% |
+| recovery | 75.07% | 79.33% |
+
+The 2000-sample stride subset had put recovery at 84.5% -- **the subset overestimated recovery by
+~9pp while preservation moved only ~0.9pp (98.46% -> 97.59%)**. The floor-ceiling gap is nearly
+identical between subset and full (8.70pp vs 8.52pp), so the recovery shift comes from small
+numerator movements amplified by the ~8pp denominator, not from an unrepresentative subset. This is
+a live demonstration of why preservation is reported before recovery in this project: with a
+single-digit gap, recovery amplifies noise that preservation absorbs.
+
+Caveats that must travel with these numbers: (a) ours ran at bs=1, bounds at bs=16 -- measured on
+200 shared indices, bs changes Acc@0.5 not at all and mIoU by 0.001, but only 76% of predictions
+are text-identical (real +/-1-8px coordinate churn below the IoU threshold); (b) the OOM skips
+systematically exclude the largest (672x672) images -- ceiling scores 50.0% and floor 62.5% on the
+8 skipped vs 88.2%/79.7% on the kept, so these are genuinely hard images, excluded from all three
+arms equally; (c) a cuDNN fused-MHA workspace failure surfaces memory exhaustion as a plain
+RuntimeError ("mha_graph.execute"), not torch.cuda.OutOfMemoryError -- handled as an OOM-skip
+variant since 73f-series commit, matched narrowly so real RuntimeErrors still crash.
+
+Attention-term ablation (2000-sample subset, keep=0.25): energy-only and energy x attention give
+IDENTICAL correct-counts (1721/1998) -- but NOT identical predictions: 36 samples flip 0->1, 36
+flip 1->0, 575/1998 prediction texts differ. A genuine null (the term reaches the score and moves
+selections; the accuracy effect cancels), not a dead mechanism -- distinguished from the
+aggregate-ties-hiding-churn failure mode by per-sample diffing, the same method that exposed the
+M-RoPE bug.
+
+keep=0.50 full-split run in progress.
+
+**keep=0.50 full split** (kept n=8604, OOM-skipped 207/8811 = 2.3%, matching the subset's 2.3% rate;
+skip list in the run log, all 672x672-class peak-memory images; includes the cuDNN mha_graph OOM
+variant and the except-order fix -- OutOfMemoryError subclasses RuntimeError, ordering documented
+in the eval script):
+
+| arm | Acc@0.5 | mIoU |
+|---|---|---|
+| floor (approx-only) | 79.79 | 70.45 |
+| **ours (keep=0.50)** | **87.27** | **79.38** |
+| ceiling (lossless) | 88.11 | 80.23 |
+| preservation | 99.05% | 98.94% |
+| recovery | 89.94% | 91.33% |
+
+Unlike the subset (where keep=0.50 tied ceiling at ~100% recovery), the full split resolves a real
+0.84pp gap to ceiling -- the subset's ~100% was the noise floor, as flagged at the time. Bias check
+on the 207 skipped: ceiling 91.3 / floor 75.4 on skipped vs 88.1 / 79.8 on kept -- on THIS larger
+skip set the largest images are EASIER for ceiling and harder for floor (the keep=0.25 n=8 check
+pointed the other way; n=8 was noise, n=207 is the believable direction). Excluded equally from
+all three arms, so ours-vs-bounds comparisons remain internally valid; the exclusion slightly
+shrinks the reported floor-ceiling gap versus the true full-split gap.
+
+Final full-split summary (both keeps, energy x attention scoring, preservation first):
+  keep=0.25: preservation 97.59% / 97.46% (Acc/mIoU), recovery 75.07% / 79.33%, skips 0.09%
+  keep=0.50: preservation 99.05% / 98.94%,             recovery 89.94% / 91.33%, skips 2.3%
+
+---
+
+## 2026-08-27 (cont.): text-split correction schedule; scoring-null promoted to conclusion
+
+**FLOPs waste audit found and fixed the total-compute anomaly.** Qwen's totals sat at 177-199% of
+full while every other fixed model converged to 114-143%. Stage/round decomposition (vision correct
+in its own stage, text-vs-image row split from logged per-round token_idx): the entire excess was
+re-correcting the FULL text block every round -- keep-independent 0.56x of a ceiling forward, 56%
+of correct-stage LLM cost for 14.5% of rows. Vision correction and image-row LLM correction were
+exactly keep-proportional (2.0x from k0.25 to k0.50); approx was exactly 1.0x full. The
+reconstruction 1.00+0.017+0.20+0.56=1.78 (k0.25) / 1.99 (k0.50) matched the measured 177.7/199.1%
+to the digit.
+
+**Fix: positional text split** (commit with this note). Pre-image text corrected every round
+(causal image rows consume its K/V); post-image text (question+generation prompt) final round only
+(no consumer of intermediate corrections; rounds restart from fresh embeddings; only the final
+round's state feeds decode). Totals after: refcoco 144.8/166.3%, gqa 147.7/169.6%, rwqa
+130.3/154.5%. Predicted-vs-measured saving on refcoco: 10.5 vs 10.4 TF. Critical unchanged by
+construction. Side effect: lower per-round peak memory -- k0.25 subset now scores 2000/2000, zero
+OOM skips (was 2/2000).
+
+Gates: g=1 identity 10/10 (schedule-invariant at g=1 by construction, confirmed). Subset A/B
+k0.25 single-variable: -0.05pp (flips 4:5) -- schedule-neutral. k0.50: confounded headline -0.82pp
+(the only complete every-round subset is energy-only-scored); PARTIAL269 3-way puts scoring at
++0.00pp (8:8) and schedule at -0.37pp (1:2, underpowered) -- full-split rerun under text-split
+running to settle which number the table carries.
+
+**CONCLUSION (promoted): the received-attention term in the pruning score does not change Qwen2.5
+accuracy.** Three independent measurements agree: k0.25 full-subset (identical correct-count
+1721/1998, flips 36:36, 575 texts changed -- a genuine null with real churn, not a dead mechanism),
+k0.50 n=269 3-way (+0.00pp, flips 8:8), and both against energy-only baselines. Selection moves;
+accuracy does not. Matches OpenCLIP's COCO finding (CLS-vs-avg attention ~0.2-0.4pp, directionless).
+The standing energy x attention score is kept for cross-model consistency (it costs ~0.1% of total,
+PSCORE-excluded from FLOPs), but on this model the attention factor is demonstrably not load-bearing.
+
+**k0.50 full-split under text-split landed; schedule-neutrality settled at full scale.**
+Single-variable A/B (both arms ATTN-scored, identical 207-skip sets, common n=8604):
+every-round 87.27% -> text-split 87.25% (-0.02pp, flips 21:23, net -2). The subset's -0.82pp
+headline was confound (energy-only comparator) plus noise; the n=269 -0.37pp was noise. Final
+table numbers (text-split schedule, kept n=8604): floor 79.79/70.45, OURS 87.25/79.35, ceiling
+88.11/80.23 -> preservation 99.02%/98.90%, recovery 89.66%/91.01% (Acc@0.5/mIoU). k0.25 full-split
+86.10 stands unchanged (schedule-neutral per its own subset A/B). inprocess_flops.json updated to
+text-split totals (refcoco 144.8/166.3%, gqa 147.7/169.6%, rwqa 130.3/154.5%; critical unchanged).
+
+---
+
+## 2026-08-28: the "large-image hardware ceiling" retracted -- it was a missing no_grad
+
+**Provenance note superseding earlier sections' OOM narrative.** The 672x672-class OOM skips
+attributed to "a genuine peak-memory image / hardware ceiling" (2026-08-26/27 sections above) were
+in fact a driver defect: `refcoco_gqa_batched_eval.py` called `approx_forward`/`correct_forward`
+bare -- these carry no `no_grad` of their own (the offload worker supplies it) -- so every
+correction round ran under autograd tracking, pinning ~27GB of graph activations per image.
+Measured: the identical build peaks at 68GB under no_grad vs ~95GB without, on the 95GiB card.
+Diagnosis burned two plausible-but-wrong hypotheses first (exception-traceback reference cycle --
+refuted by a deterministic, gc-insensitive skip set; generate()-fallback residue -- refuted by a
+fallback-then-build probe); the discriminating fact was a skipped image passing in isolation under
+a probe whose only difference was its `torch.no_grad()` wrapper.
+
+Consequences applied: k0.50 full split completed to n=8811 via jsonl resume (87.30/79.35,
+preservation 99.00/98.89, recovery 89.59/91.00 against the plain full-split bounds -- no kept-set
+restriction needed, section-footnote dropped for this arm); k0.25 remains n=8803 (its 8 skips
+predate the text-split schedule; completing them would mix schedules in one file, and the measured
+schedule neutrality says the number would not move).
+
+**Same-day ledger, because scale kept exposing what small benches could not:** a second FALSE
+ceiling (the pscore `incoming_attention` materialized full fp32 attention matrices per full-att
+segment -- 151MB at RefCOCO's ~1.5K patches, 57GB at CV-Bench's 2240x1680 ~30K patches; fixed by
+query-chunked accumulation, the exact guard gemma3's reference implementation documents and the
+port dropped), and one REAL ceiling (WildVision's 4032x3024 photos at the 12.8M-px cap produce
+~24K-token LLM contexts whose fork caches structurally exceed the ~28GB headroom -- floor and
+streaming skip the IDENTICAL 54/500, deterministically; stock ceiling passes all 500).
+Fork-port checklist, both fixed classes: worker-provided invariants (no_grad) and scale-guarded
+loops (chunked attention statistics) do not port themselves.
+
+**CV-Bench / MMVP rows** (full splits, level-2 degradation, zero skips): see
+`analysis/results/qwen25vl_bench/*.jsonl` and the eval table. CV-Bench 2638: 72.52 / 75.09 /
+77.52 / 78.96 / 79.87 (floor / k0.25 / k0.50 / streaming / ceiling). MMVP 300: 65.33 / 68.33 /
+69.00 / 71.67 / 74.67. Streaming beats both keep arms on both (5th/6th model-task confirmation);
+MMVP's 9.34pp gap is the largest of any Qwen2.5 dataset -- CLIP-blind fine-grained discrimination
+is exactly what a level-2 pyramid destroys -- and its k0.50->streaming step (+2.67pp) dwarfs
+k0.25->k0.50 (+0.67pp): the exact-prefill property outweighs vision recompute quantity there.
