@@ -88,13 +88,13 @@ Landed today, all pushed:
   reasoning_strength=low + forced ' to=user<|message|>' generation prefix
   (auto by model id in vlm_bounds_oracle).
 
-OPEN DECISION (user, escalated, NOT yet answered): degradation-filter standard.
-Probe chain: bicubic -4flips- box -6flips- pyr(archetype); box is the outlier
-(+4pp floor), pyr==bicubic in the mean. Options A(pyr everywhere, days of
-re-measurement) / B(pyr going forward, footnote the past) / C(document only).
-qwen35 box re-measurements are HALTED pending this; qwen35_accuracy default
-currently =box (flip to pyr if B/A chosen). Do not resume the remeasure until
-the user answers.
+DECIDED (user, 2026-08-28, via GH200): degradation-filter standard = **OPTION B**
+-- pyr going forward, past bicubic numbers stand with a footnote (pyr==bicubic
+in the mean licenses this), and ONLY the BOX-measured arms get re-run ("Box만
+다시 하자"). Probe chain that grounded it: bicubic -4flips- box -6flips-
+pyr(archetype); box was the outlier (+4pp floor). Action for the B200 on
+return: flip qwen35_accuracy default box->pyr, re-run only the arms that were
+measured under box, resume the halted qwen35 re-measurement in that form.
 
 ## Open items, priority order (the backlog GH200 now owns)
 1. Gemma3/OV2 ddagger: progressive-arm accuracy re-evals (the ONLY remaining ddagger).
