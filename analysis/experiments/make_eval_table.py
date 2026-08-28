@@ -226,17 +226,30 @@ LITERALS = {
     # driver. RefCOCO N=8811, GQA N=12578. These REPLACE the pre-fix values (which were
     # 85.75/74.76, 76.20/65.02, 60.84/55.16) -- see the block comment above.
     # RefCOCO ours: GH200 full-split (8811 images) 2026-08-27, energy x attention, bs=1 vs
-    # bs=16 bounds (measured Acc-identical, 0.001 mIoU); OOM-skipped 0.09% (k0.25) / 2.3%
-    # (k0.50) of the largest images, with bounds restricted to each keep's kept set for the
-    # preservation numbers reported alongside. The section-mark footnote in the caption carries
-    # this to the reader.
-    # k0.50 is the text-split-schedule full-split rerun (2026-08-27, n=8604): the schedule A/B at
-    # full scale came out -0.02pp (flips 21:23), so the 33pp compute saving costs nothing
-    # measurable. k0.25 kept from the every-round run (its own subset A/B: -0.05pp neutral).
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.79, "ceiling": 88.11,
-                                                          "k0.25": 86.10, "k0.50": 87.25},
-    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.45, "ceiling": 80.23,
-                                                          "k0.25": 78.22, "k0.50": 79.35},
+    # bs=16 bounds (measured Acc-identical, 0.001 mIoU).
+    # k0.50 is the text-split-schedule run at FULL n=8811 coverage (2026-08-28): the original
+    # 207-image OOM exclusion turned out to be a driver defect (missing no_grad pinning ~27GB of
+    # autograd graph per image -- fixed same day), and the skipped images were completed via the
+    # jsonl resume under the identical schedule. Bounds are therefore the plain full-split bounds,
+    # no kept-set restriction needed, and the section-mark footnote no longer applies to k0.50.
+    # Schedule A/B at full scale: -0.02pp (flips 21:23) vs every-round.
+    # k0.25 kept from the every-round run at n=8803 (8 OOM skips from the same driver defect,
+    # predating text-split -- resuming them would mix schedules in one file, and the schedule
+    # A/B says the number would not move; the footnote still covers this arm).
+    # Streaming (k=1.0) full n=8811, 2026-08-28: 89.55/81.50 -- ABOVE ceiling by +1.36pp.
+    # Verified real, not mismeasurement: paired flips 278:158 (net +120, ~4sigma) vs ceiling;
+    # control (k0.50, same driver/decode structure) nets -78 as expected. Mechanism isolated by
+    # elimination: interleaved k=1.0 subset ALSO beats ceiling (+1.9pp) -> not chunked-prefill-
+    # specific; the g=1 identity gate is bitwise-exact vs stock -> not the fork decode; what
+    # remains is the multi-round vision correction's partial staleness acting as a beneficial
+    # perturbation for grounding. Cross-model: Mistral-24B MMVP streaming +1.33pp (no chunked
+    # LLM at all) and OV2 GQA/VSR at 100.2% point the same way.
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.68, "ceiling": 88.19,
+                                                          "k0.25": 86.10, "k0.50": 87.30,
+                                                          "stream": 89.55},
+    ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.36, "ceiling": 80.24,
+                                                          "k0.25": 78.22, "k0.50": 79.35,
+                                                          "stream": 81.50},
     ("Qwen2.5-VL (33.5B)", "GQA testdev (Exact Match)"): {"floor": 55.24, "ceiling": 60.80},
     # 72B dropped 2026-08-26: not worth the run. It also does not fit -- the GH200 box has ~66 GB
     # free against a ~130 GB pull, so the row could only ever have carried a prose ceiling.
@@ -574,8 +587,9 @@ def emit_latex(table, keeps) -> str:
              r"per-round selection arm (2026-08-26); accuracy cells are the progressive arm's "
              r"where re-measured (2026-08-28 sweep) and the earlier upfront arm's otherwise. "
              r"$^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
-             r"(measured equivalent), excluding OOM images (0.09\% at 25\%, 2.3\% at 50\%) with "
-             r"bounds restricted to the same kept sets. $^\\P$122B-FP8 accuracy is unmeasurable "
+             r"(measured equivalent); the 25\% arm excludes 8/8811 images (0.09\%, a since-fixed "
+             r"driver defect) with bounds restricted to the same kept set -- the 50\% arm has "
+             r"full coverage. $^\\P$122B-FP8 accuracy is unmeasurable "
              r"on this hardware (FP8 kernels produce incorrect outputs on sm\_100); its compute "
              r"figures are shape-determined and unaffected.}")
     L.append(r"\label{tab:evaluation_results}")
