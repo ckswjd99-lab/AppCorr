@@ -1,0 +1,1813 @@
+{
+ "summary": {
+  "model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+  "dataset": "mmvp",
+  "arm": "floor",
+  "level": 3,
+  "num_samples": 300,
+  "accuracy": 0.58,
+  "correct": 174
+ },
+ "per_sample": [
+  {
+   "idx": 0,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 1,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 2,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 3,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 4,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 5,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 6,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 7,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 8,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 9,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 10,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 11,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 12,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 13,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 14,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 15,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 16,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 17,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 18,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 19,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 20,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 21,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 22,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 23,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 24,
+   "pred": "A",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 25,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 26,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 27,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 28,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 29,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 30,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 31,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 32,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 33,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 34,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 35,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 36,
+   "pred": "A",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 37,
+   "pred": "B",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 38,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 39,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 40,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 41,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 42,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 43,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 44,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 45,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 46,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 47,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 48,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 49,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 50,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 51,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 52,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 53,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 54,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 55,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 56,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 57,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 58,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 59,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 60,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 61,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 62,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 63,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 64,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 65,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 66,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 67,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 68,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 69,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 70,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 71,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 72,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 73,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 74,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 75,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 76,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 77,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 78,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 79,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 80,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 81,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 82,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 83,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 84,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 85,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 86,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 87,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 88,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 89,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 90,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 91,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 92,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 93,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 94,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 95,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 96,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 97,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 98,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 99,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 100,
+   "pred": "B",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 101,
+   "pred": "A",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 102,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 103,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 104,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 105,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 106,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 107,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 108,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 109,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 110,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 111,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 112,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 113,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 114,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 115,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 116,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 117,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 118,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 119,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 120,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 121,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 122,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 123,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 124,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 125,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 126,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 127,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 128,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 129,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 130,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 131,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 132,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 133,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 134,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 135,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 136,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 137,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 138,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 139,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 140,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 141,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 142,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 143,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 144,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 145,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 146,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 147,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 148,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 149,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 150,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 151,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 152,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 153,
+   "pred": "B",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 154,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 155,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 156,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 157,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 158,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 159,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 160,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 161,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 162,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 163,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 164,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 165,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 166,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 167,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 168,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 169,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 170,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 171,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 172,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 173,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 174,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 175,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 176,
+   "pred": "b",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 177,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 178,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 179,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 180,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 181,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 182,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 183,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 184,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 185,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 186,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 187,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 188,
+   "pred": "a",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 189,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 190,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 191,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 192,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 193,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 194,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 195,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 196,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 197,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 198,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 199,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 200,
+   "pred": "B",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 201,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 202,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 203,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 204,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 205,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 206,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 207,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 208,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 209,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 210,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 211,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 212,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 213,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 214,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 215,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 216,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 217,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 218,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 219,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 220,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 221,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 222,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 223,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 224,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 225,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 226,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 227,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 228,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 229,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 230,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 231,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 232,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 233,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 234,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 235,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 236,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 237,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 238,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 239,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 240,
+   "pred": "a",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 241,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 242,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 243,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 244,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 245,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 246,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 247,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 248,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 249,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 250,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 251,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 252,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 253,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 254,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 255,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 256,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 257,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 258,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 259,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 260,
+   "pred": "a",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 261,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 262,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 263,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 264,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 265,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 266,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 267,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 268,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 269,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 270,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 271,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 272,
+   "pred": "B",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 273,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 274,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 275,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 276,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 277,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 278,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 279,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 280,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 281,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 282,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 283,
+   "pred": "I don't have the information.",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 284,
+   "pred": "(a)",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 285,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 286,
+   "pred": "a",
+   "gold": "a",
+   "score": 1.0
+  },
+  {
+   "idx": 287,
+   "pred": "a",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 288,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 289,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 290,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 291,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 292,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 293,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 294,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 295,
+   "pred": "(a)",
+   "gold": "b",
+   "score": 0.0
+  },
+  {
+   "idx": 296,
+   "pred": "(b)",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 297,
+   "pred": "(b)",
+   "gold": "b",
+   "score": 1.0
+  },
+  {
+   "idx": 298,
+   "pred": "b",
+   "gold": "a",
+   "score": 0.0
+  },
+  {
+   "idx": 299,
+   "pred": "b",
+   "gold": "b",
+   "score": 1.0
+  }
+ ]
+}
