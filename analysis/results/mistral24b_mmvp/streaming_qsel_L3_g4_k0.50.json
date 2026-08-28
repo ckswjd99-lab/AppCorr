@@ -8,7 +8,8 @@
   "groups": null,
   "num_samples": 300,
   "accuracy": 0.67,
-  "correct": 201
+  "correct": 201,
+  "mean_score": 0.67
  },
  "per_sample": [
   {

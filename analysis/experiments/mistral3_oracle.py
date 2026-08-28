@@ -407,7 +407,8 @@ def main():
             inc_f.close()
         summary = {"model": a.model, "dataset": a.dataset, "arm": a.arm, "keep": None,
                    "level": a.level, "groups": None, "num_samples": total,
-                   "accuracy": correct_n / max(total, 1), "correct": correct_n}
+                   "accuracy": correct_n / max(total, 1), "correct": correct_n,
+                   "mean_score": sum(r["score"] for r in per) / max(total, 1)}
         out = {"summary": summary, "per_sample": per}
         if a.out_json:
             json.dump(out, open(a.out_json, "w"), indent=1)
@@ -501,7 +502,8 @@ def main():
     summary = {"model": a.model, "dataset": a.dataset, "arm": a.arm,
                "keep": a.keep if a.arm in ("corrected", "streaming") else None,
                "level": a.level, "groups": a.groups if a.arm == "streaming" else None,
-               "num_samples": total, "accuracy": correct_n / total, "correct": correct_n}
+               "num_samples": total, "accuracy": correct_n / total, "correct": correct_n,
+               "mean_score": sum(r["score"] for r in per) / max(total, 1)}
     if inc_f is not None:
         inc_f.close()
     print(f"\n=== Final Summary: {json.dumps(summary)}", flush=True)
