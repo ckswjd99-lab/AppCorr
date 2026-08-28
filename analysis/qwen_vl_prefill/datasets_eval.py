@@ -568,8 +568,12 @@ class VisDroneDetSpec(_VisDroneBase):
         W, H = image.size
         cx, cy, w, h = ex["box"]
         gold = ((cx - w / 2) * W, (cy - h / 2) * H, (cx + w / 2) * W, (cy + h / 2) * H)
-        prompt = (f"Provide the bounding box of the {self.SINGULAR[ex['cat']]} in this image "
-                  "as x1,y1,x2,y2.")
+        # GROUNDING_PROMPT phrasing reused verbatim-in-shape: the polite "Provide the bounding
+        # box..." form made Mistral open with a conversational preamble ("To provide the bounding
+        # box ... I need ...") that max_new_tokens cut mid-sentence -- ALL SIX arms scored 0.00
+        # including ceiling, the broken-harness signature. The "Output ONLY ..." imperative is
+        # what RefCOCO already uses and the same models emit bare coordinates under it.
+        prompt = GROUNDING_PROMPT.format(expr=f"the {self.SINGULAR[ex['cat']]}")
         return image, prompt, gold
 
     def score(self, pred_text, gold):
