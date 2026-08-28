@@ -77,6 +77,8 @@ SPEC = [
         ("RealWorldQA (Acc.)",        None, ("inproc", "qwen25vl_32b", "realworldqa")),
         ("MMVP (Acc.)",               None, None),
         ("CV-Bench (Acc.)",           None, None),
+        ("VisDrone Count (Exact Acc.)", None, None),
+        ("VisDrone Det (Acc.@0.5)",     None, None),
     ]),
     ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
@@ -100,6 +102,15 @@ SPEC = [
     ("Mistral Small 3.1 (24B)", [
         ("MMVP (Acc.)",            ("mistral24b", "mmvp"),    ("inproc", "mistral24b", "mmvp")),
         ("CV-Bench (Acc.)",        ("mistral24b", "cvbench"), ("inproc", "mistral24b", "cvbench")),
+        # Resolution-sensitive track (2026-08-28 priority shift): grounding + OCR + drone-scale
+        # tiny objects. File-based: cells fill as the GH200 campaign's arms land.
+        ("RefCOCO val (Acc.@0.5)", ("mistral24b", "refcoco"), ("inproc", "mistral24b", "refcoco")),
+        ("RefCOCO val (mIoU)",     ("mistral24b", "refcoco"), ("inproc", "mistral24b", "refcoco")),
+        ("TextVQA (VQA Acc.)",     ("mistral24b", "textvqa"), ("inproc", "mistral24b", "textvqa")),
+        ("VisDrone Count (Exact Acc.)", ("mistral24b", "visdrone_count"), ("inproc", "mistral24b", "visdrone_count")),
+        ("VisDrone Count (Soft)",       ("mistral24b", "visdrone_count"), ("inproc", "mistral24b", "visdrone_count")),
+        ("VisDrone Det (Acc.@0.5)",     ("mistral24b", "visdrone_det"),   ("inproc", "mistral24b", "visdrone_det")),
+        ("VisDrone Det (mIoU)",         ("mistral24b", "visdrone_det"),   ("inproc", "mistral24b", "visdrone_det")),
     ]),
     ("Muse Glimmer (29.6B)", [
         ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    ("inproc", "museglimmer30b", "mmvp")),
@@ -367,12 +378,16 @@ def vfm_accuracy(tag: str, key: str, scale: float) -> Optional[float]:
         return None
 
 
-def load_accuracy(model: str, dataset: str, tag: str) -> Optional[float]:
+def load_accuracy(model: str, dataset: str, tag: str, key: str = "accuracy") -> Optional[float]:
+    """key="accuracy" is the headline; key="mean_score" is the graded companion the oracle
+    writes alongside it (mIoU for bbox specs, soft score for counting/VQA-soft) -- rows whose
+    label carries "(mIoU)" or "(Soft" read it instead."""
     p = os.path.join(RESULTS, f"{model}_{dataset}", f"{tag}.json")
     if not (os.path.exists(p) and os.path.getsize(p) > 0):
         return None
     try:
-        return json.load(open(p))["summary"]["accuracy"] * 100.0
+        v = json.load(open(p))["summary"].get(key)
+        return None if v is None else v * 100.0
     except Exception:
         return None
 
@@ -467,8 +482,10 @@ def build_rows(keeps, groups: int):
                 f = lit["fmt"]
             lower_better = r"\downarrow" in label
 
+            _metric_key = "mean_score" if ("(mIoU)" in label or "(Soft" in label) else "accuracy"
+
             def acc_raw(tag, lit_key=None):
-                v = load_accuracy(*acc_key, tag) if acc_key else None
+                v = load_accuracy(*acc_key, tag, _metric_key) if acc_key else None
                 if v is None and lit_key and lit_key in lit:
                     v = lit[lit_key]
                 return v
@@ -537,7 +554,7 @@ def build_rows(keeps, groups: int):
             if "stream" in lit:
                 sv = lit["stream"]
             elif acc_key:
-                sv = load_accuracy(*acc_key, "streaming_g4")
+                sv = load_accuracy(*acc_key, "streaming_g4", _metric_key)
             if sv is None:
                 cells.append("--")
             else:

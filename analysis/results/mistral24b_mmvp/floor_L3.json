@@ -6,7 +6,8 @@
   "level": 3,
   "num_samples": 300,
   "accuracy": 0.58,
-  "correct": 174
+  "correct": 174,
+  "mean_score": 0.58
  },
  "per_sample": [
   {
