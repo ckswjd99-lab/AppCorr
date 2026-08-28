@@ -9,7 +9,7 @@
   "num_samples": 5000,
   "accuracy": 0.6732,
   "correct": 3366,
-  "mean_score": 0.6756666666666667
+  "mean_score": 0.6756666666666666
  },
  "per_sample": [
   {
