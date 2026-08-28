@@ -82,8 +82,8 @@ SPEC = [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_moe", "realworldqa")),
         ("VSR zeroshot (Acc.)",    None, None),
-        ("MMVP (Acc.)",            None, None),
-        ("CV-Bench (Acc.)",        None, None),
+        ("MMVP (Acc.)",            None, ("inproc", "qwen35_moe", "mmvp")),
+        ("CV-Bench (Acc.)",        None, ("inproc", "qwen35_moe", "cvbench")),
     ]),
     # Gemma 4 31B: one-shot corrected arm (level-3 driver, 2026-08-28); accuracy cells fill
     # from analysis/results/gemma4_*/ files (ceiling/floor/corrected_k*.json). No FLOPs yet.
