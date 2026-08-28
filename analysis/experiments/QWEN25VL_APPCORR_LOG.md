@@ -1318,3 +1318,42 @@ table numbers (text-split schedule, kept n=8604): floor 79.79/70.45, OURS 87.25/
 88.11/80.23 -> preservation 99.02%/98.90%, recovery 89.66%/91.01% (Acc@0.5/mIoU). k0.25 full-split
 86.10 stands unchanged (schedule-neutral per its own subset A/B). inprocess_flops.json updated to
 text-split totals (refcoco 144.8/166.3%, gqa 147.7/169.6%, rwqa 130.3/154.5%; critical unchanged).
+
+---
+
+## 2026-08-28: the "large-image hardware ceiling" retracted -- it was a missing no_grad
+
+**Provenance note superseding earlier sections' OOM narrative.** The 672x672-class OOM skips
+attributed to "a genuine peak-memory image / hardware ceiling" (2026-08-26/27 sections above) were
+in fact a driver defect: `refcoco_gqa_batched_eval.py` called `approx_forward`/`correct_forward`
+bare -- these carry no `no_grad` of their own (the offload worker supplies it) -- so every
+correction round ran under autograd tracking, pinning ~27GB of graph activations per image.
+Measured: the identical build peaks at 68GB under no_grad vs ~95GB without, on the 95GiB card.
+Diagnosis burned two plausible-but-wrong hypotheses first (exception-traceback reference cycle --
+refuted by a deterministic, gc-insensitive skip set; generate()-fallback residue -- refuted by a
+fallback-then-build probe); the discriminating fact was a skipped image passing in isolation under
+a probe whose only difference was its `torch.no_grad()` wrapper.
+
+Consequences applied: k0.50 full split completed to n=8811 via jsonl resume (87.30/79.35,
+preservation 99.00/98.89, recovery 89.59/91.00 against the plain full-split bounds -- no kept-set
+restriction needed, section-footnote dropped for this arm); k0.25 remains n=8803 (its 8 skips
+predate the text-split schedule; completing them would mix schedules in one file, and the measured
+schedule neutrality says the number would not move).
+
+**Same-day ledger, because scale kept exposing what small benches could not:** a second FALSE
+ceiling (the pscore `incoming_attention` materialized full fp32 attention matrices per full-att
+segment -- 151MB at RefCOCO's ~1.5K patches, 57GB at CV-Bench's 2240x1680 ~30K patches; fixed by
+query-chunked accumulation, the exact guard gemma3's reference implementation documents and the
+port dropped), and one REAL ceiling (WildVision's 4032x3024 photos at the 12.8M-px cap produce
+~24K-token LLM contexts whose fork caches structurally exceed the ~28GB headroom -- floor and
+streaming skip the IDENTICAL 54/500, deterministically; stock ceiling passes all 500).
+Fork-port checklist, both fixed classes: worker-provided invariants (no_grad) and scale-guarded
+loops (chunked attention statistics) do not port themselves.
+
+**CV-Bench / MMVP rows** (full splits, level-2 degradation, zero skips): see
+`analysis/results/qwen25vl_bench/*.jsonl` and the eval table. CV-Bench 2638: 72.52 / 75.09 /
+77.52 / 78.96 / 79.87 (floor / k0.25 / k0.50 / streaming / ceiling). MMVP 300: 65.33 / 68.33 /
+69.00 / 71.67 / 74.67. Streaming beats both keep arms on both (5th/6th model-task confirmation);
+MMVP's 9.34pp gap is the largest of any Qwen2.5 dataset -- CLIP-blind fine-grained discrimination
+is exactly what a level-2 pyramid destroys -- and its k0.50->streaming step (+2.67pp) dwarfs
+k0.25->k0.50 (+0.67pp): the exact-prefill property outweighs vision recompute quantity there.
