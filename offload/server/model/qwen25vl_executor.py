@@ -232,6 +232,34 @@ class Qwen25VLExecutor(ModelExecutor):
         else:
             x_feature = context["llm_current_feature"]
 
+        # STREAMING skips the LLM approx pass entirely. In that schedule the approx LLM values
+        # are semantically dead: every position is prefilled by exactly one chunk, the causal
+        # mask means no chunk ever attends an approx-only position (keys beyond a chunk's end are
+        # unread; keys before it were written by earlier chunks), and decode reads the final
+        # chunk. Measured before removal: keeping it put the streaming arm's total at 200.4% of
+        # full vs the streaming category's ~1.25x identity (full + one vision pass) -- an entire
+        # dead full-LLM forward per request. The cost of removal is the round-0 first-token
+        # preview, which the streaming category does not have anyway (its first token arrives
+        # after the last chunk by construction). The caches correct() reads are zero-initialized
+        # with the exact shapes approx() would have produced; zeros are correct because (above)
+        # nothing ever consumes an unwritten row. APPCORR_STREAMING_KEEP_APPROX=1 restores the
+        # old path -- GATE USE ONLY (in-process bitwise A/B of stripped-vs-kept), never an arm.
+        raw_appcorr = getattr(config, "appcorr_kwargs", None) or {}
+        if (str(raw_appcorr.get("llm_schedule", "interleaved")) == "streaming"
+                and not os.environ.get("APPCORR_STREAMING_KEEP_APPROX")):
+            B, N, D = x_feature.shape
+            cache = context.get("llm_cache", {})
+            for i in range(start_l, end_l):
+                attn = self.llm_layers[i].self_attn
+                cache[f"llm_layer{i}_kv"] = torch.zeros(
+                    B, attn.num_key_value_heads, N, 2, attn.head_dim,
+                    device=x_feature.device, dtype=x_feature.dtype)
+                cache[f"llm_layer{i}_blocks_out_sum"] = torch.zeros(
+                    B, N, D, device=x_feature.device, dtype=x_feature.dtype)
+            context["llm_current_feature"] = x_feature
+            context["llm_cache"] = cache
+            return
+
         cache = context.get("llm_cache", {})
         for i in range(start_l, end_l):
             layer = self.llm_layers[i]
