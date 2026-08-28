@@ -194,7 +194,7 @@
       "k0.50": 18661.5,
       "total_k0.50": 187037.9,
       "k1.00": 32319.5,
-      "total_k1.00": 242640.2
+      "total_k1.00": 131169.7
     },
     "gqa": {
       "full": 21506.2,
@@ -203,7 +203,7 @@
       "k0.50": 4976.7,
       "total_k0.50": 36476.7,
       "k1.00": 6395.1,
-      "total_k1.00": 43092.9
+      "total_k1.00": 23065.9
     },
     "refcoco": {
       "full": 31780.0,
@@ -212,7 +212,7 @@
       "k0.50": 7878.5,
       "total_k0.50": 52857.1,
       "k1.00": 10346.9,
-      "total_k1.00": 63676.2
+      "total_k1.00": 34040.5
     },
     "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)"
   },
