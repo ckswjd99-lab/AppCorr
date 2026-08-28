@@ -17,6 +17,7 @@ sampled-resolution cap 1540^2), so floors measured there remain the bounds for
 these arms.
 """
 import argparse
+import re
 import json
 import os
 import sys
@@ -33,12 +34,34 @@ from appcorr.models.mistral3.unified import Mistral3Axis, PixtralVisionFork, MOD
 CAP_PX = 1540 * 1540
 
 
-def degrade(img: Image.Image, level: int) -> Image.Image:
+def degrade(img: Image.Image, level: int, filt: str = "pyr") -> Image.Image:
+    """filt="pyr" (default since the 2026-08-28 filter decision: Option B, pyr going forward)
+    walks the protocol archetype itself -- cv2.pyrDown chain, cv2.pyrUp back with per-step
+    dstsize, mirroring laplacian.py's _iterative_upsample_native (ported from
+    qwen35_accuracy.py's pyr branch). "box"/"bicubic" retained for reproducing older numbers
+    only; box was the probe chain's outlier (+4pp floor)."""
     w, h = img.size
     f = 2 ** level
     s = min(1.0, (CAP_PX / (w * h)) ** 0.5)
+    if filt == "pyr":
+        import cv2
+        import numpy as np
+        if s < 1.0:
+            w2, h2 = max(1, int(w * s)), max(1, int(h * s))
+            arr = np.asarray(img.resize((w2, h2), Image.BILINEAR))
+        else:
+            arr = np.asarray(img)
+        sizes = [(arr.shape[1], arr.shape[0])]
+        for _ in range(level):
+            arr = cv2.pyrDown(arr)
+            sizes.append((arr.shape[1], arr.shape[0]))
+        for i in range(level - 1, -1, -1):
+            arr = cv2.pyrUp(arr, dstsize=sizes[i])
+        out = Image.fromarray(arr)
+        return out if s == 1.0 else out.resize((w, h), Image.BICUBIC)
     tw, th = max(1, int(w * s) // f), max(1, int(h * s) // f)
-    return img.resize((tw, th), Image.BOX).resize((w, h), Image.BICUBIC)
+    down = Image.BOX if filt == "box" else Image.BICUBIC
+    return img.resize((tw, th), down).resize((w, h), Image.BICUBIC)
 
 
 def patch_energy(px_f, px_a, patch=14):
@@ -175,6 +198,8 @@ def main():
     ap.add_argument("--keep", type=float, default=0.5)
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--level", type=int, default=2)
+    ap.add_argument("--filt", choices=["pyr", "box", "bicubic"], default="pyr",
+                    help="degradation filter; pyr is the standard since the 2026-08-28 Option-B decision, box/bicubic only to reproduce older rows")
     ap.add_argument("--num-samples", type=int, default=12)
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--max-new-tokens", type=int, default=24)
@@ -215,7 +240,7 @@ def main():
             img, prompt, _ = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
             enc = axis.build_inputs(img, prompt).to("cuda:0")
             enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
-            enc2 = axis.build_inputs(degrade(img, a.level), prompt).to("cuda:0")
+            enc2 = axis.build_inputs(degrade(img, a.level, a.filt), prompt).to("cuda:0")
             enc2["pixel_values"] = enc2["pixel_values"].to(torch.bfloat16)
             with torch.no_grad():
                 for arm in arms:
@@ -268,7 +293,7 @@ def main():
             img, prompt, _ = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
             enc = axis.build_inputs(img, prompt).to("cuda:0")
             enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
-            enc2 = axis.build_inputs(degrade(img, a.level), prompt).to("cuda:0")
+            enc2 = axis.build_inputs(degrade(img, a.level, a.filt), prompt).to("cuda:0")
             enc2["pixel_values"] = enc2["pixel_values"].to(torch.bfloat16)
             axis.assert_same_grid(enc, enc2)
             with torch.no_grad():
@@ -302,7 +327,7 @@ def main():
                 out = model.generate(**enc, max_new_tokens=a.max_new_tokens, do_sample=False)
                 text = proc.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=True)
             else:
-                enc2 = axis.build_inputs(degrade(img, a.level), prompt).to("cuda:0")
+                enc2 = axis.build_inputs(degrade(img, a.level, a.filt), prompt).to("cuda:0")
                 enc2["pixel_values"] = enc2["pixel_values"].to(torch.bfloat16)
                 axis.assert_same_grid(enc, enc2)
                 if a.arm == "floor":
@@ -322,7 +347,18 @@ def main():
                                          attention_mask=enc.get("attention_mask"),
                                          max_new_tokens=a.max_new_tokens, do_sample=False)
                     text = proc.decode(out[0], skip_special_tokens=True)
-        ok, sc = spec.score(text.strip(), gold)
+        pred_for_score = text.strip()
+        if a.dataset == "refcoco":
+            # Mistral emits 0-1 FRACTION coordinates (three-conventions warning, handover
+            # 2026-08-28: match convention before judging capability). gold is native-pixel
+            # (identity resize above), so rescale fraction-looking boxes by the native size.
+            m_nums = re.findall(r"-?\d+\.?\d*", pred_for_score)
+            if len(m_nums) >= 4 and all(abs(float(v)) <= 1.5 for v in m_nums[:4]):
+                W, H = img.size
+                vals = (float(m_nums[0]) * W, float(m_nums[1]) * H,
+                        float(m_nums[2]) * W, float(m_nums[3]) * H)
+                pred_for_score = " ".join(f"{v:.1f}" for v in vals)
+        ok, sc = spec.score(pred_for_score, gold)
         correct_n += ok
         total += 1
         per.append({"idx": idx, "pred": text.strip()[:160], "gold": str(gold)[:80], "score": sc})
