@@ -131,7 +131,7 @@ SPEC = [
     # exists. COMPUTE figures are still valid: FLOP counts are shape- and token-count-determined
     # (the MoE handler charges n_tok x top_k whichever experts the router picks), independent of
     # the values flowing through.
-    ("Qwen3.5-MoE (122B-A10B FP8)$^\\dagger\\P$", [
+    ("Qwen3.5-MoE (122B-A10B FP8)$^\\dagger$\\textsuperscript{\\P}", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_122b", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_122b", "realworldqa")),
     ]),
@@ -584,7 +584,7 @@ def build_rows(keeps, groups: int):
 
 def emit_latex(table, keeps) -> str:
     heads = " & ".join(f"\\multicolumn{{3}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
-    heads += " & \\multicolumn{3}{c}{Streaming (k={=}1.0)}"
+    heads += " & \\multicolumn{3}{c}{Streaming (k$=$1.0)}"
     cmids, col = [], 4
     for _ in keeps:
         cmids.append(f"\\cmidrule(lr){{{col}-{col+2}}}")
@@ -616,7 +616,7 @@ def emit_latex(table, keeps) -> str:
              r"$^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
              r"(measured equivalent); the 25\% arm excludes 8/8811 images (0.09\%, a since-fixed "
              r"driver defect) with bounds restricted to the same kept set -- the 50\% arm has "
-             r"full coverage. $^\\P$122B-FP8 accuracy is unmeasurable "
+             r"full coverage. \textsuperscript{\P}122B-FP8 accuracy is unmeasurable "
              r"on this hardware (FP8 kernels produce incorrect outputs on sm\_100); its compute "
              r"figures are shape-determined and unaffected.}")
     L.append(r"\label{tab:evaluation_results}")
