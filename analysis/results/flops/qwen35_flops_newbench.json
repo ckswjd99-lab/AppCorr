@@ -1,0 +1,25 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "_samples": 12,
+ "_groups": 4,
+ "mmvp": {
+  "full": 757.3,
+  "floor": 757.3,
+  "crit_g4_k0.25": 299.4,
+  "total_g4_k0.25": 810.9,
+  "crit_g4_k0.50": 312.5,
+  "total_g4_k0.50": 863.5,
+  "crit_g4": 338.8,
+  "total_g4": 968.7
+ },
+ "cvbench": {
+  "full": 5535.9,
+  "floor": 5535.9,
+  "crit_g4_k0.25": 1224.6,
+  "total_g4_k0.25": 6059.7,
+  "crit_g4_k0.50": 1353.7,
+  "total_g4_k0.50": 6574.9,
+  "crit_g4": 1611.8,
+  "total_g4": 7605.4
+ }
+}
