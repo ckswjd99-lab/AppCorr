@@ -187,6 +187,14 @@ measured under box, resume the halted qwen35 re-measurement in that form.
   (end-only out-json loses a whole arm to one crash). Port both patterns to
   qwen35_accuracy / gemma4 / MG / vlm_bounds_oracle drivers when each is next
   touched; reference implementation: mistral3_oracle.py (--bs).
+  CAUTION (2026-08-29, found the hard way): validate the batched-BOUND path
+  PER OUTPUT-FORMAT CLASS, not once. It broke EOS stopping on TextVQA-style
+  free-text prompts (answer + hallucinated self-QA continuation, scored wrong
+  by VQA normalization) while RefCOCO passed -- bbox regex reads the string
+  front, so the refcoco-only 50-sample validation could not see it. Caught by
+  a corrected arm landing 6pp ABOVE the depressed ceiling. The inputs_embeds
+  batched path (fork arms) stops cleanly. Until the bound path is re-validated
+  per class, bound arms on exact-normalized free-text datasets run bs=1.
 
 ## Final state at shutdown (23:15 sweep, 2026-08-27)
 Everything is committed and pushed (HEAD 3c64def at sweep time). Landed tonight:
