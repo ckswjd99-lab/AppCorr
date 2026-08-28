@@ -1,0 +1,10 @@
+{
+ "_model": "meta-models/Muse-Glimmer-30B",
+ "_samples": 12,
+ "mmvp": {
+  "full": 8639.3
+ },
+ "cvbench": {
+  "full": 58639.4
+ }
+}

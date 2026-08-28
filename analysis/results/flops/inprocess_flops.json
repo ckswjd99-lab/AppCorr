@@ -278,5 +278,21 @@
    "k0.50": 21086.1,
    "total_k0.50": 23837.0
   }
+ },
+ "mistral24b": {
+  "mmvp": {
+   "full": 12648.6
+  },
+  "cvbench": {
+   "full": 43821.2
+  }
+ },
+ "museglimmer30b": {
+  "mmvp": {
+   "full": 8639.3
+  },
+  "cvbench": {
+   "full": 58639.4
+  }
  }
 }
