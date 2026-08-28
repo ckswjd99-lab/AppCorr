@@ -1,0 +1,24 @@
+{
+ "_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+ "_level": 2,
+ "_samples": 12,
+ "refcoco": {
+  "full": 30268.5,
+  "corrected_k0.25": {
+   "crit": 29286.6,
+   "total": 30597.7
+  },
+  "corrected_qsel_k0.25": {
+   "crit": 29286.6,
+   "total": 59555.1
+  },
+  "streaming_k0.25": {
+   "crit": 29010.3,
+   "total": 30598.2
+  },
+  "streaming_qsel_k0.25": {
+   "crit": 29010.3,
+   "total": 59555.6
+  }
+ }
+}
