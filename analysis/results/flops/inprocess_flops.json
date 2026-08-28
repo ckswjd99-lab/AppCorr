@@ -1,305 +1,332 @@
 {
- "_README": [
-  "Backbone-prefill FLOPs for the models measured IN PROCESS rather than through the offload",
-  "server (OV2, Gemma 3, SAM 3, Qwen2.5-VL). The offload-driven models write their own JSON per",
-  "arm into this directory; these do not, because their reporters print to stdout, so the values",
-  "are pinned here with the parameters that produced them.",
-  "",
-  "Units: GFLOPs per instruction (one image + prompt), backbone only, decode excluded.",
-  "Schedule: interleaved g=4, degradation level L2, bf16.",
-  "'total_k*' is the arm's TOTAL backbone FLOPs -- approximate pass plus every correction round --",
-  "so total/full is the compute OVERHEAD the schedule pays, separate from what it defers.",
-  "'full' is the ceiling prefill, which is 100% critical by the rule and is the denominator the",
-  "table reports against. 'k*' entries are CRITICAL FLOPs at that recompute rate.",
-  "",
-  "Reproduce with:",
-  "  python analysis/experiments/flops_report_ov2.py     --samples 12 --keeps 0.25 0.30 0.50",
-  "  python analysis/experiments/flops_report_gemma3.py  --samples 12 --keeps 0.25 0.30 0.50",
-  "  python analysis/experiments/flops_report_sam3.py    --samples 8  --keeps 0.25 0.30 0.50",
-  "  python analysis/experiments/flops_report_qwen25vl.py --samples 6",
-  "FLOPs are deterministic given the shapes, so a rerun at the same --samples reproduces these;",
-  "a different --samples moves them by the change in mean image size, a few percent."
- ],
- "_meta": {
-  "groups": 4,
-  "level": 2,
-  "dtype": "bfloat16",
-  "unit": "GFLOPs/instruction",
-  "note": "backbone prefill only; decode excluded"
- },
- "ov2": {
-  "_samples": 16,
-  "chartqa": {
-   "full": 11045.0,
-   "k0.25": 1335.1,
-   "k0.30": 1481.6,
-   "k0.50": 1978.9,
-   "total_k0.25": 13557.2,
-   "total_k0.30": 16421.7,
-   "total_k0.50": 15260.3
+  "_README": [
+    "Backbone-prefill FLOPs for the models measured IN PROCESS rather than through the offload",
+    "server (OV2, Gemma 3, SAM 3, Qwen2.5-VL). The offload-driven models write their own JSON per",
+    "arm into this directory; these do not, because their reporters print to stdout, so the values",
+    "are pinned here with the parameters that produced them.",
+    "",
+    "Units: GFLOPs per instruction (one image + prompt), backbone only, decode excluded.",
+    "Schedule: interleaved g=4, degradation level L2, bf16.",
+    "'total_k*' is the arm's TOTAL backbone FLOPs -- approximate pass plus every correction round --",
+    "so total/full is the compute OVERHEAD the schedule pays, separate from what it defers.",
+    "'full' is the ceiling prefill, which is 100% critical by the rule and is the denominator the",
+    "table reports against. 'k*' entries are CRITICAL FLOPs at that recompute rate.",
+    "",
+    "Reproduce with:",
+    "  python analysis/experiments/flops_report_ov2.py     --samples 12 --keeps 0.25 0.30 0.50",
+    "  python analysis/experiments/flops_report_gemma3.py  --samples 12 --keeps 0.25 0.30 0.50",
+    "  python analysis/experiments/flops_report_sam3.py    --samples 8  --keeps 0.25 0.30 0.50",
+    "  python analysis/experiments/flops_report_qwen25vl.py --samples 6",
+    "FLOPs are deterministic given the shapes, so a rerun at the same --samples reproduces these;",
+    "a different --samples moves them by the change in mean image size, a few percent."
+  ],
+  "_meta": {
+    "groups": 4,
+    "level": 2,
+    "dtype": "bfloat16",
+    "unit": "GFLOPs/instruction",
+    "note": "backbone prefill only; decode excluded"
   },
-  "textvqa": {
-   "full": 18621.3,
-   "k0.25": 1752.0,
-   "k0.30": 1871.1,
-   "k0.50": 2882.1,
-   "total_k0.25": 22451.7,
-   "total_k0.30": 27733.5,
-   "total_k0.50": 25458.8
+  "ov2": {
+    "_samples": 16,
+    "chartqa": {
+      "full": 11045.0,
+      "k0.25": 1335.1,
+      "k0.30": 1481.6,
+      "k0.50": 1978.9,
+      "total_k0.25": 13557.2,
+      "total_k0.30": 16421.7,
+      "total_k0.50": 15260.3
+    },
+    "textvqa": {
+      "full": 18621.3,
+      "k0.25": 1752.0,
+      "k0.30": 1871.1,
+      "k0.50": 2882.1,
+      "total_k0.25": 22451.7,
+      "total_k0.30": 27733.5,
+      "total_k0.50": 25458.8
+    },
+    "infovqa": {
+      "full": 69185.3,
+      "k0.25": 5135.2,
+      "k0.30": 7812.5,
+      "k0.50": 9405.2,
+      "total_k0.25": 82908.8,
+      "total_k0.30": 149272.6,
+      "total_k0.50": 95179.6
+    },
+    "docvqa": {
+      "full": 124497.1,
+      "k0.25": 8731.8,
+      "k0.30": 7804.6,
+      "k0.50": 16448.0,
+      "total_k0.25": 149115.3,
+      "total_k0.30": 200838.7,
+      "total_k0.50": 171759.3
+    },
+    "realworldqa": {
+      "full": 35793.7,
+      "k0.25": 3081.2,
+      "k0.30": 2087.6,
+      "k0.50": 5268.3,
+      "total_k0.25": 43035.2,
+      "total_k0.30": 54061.6,
+      "total_k0.50": 49024.3
+    },
+    "pope": {
+      "full": 7030.1,
+      "k0.25": 1001.7,
+      "k0.30": 1053.2,
+      "k0.50": 1409.0,
+      "total_k0.25": 8752.1,
+      "total_k0.30": 10374.9,
+      "total_k0.50": 9802.1
+    },
+    "gqa": {
+      "full": 6279.8,
+      "k0.25": 926.1,
+      "k0.30": 1043.6,
+      "k0.50": 1287.9,
+      "total_k0.25": 7846.2,
+      "total_k0.50": 8778.8
+    },
+    "mmmu": {
+      "full": 15269.2,
+      "k0.25": 2425.2,
+      "k0.30": 2479.9,
+      "k0.50": 3282.0,
+      "total_k0.25": 19386.9,
+      "total_k0.50": 21810.5
+    },
+    "refcoco": {
+      "full": 6889.9,
+      "k0.25": 1325.6,
+      "k0.30": 1334.9,
+      "k0.50": 1703.0,
+      "total_k0.25": 8887.3,
+      "total_k0.50": 9864.9
+    }
   },
-  "infovqa": {
-   "full": 69185.3,
-   "k0.25": 5135.2,
-   "k0.30": 7812.5,
-   "k0.50": 9405.2,
-   "total_k0.25": 82908.8,
-   "total_k0.30": 149272.6,
-   "total_k0.50": 95179.6
+  "gemma3": {
+    "_samples": 16,
+    "chartqa": {
+      "full": 7369.9,
+      "k0.25": 690.7,
+      "k0.50": 1135.6,
+      "total_k0.25": 8806.1,
+      "total_k0.50": 9991.0
+    },
+    "textvqa": {
+      "full": 7327.2,
+      "k0.25": 648.3,
+      "k0.50": 1093.2,
+      "total_k0.25": 8719.1,
+      "total_k0.50": 9902.0
+    },
+    "infovqa": {
+      "full": 7358.8,
+      "k0.25": 679.7,
+      "k0.50": 1124.6,
+      "total_k0.25": 8783.4,
+      "total_k0.50": 9967.7
+    },
+    "docvqa": {
+      "full": 7346.9,
+      "k0.25": 667.9,
+      "k0.50": 1112.8,
+      "total_k0.25": 8759.3,
+      "total_k0.50": 9943.2
+    },
+    "realworldqa": {
+      "full": 7418.9,
+      "k0.25": 739.2,
+      "k0.50": 1184.1,
+      "total_k0.25": 8909.3,
+      "total_k0.50": 10100.0
+    },
+    "pope": {
+      "full": 7338.7,
+      "k0.25": 659.7,
+      "k0.50": 1104.6,
+      "total_k0.25": 8743.7,
+      "total_k0.50": 9928.4
+    },
+    "gqa": {
+      "full": 7326.7,
+      "k0.25": 647.9,
+      "k0.50": 1092.8,
+      "total_k0.25": 8718.5,
+      "total_k0.50": 9901.6
+    },
+    "mmmu": {
+      "full": 7773.0,
+      "k0.25": 1089.7,
+      "k0.50": 1534.8,
+      "total_k0.25": 9644.5,
+      "total_k0.50": 10865.9
+    },
+    "refcoco": {
+      "full": 7531.3,
+      "k0.25": 850.4,
+      "k0.50": 1295.4,
+      "total_k0.25": 9143.2,
+      "total_k0.50": 10344.1
+    }
   },
-  "docvqa": {
-   "full": 124497.1,
-   "k0.25": 8731.8,
-   "k0.30": 7804.6,
-   "k0.50": 16448.0,
-   "total_k0.25": 149115.3,
-   "total_k0.30": 200838.7,
-   "total_k0.50": 171759.3
+  "sam3": {
+    "_samples": 8,
+    "_note": "progressive per-round selection (2026-08-26): totals dropped from 206/220% to 114/128% of full when the duplicated scoring approx was removed. Source: sam3_progressive.log, 16 images.",
+    "coco": {
+      "full": 5809.1,
+      "k0.25": 747.6,
+      "k0.50": 1084.6,
+      "total_k0.25": 6610.3,
+      "total_k0.50": 7405.2
+    }
   },
-  "realworldqa": {
-   "full": 35793.7,
-   "k0.25": 3081.2,
-   "k0.30": 2087.6,
-   "k0.50": 5268.3,
-   "total_k0.25": 43035.2,
-   "total_k0.30": 54061.6,
-   "total_k0.50": 49024.3
+  "qwen25vl_32b": {
+    "_samples": 6,
+    "realworldqa": {
+      "full": 121078.4,
+      "k0.25": 11347.4,
+      "total_k0.25": 157781.6,
+      "k0.50": 18661.5,
+      "total_k0.50": 187037.9,
+      "k1.00": 32319.5,
+      "total_k1.00": 131169.7
+    },
+    "gqa": {
+      "full": 21506.2,
+      "k0.25": 3796.2,
+      "total_k0.25": 31754.9,
+      "k0.50": 4976.7,
+      "total_k0.50": 36476.7,
+      "k1.00": 6395.1,
+      "total_k1.00": 23065.9
+    },
+    "refcoco": {
+      "full": 31780.0,
+      "k0.25": 6171.6,
+      "total_k0.25": 46029.5,
+      "k0.50": 7878.5,
+      "total_k0.50": 52857.1,
+      "k1.00": 10346.9,
+      "total_k1.00": 34040.5
+    },
+    "_note": "text-split schedule totals (GH200 2026-08-27: pre-image text every round, post-image text final round only; the every-round schedule re-corrected the whole text block g times, 0.56x of full, keep-independent). criticals unchanged by construction. k0.25 accuracy verified schedule-neutral on the 2000-subset (-0.05pp); k0.50 full-split accuracy re-verification lands ~21:20 and may adjust that one accuracy cell.",
+    "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)"
   },
-  "pope": {
-   "full": 7030.1,
-   "k0.25": 1001.7,
-   "k0.30": 1053.2,
-   "k0.50": 1409.0,
-   "total_k0.25": 8752.1,
-   "total_k0.30": 10374.9,
-   "total_k0.50": 9802.1
+  "qwen35_moe": {
+    "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
+    "_samples": 12,
+    "chartqa": {
+      "full": 3898.0,
+      "k1.00": 1101.1,
+      "total_k1.00": 5384.2,
+      "k0.25": 824.9,
+      "total_k0.25": 4280.9,
+      "k0.50": 1091.2,
+      "total_k0.50": 5374.4
+    },
+    "realworldqa": {
+      "full": 11681.3,
+      "k1.00": 3089.6,
+      "total_k1.00": 16240.0,
+      "k0.25": 2239.5,
+      "total_k0.25": 12842.6,
+      "k0.50": 3079.7,
+      "total_k0.50": 16230.1
+    },
+    "mmvp": {
+      "full": 757.3,
+      "k0.25": 299.4,
+      "total_k0.25": 810.9,
+      "k0.50": 312.5,
+      "total_k0.50": 863.5,
+      "k1.00": 338.8,
+      "total_k1.00": 968.7
+    },
+    "cvbench": {
+      "full": 5535.9,
+      "k0.25": 1224.6,
+      "total_k0.25": 6059.7,
+      "k0.50": 1353.7,
+      "total_k0.50": 6574.9,
+      "k1.00": 1611.8,
+      "total_k1.00": 7605.4
+    }
   },
-  "gqa": {
-   "full": 6279.8,
-   "k0.25": 926.1,
-   "k0.30": 1043.6,
-   "k0.50": 1287.9,
-   "total_k0.25": 7846.2,
-   "total_k0.50": 8778.8
+  "qwen35_122b": {
+    "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, streaming k1.0.",
+    "chartqa": {
+      "full": 6044.4,
+      "k1.00": 1747.5,
+      "total_k1.00": 7520.9
+    },
+    "realworldqa": {
+      "full": 17964.4,
+      "k1.00": 4810.6,
+      "total_k1.00": 22513.2
+    }
   },
-  "mmmu": {
-   "full": 15269.2,
-   "k0.25": 2425.2,
-   "k0.30": 2479.9,
-   "k0.50": 3282.0,
-   "total_k0.25": 19386.9,
-   "total_k0.50": 21810.5
+  "gemma4": {
+    "mmvp": {
+      "full": 20555.6,
+      "k0.25": 18495.7,
+      "total_k0.25": 21246.7,
+      "k0.50": 19182.3,
+      "total_k0.50": 21933.3
+    },
+    "cvbench": {
+      "full": 22459.3,
+      "k0.25": 20399.4,
+      "total_k0.25": 23150.4,
+      "k0.50": 21086.1,
+      "total_k0.50": 23837.0
+    }
   },
-  "refcoco": {
-   "full": 6889.9,
-   "k0.25": 1325.6,
-   "k0.30": 1334.9,
-   "k0.50": 1703.0,
-   "total_k0.25": 8887.3,
-   "total_k0.50": 9864.9
+  "mistral24b": {
+    "mmvp": {
+      "full": 12648.6
+    },
+    "cvbench": {
+      "full": 43821.2
+    },
+    "refcoco": {
+      "full": 30268.5,
+      "k0.25": 29286.6,
+      "total_k0.25": 30597.7,
+      "k0.50": 29613.9,
+      "total_k0.50": 30925.0,
+      "k1.00": 29255.7,
+      "total_k1.00": 31579.6
+    },
+    "textvqa": {
+      "full": 57649.6,
+      "k0.25": 55236.1,
+      "total_k0.25": 58459.0,
+      "k0.50": 56040.6,
+      "total_k0.50": 59263.5,
+      "k1.00": 55160.1,
+      "total_k1.00": 60872.5
+    },
+    "visdrone_count": {
+      "full": 72542.4,
+      "k0.25": 69364.3,
+      "total_k0.25": 73608.1,
+      "k0.50": 70423.7,
+      "total_k0.50": 74667.5,
+      "k1.00": 69264.1,
+      "total_k1.00": 76786.3
+    }
+  },
+  "museglimmer30b": {
+    "mmvp": {
+      "full": 8639.3
+    },
+    "cvbench": {
+      "full": 58639.4
+    }
   }
- },
- "gemma3": {
-  "_samples": 16,
-  "chartqa": {
-   "full": 7369.9,
-   "k0.25": 690.7,
-   "k0.50": 1135.6,
-   "total_k0.25": 8806.1,
-   "total_k0.50": 9991.0
-  },
-  "textvqa": {
-   "full": 7327.2,
-   "k0.25": 648.3,
-   "k0.50": 1093.2,
-   "total_k0.25": 8719.1,
-   "total_k0.50": 9902.0
-  },
-  "infovqa": {
-   "full": 7358.8,
-   "k0.25": 679.7,
-   "k0.50": 1124.6,
-   "total_k0.25": 8783.4,
-   "total_k0.50": 9967.7
-  },
-  "docvqa": {
-   "full": 7346.9,
-   "k0.25": 667.9,
-   "k0.50": 1112.8,
-   "total_k0.25": 8759.3,
-   "total_k0.50": 9943.2
-  },
-  "realworldqa": {
-   "full": 7418.9,
-   "k0.25": 739.2,
-   "k0.50": 1184.1,
-   "total_k0.25": 8909.3,
-   "total_k0.50": 10100.0
-  },
-  "pope": {
-   "full": 7338.7,
-   "k0.25": 659.7,
-   "k0.50": 1104.6,
-   "total_k0.25": 8743.7,
-   "total_k0.50": 9928.4
-  },
-  "gqa": {
-   "full": 7326.7,
-   "k0.25": 647.9,
-   "k0.50": 1092.8,
-   "total_k0.25": 8718.5,
-   "total_k0.50": 9901.6
-  },
-  "mmmu": {
-   "full": 7773.0,
-   "k0.25": 1089.7,
-   "k0.50": 1534.8,
-   "total_k0.25": 9644.5,
-   "total_k0.50": 10865.9
-  },
-  "refcoco": {
-   "full": 7531.3,
-   "k0.25": 850.4,
-   "k0.50": 1295.4,
-   "total_k0.25": 9143.2,
-   "total_k0.50": 10344.1
-  }
- },
- "sam3": {
-  "_samples": 8,
-  "_note": "progressive per-round selection (2026-08-26): totals dropped from 206/220% to 114/128% of full when the duplicated scoring approx was removed. Source: sam3_progressive.log, 16 images.",
-  "coco": {
-   "full": 5809.1,
-   "k0.25": 747.6,
-   "k0.50": 1084.6,
-   "total_k0.25": 6610.3,
-   "total_k0.50": 7405.2
-  }
- },
- "qwen25vl_32b": {
-  "_samples": 6,
-  "realworldqa": {
-   "full": 121078.4,
-   "k0.25": 11347.4,
-   "total_k0.25": 157781.6,
-   "k0.50": 18661.5,
-   "total_k0.50": 187037.9,
-   "k1.00": 32319.5,
-   "total_k1.00": 131169.7
-  },
-  "gqa": {
-   "full": 21506.2,
-   "k0.25": 3796.2,
-   "total_k0.25": 31754.9,
-   "k0.50": 4976.7,
-   "total_k0.50": 36476.7,
-   "k1.00": 6395.1,
-   "total_k1.00": 23065.9
-  },
-  "refcoco": {
-   "full": 31780.0,
-   "k0.25": 6171.6,
-   "total_k0.25": 46029.5,
-   "k0.50": 7878.5,
-   "total_k0.50": 52857.1,
-   "k1.00": 10346.9,
-   "total_k1.00": 34040.5
-  },
-  "_note": "text-split schedule totals (GH200 2026-08-27: pre-image text every round, post-image text final round only; the every-round schedule re-corrected the whole text block g times, 0.56x of full, keep-independent). criticals unchanged by construction. k0.25 accuracy verified schedule-neutral on the 2000-subset (-0.05pp); k0.50 full-split accuracy re-verification lands ~21:20 and may adjust that one accuracy cell.",
-  "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)"
- },
- "qwen35_moe": {
-  "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
-  "_samples": 12,
-  "chartqa": {
-   "full": 3898.0,
-   "k1.00": 1101.1,
-   "total_k1.00": 5384.2,
-   "k0.25": 824.9,
-   "total_k0.25": 4280.9,
-   "k0.50": 1091.2,
-   "total_k0.50": 5374.4
-  },
-  "realworldqa": {
-   "full": 11681.3,
-   "k1.00": 3089.6,
-   "total_k1.00": 16240.0,
-   "k0.25": 2239.5,
-   "total_k0.25": 12842.6,
-   "k0.50": 3079.7,
-   "total_k0.50": 16230.1
-  },
-  "mmvp": {
-   "full": 757.3,
-   "k0.25": 299.4,
-   "total_k0.25": 810.9,
-   "k0.50": 312.5,
-   "total_k0.50": 863.5,
-   "k1.00": 338.8,
-   "total_k1.00": 968.7
-  },
-  "cvbench": {
-   "full": 5535.9,
-   "k0.25": 1224.6,
-   "total_k0.25": 6059.7,
-   "k0.50": 1353.7,
-   "total_k0.50": 6574.9,
-   "k1.00": 1611.8,
-   "total_k1.00": 7605.4
-  }
- },
- "qwen35_122b": {
-  "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, streaming k1.0.",
-  "chartqa": {
-   "full": 6044.4,
-   "k1.00": 1747.5,
-   "total_k1.00": 7520.9
-  },
-  "realworldqa": {
-   "full": 17964.4,
-   "k1.00": 4810.6,
-   "total_k1.00": 22513.2
-  }
- },
- "gemma4": {
-  "mmvp": {
-   "full": 20555.6,
-   "k0.25": 18495.7,
-   "total_k0.25": 21246.7,
-   "k0.50": 19182.3,
-   "total_k0.50": 21933.3
-  },
-  "cvbench": {
-   "full": 22459.3,
-   "k0.25": 20399.4,
-   "total_k0.25": 23150.4,
-   "k0.50": 21086.1,
-   "total_k0.50": 23837.0
-  }
- },
- "mistral24b": {
-  "mmvp": {
-   "full": 12648.6
-  },
-  "cvbench": {
-   "full": 43821.2
-  }
- },
- "museglimmer30b": {
-  "mmvp": {
-   "full": 8639.3
-  },
-  "cvbench": {
-   "full": 58639.4
-  }
- }
 }
