@@ -87,9 +87,13 @@ SPEC = [
     ]),
     # Gemma 4 31B: one-shot corrected arm (level-3 driver, 2026-08-28); accuracy cells fill
     # from analysis/results/gemma4_*/ files (ceiling/floor/corrected_k*.json). No FLOPs yet.
+    # gemma4 one-shot corrected: crit ~ 91-93% of full BY DESIGN -- the dense-31B LLM
+    # prefill dominates and must wait for the one-shot correction; overlappable work is
+    # only the vision approx. The interleaved/streaming ports (plan steps 4-5) are what
+    # would cut critical here.
     ("Gemma 4 (31B)", [
-        ("MMVP (Acc.)",            ("gemma4", "mmvp"),    None),
-        ("CV-Bench (Acc.)",        ("gemma4", "cvbench"), None),
+        ("MMVP (Acc.)",            ("gemma4", "mmvp"),    ("inproc", "gemma4", "mmvp")),
+        ("CV-Bench (Acc.)",        ("gemma4", "cvbench"), ("inproc", "gemma4", "cvbench")),
     ]),
     # New 30B-class models (2026-08-28 sweep): bounds via the generic oracle; ours arms pending
     # their axis ports. WildVision is judge-only (prediction dumps) and has no accuracy row.
