@@ -51,7 +51,7 @@ GFLOP = 1e9
 
 
 @torch.no_grad()
-def run_arm(executor, encoder, raw_config, image_np, prompt, keep, fl, req_id):
+def run_arm(executor, encoder, raw_config, image_np, prompt, keep, fl, req_id, llm_schedule=None):
     """One request through the real mechanism. Returns nothing -- fl accumulates."""
     from offload.common import ExperimentConfig, Task
 
@@ -60,6 +60,8 @@ def run_arm(executor, encoder, raw_config, image_np, prompt, keep, fl, req_id):
     cfg["transmission_kwargs"]["grouping_strategy"] = "sequential"
     cfg["transmission_kwargs"]["num_groups"] = 4
     cfg.setdefault("appcorr_kwargs", {})["token_keep_ratio"] = keep
+    if llm_schedule is not None:
+        cfg["appcorr_kwargs"]["llm_schedule"] = llm_schedule
     config = ExperimentConfig(**cfg)
 
     context = {}
@@ -97,6 +99,10 @@ def main():
     ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50])
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--datasets", nargs="+", default=["refcoco", "gqa", "realworldqa"])
+    ap.add_argument("--llm-schedule", choices=["interleaved", "streaming"], default=None,
+                    help="appcorr_kwargs.llm_schedule for the arm runs; use 'streaming' with "
+                         "--keeps 1.0 to measure the table's Streaming(k=1.0) column "
+                         "(json keys k1.00/total_k1.00).")
     ap.add_argument("--write-json", action="store_true",
                     help="Merge results into analysis/results/flops/inprocess_flops.json")
     a = ap.parse_args()
@@ -172,7 +178,8 @@ def main():
                         img, prompt, _ = spec.prepare(ds[i], smart_resize, factor, min_px, max_px)
                         image_np = np.array(img, dtype=np.uint8)
                         try:
-                            run_arm(executor, encoder, raw_config, image_np, prompt, keep, fl, i)
+                            run_arm(executor, encoder, raw_config, image_np, prompt, keep, fl, i,
+                                    llm_schedule=a.llm_schedule)
                         except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
                             if not isinstance(e, torch.cuda.OutOfMemoryError) and "mha_graph" not in str(e):
                                 raise
