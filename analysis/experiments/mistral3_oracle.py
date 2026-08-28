@@ -48,25 +48,52 @@ def patch_energy(px_f, px_a, patch=14):
     return pooled.flatten(1)                                         # row-major = flatten(1).T order
 
 
+def _grid_hw(axis, enc):
+    ps = axis.vision.patch_size
+    h, w = (int(x) for x in enc["image_sizes"][0])
+    return h // ps, w // ps
+
+
 @torch.no_grad()
-def corrected_feats(axis, fork, enc, enc2, keep, groups=None):
+def _scores(axis, fork, enc, enc2, energy, cache, sizes, qsel, flops=None):
+    """energy (default) or energy x query-attention (qsel). The qsel prefill on
+    the APPROX features runs at arrival 0 -- it needs only the base, so it
+    overlaps the transmission like the vision approx itself."""
+    if not qsel:
+        return energy
+    feats_a = axis.projector(cache["p_last"].squeeze(0), sizes)
+    hp, wp = _grid_hw(axis, enc)
+    qa = query_attn_patch_scores(axis, enc, feats_a.to(torch.bfloat16), hp, wp)
+    e = energy / energy.mean().clamp_min(1e-12)
+    q = qa / qa.mean().clamp_min(1e-12)
+    return e * q.to(e.device)
+
+
+@torch.no_grad()
+def corrected_feats(axis, fork, enc, enc2, keep, qsel=False, counter=None):
     px_f, px_a = enc["pixel_values"].to(torch.bfloat16), enc2["pixel_values"].to(torch.bfloat16)
     sizes = enc["image_sizes"]
-    emb_a, pos = fork.prepare(px_a, sizes)
-    cache = {}
-    fork.approx(emb_a, pos, cache)
-    emb_f, _ = fork.prepare(px_f, sizes)
-    energy = patch_energy(px_f, px_a)[0]
-    kq = max(1, int(round(keep * energy.numel())))
-    sel = torch.zeros_like(energy, dtype=torch.bool).scatter_(
-        0, energy.topk(kq).indices, True)
-    mixed = torch.where(sel.unsqueeze(-1), emb_f[0], emb_a[0]).unsqueeze(0)
-    last = fork.correct(mixed, sel, pos, cache)
-    return axis.projector(last.squeeze(0), sizes)
+    from contextlib import nullcontext
+    arr = counter.arrival if counter is not None else (lambda i: nullcontext())
+    with arr(0):
+        emb_a, pos = fork.prepare(px_a, sizes)
+        cache = {}
+        fork.approx(emb_a, pos, cache)
+        energy = patch_energy(px_f, px_a)[0]
+        score = _scores(axis, fork, enc, enc2, energy, cache, sizes, qsel)
+    with arr(1):
+        emb_f, _ = fork.prepare(px_f, sizes)
+        kq = max(1, int(round(keep * score.numel())))
+        sel = torch.zeros_like(score, dtype=torch.bool).scatter_(
+            0, score.topk(kq).indices, True)
+        mixed = torch.where(sel.unsqueeze(-1), emb_f[0], emb_a[0]).unsqueeze(0)
+        last = fork.correct(mixed, sel, pos, cache)
+        return axis.projector(last.squeeze(0), sizes)
 
 
 @torch.no_grad()
-def streaming_feats_and_prefill(axis, fork, enc, enc2, keep, groups, model):
+def streaming_feats_and_prefill(axis, fork, enc, enc2, keep, groups, model,
+                                qsel=False, counter=None):
     """Vision: per-band correct (arrived rows, quota=keep). LLM: prefill once at
     the end over the final mixed features -- Mistral's LLM is purely causal, so
     the arrival-ordered chunked prefill computes exactly this (OV2's verified
@@ -74,34 +101,76 @@ def streaming_feats_and_prefill(axis, fork, enc, enc2, keep, groups, model):
     the chunk-boundary identity is carried by that established result."""
     px_f, px_a = enc["pixel_values"].to(torch.bfloat16), enc2["pixel_values"].to(torch.bfloat16)
     sizes = enc["image_sizes"]
-    emb_a, pos = fork.prepare(px_a, sizes)
-    cache = {}
-    fork.approx(emb_a, pos, cache)
-    emb_f, _ = fork.prepare(px_f, sizes)
-    energy = patch_energy(px_f, px_a)[0]
-    P = energy.numel()
-    ys = pos[:, 0] if pos.dim() == 2 else pos  # meshgrid ids encode row-major anyway
-    order = torch.arange(P, device=energy.device)
+    from contextlib import nullcontext
+    arr = counter.arrival if counter is not None else (lambda i: nullcontext())
+    with arr(0):
+        emb_a, pos = fork.prepare(px_a, sizes)
+        cache = {}
+        fork.approx(emb_a, pos, cache)
+        energy = patch_energy(px_f, px_a)[0]
+        score = _scores(axis, fork, enc, enc2, energy, cache, sizes, qsel)
+        emb_f, _ = fork.prepare(px_f, sizes)
+    P = score.numel()
+    order = torch.arange(P, device=score.device)
     bands = torch.chunk(order, groups)
-    arrived = torch.zeros(P, dtype=torch.bool, device=energy.device)
+    arrived = torch.zeros(P, dtype=torch.bool, device=score.device)
     corrected = torch.zeros_like(arrived)
-    for band in bands:
-        arrived[band] = True
-        cand = arrived & ~corrected
-        e = energy.masked_fill(~cand, float("-inf"))
-        kq = max(1, int(round(keep * band.numel())))
-        sel = torch.zeros_like(cand).scatter_(0, e.topk(kq).indices, True) & cand
-        mixed_rows = torch.where(sel.unsqueeze(-1), emb_f[0], emb_a[0]).unsqueeze(0)
-        fork.correct(mixed_rows, sel, pos, cache)
-        corrected |= sel
+    for bi, band in enumerate(bands):
+        with arr(bi + 1):
+            arrived[band] = True
+            cand = arrived & ~corrected
+            e = score.masked_fill(~cand, float("-inf"))
+            kq = max(1, int(round(keep * band.numel())))
+            sel = torch.zeros_like(cand).scatter_(0, e.topk(kq).indices, True) & cand
+            mixed_rows = torch.where(sel.unsqueeze(-1), emb_f[0], emb_a[0]).unsqueeze(0)
+            fork.correct(mixed_rows, sel, pos, cache)
+            corrected |= sel
     return axis.projector(cache["p_last"].squeeze(0), sizes)
+
+
+@torch.no_grad()
+def query_attn_patch_scores(axis, enc, feats_a, hp, wp):
+    """QUERY-AWARE selection signal (user proposal 2026-08-28): one extra LLM
+    prefill on the APPROX features, attention FROM the trailing text (query)
+    tokens TO the image tokens, averaged over layers/heads/query rows, then
+    broadcast from merged tokens (2x2 patches) back to patch rows.
+
+    Costs one approx-features prefill with eager attention -- that pass is the
+    price of query awareness, and the final correction stage re-runs the query
+    tokens against the corrected features (the arm's second prefill).
+    """
+    ids = enc["input_ids"]
+    embeds = axis.scatter_and_prefill_embeds(enc, feats_a)
+    impl = axis.llm.config._attn_implementation
+    axis.llm.config._attn_implementation = "eager"   # sdpa returns no attn weights
+    try:
+        out = axis.llm(inputs_embeds=embeds, attention_mask=enc.get("attention_mask"),
+                       use_cache=False, output_attentions=True, return_dict=True)
+    finally:
+        axis.llm.config._attn_implementation = impl
+    assert out.attentions and out.attentions[0] is not None, "no attention weights captured"
+    img_pos = (ids[0] == axis.image_token_id).nonzero(as_tuple=True)[0]
+    q_pos = torch.arange(ids.shape[1], device=ids.device) > img_pos.max()
+    q_pos = q_pos.nonzero(as_tuple=True)[0]
+    score_tok = None
+    for att in out.attentions:                     # [1, heads, q, k]
+        s = att[0, :, q_pos][:, :, img_pos].mean(dim=(0, 1))   # [n_img_tokens]
+        score_tok = s if score_tok is None else score_tok + s
+    score_tok = score_tok / len(out.attentions)
+    # merged tokens are row-major over (hp/2, wp/2); broadcast to the 2x2 patch block
+    mh, mw = hp // 2, wp // 2
+    assert score_tok.numel() == mh * mw, (score_tok.shape, mh, mw)
+    grid = score_tok.view(mh, mw)
+    patch = grid.repeat_interleave(2, 0).repeat_interleave(2, 1)   # [hp, wp]
+    return patch.flatten()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL_ID)
     ap.add_argument("--dataset", default="mmvp")
-    ap.add_argument("--arm", choices=["ceiling", "floor", "corrected", "streaming"],
+    ap.add_argument("--arm", choices=["ceiling", "floor", "corrected", "streaming",
+                                      "corrected_qsel", "streaming_qsel"],
                     default="corrected")
     ap.add_argument("--keep", type=float, default=0.5)
     ap.add_argument("--groups", type=int, default=4)
@@ -111,6 +180,10 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=24)
     ap.add_argument("--out-json", default=None)
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--flops", action="store_true",
+                    help="12-sample FLOPs pass instead of accuracy: ceiling + the four ours "
+                         "arms with the arrival split (approx/qsel prefill at arrival 0 = "
+                         "overlappable; correction + final prefill = critical)")
     a = ap.parse_args()
 
     from datasets import load_dataset
@@ -128,6 +201,67 @@ def main():
     ds = spec.load(load_dataset)
     if len(ds) == 0:
         raise RuntimeError("VACUOUS: 0 samples")
+
+    if a.flops:
+        from appcorr.flops.counter import FlopCounter
+        from appcorr.flops import hooks as fhooks
+        roots = [model.model.vision_tower, model.model.multi_modal_projector,
+                 model.model.language_model]
+        arms = ["ceiling", f"corrected_k{a.keep:.2f}", f"corrected_qsel_k{a.keep:.2f}",
+                f"streaming_k{a.keep:.2f}", f"streaming_qsel_k{a.keep:.2f}"]
+        counters = {arm: FlopCounter() for arm in arms}
+        idxs = list(range(0, len(ds), max(1, len(ds) // 12)))[:12]
+        for idx in idxs:
+            img, prompt, _ = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
+            enc = axis.build_inputs(img, prompt).to("cuda:0")
+            enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
+            enc2 = axis.build_inputs(degrade(img, a.level), prompt).to("cuda:0")
+            enc2["pixel_values"] = enc2["pixel_values"].to(torch.bfloat16)
+            with torch.no_grad():
+                for arm in arms:
+                    c = counters[arm]
+                    handles = fhooks.install(c, roots)
+                    with c.request(f"{a.dataset}/{idx}"):
+                        if arm == "ceiling":
+                            with c.arrival(0):
+                                feats = axis.vision_features(enc["pixel_values"],
+                                                             enc["image_sizes"])
+                                embeds = axis.scatter_and_prefill_embeds(
+                                    enc, feats.to(torch.bfloat16))
+                                axis.llm(inputs_embeds=embeds, use_cache=False)
+                        else:
+                            qsel = "qsel" in arm
+                            if arm.startswith("corrected"):
+                                feats = corrected_feats(axis, fork, enc, enc2, a.keep,
+                                                        qsel=qsel, counter=c)
+                                final_arr = 1
+                            else:
+                                feats = streaming_feats_and_prefill(
+                                    axis, fork, enc, enc2, a.keep, a.groups, model,
+                                    qsel=qsel, counter=c)
+                                final_arr = a.groups
+                            with c.arrival(final_arr):
+                                embeds = axis.scatter_and_prefill_embeds(
+                                    enc, feats.to(torch.bfloat16))
+                                axis.llm(inputs_embeds=embeds, use_cache=False)
+                    fhooks.remove(handles)
+        agg = {arm: counters[arm].aggregate() for arm in arms}
+        full = agg["ceiling"]["mean_total_gflops"]
+        out = {"_model": a.model, "_level": a.level, "_samples": len(idxs),
+               a.dataset: {"full": round(full, 1)}}
+        for arm in arms[1:]:
+            g = agg[arm]
+            out[a.dataset][arm] = {"crit": round(g["mean_critical_gflops"], 1),
+                                   "total": round(g["mean_total_gflops"], 1)}
+            print(f"{arm:<24} crit {g['mean_critical_gflops']:8.1f} "
+                  f"({g['mean_critical_gflops'] / full * 100:5.1f}%)  total "
+                  f"{g['mean_total_gflops']:9.1f} ({g['mean_total_gflops'] / full * 100:5.1f}%)",
+                  flush=True)
+        if a.out_json:
+            os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
+            json.dump(out, open(a.out_json, "w"), indent=1)
+        print("MISTRAL3_FLOPS_DONE", flush=True)
+        return
 
     if a.gate:
         for idx in (0, len(ds) // 2):
@@ -176,11 +310,13 @@ def main():
                     text = proc.decode(out[0, enc2["input_ids"].shape[1]:],
                                        skip_special_tokens=True)
                 else:
-                    if a.arm == "corrected":
-                        feats = corrected_feats(axis, fork, enc, enc2, a.keep)
+                    qsel = a.arm.endswith("_qsel")
+                    if a.arm.startswith("corrected"):
+                        feats = corrected_feats(axis, fork, enc, enc2, a.keep, qsel=qsel)
                     else:
                         feats = streaming_feats_and_prefill(axis, fork, enc, enc2,
-                                                            a.keep, a.groups, model)
+                                                            a.keep, a.groups, model,
+                                                            qsel=qsel)
                     embeds = axis.scatter_and_prefill_embeds(enc, feats.to(torch.bfloat16))
                     out = model.generate(inputs_embeds=embeds,
                                          attention_mask=enc.get("attention_mask"),
