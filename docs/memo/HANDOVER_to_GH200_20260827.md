@@ -174,6 +174,19 @@ measured under box, resume the halted qwen35 re-measurement in that form.
   200.4% of full against the category's ~1.25x for a full day before the FLOPs
   cell forced the comparison; the excess was a semantically-dead approx-LLM
   pass inherited from the chassis (stripped, bitwise-gated, -> 107.1%).
+- BATCH THE ORACLE DRIVERS (user directive 2026-08-28, measured on mistral3):
+  every accuracy oracle runs bs=1 by default and most of its wall-clock is
+  batchable. Two patterns, both validated acc-neutral on 50-sample bs1-vs-bsN
+  A/Bs before first use (accuracy ties, +-0.01-0.03 fraction-coordinate churn,
+  the familiar bf16 batching noise): (1) bound arms (ceiling/floor) are plain
+  stock generate -- left-padded chat-template batches, 0.89->0.20 s/ex (4.4x)
+  at bs=8; (2) fork arms keep the correction bs=1 (the vision forks carry no
+  batch dim by design) but queue the per-sample inputs_embeds and flush one
+  left-padded batched generate -- 0.83->0.21 s/ex (4x) at bs=16, zero-embed
+  padding rows masked out. Also add per-sample incremental jsonl while there
+  (end-only out-json loses a whole arm to one crash). Port both patterns to
+  qwen35_accuracy / gemma4 / MG / vlm_bounds_oracle drivers when each is next
+  touched; reference implementation: mistral3_oracle.py (--bs).
 
 ## Final state at shutdown (23:15 sweep, 2026-08-27)
 Everything is committed and pushed (HEAD 3c64def at sweep time). Landed tonight:
