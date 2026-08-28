@@ -162,6 +162,17 @@ def main():
                                                         keep=args.keep)
                     dp = st["decode_start_pos"]
                 pred = greedy(axis, lg, kv, dp)
+                if args.dataset == "refcoco":
+                    # Qwen3-generation grounding emits 0-1000 RELATIVE coords (probe
+                    # 2026-08-28: boxes cap at 1000 regardless of the pixel-coord
+                    # instruction). Deterministic rescale to this image's pixels.
+                    import re as _re
+                    nums = _re.findall(r"-?\d+\.?\d*", pred)[:4]
+                    if len(nums) == 4:
+                        w_, h_ = img.size
+                        x1, y1, x2, y2 = (float(v) for v in nums)
+                        pred = (f"{x1 * w_ / 1000:.1f},{y1 * h_ / 1000:.1f},"
+                                f"{x2 * w_ / 1000:.1f},{y2 * h_ / 1000:.1f}")
                 try:
                     ok, val = spec.score(pred, gold)
                 except NotImplementedError:  # wildvision: judge-only prediction dump
