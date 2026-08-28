@@ -189,10 +189,20 @@ LITERALS = {
     # k0.25 kept from the every-round run at n=8803 (8 OOM skips from the same driver defect,
     # predating text-split -- resuming them would mix schedules in one file, and the schedule
     # A/B says the number would not move; the footnote still covers this arm).
+    # Streaming (k=1.0) full n=8811, 2026-08-28: 89.55/81.50 -- ABOVE ceiling by +1.36pp.
+    # Verified real, not mismeasurement: paired flips 278:158 (net +120, ~4sigma) vs ceiling;
+    # control (k0.50, same driver/decode structure) nets -78 as expected. Mechanism isolated by
+    # elimination: interleaved k=1.0 subset ALSO beats ceiling (+1.9pp) -> not chunked-prefill-
+    # specific; the g=1 identity gate is bitwise-exact vs stock -> not the fork decode; what
+    # remains is the multi-round vision correction's partial staleness acting as a beneficial
+    # perturbation for grounding. Cross-model: Mistral-24B MMVP streaming +1.33pp (no chunked
+    # LLM at all) and OV2 GQA/VSR at 100.2% point the same way.
     ("Qwen2.5-VL (33.5B)", "RefCOCO val (Acc.@0.5)"):    {"floor": 79.68, "ceiling": 88.19,
-                                                          "k0.25": 86.10, "k0.50": 87.30},
+                                                          "k0.25": 86.10, "k0.50": 87.30,
+                                                          "stream": 89.55},
     ("Qwen2.5-VL (33.5B)", "RefCOCO val (mIoU)"):        {"floor": 70.36, "ceiling": 80.24,
-                                                          "k0.25": 78.22, "k0.50": 79.35},
+                                                          "k0.25": 78.22, "k0.50": 79.35,
+                                                          "stream": 81.50},
     ("Qwen2.5-VL (33.5B)", "GQA testdev (Exact Match)"): {"floor": 55.24, "ceiling": 60.80},
     # 72B dropped 2026-08-26: not worth the run. It also does not fit -- the GH200 box has ~66 GB
     # free against a ~130 GB pull, so the row could only ever have carried a prose ceiling.
