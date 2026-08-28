@@ -213,6 +213,7 @@ LITERALS = {
                                                 "stream": 78.96},
     # full 2638, BOX floor (post-convention-audit), shared greedy decode.
     ("Qwen3.5-MoE (35B-A3B)", "CV-Bench (Acc.)"): {"floor": 84.08, "ceiling": 85.06,
+                                                   "k0.25": 84.50,
                                                    "stream": 84.87},
     # One-shot rows share the interleaved rows' bounds (same floor/ceiling arms).
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (i2t R@1)"): {"floor": 50.14, "ceiling": 67.92},
