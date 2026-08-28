@@ -196,6 +196,7 @@ LITERALS = {
     # NOTE: floor/streaming measured with the bicubic-era filter; BOX re-measurement
     # (qwen35_accuracy_box/) supersedes these when it lands.
     ("Qwen3.5-MoE (35B-A3B)", "MMVP (Acc.)"): {"floor": 79.00, "ceiling": 82.00,
+                                               "k0.25": 80.67, "k0.50": 80.00,
                                                "stream": 81.67},
     # GH200 campaign (2026-08-28): cvbench ceiling full 2638, zero skips, FINAL.
     # Floor arrives after their chunked-attention fix rerun; do not backfill early values.
