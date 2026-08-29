@@ -128,6 +128,12 @@ measured under box, resume the halted qwen35 re-measurement in that form.
 - Qwen3.5 evals need enable_thinking=False (truncated-<think> scored 18%).
 - kernels==0.15.2 + one ONLINE run to cache deep-gemm (then offline OK) — but FP8
   outputs are garbage on sm_100 regardless.
+- PUSH the vfm_accuracy campaign logs (B200 return item, found 2026-08-30):
+  analysis/results/vfm_accuracy/ holds only the SAM3 JSONs in git; the dinov3_*
+  and de-padded vggt_* logs live ONLY on the B200 disk, so every other box
+  renders those ours-accuracy cells as "--". The table loader now reads
+  {tag}.json first, {tag}.log second -- committing the logs (or re-emitting
+  them as JSONs) fills the cells everywhere.
 - The orphan hazard: two multi-day orphan campaigns were found writing into live
   result files. On any fresh session: `ps -eo pid,ppid | awk '$2==1'` scan first.
 - FORK-PORT CHECKLIST (two scale-exposed incidents on 2026-08-28, both drops of

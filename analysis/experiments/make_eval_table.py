@@ -369,6 +369,18 @@ def vfm_accuracy(tag: str, key: str, scale: float) -> Optional[float]:
     Both quoting styles appear: the offload drivers print a Python dict (single quotes), the SAM 3
     oracle prints JSON (double quotes).
     """
+    # The SAM 3 oracle rewrite (048835e) writes proper result JSONs instead of Final-Summary
+    # logs; try {tag}.json first (committed, box-independent), then the legacy {tag}.log
+    # (B200-local campaign logs -- dinov3/vggt cells stay "--" on other boxes until those are
+    # pushed; they were never committed, which is why this table renders them empty here while
+    # B200's local renders showed them).
+    jpath = os.path.join(VFM_DIR, f"{tag}.json")
+    if os.path.exists(jpath) and os.path.getsize(jpath) > 0:
+        try:
+            v = json.load(open(jpath)).get(key)
+            return None if v is None else v * scale
+        except Exception:
+            return None
     path = os.path.join(VFM_DIR, f"{tag}.log")
     if not (os.path.exists(path) and os.path.getsize(path) > 0):
         return None
