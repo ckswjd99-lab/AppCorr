@@ -152,6 +152,46 @@ def streaming_feats_and_prefill(axis, fork, enc, enc2, keep, groups, model,
 
 
 @torch.no_grad()
+def chunked_prefill_logits(model, embeds, attn, ranges, counter=None, arrival_offset=0):
+    """TRUE arrival-ordered chunked prefill for a purely causal LLM: feed each contiguous chunk
+    with the growing past_key_values -- no fork needed, the HF cache IS the mechanism. Returns the
+    final position's logits. Exact by the causal property (each chunk's queries attend exactly the
+    prefix, identical to one whole-sequence prefill); the --gate-chunked mode measures that claim
+    per model/dtype instead of assuming it. `ranges`: [(s, e), ...] covering [0, T) in order."""
+    from contextlib import nullcontext
+    arr = counter.arrival if counter is not None else (lambda i: nullcontext())
+    past = None
+    out = None
+    for ci, (s, e) in enumerate(ranges):
+        with arr(ci + arrival_offset):
+            out = model(inputs_embeds=embeds[:, s:e],
+                        attention_mask=attn[:, :e] if attn is not None else None,
+                        past_key_values=past, use_cache=True)
+            past = out.past_key_values
+    return out.logits[:, -1:, :]
+
+
+def llm_chunk_ranges(enc, axis, groups):
+    """Contiguous LLM chunk ranges aligned to vision bands: band r's chunk ends right after its
+    last image-feature position (interleaved [IMG_BREAK] rows ride in whichever chunk covers
+    them -- causal, so placement is harmless); chunk 0 swallows the leading text, the final chunk
+    runs to the end of the sequence (trailing text). Mirrors the Qwen2.5 streaming executor's
+    frontier construction."""
+    ids = enc["input_ids"]
+    img_pos = (ids[0] == axis.image_token_id).nonzero(as_tuple=True)[0]
+    P = img_pos.numel()
+    T = ids.shape[1]
+    bounds = [img_pos[min(P - 1, ((bi + 1) * P) // groups - 1)].item() + 1 for bi in range(groups)]
+    ranges, start = [], 0
+    for bi, b in enumerate(bounds):
+        end = T if bi == groups - 1 else b
+        if end > start:
+            ranges.append((start, end))
+        start = end
+    return ranges
+
+
+@torch.no_grad()
 def query_attn_patch_scores(axis, enc, feats_a, hp, wp):
     """QUERY-AWARE selection signal (user proposal 2026-08-28): one extra LLM
     prefill on the APPROX features, attention FROM the trailing text (query)
@@ -207,6 +247,9 @@ def main():
                     help="batch size for the STOCK bound arms (ceiling/floor) only -- they are plain generate() calls and batch cleanly with left padding; the fork arms stay bs=1 by construction. Validated bs1-vs-bs8 equivalent on 50 samples before first use.")
     ap.add_argument("--out-json", default=None)
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--gate-chunked", action="store_true",
+                    help="chunked-vs-single prefill logits equivalence on strided samples "
+                         "(the causal-equivalence property, measured rather than assumed)")
     ap.add_argument("--flops", action="store_true",
                     help="12-sample FLOPs pass instead of accuracy: ceiling + the four ours "
                          "arms with the arrival split (approx/qsel prefill at arrival 0 = "
@@ -262,15 +305,28 @@ def main():
                                 feats = corrected_feats(axis, fork, enc, enc2, a.keep,
                                                         qsel=qsel, counter=c)
                                 final_arr = 1
+                                with c.arrival(final_arr):
+                                    embeds = axis.scatter_and_prefill_embeds(
+                                        enc, feats.to(torch.bfloat16))
+                                    axis.llm(inputs_embeds=embeds, use_cache=False)
                             else:
                                 feats = streaming_feats_and_prefill(
                                     axis, fork, enc, enc2, a.keep, a.groups, model,
                                     qsel=qsel, counter=c)
-                                final_arr = a.groups
-                            with c.arrival(final_arr):
+                                # TRUE chunked prefill (2026-08-29): chunk r rides arrival r
+                                # alongside its vision band, so only the FINAL chunk (trailing
+                                # text + last band) is critical -- the single-prefill shortcut
+                                # measured the accuracy correctly (causal equivalence, see
+                                # --gate-chunked) but charged the WHOLE prefill as critical
+                                # (~96% of full). FLOP counts per chunk depend only on shapes,
+                                # so prefilling the final embeds' slices is count-identical to
+                                # prefilling each round's own values.
                                 embeds = axis.scatter_and_prefill_embeds(
                                     enc, feats.to(torch.bfloat16))
-                                axis.llm(inputs_embeds=embeds, use_cache=False)
+                                ranges = llm_chunk_ranges(enc, axis, a.groups)
+                                chunked_prefill_logits(model, embeds,
+                                                       enc.get("attention_mask"),
+                                                       ranges, counter=c, arrival_offset=1)
                     fhooks.remove(handles)
         agg = {arm: counters[arm].aggregate() for arm in arms}
         full = agg["ceiling"]["mean_total_gflops"]
@@ -288,6 +344,28 @@ def main():
             os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
             json.dump(out, open(a.out_json, "w"), indent=1)
         print("MISTRAL3_FLOPS_DONE", flush=True)
+        return
+
+    if a.gate_chunked:
+        idxs = list(range(0, len(ds), max(1, len(ds) // 8)))[:8]
+        worst = 0.0
+        for idx in idxs:
+            img, prompt, _ = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
+            enc = axis.build_inputs(img, prompt).to("cuda:0")
+            enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
+            with torch.no_grad():
+                feats = axis.vision_features(enc["pixel_values"], enc["image_sizes"])
+                embeds = axis.scatter_and_prefill_embeds(enc, feats.to(torch.bfloat16))
+                single = model(inputs_embeds=embeds, use_cache=False).logits[:, -1:, :]
+                ranges = llm_chunk_ranges(enc, axis, a.groups)
+                chunked = chunked_prefill_logits(model, embeds, enc.get("attention_mask"), ranges)
+            d = (single.float() - chunked.float()).abs().max().item()
+            worst = max(worst, d)
+            tok_eq = bool(single.argmax(-1).item() == chunked.argmax(-1).item())
+            bit = bool(torch.equal(single, chunked))
+            print(f"  idx={idx}: ranges={len(ranges)} max_abs_diff={d:.3e} "
+                  f"argmax_equal={tok_eq} bitwise={bit}", flush=True)
+        print(f"MISTRAL3_CHUNKED_GATE worst={worst:.3e}", flush=True)
         return
 
     if a.gate:
