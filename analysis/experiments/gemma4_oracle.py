@@ -27,18 +27,45 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "qwen_vl_prefill"))
 from appcorr.models.gemma4.unified import Gemma4Axis, MODEL_ID_31B  # noqa: E402
 from appcorr.models.gemma4.vision_fork import Gemma4VisionFork      # noqa: E402
-from gemma4_axis_gate import l2_degrade                              # noqa: E402
+from gemma4_axis_gate import l2_degrade, _GEMMA4_MAX_PX             # noqa: E402
+import re
+from PIL import Image
+
+
+def degrade_g4(img: Image.Image, filt: str = "pyr", level: int = 2) -> Image.Image:
+    """pyr (default; 2026-08-28 Option-B decision) = cv2.pyrDown/pyrUp archetype at the
+    model-sampled cap (port of qwen35_accuracy/mistral3_oracle's branch); "box" delegates to
+    the original l2_degrade to reproduce older rows."""
+    if filt == "box":
+        return l2_degrade(img)
+    import cv2
+    import numpy as np
+    w, h = img.size
+    s = min(1.0, (_GEMMA4_MAX_PX / (w * h)) ** 0.5)
+    if s < 1.0:
+        w2, h2 = max(1, int(w * s)), max(1, int(h * s))
+        arr = np.asarray(img.resize((w2, h2), Image.BILINEAR))
+    else:
+        arr = np.asarray(img)
+    sizes = [(arr.shape[1], arr.shape[0])]
+    for _ in range(level):
+        arr = cv2.pyrDown(arr)
+        sizes.append((arr.shape[1], arr.shape[0]))
+    for i in range(level - 1, -1, -1):
+        arr = cv2.pyrUp(arr, dstsize=sizes[i])
+    out = Image.fromarray(arr)
+    return out if s == 1.0 else out.resize((w, h), Image.BICUBIC)
 
 
 @torch.no_grad()
-def run_one(axis, fork, model, proc, img, prompt, arm, keep, max_new_tokens):
+def run_one(axis, fork, model, proc, img, prompt, arm, keep, max_new_tokens, filt="pyr"):
     enc = axis.build_inputs(img, prompt).to("cuda:0")
     enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
     if arm == "ceiling":
         out = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False)
         return proc.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=True)
 
-    enc2 = axis.build_inputs(l2_degrade(img), prompt).to("cuda:0")
+    enc2 = axis.build_inputs(degrade_g4(img, filt), prompt).to("cuda:0")
     enc2["pixel_values"] = enc2["pixel_values"].to(torch.bfloat16)
     axis.assert_same_grid(enc, enc2)
     if arm == "floor":
@@ -93,6 +120,10 @@ def main():
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--max-new-tokens", type=int, default=24)
     ap.add_argument("--out-json", default=None)
+    ap.add_argument("--filt", choices=["pyr", "box"], default="pyr")
+    ap.add_argument("--bs", type=int, default=1,
+                    help="bound-arm batching -- VALIDATE PER OUTPUT-FORMAT CLASS before first "
+                         "full use (TextVQA EOS lesson, handover gotcha)")
     a = ap.parse_args()
 
     from datasets import load_dataset
@@ -117,25 +148,85 @@ def main():
     correct, total, per = 0, 0, []
     import time
     t0 = time.time()
-    for idx in idxs:
-        img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
-        text = run_one(axis, fork, model, proc, img, prompt, a.arm, a.keep,
-                       a.max_new_tokens)
+    inc_f = None
+    if a.out_json:
+        os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
+        inc_f = open(a.out_json + ".persample.jsonl", "a", encoding="utf-8")
+    gold_by_idx = {}
+
+    def _score_and_log(idx, img, text):
+        nonlocal correct, total
+        pred_for_score = text.strip()
+        if a.dataset in ("refcoco", "visdrone_det"):
+            # Convention ladder (three-conventions warning). Gemma4 measured emitting 0-1000
+            # NORMALIZED boxes (smoke: '207,207,908,996' on 640x480 -- y=996 cannot be a pixel;
+            # rescoring that dump under /1000 took 0% -> 58%, matching the B200 probe's ~48%).
+            # Ladder: all four <=1.5 -> fraction; <=1050 -> 0-1000; larger -> pixel passthrough.
+            m_nums = re.findall(r"-?\d+\.?\d*", pred_for_score)
+            if len(m_nums) >= 4:
+                W, H = img.size
+                v4 = [float(x) for x in m_nums[:4]]
+                if all(abs(v) <= 1.5 for v in v4):
+                    vals = (v4[0] * W, v4[1] * H, v4[2] * W, v4[3] * H)
+                elif all(abs(v) <= 1050 for v in v4):
+                    vals = (v4[0] * W / 1000, v4[1] * H / 1000,
+                            v4[2] * W / 1000, v4[3] * H / 1000)
+                else:
+                    vals = None
+                if vals is not None:
+                    pred_for_score = " ".join(f"{v:.1f}" for v in vals)
         try:
-            ok, sc = spec.score(text, gold)
+            ok, sc = spec.score(pred_for_score, gold_by_idx[idx])
             correct += ok
-        except NotImplementedError:   # wildvision: judge-only, dump predictions
+        except NotImplementedError:
             ok, sc = None, None
         total += 1
-        per.append({"idx": idx, "pred": text, "gold": str(gold)[:120], "score": sc})
+        row = {"idx": idx, "pred": text, "gold": str(gold_by_idx[idx])[:120], "score": sc}
+        per.append(row)
+        if inc_f is not None:
+            inc_f.write(json.dumps(row) + "\n"); inc_f.flush()
         if total % 25 == 0 or total == len(idxs):
             dt = time.time() - t0
             print(f"  [{total}/{len(idxs)}] {dt:.0f}s {dt / total:.2f}s/ex  "
                   f"acc={correct / total:.2%}", flush=True)
 
+    if a.arm in ("ceiling", "floor") and a.bs > 1:
+        proc.tokenizer.padding_side = "left"
+        for b0 in range(0, len(idxs), a.bs):
+            chunk = idxs[b0:b0 + a.bs]
+            msgs_list, imgs_list = [], []
+            for idx in chunk:
+                img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
+                if a.arm == "floor":
+                    img = degrade_g4(img, a.filt)
+                gold_by_idx[idx] = gold
+                imgs_list.append(img)
+                msgs_list.append([{"role": "user", "content": [{"type": "image", "image": img},
+                                                               {"type": "text", "text": prompt}]}])
+            enc = proc.apply_chat_template(
+                msgs_list, add_generation_prompt=True, tokenize=True,
+                return_dict=True, return_tensors="pt", padding=True).to("cuda:0")
+            enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
+            with torch.no_grad():
+                out = model.generate(**enc, max_new_tokens=a.max_new_tokens, do_sample=False)
+            T = enc["input_ids"].shape[1]
+            for j, idx in enumerate(chunk):
+                _score_and_log(idx, imgs_list[j], proc.decode(out[j, T:], skip_special_tokens=True))
+    else:
+        for idx in idxs:
+            img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
+            gold_by_idx[idx] = gold
+            text = run_one(axis, fork, model, proc, img, prompt, a.arm, a.keep,
+                           a.max_new_tokens, a.filt)
+            _score_and_log(idx, img, text)
+    if inc_f is not None:
+        inc_f.close()
+
     summary = {"model": a.model, "dataset": a.dataset, "arm": a.arm,
                "keep": a.keep if a.arm == "corrected" else None,
-               "num_samples": total, "accuracy": correct / total, "correct": correct}
+               "num_samples": total, "accuracy": correct / total, "correct": correct,
+               "mean_score": (sum(r["score"] for r in per) / total
+                              if per and per[0]["score"] is not None else None)}
     print(f"\n=== Final Summary: {json.dumps(summary)}", flush=True)
     if a.out_json:
         os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
