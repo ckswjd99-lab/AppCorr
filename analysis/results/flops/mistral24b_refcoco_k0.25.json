@@ -13,11 +13,11 @@
    "total": 59555.1
   },
   "streaming_k0.25": {
-   "crit": 29010.3,
+   "crit": 6999.1,
    "total": 30598.2
   },
   "streaming_qsel_k0.25": {
-   "crit": 29010.3,
+   "crit": 6999.1,
    "total": 59555.6
   }
  }
