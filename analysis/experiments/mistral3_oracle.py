@@ -238,6 +238,11 @@ def main():
     ap.add_argument("--keep", type=float, default=0.5)
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--level", type=int, default=2)
+    ap.add_argument("--decode", choices=["ids", "embeds"], default="ids",
+                    help="bound-arm decode path. 'embeds' = vision_features -> scatter -> "
+                         "generate(inputs_embeds), the SAME mechanism the fork arms use -- "
+                         "Option C (2026-08-29) for the TextVQA decode-mechanism confound: "
+                         "unify the mechanism across arms instead of changing the scorer.")
     ap.add_argument("--filt", choices=["pyr", "box", "bicubic"], default="pyr",
                     help="degradation filter; pyr is the standard since the 2026-08-28 Option-B decision, box/bicubic only to reproduce older rows")
     ap.add_argument("--num-samples", type=int, default=12)
@@ -454,7 +459,7 @@ def main():
             _score_and_log(qidx, qimg, proc.decode(outg[j], skip_special_tokens=True))
         _ours_queue.clear()
 
-    if a.arm in ("ceiling", "floor") and a.bs > 1:
+    if a.arm in ("ceiling", "floor") and a.bs > 1 and a.decode == "ids":
         # Batched bound path: plain stock generate over left-padded batches. The processor's
         # chat template is applied per sample (identical to build_inputs), then tokenizer-level
         # left padding assembles the batch; pixel_values ride as the per-sample list the
@@ -499,7 +504,27 @@ def main():
         enc = axis.build_inputs(img, prompt).to("cuda:0")
         enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
         with torch.no_grad():
-            if a.arm == "ceiling":
+            if a.arm in ("ceiling", "floor") and a.decode == "embeds":
+                enc_use = enc
+                if a.arm == "floor":
+                    enc_use = axis.build_inputs(degrade(img, a.level, a.filt), prompt).to("cuda:0")
+                    enc_use["pixel_values"] = enc_use["pixel_values"].to(torch.bfloat16)
+                feats = axis.vision_features(enc_use["pixel_values"].to(torch.bfloat16),
+                                             enc_use["image_sizes"])
+                embeds = axis.scatter_and_prefill_embeds(enc_use, feats.to(torch.bfloat16))
+                if a.bs > 1:
+                    _ours_queue.append((idx, img, embeds[0],
+                                        enc_use["attention_mask"][0] if enc_use.get("attention_mask") is not None
+                                        else torch.ones(embeds.shape[1], dtype=torch.long,
+                                                        device=embeds.device)))
+                    if len(_ours_queue) >= a.bs:
+                        _flush_ours()
+                    continue
+                out = model.generate(inputs_embeds=embeds,
+                                     attention_mask=enc_use.get("attention_mask"),
+                                     max_new_tokens=a.max_new_tokens, do_sample=False)
+                text = proc.decode(out[0], skip_special_tokens=True)
+            elif a.arm == "ceiling":
                 out = model.generate(**enc, max_new_tokens=a.max_new_tokens, do_sample=False)
                 text = proc.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=True)
             else:
