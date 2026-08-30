@@ -294,3 +294,19 @@ Project facts worth carrying:
   test between arms; check running jobs every few minutes; no train/eval index
   overlap for fitted pscores; one task per GPU; apply validated techniques
   proactively when extending to analogous signals.
+
+## 2026-08-30 addendum (GH200): two sharpness-harm findings + filter non-neutrality, both measured
+
+1. Mistral-TextVQA: the corrected>ceiling anomaly root-caused to REAL model behavior, not any
+   harness confound -- self-QA tails track input SHARPNESS (ceiling 31.2% of preds, pyr floor
+   19.6%, degraded-base fork arms ~0), unchanged under decode-mechanism unification (Option-C
+   rerun: embeds ceiling 61.52 vs ids 61.08). Degradation improves Mistral's output discipline;
+   whole-string VQA scoring legitimately penalizes the rambling. All arms now decode-unified.
+2. Gemma4-RefCOCO: floor>ceiling inversion (52.12 vs 47.07, dose-response over keep) is
+   PYR-FILTER-SPECIFIC: BOX floor at n=1000 = 47.70 ~= ceiling. Two framings recorded: (a) pyrUp
+   low-frequency overshoot as inadvertent enhancement -- filter effects are MODEL x TASK specific
+   (box was the outlier on qwen35-RWQA, pyr is the outlier here; neither is universally neutral);
+   (b) protocol-faithful: the real Laplacian transmission reconstructs bases WITH pyrUp, so under
+   the deployed system gemma4 genuinely sees (and scores 52 on) that input -- the row then says
+   "no gap for AppCorr to close on this model/task", which is a valid boundary-condition finding.
+   Either way the row is non-discriminating; batching exonerated on both arms (bs=1 spots match).
