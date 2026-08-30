@@ -135,22 +135,32 @@ class ApproxCorrectGemma4TextLayer(nn.Module):
         cache_feature[f"{tag}_k"] = k_cache
         cache_feature[f"{tag}_v"] = v_cache
 
+        # All-rows correction is exactly a stock prefill over the mixed K/V, so ride the same
+        # kernel path stock takes (unsliced mask / fused causal flag): keep=1.0 g=1 then stays
+        # BITWISE end-to-end instead of drifting by the SDPA kernel-dispatch band.
+        N = x.shape[1]
+        all_rows = token_idx.numel() == N and bool(
+            (token_idx == torch.arange(N, device=token_idx.device)).all())
+        causal_flag = False
         if attention_mask is not None:
             # Query-axis rows for exactly these tokens -- Gemma4's masks are position-specific
             # (block-bidir islands on sliding layers), so rows are not interchangeable.
-            m = attention_mask[:, :, token_idx, :]
+            m = attention_mask if all_rows else attention_mask[:, :, token_idx, :]
         elif self.self_attn.is_causal:
-            # None-mask = strictly-causal layer (see _attend). A row subset cannot ride SDPA's
-            # is_causal flag (that assumes square alignment), so build the causal rows explicitly.
-            N = x.shape[1]
-            key_pos = torch.arange(N, device=x.device).view(1, N)
-            allowed = key_pos <= token_idx.view(-1, 1)
-            m = torch.zeros((token_idx.numel(), N), device=x.device, dtype=x.dtype)
-            m.masked_fill_(~allowed, torch.finfo(x.dtype).min)
-            m = m.view(1, 1, token_idx.numel(), N)
+            if all_rows:
+                m, causal_flag = None, True
+            else:
+                # None-mask = strictly-causal layer (see _attend). A row subset cannot ride
+                # SDPA's is_causal flag (that assumes square alignment), so build the causal
+                # rows explicitly.
+                key_pos = torch.arange(N, device=x.device).view(1, N)
+                allowed = key_pos <= token_idx.view(-1, 1)
+                m = torch.zeros((token_idx.numel(), N), device=x.device, dtype=x.dtype)
+                m.masked_fill_(~allowed, torch.finfo(x.dtype).min)
+                m = m.view(1, 1, token_idx.numel(), N)
         else:
             m = None
-        out_active = self._layer_out(x_active, q_sel, k_cache, v_cache, m)
+        out_active = self._layer_out(x_active, q_sel, k_cache, v_cache, m, is_causal=causal_flag)
 
         out = (x + delta.to(x.dtype)).clone()
         out[:, token_idx] = out_active.to(out.dtype)

@@ -58,7 +58,129 @@ def degrade_g4(img: Image.Image, filt: str = "pyr", level: int = 2) -> Image.Ima
 
 
 @torch.no_grad()
-def run_one(axis, fork, model, proc, img, prompt, arm, keep, max_new_tokens, filt="pyr"):
+def _generate_from_kv(model, proc, axis, hidden, lcache, n_seq, max_new_tokens):
+    """Greedy decode on top of the fork's K/V (gemma3_oracle's `_generate_from_axis` ported).
+
+    `model.generate(pixel_values=...)` would recompute exact features and invert the experiment;
+    `generate(inputs_embeds=...)` would re-prefill the LLM, throwing away the interleaved walk.
+    The fork caches ARE the corrected prefix state, so decoding must ride them. DynamicCache
+    stores full-length K/V even for sliding layers (checked: lazy layers ignore the window) --
+    a memory cost only, since decode masks are built from config.layer_types, not the cache."""
+    from transformers import DynamicCache
+    kv = DynamicCache(config=model.config.text_config)
+    for i in range(len(axis.llm_fork_layers)):
+        kv.update(lcache[f"l{i}_k"], lcache[f"l{i}_v"], i)
+
+    gcfg = getattr(model, "generation_config", None)
+    eos = getattr(gcfg, "eos_token_id", None) if gcfg is not None else None
+    if eos is None:
+        eos = model.config.text_config.eos_token_id
+    eos = list(eos) if isinstance(eos, (list, tuple)) else [eos]
+
+    nxt = axis.logits(axis.llm_finish(hidden)[:, -1:])[:, -1].argmax(-1, keepdim=True)
+    produced = [nxt]
+    for step in range(max_new_tokens - 1):
+        if int(nxt) in eos:
+            break
+        pos = torch.tensor([[n_seq + step]], device=nxt.device)
+        emb = model.get_input_embeddings()(nxt)
+        out = axis.llm(inputs_embeds=emb, past_key_values=kv, position_ids=pos, use_cache=True)
+        kv = out.past_key_values
+        nxt = axis.logits(out.last_hidden_state[:, -1:])[:, -1].argmax(-1, keepdim=True)
+        produced.append(nxt)
+        if int(nxt) in eos:
+            break
+    return proc.decode(torch.cat(produced, dim=1)[0], skip_special_tokens=True)
+
+
+@torch.no_grad()
+def _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_tokens):
+    """Port-plan step 4: full approx at arrival 0, per-round vision-band + LLM corrections.
+
+    Schedule (the gemma3 contract, docs/memo/interleaved_correction_contract.md):
+      arrival 0: vision approx (degraded) full depth, LLM approx full depth on the approx feats
+                 -- overlaps the detail transmission entirely.
+      round r:   vision-correct THIS round's band of the selected patches; LLM-correct exactly
+                 the soft tokens those patches pool into. Text joins the FINAL round only.
+    Bands are horizontal strips of POOLED rows (edges snapped to the pooling kernel so no soft
+    token straddles two rounds -- a straddled token would re-enter a later round with a changed
+    x while its delta was computed against the old one, breaking rule-3 reconstruction).
+    The LLM entry is rebuilt from the fork's `v_last_hidden` each round: untouched patch rows are
+    still the approx values there, so the entry is automatically MIXED at the token level
+    (bitwise -- pooling untouched rows reproduces the approx feature exactly)."""
+    px_f, px_a = enc["pixel_values"], enc2["pixel_values"]
+    pos = enc.get("image_position_ids")
+    px_fb = px_f if px_f.dim() == 3 else px_f.unsqueeze(0)
+    px_ab = px_a if px_a.dim() == 3 else px_a.unsqueeze(0)
+    pos_b = pos if pos.dim() == 3 else pos.unsqueeze(0)
+    n_pool = px_fb.shape[1]
+
+    emb_f, _ = fork.prepare(px_fb, pos_b)
+    emb_a, pad = fork.prepare(px_ab, pos_b)
+    vcache = {}
+    fork.approx(emb_a, pos_b, pad, vcache)
+
+    # Selection: same pscore as `corrected` (residual energy, top-keep).
+    energy = (px_fb.float() - px_ab.float()).pow(2).sum(-1)
+    energy = energy.masked_fill(pad, float("-inf"))
+    kq = max(1, int(round(keep * n_pool)))
+    sel = torch.zeros_like(energy, dtype=torch.bool).scatter_(
+        1, energy.topk(kq, dim=-1).indices, True)
+
+    # patch -> soft-token map: the pooler's own kernel_idxs formula (_avg_pool_by_positions).
+    pk = fork.cfg.pooling_kernel_size
+    cp = pos_b.clamp(min=0)
+    max_x = cp[..., 0].max(dim=-1, keepdim=True)[0] + 1
+    kidx = (cp[..., 0] // pk) + (max_x // pk) * (cp[..., 1] // pk)          # [1, P]
+
+    pooled_row = cp[..., 1] // pk
+    n_rows = int(pooled_row.max().item()) + 1
+    edges = torch.linspace(0, n_rows, groups + 1).round().long()
+    bands = [sel & (pooled_row >= edges[r]) & (pooled_row < edges[r + 1]) & ~pad
+             for r in range(groups)]
+
+    # LLM approx on the (all-approximate) features -- arrival 0.
+    ids = enc["input_ids"]
+    image_mask = ids == axis.cg.config.image_token_id
+    llm_ids = torch.where(image_mask, axis.cg.config.text_config.pad_token_id, ids)
+    base_embeds = axis.model.get_input_embeddings()(llm_ids)
+
+    def entry_embeds():
+        soft = fork.finish(vcache["v_last_hidden"], pos_b, pad, n_pool, work_dtype=emb_a.dtype)
+        feats = axis.embed_vision(inputs_embeds=soft).to(base_embeds.device, base_embeds.dtype)
+        return base_embeds.masked_scatter(
+            image_mask.unsqueeze(-1).expand_as(base_embeds), feats)
+
+    embeds = entry_embeds()
+    ctx = axis.build_llm_ctx(enc, embeds)
+    lcache = {}
+    hidden, lcache = axis.llm_approx(embeds, ctx, lcache)
+
+    img_pos = image_mask[0].nonzero(as_tuple=True)[0]      # soft-token j sits at img_pos[j]
+    arrived = torch.zeros_like(sel)
+    for r in range(groups):
+        last = (r == groups - 1)
+        band = bands[r]
+        tok_rows = torch.empty(0, dtype=torch.long, device=ids.device)
+        if bool(band.any()):
+            arrived = arrived | band
+            # Contract rule 2: the stream carries full-res rows for everything ARRIVED;
+            # this round recomputes only its OWN band (never the accumulated set).
+            stream = torch.where(arrived.unsqueeze(-1), emb_f, emb_a)
+            fork.correct(stream, band, pos_b, pad, vcache)
+            tok_rows = img_pos[torch.unique(kidx[0][band[0]])]
+        if last:
+            text_rows = (~image_mask[0]).nonzero(as_tuple=True)[0]
+            tok_rows = torch.cat([tok_rows, text_rows]).sort().values
+        if tok_rows.numel():
+            hidden, lcache = axis.llm_correct(entry_embeds(), tok_rows, ctx, lcache)
+
+    return _generate_from_kv(model, proc, axis, hidden, lcache, ids.shape[1], max_new_tokens)
+
+
+@torch.no_grad()
+def run_one(axis, fork, model, proc, img, prompt, arm, keep, max_new_tokens, filt="pyr",
+            groups=4):
     enc = axis.build_inputs(img, prompt).to("cuda:0")
     enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
     if arm == "ceiling":
@@ -71,6 +193,9 @@ def run_one(axis, fork, model, proc, img, prompt, arm, keep, max_new_tokens, fil
     if arm == "floor":
         out = model.generate(**enc2, max_new_tokens=max_new_tokens, do_sample=False)
         return proc.decode(out[0, enc2["input_ids"].shape[1]:], skip_special_tokens=True)
+
+    if arm == "interleaved":
+        return _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_tokens)
 
     # corrected: vision approx on degraded, one-shot partial correct, LLM once
     px_f, px_a = enc["pixel_values"], enc2["pixel_values"]
@@ -114,8 +239,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=MODEL_ID_31B)
     ap.add_argument("--dataset", default="realworldqa")
-    ap.add_argument("--arm", choices=["ceiling", "floor", "corrected"], default="ceiling")
+    ap.add_argument("--arm", choices=["ceiling", "floor", "corrected", "interleaved"],
+                    default="ceiling")
     ap.add_argument("--keep", type=float, default=0.5)
+    ap.add_argument("--groups", type=int, default=4,
+                    help="interleaved rounds; corrects the SAME selection as `corrected`, split "
+                         "into horizontal pooled-row bands (identity: keep=1.0 g=1 == ceiling "
+                         "modulo the documented SDPA kernel band)")
     ap.add_argument("--num-samples", type=int, default=12)
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--max-new-tokens", type=int, default=24)
@@ -217,13 +347,14 @@ def main():
             img, prompt, gold = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
             gold_by_idx[idx] = gold
             text = run_one(axis, fork, model, proc, img, prompt, a.arm, a.keep,
-                           a.max_new_tokens, a.filt)
+                           a.max_new_tokens, a.filt, a.groups)
             _score_and_log(idx, img, text)
     if inc_f is not None:
         inc_f.close()
 
     summary = {"model": a.model, "dataset": a.dataset, "arm": a.arm,
-               "keep": a.keep if a.arm == "corrected" else None,
+               "keep": a.keep if a.arm in ("corrected", "interleaved") else None,
+               "groups": a.groups if a.arm == "interleaved" else None,
                "num_samples": total, "accuracy": correct / total, "correct": correct,
                "mean_score": (sum(r["score"] for r in per) / total
                               if per and per[0]["score"] is not None else None)}
