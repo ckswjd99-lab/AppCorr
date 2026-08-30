@@ -112,7 +112,10 @@ def main():
                 for arm in arms:
                     c = counters[arm]
                     handles = hooks.install(c, roots)
-                    with c.request(f"{ds_name}/{si}"):
+                    # patch_attention is NOT optional: install() alone counts only Linear/Conv,
+                    # silently dropping the SDPA quadratic term (caught 2026-08-31 -- every
+                    # gemma4/mistral/qwen35 cell measured without it).
+                    with hooks.patch_attention(c), c.request(f"{ds_name}/{si}"):
                         if arm in ("ceiling", "floor"):
                             with c.arrival(0):
                                 feats = axis.vision_features(

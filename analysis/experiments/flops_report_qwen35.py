@@ -84,7 +84,8 @@ def main():
                     c = counters[arm]
                     axis = axis_by[arm]
                     handles = hooks.install(c, [model.model.visual, model.model.language_model])
-                    with c.request(f"{ds_name}/{si}"):
+                    # patch_attention required -- install() alone drops the SDPA term (2026-08-31).
+                    with hooks.patch_attention(c), c.request(f"{ds_name}/{si}"):
                         if arm == "ceiling":
                             axis.full_forward(inputs)
                         elif arm == "floor":

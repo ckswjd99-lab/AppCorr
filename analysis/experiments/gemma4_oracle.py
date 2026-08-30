@@ -134,17 +134,38 @@ def _interleaved_walk(axis, fork, model, enc, enc2, keep, groups, arrival=None):
     sel = torch.zeros_like(energy, dtype=torch.bool).scatter_(
         1, energy.topk(kq, dim=-1).indices, True)
 
-    # patch -> soft-token map: the pooler's own kernel_idxs formula (_avg_pool_by_positions).
+    # patch -> soft-token map: the pooler's own kernel_idxs formula (_avg_pool_by_positions),
+    # then kernel index -> FEATS ROW. The pooler drops kernel blocks with no real patch, so a
+    # kernel index is NOT a row index when padding exists; build the mapping explicitly and
+    # assert it against the id stream's soft-token count (crash, don't drift).
     pk = fork.cfg.pooling_kernel_size
     cp = pos_b.clamp(min=0)
     max_x = cp[..., 0].max(dim=-1, keepdim=True)[0] + 1
     kidx = (cp[..., 0] // pk) + (max_x // pk) * (cp[..., 1] // pk)          # [1, P]
+    valid = ~pad[0]
+    uniq = torch.unique(kidx[0][valid])                 # kernel indices that survive the pooler
+    k2row = torch.full((int(kidx.max().item()) + 1,), -1,
+                       dtype=torch.long, device=kidx.device)
+    k2row[uniq] = torch.arange(uniq.numel(), device=kidx.device)
+    n_soft = uniq.numel()
 
     pooled_row = cp[..., 1] // pk
     n_rows = int(pooled_row.max().item()) + 1
     edges = torch.linspace(0, n_rows, groups + 1).round().long()
     bands = [sel & (pooled_row >= edges[r]) & (pooled_row < edges[r + 1]) & ~pad
              for r in range(groups)]
+
+    # LLM-side token budget (the gemma3 contract, user decision 2026-08-31): patch keep spreads
+    # over 3x3-pooled tokens (50% patches touch 80-88% of tokens), so uncapped ANY-touched
+    # correction made the LLM budget meaningless (total 165-182%). Cap the LLM correction set at
+    # round(keep * n_soft) tokens, chosen by pooled residual energy -- and mix the entry
+    # per-token so corrected features enter ONLY at corrected tokens (mix mask == correction
+    # mask, the consistency that keeps keep=1.0 g=1 an identity).
+    tok_energy = torch.zeros(n_soft, dtype=torch.float32, device=kidx.device)
+    tok_energy.index_add_(0, k2row[kidx[0][valid]], energy[0][valid].float())
+    kq_tok = max(1, int(round(keep * n_soft)))
+    llm_budget = torch.zeros(n_soft, dtype=torch.bool, device=kidx.device)
+    llm_budget[tok_energy.topk(kq_tok).indices] = True
 
     # LLM approx on the (all-approximate) features -- arrival 0. The token-embedding lookup is
     # a hooked module (language_model.embed_tokens), so it sits inside arr(0) with the rest.
@@ -154,20 +175,32 @@ def _interleaved_walk(axis, fork, model, enc, enc2, keep, groups, arrival=None):
     with arr(0):
         base_embeds = axis.model.get_input_embeddings()(llm_ids)
 
-    def entry_embeds():
+    def current_feats(corr_tok=None):
+        """Projected soft-token features; with `corr_tok` [n_soft] the entry is MIXED per token:
+        corrected features enter only where correction happened, feats_appr elsewhere."""
         soft = fork.finish(vcache["v_last_hidden"], pos_b, pad, n_pool, work_dtype=emb_a.dtype)
         feats = axis.embed_vision(inputs_embeds=soft).to(base_embeds.device, base_embeds.dtype)
+        if corr_tok is not None:
+            feats = torch.where(corr_tok.to(feats.device).unsqueeze(-1), feats, feats_appr)
+        return feats
+
+    def entry_embeds(feats):
         return base_embeds.masked_scatter(
             image_mask.unsqueeze(-1).expand_as(base_embeds), feats)
 
+    assert n_soft == int(image_mask.sum()), \
+        f"pooler rows {n_soft} != id-stream soft tokens {int(image_mask.sum())}"
+
     with arr(0):
-        embeds = entry_embeds()
+        feats_appr = current_feats()
+        embeds = entry_embeds(feats_appr)
         ctx = axis.build_llm_ctx(enc, embeds)
         lcache = {}
         hidden, lcache = axis.llm_approx(embeds, ctx, lcache)
 
     img_pos = image_mask[0].nonzero(as_tuple=True)[0]      # soft-token j sits at img_pos[j]
     arrived = torch.zeros_like(sel)
+    arrived_tok = torch.zeros(n_soft, dtype=torch.bool, device=kidx.device)
     emb_f = None
     for r in range(groups):
         last = (r == groups - 1)
@@ -184,12 +217,21 @@ def _interleaved_walk(axis, fork, model, enc, enc2, keep, groups, arrival=None):
                 # this round recomputes only its OWN band (never the accumulated set).
                 stream = torch.where(arrived.unsqueeze(-1), emb_f, emb_a)
                 fork.correct(stream, band, pos_b, pad, vcache)
-                tok_rows = img_pos[torch.unique(kidx[0][band[0]])]
+                # The LLM corrects this round's touched tokens INTERSECTED with the budget --
+                # a round corrects its own group, and only budgeted tokens ever enter the mix
+                # (band edges are pk-snapped, so a token's patches live in exactly one round
+                # and its mixed feature changes exactly once: rule-3 re-entry stays exact).
+                this_round = torch.zeros_like(arrived_tok)
+                this_round[k2row[torch.unique(kidx[0][band[0]])]] = True
+                this_round &= llm_budget
+                arrived_tok |= this_round
+                tok_rows = img_pos[this_round.nonzero(as_tuple=True)[0]]
             if last:
                 text_rows = (~image_mask[0]).nonzero(as_tuple=True)[0]
                 tok_rows = torch.cat([tok_rows, text_rows]).sort().values
             if tok_rows.numel():
-                hidden, lcache = axis.llm_correct(entry_embeds(), tok_rows, ctx, lcache)
+                hidden, lcache = axis.llm_correct(
+                    entry_embeds(current_feats(arrived_tok)), tok_rows, ctx, lcache)
 
     return hidden, lcache, ids
 
