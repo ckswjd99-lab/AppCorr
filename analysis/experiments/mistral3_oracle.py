@@ -296,7 +296,8 @@ def main():
                 for arm in arms:
                     c = counters[arm]
                     handles = fhooks.install(c, roots)
-                    with c.request(f"{a.dataset}/{idx}"):
+                    # patch_attention required -- install() alone drops the SDPA term (2026-08-31).
+                    with fhooks.patch_attention(c), c.request(f"{a.dataset}/{idx}"):
                         if arm == "ceiling":
                             with c.arrival(0):
                                 feats = axis.vision_features(enc["pixel_values"],

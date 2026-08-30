@@ -59,7 +59,9 @@ def main():
             if "pixel_values" in enc and enc["pixel_values"].is_floating_point():
                 enc["pixel_values"] = enc["pixel_values"].to(torch.bfloat16)
             handles = hooks.install(c, roots)
-            with torch.no_grad(), c.request(f"{ds_name}/{si}"), c.arrival(0):
+            # patch_attention required -- install() alone drops the SDPA term (2026-08-31).
+            with torch.no_grad(), hooks.patch_attention(c), c.request(f"{ds_name}/{si}"), \
+                    c.arrival(0):
                 model.model(**{k: v for k, v in enc.items()}) if hasattr(model, "model") \
                     else model(**enc)
             hooks.remove(handles)
