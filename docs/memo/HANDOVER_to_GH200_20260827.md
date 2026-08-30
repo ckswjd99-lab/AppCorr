@@ -318,3 +318,19 @@ Project facts worth carrying:
    the deployed system gemma4 genuinely sees (and scores 52 on) that input -- the row then says
    "no gap for AppCorr to close on this model/task", which is a valid boundary-condition finding.
    Either way the row is non-discriminating; batching exonerated on both arms (bs=1 spots match).
+
+## 2026-08-31 addendum (GH200): greedy generate is not run-stable on Gemma4-31B
+
+Probed after the interleaved identity gate "regressed" without a code change:
+the same `model.generate(**enc, do_sample=False)` call, same process, same
+weights, flips between adjacent boxes on near-tie RefCOCO samples (e.g.
+'402,444,541,935' vs '403,443,553,936'; also 306 vs 308 on another sample).
+bf16 reduction nondeterminism -- greedy does NOT imply reproducible.
+
+Consequences, applied:
+- Text-equality gates against a single ceiling draw are invalid on this
+  model. The interleaved gate now samples ceiling 3x and checks MEMBERSHIP
+  in the flicker set. (The fork walk itself reproduced bitwise across
+  processes -- the manual path is more deterministic than generate.)
+- A ~0.1pp-scale accuracy wobble between reruns of the same bound arm is
+  expected noise here, not a measurement problem (anomaly-heuristics rider).
