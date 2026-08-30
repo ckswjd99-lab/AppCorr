@@ -87,12 +87,12 @@ SPEC = [
         ("MMVP (Acc.)",            None, ("inproc", "qwen35_moe", "mmvp")),
         ("CV-Bench (Acc.)",        None, ("inproc", "qwen35_moe", "cvbench")),
     ]),
-    # Gemma 4 31B: one-shot corrected arm (level-3 driver, 2026-08-28); accuracy cells fill
-    # from analysis/results/gemma4_*/ files (ceiling/floor/corrected_k*.json). No FLOPs yet.
-    # gemma4 one-shot corrected: crit ~ 91-93% of full BY DESIGN -- the dense-31B LLM
-    # prefill dominates and must wait for the one-shot correction; overlappable work is
-    # only the vision approx. The interleaved/streaming ports (plan steps 4-5) are what
-    # would cut critical here.
+    # Gemma 4 31B: Ours = INTERLEAVED g=4 since 2026-08-31 (port-plan step 4 landed; walk
+    # gate bitwise, identity gate in ceiling's flicker set). Accuracy cells prefer
+    # interleaved_g4_k*.json and fall back to corrected_k*.json while reruns land; FLOPs in
+    # inprocess_flops.json are the interleaved accounting (crit 17-35%, total 154-182% --
+    # the one-shot structure's 90%+ crit / 103-106% total is archived in
+    # analysis/results/flops/gemma4_flops*.json).
     ("Gemma 4 (31B)", [
         ("MMVP (Acc.)",            ("gemma4", "mmvp"),    ("inproc", "gemma4", "mmvp")),
         ("CV-Bench (Acc.)",        ("gemma4", "cvbench"), ("inproc", "gemma4", "cvbench")),
