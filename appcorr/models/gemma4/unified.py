@@ -110,6 +110,61 @@ class Gemma4Axis:
                        inputs_embeds=embeds, use_cache=True, return_dict=True)
         return out.last_hidden_state, out.past_key_values
 
+
+
+    # --- LLM approx/correct walk (port-plan step 4, 2026-08-30) ------------------------------- #
+
+    def build_llm_ctx(self, inputs, embeds):
+        """Masks (per layer type, via transformers' own builders -- the same calls full_forward
+        makes) + per-layer-type rotary embeddings, computed ONCE per request."""
+        ids = inputs["input_ids"]
+        mm_tti = inputs["mm_token_type_ids"]
+        position_ids = torch.arange(embeds.shape[1], device=embeds.device).unsqueeze(0)
+        block_ids = get_block_sequence_ids_for_mask(mm_tti, embeds.device)
+        masks = create_masks_for_vision_model(
+            config=self.cg.config.get_text_config(),
+            inputs_embeds=embeds,
+            attention_mask=inputs.get("attention_mask"),
+            past_key_values=None,
+            position_ids=position_ids,
+            block_sequence_ids=block_ids,
+        )
+        tm = self.llm
+        pe = {lt: tm.rotary_emb(embeds, position_ids, lt) for lt in tm.unique_layer_types}
+        return {"masks": masks, "pe": pe}
+
+    def _ensure_llm_fork(self):
+        if not hasattr(self, "llm_fork_layers"):
+            from appcorr.models.gemma4.llm_fork import ApproxCorrectGemma4TextLayer
+            self.llm_fork_layers = torch.nn.ModuleList(
+                ApproxCorrectGemma4TextLayer.from_stock(l)
+                for l in self.llm.layers[: self.cg.config.get_text_config().num_hidden_layers])
+
+    def _layer_ctx(self, i, ctx):
+        lt = self.cg.config.get_text_config().layer_types[i]
+        m = ctx["masks"][lt] if isinstance(ctx["masks"], dict) else ctx["masks"]
+        return ctx["pe"][lt], m
+
+    @torch.no_grad()
+    def llm_approx(self, hidden, ctx, cache):
+        self._ensure_llm_fork()
+        for i, layer in enumerate(self.llm_fork_layers):
+            pe, m = self._layer_ctx(i, ctx)
+            hidden, cache = layer.approx(hidden, pe, m, cache, f"l{i}")
+        return hidden, cache
+
+    @torch.no_grad()
+    def llm_correct(self, hidden, token_idx, ctx, cache):
+        self._ensure_llm_fork()
+        for i, layer in enumerate(self.llm_fork_layers):
+            pe, m = self._layer_ctx(i, ctx)
+            hidden, cache = layer.correct(hidden, token_idx, pe, m, cache, f"l{i}")
+        return hidden, cache
+
+    @torch.no_grad()
+    def llm_finish(self, hidden):
+        return self.llm.norm(hidden)
+
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
         """lm_head + the 30.0 softcap, matching Gemma4ForConditionalGeneration."""
         lg = self.cg.lm_head(hidden)
