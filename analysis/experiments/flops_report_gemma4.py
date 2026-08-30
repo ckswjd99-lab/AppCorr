@@ -6,6 +6,13 @@ arrival of the request):
     corrected         arrival 0: vision approx on the degraded base (overlaps
                       the transmission); arrival 1: full-res prepare + partial
                       correct + pooler/embed + the ONE LLM prefill -> critical.
+    interleaved       arrival 0: vision approx + pooler/embed + FULL LLM approx
+                      prefill (all overlapped); arrival r+1: round r's vision
+                      band correct + entry rebuild + LLM correct on that band's
+                      soft tokens (text joins the last round). Critical = the
+                      LAST round only. The walk itself is gemma4_oracle's
+                      `_interleaved_walk` with this counter's `.arrival` plugged
+                      in, so accounting and accuracy share one code path.
 
 Decode is excluded everywhere, matching every other model's report. The LLM
 pass is a single manual prefill through the dual masks (full layers causal,
@@ -30,6 +37,7 @@ from appcorr.flops import hooks                                    # noqa: E402
 from appcorr.models.gemma4.unified import Gemma4Axis, MODEL_ID_31B  # noqa: E402
 from appcorr.models.gemma4.vision_fork import Gemma4VisionFork      # noqa: E402
 from gemma4_axis_gate import l2_degrade                             # noqa: E402
+from gemma4_oracle import _interleaved_walk                         # noqa: E402
 
 
 def main():
@@ -38,6 +46,10 @@ def main():
     ap.add_argument("--datasets", nargs="+", default=["mmvp", "cvbench"])
     ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50])
     ap.add_argument("--samples", type=int, default=12)
+    ap.add_argument("--groups", type=int, default=4)
+    ap.add_argument("--arms", nargs="+", default=["corrected"],
+                    choices=["corrected", "interleaved"],
+                    help="which ours-structure arms to account (bounds always run)")
     ap.add_argument("--out-json", default="analysis/results/flops/gemma4_flops.json")
     a = ap.parse_args()
 
@@ -76,7 +88,11 @@ def main():
         spec = get_spec(ds_name)
         ds = spec.load(load_dataset)
         idxs = list(range(0, len(ds), max(1, len(ds) // a.samples)))[:a.samples]
-        arms = ["ceiling", "floor"] + [f"corrected_k{k:.2f}" for k in a.keeps]
+        arms = ["ceiling", "floor"]
+        if "corrected" in a.arms:
+            arms += [f"corrected_k{k:.2f}" for k in a.keeps]
+        if "interleaved" in a.arms:
+            arms += [f"interleaved_g{a.groups}_k{k:.2f}" for k in a.keeps]
         counters = {arm: FlopCounter() for arm in arms}
         for si, idx in enumerate(idxs):
             img, prompt, _ = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
@@ -102,6 +118,10 @@ def main():
                                 feats = axis.vision_features(
                                     px_f if arm == "ceiling" else px_a, pos)
                                 llm_prefill(enc if arm == "ceiling" else enc2, feats)
+                        elif arm.startswith("interleaved"):
+                            k = float(arm.split("_k")[1])
+                            _interleaved_walk(axis, fork, model, enc, enc2, k,
+                                              a.groups, arrival=c.arrival)
                         else:
                             k = float(arm.split("_k")[1])
                             with c.arrival(0):
@@ -125,13 +145,20 @@ def main():
         agg = {arm: counters[arm].aggregate() for arm in arms}
         full = agg["ceiling"]["mean_total_gflops"]
         row = {"full": round(full, 1), "floor": round(agg["floor"]["mean_total_gflops"], 1)}
-        for k in a.keeps:
-            g = agg[f"corrected_k{k:.2f}"]
-            row[f"k{k:.2f}"] = round(g["mean_critical_gflops"], 1)
-            row[f"total_k{k:.2f}"] = round(g["mean_total_gflops"], 1)
-            print(f"{ds_name:<10} k={k:.2f} full {full:9.1f}  corrected crit "
-                  f"{g['mean_critical_gflops']:8.1f} total {g['mean_total_gflops']:9.1f} "
-                  f"crit/full = {g['mean_critical_gflops'] / full * 100:5.1f}%", flush=True)
+        for arm in arms:
+            if arm in ("ceiling", "floor"):
+                continue
+            g = agg[arm]
+            crit, tot = g["mean_critical_gflops"], g["mean_total_gflops"]
+            if arm.startswith("corrected"):
+                # legacy key shape ("k0.50"/"total_k0.50"), kept for the existing merge tooling
+                kk = arm.split("_k")[1]
+                row[f"k{kk}"], row[f"total_k{kk}"] = round(crit, 1), round(tot, 1)
+            else:
+                row[arm], row[f"total_{arm}"] = round(crit, 1), round(tot, 1)
+            print(f"{ds_name:<10} {arm:<22} full {full:9.1f}  crit {crit:8.1f} "
+                  f"total {tot:9.1f}  crit/full = {crit / full * 100:5.1f}%  "
+                  f"total/full = {tot / full * 100:5.1f}%", flush=True)
         result[ds_name] = row
 
     os.makedirs(os.path.dirname(a.out_json), exist_ok=True)

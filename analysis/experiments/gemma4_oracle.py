@@ -94,7 +94,7 @@ def _generate_from_kv(model, proc, axis, hidden, lcache, n_seq, max_new_tokens):
 
 
 @torch.no_grad()
-def _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_tokens):
+def _interleaved_walk(axis, fork, model, enc, enc2, keep, groups, arrival=None):
     """Port-plan step 4: full approx at arrival 0, per-round vision-band + LLM corrections.
 
     Schedule (the gemma3 contract, docs/memo/interleaved_correction_contract.md):
@@ -107,7 +107,14 @@ def _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_token
     x while its delta was computed against the old one, breaking rule-3 reconstruction).
     The LLM entry is rebuilt from the fork's `v_last_hidden` each round: untouched patch rows are
     still the approx values there, so the entry is automatically MIXED at the token level
-    (bitwise -- pooling untouched rows reproduces the approx feature exactly)."""
+    (bitwise -- pooling untouched rows reproduces the approx feature exactly).
+
+    `arrival`: optional callable i -> context manager, wrapped around arrival-0 work and each
+    round r (as arrival r+1). The FLOPs report passes its counter's `.arrival` here so the
+    accounting walks EXACTLY the accuracy arm's module calls; the oracle passes nothing.
+    Returns (hidden, lcache, ids) -- pre-finish hidden, the fork K/V, the id stream."""
+    from contextlib import nullcontext
+    arr = arrival if arrival is not None else (lambda i: nullcontext())
     px_f, px_a = enc["pixel_values"], enc2["pixel_values"]
     pos = enc.get("image_position_ids")
     px_fb = px_f if px_f.dim() == 3 else px_f.unsqueeze(0)
@@ -115,10 +122,10 @@ def _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_token
     pos_b = pos if pos.dim() == 3 else pos.unsqueeze(0)
     n_pool = px_fb.shape[1]
 
-    emb_f, _ = fork.prepare(px_fb, pos_b)
-    emb_a, pad = fork.prepare(px_ab, pos_b)
-    vcache = {}
-    fork.approx(emb_a, pos_b, pad, vcache)
+    with arr(0):
+        emb_a, pad = fork.prepare(px_ab, pos_b)
+        vcache = {}
+        fork.approx(emb_a, pos_b, pad, vcache)
 
     # Selection: same pscore as `corrected` (residual energy, top-keep).
     energy = (px_fb.float() - px_ab.float()).pow(2).sum(-1)
@@ -139,11 +146,13 @@ def _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_token
     bands = [sel & (pooled_row >= edges[r]) & (pooled_row < edges[r + 1]) & ~pad
              for r in range(groups)]
 
-    # LLM approx on the (all-approximate) features -- arrival 0.
+    # LLM approx on the (all-approximate) features -- arrival 0. The token-embedding lookup is
+    # a hooked module (language_model.embed_tokens), so it sits inside arr(0) with the rest.
     ids = enc["input_ids"]
     image_mask = ids == axis.cg.config.image_token_id
     llm_ids = torch.where(image_mask, axis.cg.config.text_config.pad_token_id, ids)
-    base_embeds = axis.model.get_input_embeddings()(llm_ids)
+    with arr(0):
+        base_embeds = axis.model.get_input_embeddings()(llm_ids)
 
     def entry_embeds():
         soft = fork.finish(vcache["v_last_hidden"], pos_b, pad, n_pool, work_dtype=emb_a.dtype)
@@ -151,30 +160,43 @@ def _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_token
         return base_embeds.masked_scatter(
             image_mask.unsqueeze(-1).expand_as(base_embeds), feats)
 
-    embeds = entry_embeds()
-    ctx = axis.build_llm_ctx(enc, embeds)
-    lcache = {}
-    hidden, lcache = axis.llm_approx(embeds, ctx, lcache)
+    with arr(0):
+        embeds = entry_embeds()
+        ctx = axis.build_llm_ctx(enc, embeds)
+        lcache = {}
+        hidden, lcache = axis.llm_approx(embeds, ctx, lcache)
 
     img_pos = image_mask[0].nonzero(as_tuple=True)[0]      # soft-token j sits at img_pos[j]
     arrived = torch.zeros_like(sel)
+    emb_f = None
     for r in range(groups):
         last = (r == groups - 1)
         band = bands[r]
-        tok_rows = torch.empty(0, dtype=torch.long, device=ids.device)
-        if bool(band.any()):
-            arrived = arrived | band
-            # Contract rule 2: the stream carries full-res rows for everything ARRIVED;
-            # this round recomputes only its OWN band (never the accumulated set).
-            stream = torch.where(arrived.unsqueeze(-1), emb_f, emb_a)
-            fork.correct(stream, band, pos_b, pad, vcache)
-            tok_rows = img_pos[torch.unique(kidx[0][band[0]])]
-        if last:
-            text_rows = (~image_mask[0]).nonzero(as_tuple=True)[0]
-            tok_rows = torch.cat([tok_rows, text_rows]).sort().values
-        if tok_rows.numel():
-            hidden, lcache = axis.llm_correct(entry_embeds(), tok_rows, ctx, lcache)
+        with arr(r + 1):
+            if emb_f is None:
+                # Full-res patch embed rides the FIRST detail arrival (same charge as the
+                # one-shot report's arrival 1) -- it cannot exist before details land.
+                emb_f, _ = fork.prepare(px_fb, pos_b)
+            tok_rows = torch.empty(0, dtype=torch.long, device=ids.device)
+            if bool(band.any()):
+                arrived = arrived | band
+                # Contract rule 2: the stream carries full-res rows for everything ARRIVED;
+                # this round recomputes only its OWN band (never the accumulated set).
+                stream = torch.where(arrived.unsqueeze(-1), emb_f, emb_a)
+                fork.correct(stream, band, pos_b, pad, vcache)
+                tok_rows = img_pos[torch.unique(kidx[0][band[0]])]
+            if last:
+                text_rows = (~image_mask[0]).nonzero(as_tuple=True)[0]
+                tok_rows = torch.cat([tok_rows, text_rows]).sort().values
+            if tok_rows.numel():
+                hidden, lcache = axis.llm_correct(entry_embeds(), tok_rows, ctx, lcache)
 
+    return hidden, lcache, ids
+
+
+@torch.no_grad()
+def _interleaved(axis, fork, model, proc, enc, enc2, keep, groups, max_new_tokens):
+    hidden, lcache, ids = _interleaved_walk(axis, fork, model, enc, enc2, keep, groups)
     return _generate_from_kv(model, proc, axis, hidden, lcache, ids.shape[1], max_new_tokens)
 
 
