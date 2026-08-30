@@ -201,6 +201,14 @@ measured under box, resume the halted qwen35 re-measurement in that form.
   a corrected arm landing 6pp ABOVE the depressed ceiling. The inputs_embeds
   batched path (fork arms) stops cleanly. Until the bound path is re-validated
   per class, bound arms on exact-normalized free-text datasets run bs=1.
+  LIMIT (2026-08-30, gemma4 interleaved): pattern (2) does NOT apply to
+  INTERLEAVED arms -- their decode must ride the fork's per-layer K/V (a
+  `generate(inputs_embeds=...)` flush would re-prefill the LLM and erase the
+  walk), so the only batchable piece is stacking the manual decode loop across
+  samples (variable-length KV left-pad + hybrid sliding/full masks; est. ~15%
+  wall-clock for short answers -- not worth mid-campaign). Batching interleaved
+  properly means batch-capable forks (vision + LLM both assert B=1 today);
+  design that in at the NEXT model port, don't retrofit.
 
 ## Final state at shutdown (23:15 sweep, 2026-08-27)
 Everything is committed and pushed (HEAD 3c64def at sweep time). Landed tonight:
