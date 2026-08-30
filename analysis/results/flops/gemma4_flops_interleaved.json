@@ -1,0 +1,52 @@
+{
+ "_model": "google/gemma-4-31B-it",
+ "_samples": 8,
+ "refcoco": {
+  "full": 22024.9,
+  "floor": 22024.9,
+  "interleaved_g4_k0.25": 6359.8,
+  "total_interleaved_g4_k0.25": 36230.2,
+  "interleaved_g4_k0.50": 7239.6,
+  "total_interleaved_g4_k0.50": 40043.2
+ },
+ "textvqa": {
+  "full": 19974.8,
+  "floor": 19974.8,
+  "interleaved_g4_k0.25": 3986.1,
+  "total_interleaved_g4_k0.25": 30767.6,
+  "interleaved_g4_k0.50": 5100.9,
+  "total_interleaved_g4_k0.50": 35027.6
+ },
+ "visdrone_count": {
+  "full": 19916.3,
+  "floor": 19916.3,
+  "interleaved_g4_k0.25": 3424.1,
+  "total_interleaved_g4_k0.25": 31200.3,
+  "interleaved_g4_k0.50": 4625.6,
+  "total_interleaved_g4_k0.50": 35086.5
+ },
+ "visdrone_det": {
+  "full": 21966.3,
+  "floor": 21966.3,
+  "interleaved_g4_k0.25": 5712.3,
+  "total_interleaved_g4_k0.25": 36017.9,
+  "interleaved_g4_k0.50": 6828.9,
+  "total_interleaved_g4_k0.50": 39955.4
+ },
+ "mmvp": {
+  "full": 20604.4,
+  "floor": 20604.4,
+  "interleaved_g4_k0.25": 4858.9,
+  "total_interleaved_g4_k0.25": 33125.4,
+  "interleaved_g4_k0.50": 5989.7,
+  "total_interleaved_g4_k0.50": 36667.4
+ },
+ "cvbench": {
+  "full": 22171.3,
+  "floor": 22171.3,
+  "interleaved_g4_k0.25": 6348.2,
+  "total_interleaved_g4_k0.25": 35908.0,
+  "interleaved_g4_k0.50": 7733.9,
+  "total_interleaved_g4_k0.50": 40255.5
+ }
+}
