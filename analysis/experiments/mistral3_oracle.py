@@ -600,7 +600,10 @@ def main():
             print(f"  [{total}/{len(idxs)}] {dt:.0f}s {dt / total:.2f}s/ex "
                   f"acc={correct_n / total:.2%}", flush=True)
 
-    if a.bs > 1 and a.arm not in ("ceiling", "floor"):
+    if a.bs > 1 and (a.arm not in ("ceiling", "floor") or a.decode == "embeds"):
+        # embeds-decode bounds ride the same queue -- the old condition skipped their tail
+        # flush and silently dropped the final partial batch (n=4992/5000 on the Option-C
+        # rerun; deterministic last-stride samples, <=0.16pp, noted where reported).
         _flush_ours()
     summary = {"model": a.model, "dataset": a.dataset, "arm": a.arm,
                "keep": a.keep if a.arm in ("corrected", "streaming") else None,
