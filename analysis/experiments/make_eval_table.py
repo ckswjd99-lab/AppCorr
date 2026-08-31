@@ -131,6 +131,10 @@ SPEC = [
         ("RefCOCO val (Acc.@0.5)", None, ("inproc", "qwen35_moe", "refcoco")),
         ("RefCOCO val (mIoU)",     None, ("inproc", "qwen35_moe", "refcoco")),
         ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_moe", "textvqa")),
+        ("VisDrone Count (Exact Acc.)", None, ("inproc", "qwen35_moe", "visdrone_count")),
+        ("VisDrone Count (Soft)",       None, ("inproc", "qwen35_moe", "visdrone_count")),
+        ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_moe", "visdrone_det")),
+        ("VisDrone Det (mIoU)",         None, ("inproc", "qwen35_moe", "visdrone_det")),
     ]),
     # Gemma 4 31B: Ours = INTERLEAVED g=4 since 2026-08-31 (port-plan step 4 landed; walk
     # gate bitwise, identity gate in ceiling's flicker set). Accuracy cells prefer
@@ -183,6 +187,8 @@ SPEC = [
         # unmeasurable on sm_100 (pilcrow footnote). n=12, attention term included.
         ("RefCOCO val (Acc.@0.5)", None, ("inproc", "qwen35_122b", "refcoco")),
         ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_122b", "textvqa")),
+        ("VisDrone Count (Exact Acc.)", None, ("inproc", "qwen35_122b", "visdrone_count")),
+        ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_122b", "visdrone_det")),
     ]),
     ("OpenVLA (7B)", [
         ("LIBERO-Spatial (Success Rate)", None, None),
