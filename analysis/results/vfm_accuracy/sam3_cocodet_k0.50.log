@@ -1,0 +1,234 @@
+Skipping import of cpp extensions due to incompatible torch version 2.12.1+cu130 for torchao version 0.16.0+cu130             Please see https://github.com/pytorch/ao/issues/2919 for more info
+loading annotations into memory...
+Done (t=0.99s)
+creating index...
+index created!
+[oracle:detector] loading facebook/sam3 (bfloat16)
+Loading weights:   0%|          | 0/1468 [00:00<?, ?it/s]Loading weights:   2%|▏         | 34/1468 [00:00<00:06, 210.59it/s]Loading weights:   5%|▌         | 74/1468 [00:00<00:04, 295.48it/s]Loading weights:   7%|▋         | 106/1468 [00:00<00:04, 304.09it/s]Loading weights:   9%|▉         | 138/1468 [00:00<00:05, 232.91it/s]Loading weights:  17%|█▋        | 253/1468 [00:00<00:02, 488.46it/s]Loading weights:  26%|██▌       | 377/1468 [00:00<00:01, 700.02it/s]Loading weights:  31%|███       | 457/1468 [00:00<00:01, 691.07it/s]Loading weights:  37%|███▋      | 540/1468 [00:01<00:01, 602.37it/s]Loading weights:  41%|████▏     | 607/1468 [00:04<00:11, 72.90it/s] Loading weights:  45%|████▍     | 654/1468 [00:04<00:11, 71.82it/s]Loading weights:  47%|████▋     | 689/1468 [00:05<00:10, 71.39it/s]Loading weights:  49%|████▊     | 715/1468 [00:06<00:12, 62.02it/s]Loading weights:  50%|█████     | 735/1468 [00:06<00:12, 59.98it/s]Loading weights:  51%|█████     | 750/1468 [00:06<00:12, 58.02it/s]Loading weights:  52%|█████▏    | 762/1468 [00:06<00:12, 57.46it/s]Loading weights:  53%|█████▎    | 772/1468 [00:07<00:13, 53.08it/s]Loading weights:  53%|█████▎    | 781/1468 [00:07<00:12, 56.49it/s]Loading weights:  54%|█████▍    | 790/1468 [00:07<00:12, 52.80it/s]Loading weights:  54%|█████▍    | 797/1468 [00:07<00:13, 48.69it/s]Loading weights:  55%|█████▌    | 811/1468 [00:07<00:10, 61.31it/s]Loading weights:  56%|█████▌    | 820/1468 [00:08<00:12, 50.04it/s]Loading weights:  56%|█████▋    | 829/1468 [00:08<00:14, 44.31it/s]Loading weights:  57%|█████▋    | 841/1468 [00:08<00:11, 55.41it/s]Loading weights:  58%|█████▊    | 849/1468 [00:08<00:12, 50.45it/s]Loading weights:  59%|█████▊    | 859/1468 [00:09<00:13, 43.56it/s]Loading weights:  59%|█████▉    | 871/1468 [00:09<00:10, 54.99it/s]Loading weights:  60%|█████▉    | 879/1468 [00:09<00:11, 50.74it/s]Loading weights:  60%|██████    | 886/1468 [00:09<00:12, 45.46it/s]Loading weights:  61%|██████    | 899/1468 [00:09<00:12, 44.58it/s]Loading weights:  62%|██████▏   | 915/1468 [00:10<00:11, 47.42it/s]Loading weights:  65%|██████▍   | 948/1468 [00:10<00:09, 57.27it/s]Loading weights:  65%|██████▌   | 956/1468 [00:10<00:08, 59.46it/s]Loading weights:  66%|██████▌   | 964/1468 [00:10<00:09, 53.66it/s]Loading weights:  66%|██████▋   | 974/1468 [00:11<00:10, 47.51it/s]Loading weights:  67%|██████▋   | 980/1468 [00:11<00:10, 48.55it/s]Loading weights:  68%|██████▊   | 996/1468 [00:11<00:10, 44.35it/s]Loading weights:  69%|██████▉   | 1012/1468 [00:12<00:10, 43.70it/s]Loading weights:  70%|██████▉   | 1022/1468 [00:12<00:08, 49.89it/s]Loading weights:  70%|███████   | 1028/1468 [00:12<00:10, 43.87it/s]Loading weights:  71%|███████   | 1036/1468 [00:12<00:09, 43.53it/s]Loading weights:  71%|███████   | 1044/1468 [00:12<00:11, 37.75it/s]Loading weights:  72%|███████▏  | 1060/1468 [00:13<00:09, 42.50it/s]Loading weights:  73%|███████▎  | 1068/1468 [00:13<00:09, 42.97it/s]Loading weights:  73%|███████▎  | 1076/1468 [00:13<00:08, 46.27it/s]Loading weights:  74%|███████▍  | 1086/1468 [00:13<00:07, 48.34it/s]Loading weights:  74%|███████▍  | 1092/1468 [00:13<00:08, 43.40it/s]Loading weights:  75%|███████▌  | 1102/1468 [00:14<00:07, 52.05it/s]Loading weights:  75%|███████▌  | 1108/1468 [00:14<00:09, 39.66it/s]Loading weights:  76%|███████▌  | 1118/1468 [00:14<00:07, 49.27it/s]Loading weights:  77%|███████▋  | 1124/1468 [00:14<00:09, 37.34it/s]Loading weights:  77%|███████▋  | 1134/1468 [00:14<00:08, 40.50it/s]Loading weights:  78%|███████▊  | 1142/1468 [00:15<00:06, 47.18it/s]Loading weights:  78%|███████▊  | 1150/1468 [00:15<00:05, 53.08it/s]Loading weights:  79%|███████▉  | 1157/1468 [00:15<00:08, 35.33it/s]Loading weights:  79%|███████▉  | 1166/1468 [00:15<00:06, 44.06it/s]Loading weights:  80%|███████▉  | 1173/1468 [00:15<00:07, 40.06it/s]Loading weights:  81%|████████  | 1188/1468 [00:16<00:06, 43.34it/s]Loading weights:  82%|████████▏ | 1204/1468 [00:16<00:05, 47.37it/s]Loading weights:  83%|████████▎ | 1214/1468 [00:16<00:05, 48.48it/s]Loading weights:  83%|████████▎ | 1220/1468 [00:16<00:05, 44.31it/s]Loading weights:  84%|████████▍ | 1230/1468 [00:17<00:05, 44.16it/s]Loading weights:  84%|████████▍ | 1237/1468 [00:17<00:04, 48.25it/s]Loading weights:  85%|████████▌ | 1252/1468 [00:17<00:04, 44.29it/s]Loading weights:  86%|████████▌ | 1262/1468 [00:17<00:04, 46.08it/s]Loading weights:  86%|████████▋ | 1268/1468 [00:17<00:04, 46.74it/s]Loading weights:  87%|████████▋ | 1278/1468 [00:18<00:03, 47.79it/s]Loading weights:  87%|████████▋ | 1284/1468 [00:18<00:04, 37.89it/s]Loading weights:  89%|████████▊ | 1300/1468 [00:18<00:03, 42.50it/s]Loading weights:  90%|████████▉ | 1316/1468 [00:18<00:03, 45.49it/s]Loading weights:  90%|█████████ | 1326/1468 [00:19<00:02, 47.84it/s]Loading weights:  91%|█████████ | 1332/1468 [00:19<00:03, 38.68it/s]Loading weights:  92%|█████████▏| 1348/1468 [00:19<00:02, 43.53it/s]Loading weights:  93%|█████████▎| 1364/1468 [00:20<00:02, 45.76it/s]Loading weights:  94%|█████████▎| 1374/1468 [00:20<00:01, 52.56it/s]Loading weights:  94%|█████████▍| 1381/1468 [00:20<00:02, 42.18it/s]Loading weights:  95%|█████████▌| 1396/1468 [00:20<00:01, 44.84it/s]Loading weights:  96%|█████████▌| 1406/1468 [00:20<00:01, 47.59it/s]Loading weights:  96%|█████████▌| 1412/1468 [00:21<00:01, 47.42it/s]Loading weights:  97%|█████████▋| 1420/1468 [00:21<00:01, 46.17it/s]Loading weights:  97%|█████████▋| 1425/1468 [00:21<00:00, 45.98it/s]Loading weights:  97%|█████████▋| 1430/1468 [00:21<00:00, 39.35it/s]Loading weights:  98%|█████████▊| 1438/1468 [00:21<00:00, 46.95it/s]Loading weights:  98%|█████████▊| 1444/1468 [00:21<00:00, 40.38it/s]Loading weights: 100%|██████████| 1468/1468 [00:21<00:00, 66.84it/s]
+[oracle:detector] text prompts truncated at 32 tokens
+[oracle:detector] presence token: off (auto)
+[oracle:detector] arm=corrected keep_ratio=0.5 (32 layers, global at [7, 15, 23, 31])
+[oracle:detector] coco: 4952 images, 34104 annotations, 80 categories
+  [25/4952] 40s  1.62s/img  preds=1800
+  [50/4952] 70s  1.40s/img  preds=3790
+  [75/4952] 96s  1.27s/img  preds=5370
+  [100/4952] 121s  1.21s/img  preds=7240
+  [125/4952] 143s  1.15s/img  preds=9090
+  [150/4952] 164s  1.09s/img  preds=10930
+  [175/4952] 185s  1.06s/img  preds=12710
+  [200/4952] 205s  1.02s/img  preds=14440
+  [225/4952] 225s  1.00s/img  preds=16240
+  [250/4952] 244s  0.98s/img  preds=17980
+  [275/4952] 263s  0.96s/img  preds=19840
+  [300/4952] 283s  0.94s/img  preds=21720
+  [325/4952] 302s  0.93s/img  preds=23550
+  [350/4952] 322s  0.92s/img  preds=25440
+  [375/4952] 341s  0.91s/img  preds=27390
+  [400/4952] 359s  0.90s/img  preds=29090
+  [425/4952] 378s  0.89s/img  preds=31110
+  [450/4952] 395s  0.88s/img  preds=32760
+  [475/4952] 412s  0.87s/img  preds=34370
+  [500/4952] 431s  0.86s/img  preds=36320
+  [525/4952] 450s  0.86s/img  preds=38080
+  [550/4952] 468s  0.85s/img  preds=40060
+  [575/4952] 486s  0.84s/img  preds=41880
+  [600/4952] 503s  0.84s/img  preds=43620
+  [625/4952] 520s  0.83s/img  preds=45440
+  [650/4952] 539s  0.83s/img  preds=47350
+  [675/4952] 557s  0.83s/img  preds=49060
+  [700/4952] 574s  0.82s/img  preds=50870
+  [725/4952] 593s  0.82s/img  preds=53050
+  [750/4952] 610s  0.81s/img  preds=54660
+  [775/4952] 627s  0.81s/img  preds=56310
+  [800/4952] 646s  0.81s/img  preds=58220
+  [825/4952] 663s  0.80s/img  preds=59890
+  [850/4952] 680s  0.80s/img  preds=61960
+  [875/4952] 697s  0.80s/img  preds=63560
+  [900/4952] 714s  0.79s/img  preds=65030
+  [925/4952] 730s  0.79s/img  preds=66790
+  [950/4952] 747s  0.79s/img  preds=68440
+  [975/4952] 765s  0.78s/img  preds=70430
+  [1000/4952] 782s  0.78s/img  preds=72360
+  [1025/4952] 798s  0.78s/img  preds=74000
+  [1050/4952] 815s  0.78s/img  preds=75700
+  [1075/4952] 832s  0.77s/img  preds=77530
+  [1100/4952] 849s  0.77s/img  preds=79170
+  [1125/4952] 865s  0.77s/img  preds=80730
+  [1150/4952] 872s  0.76s/img  preds=82450
+  [1175/4952] 878s  0.75s/img  preds=84380
+  [1200/4952] 885s  0.74s/img  preds=86240
+  [1225/4952] 891s  0.73s/img  preds=88110
+  [1250/4952] 903s  0.72s/img  preds=89940
+  [1275/4952] 915s  0.72s/img  preds=91570
+  [1300/4952] 928s  0.71s/img  preds=93190
+  [1325/4952] 941s  0.71s/img  preds=94930
+  [1350/4952] 956s  0.71s/img  preds=96810
+  [1375/4952] 970s  0.71s/img  preds=98460
+  [1400/4952] 983s  0.70s/img  preds=100160
+  [1425/4952] 998s  0.70s/img  preds=101690
+  [1450/4952] 1013s  0.70s/img  preds=103400
+  [1475/4952] 1027s  0.70s/img  preds=105140
+  [1500/4952] 1043s  0.70s/img  preds=107040
+  [1525/4952] 1058s  0.69s/img  preds=108920
+  [1550/4952] 1073s  0.69s/img  preds=110860
+  [1575/4952] 1089s  0.69s/img  preds=112820
+  [1600/4952] 1103s  0.69s/img  preds=114580
+  [1625/4952] 1119s  0.69s/img  preds=116360
+  [1650/4952] 1132s  0.69s/img  preds=118000
+  [1675/4952] 1145s  0.68s/img  preds=119800
+  [1700/4952] 1160s  0.68s/img  preds=121680
+  [1725/4952] 1175s  0.68s/img  preds=123450
+  [1750/4952] 1189s  0.68s/img  preds=125150
+  [1775/4952] 1202s  0.68s/img  preds=126980
+  [1800/4952] 1217s  0.68s/img  preds=128460
+  [1825/4952] 1231s  0.67s/img  preds=130280
+  [1850/4952] 1246s  0.67s/img  preds=132180
+  [1875/4952] 1260s  0.67s/img  preds=133940
+  [1900/4952] 1275s  0.67s/img  preds=135450
+  [1925/4952] 1290s  0.67s/img  preds=137180
+  [1950/4952] 1305s  0.67s/img  preds=138930
+  [1975/4952] 1321s  0.67s/img  preds=140870
+  [2000/4952] 1335s  0.67s/img  preds=142500
+  [2025/4952] 1351s  0.67s/img  preds=144400
+  [2050/4952] 1365s  0.67s/img  preds=145900
+  [2075/4952] 1379s  0.66s/img  preds=147700
+  [2100/4952] 1395s  0.66s/img  preds=149560
+  [2125/4952] 1408s  0.66s/img  preds=151260
+  [2150/4952] 1424s  0.66s/img  preds=153020
+  [2175/4952] 1438s  0.66s/img  preds=154660
+  [2200/4952] 1454s  0.66s/img  preds=156600
+  [2225/4952] 1469s  0.66s/img  preds=158400
+  [2250/4952] 1484s  0.66s/img  preds=160440
+  [2275/4952] 1498s  0.66s/img  preds=162030
+  [2300/4952] 1512s  0.66s/img  preds=163750
+  [2325/4952] 1526s  0.66s/img  preds=165110
+  [2350/4952] 1540s  0.66s/img  preds=166800
+  [2375/4952] 1556s  0.66s/img  preds=168800
+  [2400/4952] 1573s  0.66s/img  preds=170850
+  [2425/4952] 1588s  0.65s/img  preds=172510
+  [2450/4952] 1605s  0.65s/img  preds=174160
+  [2475/4952] 1621s  0.65s/img  preds=176070
+  [2500/4952] 1636s  0.65s/img  preds=177740
+  [2525/4952] 1652s  0.65s/img  preds=179720
+  [2550/4952] 1669s  0.65s/img  preds=181660
+  [2575/4952] 1685s  0.65s/img  preds=183220
+  [2600/4952] 1701s  0.65s/img  preds=185080
+  [2625/4952] 1717s  0.65s/img  preds=186890
+  [2650/4952] 1733s  0.65s/img  preds=188800
+  [2675/4952] 1749s  0.65s/img  preds=190620
+  [2700/4952] 1764s  0.65s/img  preds=192340
+  [2725/4952] 1780s  0.65s/img  preds=194010
+  [2750/4952] 1795s  0.65s/img  preds=195740
+  [2775/4952] 1811s  0.65s/img  preds=197630
+  [2800/4952] 1828s  0.65s/img  preds=199470
+  [2825/4952] 1844s  0.65s/img  preds=201260
+  [2850/4952] 1859s  0.65s/img  preds=202870
+  [2875/4952] 1876s  0.65s/img  preds=204800
+  [2900/4952] 1892s  0.65s/img  preds=206590
+  [2925/4952] 1907s  0.65s/img  preds=208370
+  [2950/4952] 1923s  0.65s/img  preds=210120
+  [2975/4952] 1938s  0.65s/img  preds=211800
+  [3000/4952] 1954s  0.65s/img  preds=213530
+  [3025/4952] 1970s  0.65s/img  preds=215270
+  [3050/4952] 1986s  0.65s/img  preds=217000
+  [3075/4952] 2000s  0.65s/img  preds=218620
+  [3100/4952] 2016s  0.65s/img  preds=220280
+  [3125/4952] 2032s  0.65s/img  preds=222080
+  [3150/4952] 2048s  0.65s/img  preds=224090
+  [3175/4952] 2064s  0.65s/img  preds=225960
+  [3200/4952] 2080s  0.65s/img  preds=227910
+  [3225/4952] 2096s  0.65s/img  preds=229740
+  [3250/4952] 2112s  0.65s/img  preds=231470
+  [3275/4952] 2127s  0.65s/img  preds=233400
+  [3300/4952] 2141s  0.65s/img  preds=235170
+  [3325/4952] 2157s  0.65s/img  preds=236940
+  [3350/4952] 2170s  0.65s/img  preds=238790
+  [3375/4952] 2184s  0.65s/img  preds=240390
+  [3400/4952] 2199s  0.65s/img  preds=242280
+  [3425/4952] 2213s  0.65s/img  preds=244000
+  [3450/4952] 2227s  0.65s/img  preds=245660
+  [3475/4952] 2242s  0.65s/img  preds=247370
+  [3500/4952] 2255s  0.64s/img  preds=249080
+  [3525/4952] 2269s  0.64s/img  preds=250730
+  [3550/4952] 2283s  0.64s/img  preds=252640
+  [3575/4952] 2297s  0.64s/img  preds=254360
+  [3600/4952] 2312s  0.64s/img  preds=256050
+  [3625/4952] 2327s  0.64s/img  preds=257860
+  [3650/4952] 2340s  0.64s/img  preds=259730
+  [3675/4952] 2354s  0.64s/img  preds=261740
+  [3700/4952] 2368s  0.64s/img  preds=263430
+  [3725/4952] 2383s  0.64s/img  preds=265510
+  [3750/4952] 2398s  0.64s/img  preds=267300
+  [3775/4952] 2412s  0.64s/img  preds=269380
+  [3800/4952] 2425s  0.64s/img  preds=271000
+  [3825/4952] 2440s  0.64s/img  preds=272830
+  [3850/4952] 2453s  0.64s/img  preds=274510
+  [3875/4952] 2467s  0.64s/img  preds=276310
+  [3900/4952] 2481s  0.64s/img  preds=278060
+  [3925/4952] 2495s  0.64s/img  preds=279960
+  [3950/4952] 2509s  0.64s/img  preds=281620
+  [3975/4952] 2524s  0.63s/img  preds=283610
+  [4000/4952] 2539s  0.63s/img  preds=285460
+  [4025/4952] 2553s  0.63s/img  preds=287270
+  [4050/4952] 2568s  0.63s/img  preds=289020
+  [4075/4952] 2582s  0.63s/img  preds=290900
+  [4100/4952] 2596s  0.63s/img  preds=292550
+  [4125/4952] 2611s  0.63s/img  preds=294470
+  [4150/4952] 2625s  0.63s/img  preds=296240
+  [4175/4952] 2640s  0.63s/img  preds=298090
+  [4200/4952] 2656s  0.63s/img  preds=299760
+  [4225/4952] 2673s  0.63s/img  preds=301680
+  [4250/4952] 2690s  0.63s/img  preds=303390
+  [4275/4952] 2706s  0.63s/img  preds=305280
+  [4300/4952] 2720s  0.63s/img  preds=306840
+  [4325/4952] 2735s  0.63s/img  preds=308280
+  [4350/4952] 2752s  0.63s/img  preds=310170
+  [4375/4952] 2767s  0.63s/img  preds=311900
+  [4400/4952] 2784s  0.63s/img  preds=313840
+  [4425/4952] 2801s  0.63s/img  preds=315720
+  [4450/4952] 2818s  0.63s/img  preds=317450
+  [4475/4952] 2835s  0.63s/img  preds=319160
+  [4500/4952] 2850s  0.63s/img  preds=320580
+  [4525/4952] 2867s  0.63s/img  preds=322380
+  [4550/4952] 2884s  0.63s/img  preds=324230
+  [4575/4952] 2899s  0.63s/img  preds=325970
+  [4600/4952] 2915s  0.63s/img  preds=327670
+  [4625/4952] 2932s  0.63s/img  preds=329530
+  [4650/4952] 2948s  0.63s/img  preds=331040
+  [4675/4952] 2965s  0.63s/img  preds=332820
+  [4700/4952] 2981s  0.63s/img  preds=334510
+  [4725/4952] 2998s  0.63s/img  preds=336290
+  [4750/4952] 3013s  0.63s/img  preds=337990
+  [4775/4952] 3029s  0.63s/img  preds=339910
+  [4800/4952] 3045s  0.63s/img  preds=341550
+  [4825/4952] 3061s  0.63s/img  preds=343320
+  [4850/4952] 3079s  0.63s/img  preds=345380
+  [4875/4952] 3096s  0.64s/img  preds=347230
+  [4900/4952] 3112s  0.64s/img  preds=348810
+  [4925/4952] 3128s  0.64s/img  preds=350430
+  [4950/4952] 3144s  0.64s/img  preds=352220
+  [4952/4952] 3145s  0.64s/img  preds=352280
+[oracle] 352280 predictions -> analysis/results/vfm_accuracy/sam3_cocodet_k0.50.json.preds.json
+Loading and preparing results...
+DONE (t=4.77s)
+creating index...
+index created!
+Running per image evaluation...
+Evaluate annotation type *segm*
+DONE (t=23.95s).
+Accumulating evaluation results...
+DONE (t=2.16s).
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.501
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.762
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.544
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.334
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.540
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.675
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.359
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.585
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.619
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.470
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.668
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.753
+
+=== Final Summary: {"dataset": "coco", "path": "detector", "arm": "corrected", "keep_ratio": 0.5, "pscore": "energy_attn", "groups": 4, "bounds": "pre_global", "repo": "facebook/sam3", "num_images": 4952, "num_predictions": 352280, "dtype": "bfloat16", "image_size": 1008, "max_boxes": 20, "det_per_cat": 30, "det_max_dets": 100, "det_score_thresh": 0.0, "annotations": "/home/nxclab/fiftyone/coco-2017/raw/instances_val2017.json", "mask_AP": 0.5009033276714453, "mask_AP50": 0.7624320083037823, "mask_AP75": 0.543814085475273, "mask_AP_small": 0.334026214811278, "mask_AP_medium": 0.5402533469528832, "mask_AP_large": 0.6753359156591483}
