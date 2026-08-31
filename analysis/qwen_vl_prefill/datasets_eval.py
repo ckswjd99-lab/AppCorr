@@ -581,12 +581,39 @@ class VisDroneDetSpec(_VisDroneBase):
         return int(i > 0.5), i
 
 
+class VStarSpec:
+    """V*Bench (SEAL, Wu & Xie CVPR 2024): 191 MCQ over large images (~2246x1582 mean) that
+    require finding SMALL details -- 115 direct_attributes + 76 relative_position. `text` already
+    carries the four options and the answer-with-letter instruction; `label` is the letter.
+    n=191 IS the whole benchmark: full-split runs are cheap, but every comparison is far under the
+    nr=400 sanity bar -- report with paired stats and intervals, never bare deltas."""
+    name = "vstar"
+    hf = "craigwu/vstar_bench"
+    split = "test"
+
+    def load(self, load_dataset):
+        from huggingface_hub import snapshot_download
+        self.root = snapshot_download(self.hf, repo_type="dataset")
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import os
+        image = Image.open(os.path.join(self.root, ex["image"])).convert("RGB")
+        return image, ex["text"], ex["label"].strip().upper()
+
+    def score(self, pred_text, gold):
+        m = re.search(r"[ABCD]", pred_text.upper())
+        ok = int(bool(m) and m.group(0) == gold)
+        return ok, float(ok)
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
          "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec,
          "cvbench": CVBenchSpec, "mmvp": MMVPSpec, "mmerealworld": MMERealWorldSpec,
          "wildvision": WildVisionSpec,
-         "visdrone_count": VisDroneCountSpec, "visdrone_det": VisDroneDetSpec}
+         "visdrone_count": VisDroneCountSpec, "visdrone_det": VisDroneDetSpec,
+         "vstar": VStarSpec}
 
 
 def get_spec(name):
