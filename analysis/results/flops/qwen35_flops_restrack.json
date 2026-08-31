@@ -1,0 +1,25 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "_samples": 12,
+ "_groups": 4,
+ "refcoco": {
+  "full": 2948.4,
+  "floor": 2948.4,
+  "crit_g4_k0.25": 727.6,
+  "total_g4_k0.25": 3230.8,
+  "crit_g4_k0.50": 799.5,
+  "total_g4_k0.50": 3517.3,
+  "crit_g4": 944.1,
+  "total_g4": 4090.6
+ },
+ "textvqa": {
+  "full": 7520.5,
+  "floor": 7520.5,
+  "crit_g4_k0.25": 1314.3,
+  "total_g4_k0.25": 8381.1,
+  "crit_g4_k0.50": 1536.5,
+  "total_g4_k0.50": 9269.7,
+  "crit_g4": 1980.8,
+  "total_g4": 11047.0
+ }
+}
