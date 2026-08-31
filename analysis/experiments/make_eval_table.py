@@ -57,16 +57,26 @@ QWEN35_PYR_ROWS = {"RefCOCO val (Acc.@0.5)": ("refcoco", "ok"),
                    "TextVQA (VQA Acc.)":     ("textvqa", "val")}
 
 
-def qwen35_pyr_lit(dataset: str, metric: str, slug: str = "") -> Dict[str, float]:
+# 122B probe (2026-09-01, NHN box): same jsonl schema, REDUCED SCALE (n=240 per arm, user-directed)
+# under the Triton finegrained-fp8 fallback -- see the pilcrow footnote. Completeness is checked
+# against the probe's own n, not the dataset size.
+QWEN122B_DIR = os.path.join(RESULTS, "qwen35_122b_probe")
+QWEN122B_EXPECTED = {"refcoco": 240, "textvqa": 240}
+QWEN122B_SLUG = "_qwen3.5-122b-a10b-fp8"
+
+
+def qwen35_pyr_lit(dataset: str, metric: str, slug: str = "",
+                   dir_: str = None, expected: Dict[str, int] = None) -> Dict[str, float]:
     """LITERALS-shaped dict computed from the pyr campaign's jsonls; complete arms only."""
-    exp = QWEN35_PYR_EXPECTED.get(dataset)
+    exp = (expected or QWEN35_PYR_EXPECTED).get(dataset)
     out: Dict[str, float] = {}
     if exp is None:
         return out
+    QWEN35_PYR_DIR_ = dir_ or QWEN35_PYR_DIR
     for key, tag in (("floor", "floor"), ("ceiling", "ceiling"),
                      ("k0.25", "streaming_g4_k0.25"), ("k0.50", "streaming_g4_k0.50"),
                      ("stream", "streaming_g4")):
-        p = os.path.join(QWEN35_PYR_DIR, f"{dataset}{slug}_{tag}.jsonl")
+        p = os.path.join(QWEN35_PYR_DIR_, f"{dataset}{slug}_{tag}.jsonl")
         if not os.path.exists(p):
             continue
         rows = [json.loads(l) for l in open(p) if l.strip()]
@@ -175,17 +185,17 @@ SPEC = [
         ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    ("inproc", "museglimmer30b", "mmvp")),
         ("CV-Bench (Acc.)",        ("museglimmer30b", "cvbench"), ("inproc", "museglimmer30b", "cvbench")),
     ]),
-    # 122B-FP8: the FP8 GEMM kernel stack (deep-gemm, sm_90) produces garbage on this B200
-    # (sm_100), so ACCURACY is unmeasurable here until a Blackwell kernel or a dequant path
-    # exists. COMPUTE figures are still valid: FLOP counts are shape- and token-count-determined
-    # (the MoE handler charges n_tok x top_k whichever experts the router picks), independent of
-    # the values flowing through.
+    # 122B-FP8: DeepGEMM mis-generates on this B200 (sm_100; per-row outputs bit-perfect, end
+    # tokens drift -- transformers 5.13 documents it); accuracy IS measurable under the Triton
+    # finegrained-fp8 fallback (TRANSFORMERS_DISABLE_DEEPGEMM_LINEAR=1). Cells below are the
+    # 2026-09-01 REDUCED-SCALE probe (n=240/arm, user-directed) via the QWEN122B_* loader; the
+    # pilcrow footnote states both the fallback and the n. COMPUTE figures are shape-determined
+    # and kernel-independent (n=12, attention term included except chartqa -- see _note).
     ("Qwen3.5-MoE (122B-A10B FP8)$^\\dagger$\\textsuperscript{\\P}", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_122b", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_122b", "realworldqa")),
-        # Resolution-sensitive track (2026-08-31, B200 box): FLOPs only -- accuracy stays
-        # unmeasurable on sm_100 (pilcrow footnote). n=12, attention term included.
         ("RefCOCO val (Acc.@0.5)", None, ("inproc", "qwen35_122b", "refcoco")),
+        ("RefCOCO val (mIoU)",     None, ("inproc", "qwen35_122b", "refcoco")),
         ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_122b", "textvqa")),
         ("VisDrone Count (Exact Acc.)", None, ("inproc", "qwen35_122b", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_122b", "visdrone_det")),
@@ -574,6 +584,14 @@ def build_rows(keeps, groups: int):
             if base_model == "Qwen3.5-MoE (35B-A3B)" and label in QWEN35_PYR_ROWS:
                 ds_name, metric = QWEN35_PYR_ROWS[label]
                 lit = {**lit, **qwen35_pyr_lit(ds_name, metric)}
+            if base_model.startswith("Qwen3.5-MoE (122B") and label in QWEN35_PYR_ROWS:
+                ds_name, metric = QWEN35_PYR_ROWS[label]
+                # User directive (2026-09-01): 122B probe numbers render PARENTHESIZED, never
+                # shaded, no preservation % -- they must not read as full-split values.
+                lit = {**lit, **qwen35_pyr_lit(ds_name, metric, slug=QWEN122B_SLUG,
+                                               dir_=QWEN122B_DIR,
+                                               expected=QWEN122B_EXPECTED),
+                       "probe": True}
             f = "{:.2f}"
             if "fmt" in lit:
                 f = lit["fmt"]
@@ -603,6 +621,8 @@ def build_rows(keeps, groups: int):
                 v = acc_raw(tag, lit_key)
                 if v is None:
                     return "--"
+                if lit.get("probe"):
+                    return f"({f.format(v)})"
                 s = f.format(v)
                 if ceiling_v:
                     pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
@@ -661,6 +681,8 @@ def build_rows(keeps, groups: int):
                 sv = load_accuracy(*acc_key, "streaming_g4", _metric_key)
             if sv is None:
                 cells.append("--")
+            elif lit.get("probe"):
+                cells.append(f"({f.format(sv)})")
             else:
                 out_s = f.format(sv)
                 if ceiling_v:
@@ -671,7 +693,10 @@ def build_rows(keeps, groups: int):
                 cells.append(out_s)
             cells.append(fmt_tf(get_total(fl_key, "k1.00"), full_gf))
             cells.append(fmt_tf(get_flops(fl_key, "k1.00"), full_gf))
-            cells.append(f.format(ceiling_v) if ceiling_v is not None else "--")
+            if ceiling_v is None:
+                cells.append("--")
+            else:
+                cells.append(f"({f.format(ceiling_v)})" if lit.get("probe") else f.format(ceiling_v))
             cells.append(fmt_tf(full_gf, None))
             block.append((label, cells))
         out.append((model, block))
@@ -714,9 +739,11 @@ def emit_latex(table, keeps) -> str:
              r"$^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
              r"(measured equivalent); the 25\% arm excludes 8/8811 images (0.09\%, a since-fixed "
              r"driver defect) with bounds restricted to the same kept set -- the 50\% arm has "
-             r"full coverage. \textsuperscript{\P}122B-FP8 accuracy is unmeasurable "
-             r"on this hardware (FP8 kernels produce incorrect outputs on sm\_100); its compute "
-             r"figures are shape-determined and unaffected.}")
+             r"full coverage. \textsuperscript{\P}122B-FP8 accuracy cells are PARENTHESIZED and "
+             r"unshaded: they are a reduced-scale probe (n$=$240 per arm) measured under the "
+             r"Triton finegrained-fp8 fallback (the DeepGEMM path mis-generates on sm\_100), not "
+             r"full-split values, and must not be compared 1:1 against full-split cells; compute "
+             r"figures are shape-determined and kernel-independent.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
