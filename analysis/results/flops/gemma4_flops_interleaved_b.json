@@ -1,0 +1,20 @@
+{
+ "_model": "google/gemma-4-31B-it",
+ "_samples": 8,
+ "refcoco": {
+  "full": 23063.3,
+  "floor": 23063.3,
+  "interleaved_g4_k0.25": 5001.0,
+  "total_interleaved_g4_k0.25": 31766.6,
+  "interleaved_g4_k0.50": 6192.4,
+  "total_interleaved_g4_k0.50": 36566.4
+ },
+ "textvqa": {
+  "full": 20963.2,
+  "floor": 20963.2,
+  "interleaved_g4_k0.25": 2931.9,
+  "total_interleaved_g4_k0.25": 27766.8,
+  "interleaved_g4_k0.50": 4121.4,
+  "total_interleaved_g4_k0.50": 32494.7
+ }
+}

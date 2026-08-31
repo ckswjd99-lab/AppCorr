@@ -1,0 +1,36 @@
+{
+ "_model": "google/gemma-4-31B-it",
+ "_samples": 8,
+ "visdrone_count": {
+  "full": 20903.3,
+  "floor": 20903.3,
+  "interleaved_g4_k0.25": 2344.2,
+  "total_interleaved_g4_k0.25": 27432.9,
+  "interleaved_g4_k0.50": 3357.8,
+  "total_interleaved_g4_k0.50": 32227.6
+ },
+ "visdrone_det": {
+  "full": 23003.2,
+  "floor": 23003.2,
+  "interleaved_g4_k0.25": 4615.9,
+  "total_interleaved_g4_k0.25": 31617.2,
+  "interleaved_g4_k0.50": 5536.0,
+  "total_interleaved_g4_k0.50": 36416.9
+ },
+ "mmvp": {
+  "full": 21607.5,
+  "floor": 21607.5,
+  "interleaved_g4_k0.25": 3731.1,
+  "total_interleaved_g4_k0.25": 29191.8,
+  "interleaved_g4_k0.50": 4811.6,
+  "total_interleaved_g4_k0.50": 33869.4
+ },
+ "cvbench": {
+  "full": 23213.7,
+  "floor": 23213.7,
+  "interleaved_g4_k0.25": 4979.3,
+  "total_interleaved_g4_k0.25": 32087.7,
+  "interleaved_g4_k0.50": 6335.4,
+  "total_interleaved_g4_k0.50": 36881.3
+ }
+}
