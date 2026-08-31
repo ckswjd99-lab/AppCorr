@@ -157,7 +157,13 @@ def main():
                 pred_raw = None
                 if args.box_scale != "none" and args.dataset in ("refcoco", "visdrone_det"):
                     import re as _re
-                    nums = _re.findall(r"-?\d+\.?\d*", pred)[:4]
+                    # MG emits JSON-style boxes ({"x1": 185, ...}) and may leak into the to=self
+                    # channel after the answer; strip key tokens (their digits poison a bare
+                    # number scan -- the coord probe read 0.00% from exactly that) and cut at the
+                    # channel switch before extracting. Convention: 0-1000 relative (probe
+                    # 2026-09-01: /1000*(w,h) maximizes IoU across hypotheses).
+                    cleaned = _re.sub(r'"?[xy][12]"?\s*[:=]', " ", pred).split("assistant")[0]
+                    nums = _re.findall(r"-?\d+\.?\d*", cleaned)[:4]
                     if len(nums) == 4:
                         pred_raw = pred
                         w_, h_ = img.size
