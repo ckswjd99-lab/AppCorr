@@ -1,0 +1,1 @@
+{"_model": "Qwen/Qwen3.5-35B-A3B", "_samples": 12, "refcoco": {"V": 1168.6}, "textvqa": {"V": 3610.3}, "chartqa": {"V": 1904.4}, "realworldqa": {"V": 8458.1}}
