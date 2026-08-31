@@ -39,6 +39,45 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 RESULTS = os.path.join(ROOT, "analysis", "results")
 FLOPS_DIR = os.path.join(RESULTS, "flops")
 
+# Ours accuracy cells at or above this preservation get a light-gray background (user request
+# 2026-08-31). Needs \usepackage[table]{xcolor} in the paper preamble; emit_md strips the macro.
+SHADE_PRES = 98.0
+SHADE_MACRO = r"\cellcolor{gray!15}"
+
+# Qwen3.5 pyr-filter campaign (2026-08-31, B200 box): jsonl per arm, appended incrementally with
+# resume. A cell is emitted only when the arm is COMPLETE (every split index present), so a table
+# generated mid-run never shows a partial number; oom-skips count toward completeness but are
+# excluded from the mean. RefCOCO reports mean(ok) as Acc@0.5 and mean(val) as mIoU; TextVQA's
+# headline is mean(val) -- the VQA soft score -- NOT the driver's running % (which prints the
+# ok-rate, sc>=0.5).
+QWEN35_PYR_DIR = os.path.join(RESULTS, "qwen35_accuracy_pyr")
+QWEN35_PYR_EXPECTED = {"refcoco": 8811, "textvqa": 5000}
+QWEN35_PYR_ROWS = {"RefCOCO val (Acc.@0.5)": ("refcoco", "ok"),
+                   "RefCOCO val (mIoU)":     ("refcoco", "val"),
+                   "TextVQA (VQA Acc.)":     ("textvqa", "val")}
+
+
+def qwen35_pyr_lit(dataset: str, metric: str, slug: str = "") -> Dict[str, float]:
+    """LITERALS-shaped dict computed from the pyr campaign's jsonls; complete arms only."""
+    exp = QWEN35_PYR_EXPECTED.get(dataset)
+    out: Dict[str, float] = {}
+    if exp is None:
+        return out
+    for key, tag in (("floor", "floor"), ("ceiling", "ceiling"),
+                     ("k0.25", "streaming_g4_k0.25"), ("k0.50", "streaming_g4_k0.50"),
+                     ("stream", "streaming_g4")):
+        p = os.path.join(QWEN35_PYR_DIR, f"{dataset}{slug}_{tag}.jsonl")
+        if not os.path.exists(p):
+            continue
+        rows = [json.loads(l) for l in open(p) if l.strip()]
+        if len({r["i"] for r in rows}) < exp:
+            continue
+        sc = [r for r in rows if "skip" not in r]
+        if not sc:
+            continue
+        out[key] = 100.0 * sum(float(r[metric]) for r in sc) / len(sc)
+    return out
+
 # (model label, [(dataset label, accuracy key, flops key)]). `accuracy key` is (dir_prefix, dataset)
 # or None when no accuracy arm exists; `flops key` selects the FLOPs source.
 SPEC = [
@@ -189,6 +228,23 @@ SPEC = [
         (r"Co3Dv2 (3D Inlier $<10\%$)",         None, ("offload", "vggt_co3d")),
     ]),
 ]
+
+# Presentation order (user, 2026-08-31): VFMs first, then the VLMs, then the VLA. Sorting here
+# instead of moving the literal blocks keeps each block's comments next to its rows.
+_ROW_ORDER = ["DINOv3", "SAM 3", "OpenCLIP", "VGGT-Omega", "LLaVA-OV2", "Gemma 3", "Gemma 4",
+              "Mistral Small", "Muse Glimmer", "Qwen2.5-VL", "Qwen3.5-MoE (35B",
+              "Qwen3.5-MoE (122B", "OpenVLA"]
+
+
+def _row_order_key(entry):
+    name = entry[0]
+    for i, prefix in enumerate(_ROW_ORDER):
+        if name.startswith(prefix):
+            return i
+    return len(_ROW_ORDER)  # unknown models sink to the bottom rather than crash
+
+
+SPEC.sort(key=_row_order_key)
 
 # Values that exist only in prose (other branches, published memos) and have no JSON to read.
 # Kept separate from anything measured here so the two are never confused.
@@ -509,6 +565,9 @@ def build_rows(keeps, groups: int):
         block = []
         for label, acc_key, fl_key in rows:
             lit = LITERALS.get((base_model, label), {})
+            if base_model == "Qwen3.5-MoE (35B-A3B)" and label in QWEN35_PYR_ROWS:
+                ds_name, metric = QWEN35_PYR_ROWS[label]
+                lit = {**lit, **qwen35_pyr_lit(ds_name, metric)}
             f = "{:.2f}"
             if "fmt" in lit:
                 f = lit["fmt"]
@@ -524,13 +583,16 @@ def build_rows(keeps, groups: int):
 
             ceiling_v = acc_raw("ceiling", "ceiling")
 
-            def acc_with_pres(tag, lit_key=None):
+            def acc_with_pres(tag, lit_key=None, shade_hi=False):
                 """Accuracy, with (preservation vs.\\ ceiling %) in parentheses.
 
                 Preservation is this-value-relative-to-ceiling, not the other way round: for a
                 lower-is-better metric that means ceiling/value, so a value further from the
                 ceiling in the bad direction still reads as a preservation < 100%. Applied to
                 Low-res. and Ours -- Full-res. is the reference point itself, always 100%.
+
+                `shade_hi` (Ours cells only) marks preservation >= SHADE_PRES with a light-gray
+                \\cellcolor so near-ceiling cells read at a glance; emit_md strips the macro.
                 """
                 v = acc_raw(tag, lit_key)
                 if v is None:
@@ -539,6 +601,8 @@ def build_rows(keeps, groups: int):
                 if ceiling_v:
                     pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
                     s += f" ({pres:.1f}\\%)"
+                    if shade_hi and pres >= SHADE_PRES:
+                        s = SHADE_MACRO + s
                 return s
 
             vfm = VFM_OURS.get((base_model, label))
@@ -554,6 +618,8 @@ def build_rows(keeps, groups: int):
                     if ceiling_v:
                         pres = 100.0 * ((ceiling_v / v) if lower_better else (v / ceiling_v))
                         out += f" ({pres:.1f}\\%)"
+                        if pres >= SHADE_PRES:
+                            out = SHADE_MACRO + out
                     return out
                 # Tag preference: canonical progressive arm where re-measured; the upfront
                 # interleaved arm's file otherwise (ddagger caveat); the one-shot corrected
@@ -561,7 +627,7 @@ def build_rows(keeps, groups: int):
                 for tag in (f"progressive_g{groups}_k{k:.2f}",
                             f"interleaved_g{groups}_k{k:.2f}",
                             f"corrected_k{k:.2f}"):
-                    v = acc_with_pres(tag, lit_key=f"k{k:.2f}")
+                    v = acc_with_pres(tag, lit_key=f"k{k:.2f}", shade_hi=True)
                     if v != "--":
                         return v
                 return "--"
@@ -594,6 +660,8 @@ def build_rows(keeps, groups: int):
                 if ceiling_v:
                     pres = 100.0 * ((ceiling_v / sv) if lower_better else (sv / ceiling_v))
                     out_s += f" ({pres:.1f}\\%)"
+                    if pres >= SHADE_PRES:
+                        out_s = SHADE_MACRO + out_s
                 cells.append(out_s)
             cells.append(fmt_tf(get_total(fl_key, "k1.00"), full_gf))
             cells.append(fmt_tf(get_flops(fl_key, "k1.00"), full_gf))
@@ -619,13 +687,15 @@ def emit_latex(table, keeps) -> str:
     # 2 labels + Low-res. + three per Ours block + three for Streaming + two for Full-res.
     ncol = 2 + 1 + 3 * len(keeps) + 3 + 2
     L = []
+    L.append(r"% requires \usepackage[table]{xcolor} in the preamble (for \cellcolor)")
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
     L.append(r"\caption{Evaluation Results across Different Configurations. Crit.\ Comp.\ is "
              r"backbone prefill FLOPs per instruction that can only begin once the whole image has "
              r"arrived (decode excluded); Comp.\ is the arm's total backbone compute including "
              r"work overlapped with transmission. Parentheses give the ratio to the Full-res.\ "
-             r"computation. Ours uses interleaved $g{=}4$. "
+             r"computation. Ours uses interleaved $g{=}4$; shaded Ours and Streaming accuracy "
+             r"cells retain $\geq$98\% of the Full-res.\ accuracy. "
              r"The Streaming (k$=$1.0) block is the causal-LLM category: the LLM prefills exactly "
              r"once in arrival-order chunks while the vision encoder corrects everything "
              r"progressively -- total $\approx$ full + one vision pass, critical $\approx 1/g$. "
@@ -678,8 +748,10 @@ def emit_md(table, keeps) -> str:
     L = ["| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
     for model, rows in table:
         for label, cells in rows:
-            L.append("| " + " | ".join([model, label] + [c.replace("\\,", " ").replace("\\%", "%")
-                                                         for c in cells]) + " |")
+            L.append("| " + " | ".join([model, label] +
+                                       [c.replace(SHADE_MACRO, "").replace("\\,", " ")
+                                         .replace("\\%", "%")
+                                        for c in cells]) + " |")
     return "\n".join(L)
 
 
