@@ -22,8 +22,8 @@ Throughput policy (user decision 2026-08-31, after the GQA n=240 equivalence gat
     forms; the hybrid linear-attention conv/recurrent state diverges at the prefix boundary).
     Worth retrying only on pure-softmax models.
   * Per-dataset consistency: every arm of one dataset must share one preprocessing path. The
-    streaming arm cannot batch but CAN take --fast-processor -- gate streaming+fastproc once
-    (240-sample) before the first campaign that mixes it into a row.
+    streaming arm cannot batch but CAN take --fast-processor: GATED 2026-09-01 (gqa contiguous
+    n=240: identical 97.1%, dacc +0.42pp) -- ADOPTED, so new campaigns run fastproc on all arms.
   * Rows measured before this date (refcoco/textvqa pyr campaign) are slow-processor bs=1
     throughout -- internally consistent; do not re-run.
 """
