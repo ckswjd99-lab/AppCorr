@@ -1,0 +1,25 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "_samples": 12,
+ "_groups": 4,
+ "visdrone_count": {
+  "full": 12303.3,
+  "floor": 12303.3,
+  "crit_g4_k0.25": 1953.6,
+  "total_g4_k0.25": 13833.2,
+  "crit_g4_k0.50": 2355.0,
+  "total_g4_k0.50": 15438.6,
+  "crit_g4": 3158.8,
+  "total_g4": 18650.1
+ },
+ "visdrone_det": {
+  "full": 10701.2,
+  "floor": 10701.2,
+  "crit_g4_k0.25": 1867.6,
+  "total_g4_k0.25": 11978.7,
+  "crit_g4_k0.50": 2201.7,
+  "total_g4_k0.50": 13317.2,
+  "crit_g4": 2872.6,
+  "total_g4": 15995.5
+ }
+}
