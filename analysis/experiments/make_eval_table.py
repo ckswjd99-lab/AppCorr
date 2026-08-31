@@ -308,6 +308,10 @@ LITERALS = {
     ("LLaVA-OV2 (8.5B)", "V*Bench (Acc.)"): {"floor": 74.87, "ceiling": 85.86,
                                              "k0.25": 78.01, "k0.50": 83.25,
                                              "stream": 84.29},
+    # V*Bench full split via qwen25vl_bench_eval retry (logs vstar_qwen25_*.log, '=== Summary').
+    ("Qwen2.5-VL (33.5B)", "V*Bench (Acc.)"): {"floor": 60.73, "ceiling": 79.06,
+                                               "k0.25": 70.68, "k0.50": 74.87,
+                                               "stream": 78.01},
     # Qwen3.5 accuracy, full RealWorldQA split (765), 2026-08-27, thinking disabled, shared greedy
     # decode across all three arms. Single streaming arm (g=4) sits under the k0.50 columns per the
     # dagger footnote's nominal-placement rule.
