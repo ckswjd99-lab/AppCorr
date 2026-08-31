@@ -51,10 +51,16 @@ SHADE_MACRO = r"\cellcolor{gray!15}"
 # headline is mean(val) -- the VQA soft score -- NOT the driver's running % (which prints the
 # ok-rate, sc>=0.5).
 QWEN35_PYR_DIR = os.path.join(RESULTS, "qwen35_accuracy_pyr")
-QWEN35_PYR_EXPECTED = {"refcoco": 8811, "textvqa": 5000}
+QWEN35_PYR_EXPECTED = {"refcoco": 8811, "textvqa": 5000, "vstar": 191}
 QWEN35_PYR_ROWS = {"RefCOCO val (Acc.@0.5)": ("refcoco", "ok"),
                    "RefCOCO val (mIoU)":     ("refcoco", "val"),
-                   "TextVQA (VQA Acc.)":     ("textvqa", "val")}
+                   "TextVQA (VQA Acc.)":     ("textvqa", "val"),
+                   "V*Bench (Acc.)":         ("vstar", "ok")}
+
+# Muse Glimmer campaign jsonls (same schema, same driver family).
+MG_PYR_DIR = os.path.join(RESULTS, "museglimmer_accuracy_pyr")
+MG_PYR_EXPECTED = {"vstar": 191}
+MG_PYR_ROWS = {"V*Bench (Acc.)": ("vstar", "ok")}
 
 
 # 122B probe (2026-09-01, NHN box): same jsonl schema, REDUCED SCALE (n=240 per arm, user-directed)
@@ -118,6 +124,7 @@ SPEC = [
         ("MMMU val (Acc.)",        ("ov2", "mmmu"),        ("inproc", "ov2", "mmmu")),
         ("RefCOCO val (Acc.@0.5)", ("ov2", "refcoco"),     ("inproc", "ov2", "refcoco")),
         ("VSR zeroshot (Acc.)",    ("ov2", "vsr"),         None),
+        ("V*Bench (Acc.)",         None, None),
     ]),
     ("Qwen2.5-VL (33.5B)$^\\S$", [
         ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
@@ -128,6 +135,7 @@ SPEC = [
         ("CV-Bench (Acc.)",           None, None),
         ("VisDrone Count (Exact Acc.)", None, None),
         ("VisDrone Det (Acc.@0.5)",     None, None),
+        ("V*Bench (Acc.)",              None, None),
     ]),
     ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
@@ -145,6 +153,7 @@ SPEC = [
         ("VisDrone Count (Soft)",       None, ("inproc", "qwen35_moe", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_moe", "visdrone_det")),
         ("VisDrone Det (mIoU)",         None, ("inproc", "qwen35_moe", "visdrone_det")),
+        ("V*Bench (Acc.)",              None, None),
     ]),
     # Gemma 4 31B: Ours = INTERLEAVED g=4 since 2026-08-31 (port-plan step 4 landed; walk
     # gate bitwise, identity gate in ceiling's flicker set). Accuracy cells prefer
@@ -180,10 +189,12 @@ SPEC = [
         ("VisDrone Count (Soft)",       ("mistral24b", "visdrone_count"), ("inproc", "mistral24b", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     ("mistral24b", "visdrone_det"),   ("inproc", "mistral24b", "visdrone_det")),
         ("VisDrone Det (mIoU)",         ("mistral24b", "visdrone_det"),   ("inproc", "mistral24b", "visdrone_det")),
+        ("V*Bench (Acc.)",              None, None),
     ]),
     ("Muse Glimmer (29.6B)", [
         ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    ("inproc", "museglimmer30b", "mmvp")),
         ("CV-Bench (Acc.)",        ("museglimmer30b", "cvbench"), ("inproc", "museglimmer30b", "cvbench")),
+        ("V*Bench (Acc.)",         None, None),
     ]),
     # 122B-FP8: DeepGEMM mis-generates on this B200 (sm_100; per-row outputs bit-perfect, end
     # tokens drift -- transformers 5.13 documents it); accuracy IS measurable under the Triton
@@ -199,6 +210,7 @@ SPEC = [
         ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_122b", "textvqa")),
         ("VisDrone Count (Exact Acc.)", None, ("inproc", "qwen35_122b", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_122b", "visdrone_det")),
+        ("V*Bench (Acc.)",              None, None),
     ]),
     ("OpenVLA (7B)", [
         ("LIBERO-Spatial (Success Rate)", None, None),
@@ -247,7 +259,7 @@ SPEC = [
 
 # Presentation order (user, 2026-08-31): VFMs first, then the VLMs, then the VLA. Sorting here
 # instead of moving the literal blocks keeps each block's comments next to its rows.
-_ROW_ORDER = ["DINOv3", "SAM 3", "OpenCLIP", "VGGT-Omega", "LLaVA-OV2", "Gemma 3", "Gemma 4",
+_ROW_ORDER = ["DINOv3", "SAM 3", "OpenCLIP", "VGGT-Omega", "Gemma 3", "Gemma 4", "LLaVA-OV2",
               "Mistral Small", "Muse Glimmer", "Qwen2.5-VL", "Qwen3.5-MoE (35B",
               "Qwen3.5-MoE (122B", "OpenVLA"]
 
@@ -288,6 +300,14 @@ SPEC.sort(key=_row_order_key)
 # re-measured too, so nothing here is updated until BOTH bounds are back: quoting a new ceiling
 # against an old floor would invent a gap neither measurement supports.
 LITERALS = {
+    # V*Bench full split (191), 2026-09-01 campaign, pyr L2, from the oracle Final Summary lines
+    # (analysis/results/logs/vstar_mistral_*.log / vstar_ov2_*.log -- --out-json was not passed).
+    ("Mistral Small 3.1 (24B)", "V*Bench (Acc.)"): {"floor": 50.26, "ceiling": 52.36,
+                                                    "k0.25": 53.40, "k0.50": 54.97,
+                                                    "stream": 51.83},
+    ("LLaVA-OV2 (8.5B)", "V*Bench (Acc.)"): {"floor": 74.87, "ceiling": 85.86,
+                                             "k0.25": 78.01, "k0.50": 83.25,
+                                             "stream": 84.29},
     # Qwen3.5 accuracy, full RealWorldQA split (765), 2026-08-27, thinking disabled, shared greedy
     # decode across all three arms. Single streaming arm (g=4) sits under the k0.50 columns per the
     # dagger footnote's nominal-placement rule.
@@ -586,12 +606,23 @@ def build_rows(keeps, groups: int):
                 lit = {**lit, **qwen35_pyr_lit(ds_name, metric)}
             if base_model.startswith("Qwen3.5-MoE (122B") and label in QWEN35_PYR_ROWS:
                 ds_name, metric = QWEN35_PYR_ROWS[label]
-                # User directive (2026-09-01): 122B probe numbers render PARENTHESIZED, never
-                # shaded, no preservation % -- they must not read as full-split values.
-                lit = {**lit, **qwen35_pyr_lit(ds_name, metric, slug=QWEN122B_SLUG,
-                                               dir_=QWEN122B_DIR,
-                                               expected=QWEN122B_EXPECTED),
-                       "probe": True}
+                if label == "V*Bench (Acc.)":
+                    # V*Bench n=191 IS the whole benchmark: a full-split value, rendered
+                    # normally. The parenthesized-probe rule covers reduced-n subsets only.
+                    lit = {**lit, **qwen35_pyr_lit(ds_name, metric, slug=QWEN122B_SLUG,
+                                                   dir_=QWEN35_PYR_DIR,
+                                                   expected=QWEN35_PYR_EXPECTED)}
+                else:
+                    # User directive (2026-09-01): 122B probe numbers render PARENTHESIZED, never
+                    # shaded, no preservation % -- they must not read as full-split values.
+                    lit = {**lit, **qwen35_pyr_lit(ds_name, metric, slug=QWEN122B_SLUG,
+                                                   dir_=QWEN122B_DIR,
+                                                   expected=QWEN122B_EXPECTED),
+                           "probe": True}
+            if base_model == "Muse Glimmer (29.6B)" and label in MG_PYR_ROWS:
+                ds_name, metric = MG_PYR_ROWS[label]
+                lit = {**lit, **qwen35_pyr_lit(ds_name, metric, dir_=MG_PYR_DIR,
+                                               expected=MG_PYR_EXPECTED)}
             f = "{:.2f}"
             if "fmt" in lit:
                 f = lit["fmt"]
