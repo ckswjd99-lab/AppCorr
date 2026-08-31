@@ -346,7 +346,7 @@ def main():
             """Score + append one row -- the same transform/score/write the bs=1 loop performs."""
             nonlocal correct, scored
             w_, h_ = size
-            if args.dataset == "refcoco":
+            if args.dataset in ("refcoco", "visdrone_det"):
                 import re as _re
                 nums = _re.findall(r"-?\d+\.?\d*", pred)[:4]
                 if len(nums) == 4:
@@ -473,7 +473,7 @@ def main():
                     torch.cuda.empty_cache()
                     continue
                 for i, pred, gold, (w_, h_) in zip(chunk, preds, golds, sizes):
-                    if args.dataset == "refcoco":
+                    if args.dataset in ("refcoco", "visdrone_det"):
                         # Same 0-1000 -> pixel rescale as the bs=1 path below.
                         import re as _re
                         nums = _re.findall(r"-?\d+\.?\d*", pred)[:4]
@@ -518,8 +518,9 @@ def main():
                                                         keep=args.keep)
                     dp = st["decode_start_pos"]
                 pred = greedy(axis, lg, kv, dp)
-                if args.dataset == "refcoco":
-                    # Qwen3-generation grounding emits 0-1000 RELATIVE coords (probe
+                if args.dataset in ("refcoco", "visdrone_det"):
+                    # Qwen3-generation grounding emits 0-1000 RELATIVE coords for refcoco AND
+                    # visdrone_det (same convention; VisDrone gold is native pixels). (probe
                     # 2026-08-28: boxes cap at 1000 regardless of the pixel-coord
                     # instruction). Deterministic rescale to this image's pixels.
                     import re as _re
