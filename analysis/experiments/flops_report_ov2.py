@@ -82,6 +82,10 @@ def main():
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--keeps", type=float, nargs="+", default=[0.30, 0.50])
     ap.add_argument("--level", type=int, default=2)
+    ap.add_argument("--streaming", action="store_true",
+                    help="also measure the streaming k=1.0 arm (keys k1.00/total_k1.00)")
+    ap.add_argument("--skip-interleaved", action="store_true",
+                    help="skip the interleaved keeps loop (streaming-only refresh)")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--datasets", nargs="+", default=list(DATASETS))
     ap.add_argument("--out-json",
@@ -150,7 +154,7 @@ def main():
         print(f"  independent analytic estimate      {analytic:10.1f} GFLOPs   "
               f"measured/analytic = {ratio:4.2f}  {flag}")
 
-        for keep in a.keeps:
+        for keep in ([] if a.skip_interleaved else a.keeps):
             def interleaved(axis, fl, ids, pp, px, px2, keep=keep):
                 # PROGRESSIVE per-round selection (canonical 2026-08-26; see the gemma3 report for
                 # the full rationale). The old path here ran a full-tower scoring pass before the
@@ -167,6 +171,20 @@ def main():
                   f"critical {crit:9.1f}  total {tot:9.1f} GFLOPs   "
                   f"critical/full = {100*crit/full_g:5.1f}%   "
                   f"(critical/own total {100*crit/tot:4.1f}%)")
+        if a.streaming:
+            # --- streaming (k=1.0): vision approx+correct, EXACT chunked prefill --------------- #
+            # Fills the table's Streaming Comp./Crit. Comp. cells (inproc keys k1.00/total_k1.00),
+            # which had accuracy but no compute since the arm won the OV2 menu (2026-08-26).
+            def streaming(axis, fl, ids, pp, px, px2):
+                axis.streaming_forward(px2, px, pp, ids, a.groups)
+
+            agg_s, _ = run(streaming)
+            crit_s = agg_s["mean_critical_gflops"]
+            tot_s = agg_s["mean_total_gflops"]
+            rows.append((ds_name, 1.0, crit_s, tot_s, full_g))
+            print(f"  streaming g={a.groups} k=1.00     "
+                  f"critical {crit_s:9.1f}  total {tot_s:9.1f} GFLOPs   "
+                  f"critical/full = {100*crit_s/full_g:5.1f}%")
         _save(a.out_json, "ov2", ds_name, full_g,
               [(k, c, t) for d, k, c, t, _ in rows if d == ds_name],
               len(idxs), a.groups)
