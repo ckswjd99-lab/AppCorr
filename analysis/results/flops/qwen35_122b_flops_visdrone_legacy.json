@@ -1,0 +1,35 @@
+{
+ "_model": "Qwen/Qwen3.5-122B-A10B-FP8",
+ "_samples": 12,
+ "_groups": 4,
+ "visdrone_count": {
+  "full": 17579.9,
+  "floor": 17579.9,
+  "crit_g4_k0.25": 3350.4,
+  "total_g4_k0.25": 18981.4,
+  "crit_g4_k0.50": 3751.9,
+  "total_g4_k0.50": 20586.8,
+  "crit_g4": 4555.6,
+  "total_g4": 23798.3
+ },
+ "visdrone_det": {
+  "full": 15487.3,
+  "floor": 15487.3,
+  "crit_g4_k0.25": 3244.0,
+  "total_g4_k0.25": 16658.3,
+  "crit_g4_k0.50": 3578.2,
+  "total_g4_k0.50": 17996.9,
+  "crit_g4": 4249.1,
+  "total_g4": 20675.2
+ },
+ "realworldqa": {
+  "full": 22603.6,
+  "floor": 22603.6,
+  "crit_g4_k0.25": 4415.5,
+  "total_g4_k0.25": 24399.2,
+  "crit_g4_k0.50": 4939.1,
+  "total_g4_k0.50": 26486.4,
+  "crit_g4": 5983.5,
+  "total_g4": 30665.7
+ }
+}

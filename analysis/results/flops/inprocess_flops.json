@@ -273,19 +273,41 @@
    "total_k0.25": 8381.1,
    "k0.50": 1536.5,
    "total_k0.50": 9269.7
+  },
+  "visdrone_count": {
+   "full": 12303.3,
+   "k1.00": 3158.8,
+   "total_k1.00": 18650.1,
+   "k0.25": 1953.6,
+   "total_k0.25": 13833.2,
+   "k0.50": 2355.0,
+   "total_k0.50": 15438.6
+  },
+  "visdrone_det": {
+   "full": 10701.2,
+   "k1.00": 2872.6,
+   "total_k1.00": 15995.5,
+   "k0.25": 1867.6,
+   "total_k0.25": 11978.7,
+   "k0.50": 2201.7,
+   "total_k0.50": 13317.2
   }
  },
  "qwen35_122b": {
-  "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, attention term included for refcoco/textvqa (2026-08-31); chartqa/realworldqa remain PRE-FIX (no attention term) pending re-measurement.",
+  "_note": "122B-A10B-FP8, shape-determined counts. n=12, attention term included for refcoco/textvqa/visdrone_count/visdrone_det/realworldqa (2026-08-31); chartqa remains PRE-FIX (no attention term) -- deprioritized per user, re-measure only on request.",
   "chartqa": {
    "full": 6044.4,
    "k1.00": 1747.5,
    "total_k1.00": 7520.9
   },
   "realworldqa": {
-   "full": 17964.4,
-   "k1.00": 4810.6,
-   "total_k1.00": 22513.2
+   "full": 22603.6,
+   "k1.00": 5983.5,
+   "total_k1.00": 30665.7,
+   "k0.25": 4415.5,
+   "total_k0.25": 24399.2,
+   "k0.50": 4939.1,
+   "total_k0.50": 26486.4
   },
   "refcoco": {
    "full": 4540.7,
@@ -304,6 +326,24 @@
    "total_k0.25": 11853.9,
    "k0.50": 2510.7,
    "total_k0.50": 12742.5
+  },
+  "visdrone_count": {
+   "full": 17579.9,
+   "k1.00": 4555.6,
+   "total_k1.00": 23798.3,
+   "k0.25": 3350.4,
+   "total_k0.25": 18981.4,
+   "k0.50": 3751.9,
+   "total_k0.50": 20586.8
+  },
+  "visdrone_det": {
+   "full": 15487.3,
+   "k1.00": 4249.1,
+   "total_k1.00": 20675.2,
+   "k0.25": 3244.0,
+   "total_k0.25": 16658.3,
+   "k0.50": 3578.2,
+   "total_k0.50": 17996.9
   }
  },
  "gemma4": {
