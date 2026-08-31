@@ -86,6 +86,12 @@ SPEC = [
         ("VSR zeroshot (Acc.)",    None, None),
         ("MMVP (Acc.)",            None, ("inproc", "qwen35_moe", "mmvp")),
         ("CV-Bench (Acc.)",        None, ("inproc", "qwen35_moe", "cvbench")),
+        # Resolution-sensitive track (2026-08-31, B200 box): accuracy is measured under the
+        # pyr filter (Option B) by qwen35_accuracy.py into qwen35_accuracy_pyr/ -- jsonl, not
+        # the {arm}.json layout, so cells stay "--" until a loader is wired. FLOPs n=12.
+        ("RefCOCO val (Acc.@0.5)", None, ("inproc", "qwen35_moe", "refcoco")),
+        ("RefCOCO val (mIoU)",     None, ("inproc", "qwen35_moe", "refcoco")),
+        ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_moe", "textvqa")),
     ]),
     # Gemma 4 31B: Ours = INTERLEAVED g=4 since 2026-08-31 (port-plan step 4 landed; walk
     # gate bitwise, identity gate in ceiling's flicker set). Accuracy cells prefer
@@ -134,6 +140,10 @@ SPEC = [
     ("Qwen3.5-MoE (122B-A10B FP8)$^\\dagger$\\textsuperscript{\\P}", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_122b", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_122b", "realworldqa")),
+        # Resolution-sensitive track (2026-08-31, B200 box): FLOPs only -- accuracy stays
+        # unmeasurable on sm_100 (pilcrow footnote). n=12, attention term included.
+        ("RefCOCO val (Acc.@0.5)", None, ("inproc", "qwen35_122b", "refcoco")),
+        ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_122b", "textvqa")),
     ]),
     ("OpenVLA (7B)", [
         ("LIBERO-Spatial (Success Rate)", None, None),

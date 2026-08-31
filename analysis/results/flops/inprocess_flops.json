@@ -218,47 +218,65 @@
   "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)"
  },
  "qwen35_moe": {
-  "_note": "streaming arm, g=4: progressively recomputes 100% of tokens, no keep-rate knob. Stored under k0.50 keys ONLY so the existing column machinery renders it; the placement is nominal and the table footnotes it. Source: qwen35_flops.json (flops_report_qwen35.py, 12 samples).",
+  "_note": "streaming arm, g=4: progressively recomputes 100% of tokens at k1.00; k0.25/k0.50 are the keep-limited variants. ALL datasets re-measured 2026-08-31 with hooks.patch_attention (attention term included; the pre-fix numbers are in git history). Sources: qwen35_flops_attnfix_legacy4.json + qwen35_flops_restrack.json (flops_report_qwen35.py, 12 samples).",
   "_samples": 12,
   "chartqa": {
-   "full": 3898.0,
-   "k1.00": 1101.1,
-   "total_k1.00": 5384.2,
-   "k0.25": 824.9,
-   "total_k0.25": 4280.9,
-   "k0.50": 1091.2,
-   "total_k0.50": 5374.4
+   "full": 4347.5,
+   "k1.00": 1212.2,
+   "total_k1.00": 6209.3,
+   "k0.25": 860.7,
+   "total_k0.25": 4805.3,
+   "k0.50": 978.9,
+   "total_k0.50": 5271.9
   },
   "realworldqa": {
-   "full": 11681.3,
-   "k1.00": 3089.6,
-   "total_k1.00": 16240.0,
-   "k0.25": 2239.5,
-   "total_k0.25": 12842.6,
-   "k0.50": 3079.7,
-   "total_k0.50": 16230.1
+   "full": 15855.5,
+   "k1.00": 4135.9,
+   "total_k1.00": 24099.3,
+   "k0.25": 2567.9,
+   "total_k0.25": 17832.8,
+   "k0.50": 3091.6,
+   "total_k0.50": 19920.0
   },
   "mmvp": {
-   "full": 757.3,
-   "k0.25": 299.4,
-   "total_k0.25": 810.9,
-   "k0.50": 312.5,
-   "total_k0.50": 863.5,
-   "k1.00": 338.8,
-   "total_k1.00": 968.7
+   "full": 767.4,
+   "k1.00": 341.8,
+   "total_k1.00": 986.2,
+   "k0.25": 300.8,
+   "total_k0.25": 822.3,
+   "k0.50": 314.5,
+   "total_k0.50": 876.9
   },
   "cvbench": {
-   "full": 5535.9,
-   "k0.25": 1224.6,
-   "total_k0.25": 6059.7,
-   "k0.50": 1353.7,
-   "total_k0.50": 6574.9,
-   "k1.00": 1611.8,
-   "total_k1.00": 7605.4
+   "full": 7868.1,
+   "k1.00": 2198.3,
+   "total_k1.00": 12007.2,
+   "k0.25": 1409.2,
+   "total_k0.25": 8854.9,
+   "k0.50": 1672.3,
+   "total_k0.50": 9905.7
+  },
+  "refcoco": {
+   "full": 2948.4,
+   "k1.00": 944.1,
+   "total_k1.00": 4090.6,
+   "k0.25": 727.6,
+   "total_k0.25": 3230.8,
+   "k0.50": 799.5,
+   "total_k0.50": 3517.3
+  },
+  "textvqa": {
+   "full": 7520.5,
+   "k1.00": 1980.8,
+   "total_k1.00": 11047.0,
+   "k0.25": 1314.3,
+   "total_k0.25": 8381.1,
+   "k0.50": 1536.5,
+   "total_k0.50": 9269.7
   }
  },
  "qwen35_122b": {
-  "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, streaming k1.0.",
+  "_note": "122B-A10B-FP8, shape-determined counts (valid despite the broken FP8 kernel outputs; see the pilcrow footnote). n=12, attention term included for refcoco/textvqa (2026-08-31); chartqa/realworldqa remain PRE-FIX (no attention term) pending re-measurement.",
   "chartqa": {
    "full": 6044.4,
    "k1.00": 1747.5,
@@ -268,6 +286,24 @@
    "full": 17964.4,
    "k1.00": 4810.6,
    "total_k1.00": 22513.2
+  },
+  "refcoco": {
+   "full": 4540.7,
+   "k1.00": 1527.7,
+   "total_k1.00": 5671.1,
+   "k0.25": 1311.1,
+   "total_k0.25": 4811.3,
+   "k0.50": 1383.0,
+   "total_k0.50": 5097.8
+  },
+  "textvqa": {
+   "full": 11047.3,
+   "k1.00": 2955.0,
+   "total_k1.00": 14519.8,
+   "k0.25": 2288.5,
+   "total_k0.25": 11853.9,
+   "k0.50": 2510.7,
+   "total_k0.50": 12742.5
   }
  },
  "gemma4": {
