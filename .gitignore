@@ -231,3 +231,8 @@ analysis/results/coco_retrieval/*.pt
 # these. They also trip GitHub push protection -- COCO RLE mask `counts` are high-entropy strings
 # that its scanner reports as an "Oculus Access Token".
 *.preds.json
+
+# VFM accuracy run logs: the eval table loader reads these directly
+# (make_eval_table.py::vfm_accuracy regexes the last `Final Summary: {...}`),
+# so they are provenance, not scratch output. Kept despite the `*.log` rule above.
+!analysis/results/vfm_accuracy/*.log
