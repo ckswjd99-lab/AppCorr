@@ -1,0 +1,191 @@
+{"i": 0, "pred": "(A) rubber", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 1, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 2, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 3, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 4, "pred": "D", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 5, "pred": "(D)", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 6, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 7, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 8, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 9, "pred": "(D) blue", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 10, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 11, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 12, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 13, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 14, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 15, "pred": "There is no suitcase visible in the image. The image shows the exterior of The Trump World Tower, with glass windows,", "gold": "D", "ok": 0, "val": 0.0}
+{"i": 16, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 17, "pred": "D", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 18, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 19, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 20, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 21, "pred": "(D) bird", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 22, "pred": "(D) blue", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 23, "pred": "C", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 24, "pred": "(A) white", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 25, "pred": "There is no bicycle visible in the image. The image shows a lake with colorful paddle boats (green, pink, white", "gold": "D", "ok": 0, "val": 0.0}
+{"i": 26, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 27, "pred": "(A) blue", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 28, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 29, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 30, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 31, "pred": "(B)", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 32, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 33, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 34, "pred": "(C)", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 35, "pred": "(B)", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 36, "pred": "(D)", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 37, "pred": "(A) black", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 38, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 39, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 40, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 41, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 42, "pred": "(A) red", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 43, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 44, "pred": "(A)", "gold": "D", "ok": 0, "val": 0.0}
+{"i": 45, "pred": "(B)", "gold": "D", "ok": 0, "val": 0.0}
+{"i": 46, "pred": "(D) black", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 47, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 48, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 49, "pred": "(D) red", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 50, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 51, "pred": "There is no helmet visible in the image. The image shows a river, a boat, a colonnade, trees,", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 52, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 53, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 54, "pred": "(A) orange", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 55, "pred": "(D) red", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 56, "pred": "(A) green", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 57, "pred": "(D)", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 58, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 59, "pred": "(A) orange and black", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 60, "pred": "B", "gold": "D", "ok": 0, "val": 0.0}
+{"i": 61, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 62, "pred": "(D) black", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 63, "pred": "(D) silver", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 64, "pred": "(A) curly hair", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 65, "pred": "(D) red", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 66, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 67, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 68, "pred": "(B) red", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 69, "pred": "B", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 70, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 71, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 72, "pred": "(D)", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 73, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 74, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 75, "pred": "(D) red", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 76, "pred": "(B) blue", "gold": "D", "ok": 0, "val": 0.0}
+{"i": 77, "pred": "(A) red", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 78, "pred": "(D) black", "gold": "C", "ok": 0, "val": 0.0}
+{"i": 79, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 80, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 81, "pred": "(C)", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 82, "pred": "(B)", "gold": "D", "ok": 0, "val": 0.0}
+{"i": 83, "pred": "(D) yellow", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 84, "pred": "(D) white", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 85, "pred": "(D)", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 86, "pred": "(A) black", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 87, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 88, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 89, "pred": "(D) yellow", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 90, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 91, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 92, "pred": "(D)", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 93, "pred": "(C)", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 94, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 95, "pred": "(A) purple", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 96, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 97, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 98, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 99, "pred": "There is no dog visible in the image. The scene shows a beach with thatched umbrellas, calm water, and", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 100, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 101, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 102, "pred": "C", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 103, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 104, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 105, "pred": "(D)", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 106, "pred": "(A) blue", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 107, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 108, "pred": "(D) orange", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 109, "pred": "There is no tablecloth visible in the image. The image shows a large, ornate building (likely a theater or", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 110, "pred": "(D) white", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 111, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 112, "pred": "(D)", "gold": "D", "ok": 1, "val": 1.0}
+{"i": 113, "pred": "(A) green", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 114, "pred": "(C)", "gold": "C", "ok": 1, "val": 1.0}
+{"i": 115, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 116, "pred": "There is no red car or police car visible in the image. The image shows a public square with a tall column monument", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 117, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 118, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 119, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 120, "pred": "A", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 121, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 122, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 123, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 124, "pred": "(A) left", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 125, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 126, "pred": "B", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 127, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 128, "pred": "(B) right", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 129, "pred": "A", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 130, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 131, "pred": "(B) right", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 132, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 133, "pred": "(A) right", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 134, "pred": "A", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 135, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 136, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 137, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 138, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 139, "pred": "There is no blue truck or white vehicle visible in the image. The image shows a hillside town with houses, trees", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 140, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 141, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 142, "pred": "(A)", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 143, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 144, "pred": "(B) left", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 145, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 146, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 147, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 148, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 149, "pred": "(A) left", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 150, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 151, "pred": "(A)", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 152, "pred": "(B) left", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 153, "pred": "A", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 154, "pred": "B", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 155, "pred": "(A) left", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 156, "pred": "(A) right", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 157, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 158, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 159, "pred": "(B)", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 160, "pred": "(A) right", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 161, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 162, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 163, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 164, "pred": "(A)", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 165, "pred": "(B)", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 166, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 167, "pred": "(A) right", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 168, "pred": "There is no dog or blue bicycle visible in the image. The scene shows a street with people walking, parked vehicles (", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 169, "pred": "(A) left", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 170, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 171, "pred": "(A) right", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 172, "pred": "There is no wagon or steel ladder visible in the image. The scene shows a lake with people paddleboarding, a grass", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 173, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 174, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 175, "pred": "A", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 176, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 177, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 178, "pred": "There is no baby carriage or cyclist visible in the image. The scene shows a park with grass, trees, and buildings", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 179, "pred": "(A) right", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 180, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 181, "pred": "B", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 182, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 183, "pred": "(A) water bottle", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 184, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 185, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 186, "pred": "B", "gold": "B", "ok": 1, "val": 1.0}
+{"i": 187, "pred": "A", "gold": "A", "ok": 1, "val": 1.0}
+{"i": 188, "pred": "B", "gold": "A", "ok": 0, "val": 0.0}
+{"i": 189, "pred": "There is no red suitcase or red stool visible in the image. The image shows a street scene with auto-ricksh", "gold": "B", "ok": 0, "val": 0.0}
+{"i": 190, "pred": "(A) right", "gold": "A", "ok": 1, "val": 1.0}
