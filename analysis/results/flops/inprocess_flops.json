@@ -36,7 +36,9 @@
    "k0.50": 1978.9,
    "total_k0.25": 13557.2,
    "total_k0.30": 16421.7,
-   "total_k0.50": 15260.3
+   "total_k0.50": 15260.3,
+   "k1.00": 3000.0,
+   "total_k1.00": 12924.1
   },
   "textvqa": {
    "full": 18621.3,
@@ -45,7 +47,9 @@
    "k0.50": 2882.1,
    "total_k0.25": 22451.7,
    "total_k0.30": 27733.5,
-   "total_k0.50": 25458.8
+   "total_k0.50": 25458.8,
+   "k1.00": 4805.5,
+   "total_k1.00": 22282.0
   },
   "infovqa": {
    "full": 69185.3,
@@ -54,7 +58,9 @@
    "k0.50": 9405.2,
    "total_k0.25": 82908.8,
    "total_k0.30": 149272.6,
-   "total_k0.50": 95179.6
+   "total_k0.50": 95179.6,
+   "k1.00": 17575.5,
+   "total_k1.00": 91209.9
   },
   "docvqa": {
    "full": 124497.1,
@@ -63,7 +69,9 @@
    "k0.50": 16448.0,
    "total_k0.25": 149115.3,
    "total_k0.30": 200838.7,
-   "total_k0.50": 171759.3
+   "total_k0.50": 171759.3,
+   "k1.00": 31505.4,
+   "total_k1.00": 165377.4
   },
   "realworldqa": {
    "full": 35793.7,
@@ -72,7 +80,9 @@
    "k0.50": 5268.3,
    "total_k0.25": 43035.2,
    "total_k0.30": 54061.6,
-   "total_k0.50": 49024.3
+   "total_k0.50": 49024.3,
+   "k1.00": 9029.2,
+   "total_k1.00": 44193.0
   },
   "pope": {
    "full": 7030.1,
@@ -81,7 +91,9 @@
    "k0.50": 1409.0,
    "total_k0.25": 8752.1,
    "total_k0.30": 10374.9,
-   "total_k0.50": 9802.1
+   "total_k0.50": 9802.1,
+   "k1.00": 2022.9,
+   "total_k1.00": 8068.6
   },
   "gqa": {
    "full": 6279.8,
@@ -89,7 +101,9 @@
    "k0.30": 1043.6,
    "k0.50": 1287.9,
    "total_k0.25": 7846.2,
-   "total_k0.50": 8778.8
+   "total_k0.50": 8778.8,
+   "k1.00": 1843.0,
+   "total_k1.00": 7225.8
   },
   "mmmu": {
    "full": 15269.2,
@@ -106,7 +120,8 @@
    "k0.50": 1703.0,
    "total_k0.25": 8887.3,
    "total_k0.50": 9864.9
-  }
+  },
+  "_streaming_note": "k1.00/total_k1.00 measured 2026-09-01 (n=12, own-run ratios crit/full and total/full self-consistent) and expressed at each dataset's stored `full` scale -- the n=12 subset's mean image size differs from the original full measurement's (infovqa +34%, pope -20%), so raw GF values are subset-normalized the same way offload arms are batch-normalized. Raw run: ov2_streaming_flops.json."
  },
  "gemma3": {
   "_samples": 16,
@@ -440,10 +455,11 @@
  },
  "museglimmer30b": {
   "mmvp": {
-   "full": 8639.3
+   "full": 8679.3
   },
   "cvbench": {
-   "full": 58639.4
-  }
+   "full": 63326.4
+  },
+  "_note": "full-forward only (no axis port arms yet in the table); attention term included, re-measured 2026-09-01 on the B200 box via tf515. n=12."
  }
 }

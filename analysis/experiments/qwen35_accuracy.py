@@ -52,7 +52,7 @@ def degrade(img: Image.Image, level: int = 2, filt: str = "bicubic") -> Image.Im
     # min(native, what the model samples). Qwen's smart_resize tops out at
     # max_pixels=12.8M, so every bench measured so far sat below it and the two
     # branches coincided -- MME-RealWorld (36M px) is where this first BINDS.
-    QWEN_MAX_PX = 12_845_056
+    QWEN_MAX_PX = 16_777_216  # measured 2026-08-31: processor longest_edge cap; images stay native below it
     f = 2 ** level
     w, h = img.size
     s = min(1.0, (QWEN_MAX_PX / (w * h)) ** 0.5)
