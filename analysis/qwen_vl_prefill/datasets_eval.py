@@ -599,7 +599,54 @@ class VStarSpec:
     def prepare(self, ex, smart_resize, factor, min_px, max_px):
         import os
         image = Image.open(os.path.join(self.root, ex["image"])).convert("RGB")
-        return image, ex["text"], ex["label"].strip().upper()
+        # Honor the caller's smart_resize like every other spec -- the offload-path drivers
+        # (qwen25vl) rely on spec-side resizing to patch multiples; identity callers are a no-op.
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR) if (tw, th) != image.size else image
+        return image_r, ex["text"], ex["label"].strip().upper()
+
+    def score(self, pred_text, gold):
+        m = re.search(r"[ABCD]", pred_text.upper())
+        ok = int(bool(m) and m.group(0) == gold)
+        return ok, float(ok)
+
+
+class SOUDrivingSpec:
+    """SOUBench Driving scenario (Han et al. 2026, arXiv 2604.22884): SODA-D-sourced small-object
+    MCQ, 1072 rows per subtask x 6 subtasks, images base64-embedded in VLMEvalKit-style TSVs under
+    /NHNHOME/share/cjpark/data/SOU/SOU/Driving. Adopted Driving-ONLY by user decision (the Aerial
+    scenario reuses VisDrone images we already measure). `subtask` selects one TSV (default 1 =
+    CategoryEnumeration); prompt = hint + question + options + letter instruction; scored like
+    every MCQ spec (first A-D letter)."""
+    name = "sou_driving"
+    root = "/NHNHOME/share/cjpark/data/SOU/SOU/Driving"
+    # Selectable via SOU_SUBTASK (1..6); default 3 = CategoryRecognition after the subtask-1
+    # pilot read a 32.5% ceiling on the 35B (random=25 -- no headroom for a resolution story).
+    subtask = int(__import__("os").environ.get("SOU_SUBTASK", "3"))
+
+    def load(self, load_dataset):
+        import csv, glob, sys as _sys
+        csv.field_size_limit(_sys.maxsize)
+        path = sorted(glob.glob(f"{self.root}/*Subtask{self.subtask}_*.tsv"))[0]
+        rows = []
+        with open(path) as f:
+            r = csv.DictReader(f, delimiter="\t")
+            for row in r:
+                rows.append(row)
+        if not rows:
+            raise RuntimeError("VACUOUS: no SOU rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import base64, io
+        image = Image.open(io.BytesIO(base64.b64decode(ex["image"]))).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        if (tw, th) != image.size:
+            image = image.resize((tw, th), Image.BILINEAR)
+        prompt = (ex["hint"].strip() + "\n" + ex["question"].strip() + "\n"
+                  + "\n".join(f"({o}) {ex[o]}" for o in "ABCD")
+                  + "\nAnswer with the option's letter only.")
+        return image, prompt, ex["answer"].strip().upper()
 
     def score(self, pred_text, gold):
         m = re.search(r"[ABCD]", pred_text.upper())
@@ -613,7 +660,7 @@ SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "cvbench": CVBenchSpec, "mmvp": MMVPSpec, "mmerealworld": MMERealWorldSpec,
          "wildvision": WildVisionSpec,
          "visdrone_count": VisDroneCountSpec, "visdrone_det": VisDroneDetSpec,
-         "vstar": VStarSpec}
+         "vstar": VStarSpec, "sou_driving": SOUDrivingSpec}
 
 
 def get_spec(name):
