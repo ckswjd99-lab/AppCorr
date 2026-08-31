@@ -334,3 +334,22 @@ Consequences, applied:
   processes -- the manual path is more deterministic than generate.)
 - A ~0.1pp-scale accuracy wobble between reruns of the same bound arm is
   expected noise here, not a measurement problem (anomaly-heuristics rider).
+
+## 2026-08-31 addendum 2: 122B-FP8 unblocked (NHN session finding, verified 50-sample)
+
+`TRANSFORMERS_DISABLE_DEEPGEMM_LINEAR=1` forces the Triton finegrained-fp8
+fallback (native sm_100) and fixes the broken-generation failure: RWQA 50-sample
+ceiling 6.00% (DeepGEMM) -> 74.00% (Triton), in band vs 35B's 77.39. transformers
+5.13 documents the DeepGEMM-vs-Triton drift on B200 explicitly.
+- Open item 5 ("122B dequant shim") is OBSOLETE -- no shim, just the env var.
+- The pilcrow footnote ("accuracy unmeasurable on this hardware") goes stale the
+  moment 122B accuracy cells land; reword THEN, not before (cells first).
+- August's "chunked prefill lossy under FP8" stays UNVERIFIED (measured on the
+  broken kernel); NHN re-runs the qwen35_axis_gate guardrail under the env var
+  before any 122B streaming arm.
+- NHN queue: 122B axis gate -> refcoco/textvqa accuracy (env var set). Their
+  qwen35-35B FLOPs re-measure WITH the attention term is done on
+  develop/qwen35-resolution-track (380d857, 836a2f5; push pending their user's
+  go); 122B chartqa/rwqa FLOPs re-measure offered by NHN -- accepted, off the
+  GH200 backlog. GH200 still owns: mistral24b + museglimmer full-cell
+  re-measures (attention term).
