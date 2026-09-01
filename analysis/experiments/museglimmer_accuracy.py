@@ -79,12 +79,22 @@ def degrade(img: Image.Image, level: int, filt: str) -> Image.Image:
 
 @torch.no_grad()
 def greedy(axis, logits, cache, start_pos, n):
-    """The one decode mechanism, shared by every arm. 1D positions."""
+    """The one decode mechanism, shared by every arm. 1D positions.
+
+    Stop set includes the ATEM channel-protocol message/turn terminators <|eom|>/<|eot|> --
+    stopping only on <|end_of_text|> let the decode run past the answer into the to=self
+    channel, which poisoned whole-string scorers (textvqa read 0.00% while the answers were
+    visibly correct). MCQ first-letter and first-number scorers were never affected."""
+    tok = axis.processor.tokenizer
+    stop = {tok.eos_token_id}
+    for st in ("<|eom|>", "<|eot|>"):
+        i = tok.convert_tokens_to_ids(st)
+        if i is not None:
+            stop.add(int(i))
     toks, cur, pos = [], logits.argmax(-1, keepdim=True), start_pos
-    eos = axis.processor.tokenizer.eos_token_id
     for _ in range(n):
         t = int(cur)
-        if t == eos:
+        if t in stop:
             break
         toks.append(t)
         pid = torch.full((1, 1), pos, device=cur.device, dtype=torch.long)

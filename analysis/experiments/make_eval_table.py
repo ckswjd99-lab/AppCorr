@@ -59,8 +59,16 @@ QWEN35_PYR_ROWS = {"RefCOCO val (Acc.@0.5)": ("refcoco", "ok"),
 
 # Muse Glimmer campaign jsonls (same schema, same driver family).
 MG_PYR_DIR = os.path.join(RESULTS, "museglimmer_accuracy_pyr")
-MG_PYR_EXPECTED = {"vstar": 191}
-MG_PYR_ROWS = {"V*Bench (Acc.)": ("vstar", "ok")}
+MG_PYR_EXPECTED = {"vstar": 191, "textvqa": 5000, "refcoco": 8811,
+                   "visdrone_det": 448, "visdrone_count": 2350}
+MG_PYR_ROWS = {"V*Bench (Acc.)":              ("vstar", "ok"),
+               "TextVQA (VQA Acc.)":          ("textvqa", "val"),
+               "RefCOCO val (Acc.@0.5)":      ("refcoco", "ok"),
+               "RefCOCO val (mIoU)":          ("refcoco", "val"),
+               "VisDrone Count (Exact Acc.)": ("visdrone_count", "ok"),
+               "VisDrone Count (Soft)":       ("visdrone_count", "val"),
+               "VisDrone Det (Acc.@0.5)":     ("visdrone_det", "ok"),
+               "VisDrone Det (mIoU)":         ("visdrone_det", "val")}
 
 
 # 122B probe (2026-09-01, NHN box): same jsonl schema, REDUCED SCALE (n=240 per arm, user-directed)
@@ -195,6 +203,16 @@ SPEC = [
         ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    ("inproc", "museglimmer30b", "mmvp")),
         ("CV-Bench (Acc.)",        ("museglimmer30b", "cvbench"), ("inproc", "museglimmer30b", "cvbench")),
         ("V*Bench (Acc.)",         None, None),
+        # 2026-09-01 MG campaign (user scope: RefCOCO/VisDrone/TextVQA, arms floor/ceiling/
+        # streaming k1.0). visdrone_det is a capability-limit row (~1-2% every arm), kept per
+        # the Mistral precedent. FLOPs: refcoco/textvqa from museglimmer_arms_flops.json.
+        ("RefCOCO val (Acc.@0.5)", None, ("inproc", "museglimmer30b", "refcoco")),
+        ("RefCOCO val (mIoU)",     None, ("inproc", "museglimmer30b", "refcoco")),
+        ("TextVQA (VQA Acc.)",     None, ("inproc", "museglimmer30b", "textvqa")),
+        ("VisDrone Count (Exact Acc.)", None, None),
+        ("VisDrone Count (Soft)",       None, None),
+        ("VisDrone Det (Acc.@0.5)",     None, None),
+        ("VisDrone Det (mIoU)",         None, None),
     ]),
     # 122B-FP8: DeepGEMM mis-generates on this B200 (sm_100; per-row outputs bit-perfect, end
     # tokens drift -- transformers 5.13 documents it); accuracy IS measurable under the Triton
@@ -790,9 +808,13 @@ def emit_latex(table, keeps) -> str:
     L.append(r"\cmidrule(lr){3-3} " + " ".join(cmids))
     L.append(r"& & Acc. (\%) & " + sub + r" \\")
     L.append(r"\midrule")
+    # Section boundaries get a DOUBLE rule (user 2026-09-01): before Gemma 3 (VFM->VLM),
+    # before LLaVA-OV2 (Gemma family -> the rest), and before OpenVLA (VLM -> VLA).
+    DOUBLE_RULE_BEFORE = ("Gemma 3", "LLaVA-OV2", "OpenVLA")
     for i, (model, rows) in enumerate(table):
         if i:
-            L.append(r"\midrule")
+            L.append(r"\midrule\midrule" if model.startswith(DOUBLE_RULE_BEFORE)
+                     else r"\midrule")
         # "Name (size)" wraps to two lines inside the multirow cell -- the size (and any footnote
         # marks after it) drops to the second line, keeping the model column narrow.
         m = re.match(r"^(.*?) (\(.*)$", model)
