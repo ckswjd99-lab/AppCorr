@@ -6,6 +6,18 @@ cd "$(dirname "$0")/.."
 LOGDIR=analysis/results/logs
 mkdir -p "$LOGDIR"
 
+echo "=== Pre-flight: no stale pipeline processes ==="
+# A crashed run_local leaves detached spawn workers holding tens of GB of GPU
+# memory (caught 2026-09-02: a 36 GiB orphan OOM'd the next gate). Refuse to
+# start over someone else's live run; clean only obviously-ours leftovers.
+if pgrep -f "offload/server/main.py|offload/mobile/main.py" > /dev/null; then
+  echo "stale offload processes found; killing"
+  pkill -9 -f "offload/server/main.py|offload/mobile/main.py" || true
+  sleep 3
+fi
+LEFT=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l)
+[ "$LEFT" = "0" ] || { echo "GPU still busy ($LEFT compute apps) -- aborting"; exit 1; }
+
 echo "=== Gate 0: weights present ==="
 for f in ~/cjpark/weights/dinov3/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth \
          ~/cjpark/weights/dinov3/dinov3_vit7b16_ade20k_m2f_head-bf307cb1.pth; do
