@@ -432,6 +432,22 @@ class DINOv3DetectorExecutor(ModelExecutor):
             token_hw=(grid_h, grid_w),
         ).view(grid_h, grid_w)
 
+    @staticmethod
+    def _uses_coco_window_correction_groups(config: Any) -> bool:
+        """True for transmission policies whose group_id sequence is the raster
+        3x3 window partition (group_id = 1 + row*n_windows_w + col) that
+        _build_coco_window_group_maps understands: COCOWindowProgressiveLaplacian
+        and FourierLaplacianHybrid always (both inherit/reuse the same window
+        residual encoding), and FourierProgressive when explicitly configured
+        for it via transmission_kwargs.windowed_groups (it reuses the exact
+        same window partition function to assign its own group ids)."""
+        policy_name = getattr(config, 'transmission_policy_name', None)
+        if policy_name in {'COCOWindowProgressiveLaplacian', 'FourierLaplacianHybrid'}:
+            return True
+        if policy_name == 'FourierProgressive':
+            return bool(config.transmission_kwargs.get('windowed_groups', False))
+        return False
+
     def _project_transmission_groups_to_sources(
         self,
         context: Dict[str, Any],
@@ -444,7 +460,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if len(source_layouts) != len(all_input_tokens):
             return None
 
-        if getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian':
+        if self._uses_coco_window_correction_groups(config):
             return self._build_coco_window_group_maps(context, config)
 
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
@@ -645,6 +661,8 @@ class DINOv3DetectorExecutor(ModelExecutor):
             raise e
 
         self.model.eval()
+        self.configure_dinov3_approx_precision(self._get_vit_backbone(), config)
+        self.configure_dinov3_correct_precision(self._get_vit_backbone(), config)
 
     def _get_vit_backbone(self):
         inner = self.model.detector.backbone[0]
@@ -857,7 +875,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
 
         group_id = self._get_task_group_id(task)
         can_update_single_window = (
-            getattr(config, 'transmission_policy_name', None) == 'COCOWindowProgressiveLaplacian'
+            self._uses_coco_window_correction_groups(config)
             and group_id is not None
             and 1 <= group_id <= win_wrapper._n_windows_h * win_wrapper._n_windows_w
             and self._has_detector_source_cache(context, tensors.shape[0])
@@ -1026,6 +1044,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if all_outputs is None:
             all_outputs = [[] for _ in range(len(all_input_tokens))]
 
+        self.begin_dinov3_approx_event()
         if start_l == 0 and not global_only:
             reset_current_features = []
             reset_outputs = []
@@ -1108,14 +1127,14 @@ class DINOv3DetectorExecutor(ModelExecutor):
             )
 
             for lidx in range(start_l, end_l):
-                blk = blocks[lidx]
-
                 with torch.no_grad():
-                    x_feature, cache = blk.approx(
+                    x_feature, cache = self.run_dinov3_approx_block(
+                        lidx,
                         x_feature,
                         rope_sincos,
                         cache,
                         tag=f"src{src_idx}_layer{lidx}",
+                        source_key=f"src{src_idx}",
                         appcorr_method=appcorr_method,
                         attn_cache_candidates=attn_cache_candidates,
                         group_plans=group_plans,
@@ -1136,6 +1155,7 @@ class DINOv3DetectorExecutor(ModelExecutor):
         context['all_cache_features'] = new_cache_features
         context['all_outputs'] = new_all_outputs
         context['cache_feature'] = self._aggregate_cache_features(new_cache_features)
+        return self.dinov3_approx_event_metadata()
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get('layers', (0, 40))
@@ -1263,16 +1283,19 @@ class DINOv3DetectorExecutor(ModelExecutor):
                 attn_col_alive_ratio = 1.0
 
             x_temp = input_tokens
+            self.begin_dinov3_correct_event()
             for lidx in range(start_l, end_l):
                 blk = blocks[lidx]
                 with torch.no_grad():
                     if appcorr_method == 'partial_channel':
-                        x_temp, cache = blk.correct(
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx,
                             x_temp,
                             dindice,
                             rope_sincos,
                             cache,
-                            tag=f"src{src_idx}_layer{lidx}",
+                            f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
@@ -1290,12 +1313,14 @@ class DINOv3DetectorExecutor(ModelExecutor):
                             debug=False,
                         )
                     else:
-                        x_temp, cache = blk.correct(
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx,
                             x_temp,
                             dindice,
                             rope_sincos,
                             cache,
-                            tag=f"src{src_idx}_layer{lidx}",
+                            f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
@@ -1452,7 +1477,10 @@ class DINOv3DetectorExecutor(ModelExecutor):
     def full_inference(self, task: Task, context: Dict[str, Any], config: Any):
         inp = context.get('input_tensor')
         if inp is not None:
-            context['det_outputs'] = self.model(inp)
+            # The stock model call has no per-block precision hook, so `precision` reaches it only
+            # by substituting the quantized blocks into the backbone for the duration of the call.
+            with self.dinov3_full_inference_precision():
+                context['det_outputs'] = self.model(inp)
             context['det_output'] = context['det_outputs']
 
 

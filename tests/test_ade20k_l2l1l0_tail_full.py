@@ -653,6 +653,19 @@ class ADE20KM2FExecutionContractTest(unittest.TestCase):
         )
         executor.device = torch.device("cpu")
         executor.autocast_dtype = torch.bfloat16
+
+        # The serving path always configures the precision controller before approx_forward;
+        # this bare __new__ executor needs a stand-in for the event bookkeeping only. The
+        # contract under test is untouched: the deferred suffix must run stock forward() and
+        # never blk.approx() (DummyBlock.approx raises).
+        class _StubPrecision:
+            def begin_event(self):
+                pass
+
+            def event_metadata(self):
+                return {}
+
+        executor._dinov3_approx_precision = _StubPrecision()
         backbone = types.SimpleNamespace(
             blocks=[DummyBlock(1.0), DummyBlock(2.0)]
         )
@@ -682,7 +695,9 @@ class ADE20KM2FExecutionContractTest(unittest.TestCase):
         )
         self.assertEqual(len(context["m2f_intermediate_raw"][0]), 1)
         self.assertEqual(set(cache), {"existing"})
-        self.assertEqual(metadata["cache_mode"], "none")
+        # approx_forward now returns the precision controller's event metadata
+        # (main's contract since the FP4/FP8 wiring); the stub reports {}.
+        self.assertEqual(metadata, {})
 
 
 if __name__ == "__main__":

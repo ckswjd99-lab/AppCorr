@@ -24,6 +24,7 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'l1_l0_disjoint_support': False,
         'l1_l0_reentry_ratio': 1.0,
         'l1_remaining_energy_ratio_max': None,
+        'token_keep_cap': 0,
         'attn_col_alive_ratio': 1.0,
         'mobile_pscore': 'none',
         'mobile_pscore_weight': 0.0,
@@ -75,6 +76,19 @@ def normalize_appcorr_kwargs(
     explicit_enabled = raw.pop('enabled', None)
     enabled_from_appcorr = bool(raw)
     _inherit_shared_appcorr_kwargs(raw, transmission_kwargs)
+
+    # Removed 2026-08-16: persisting the corrected increment into `blocks_out_sum` is
+    # unconditional, because not doing it is the bug rather than a setting -- interleaved
+    # correction then discards every round but the last. Raise instead of ignoring the key: a
+    # stale `--set ...=false` would otherwise produce an "off" arm that is really an on arm, and
+    # an A/B whose two halves are secretly the same condition is worse than one that fails.
+    if 'persist_correction_residual' in raw:
+        raise ValueError(
+            "appcorr_kwargs.persist_correction_residual no longer exists; the corrected "
+            "increment is always persisted. Drop the setting -- the pre-fix behaviour is not "
+            "reproducible, and its measurements are recorded in "
+            "docs/memo/dinov3_correct_low_precision_status.md."
+        )
 
     options = default_appcorr_kwargs()
     options.update(raw)
@@ -168,6 +182,10 @@ def normalize_appcorr_kwargs(
                 f"got {remaining_ratio_max}"
             )
     options['l1_remaining_energy_ratio_max'] = remaining_ratio_max
+    # >0 routes threshold selection through the sync-free fixed-width builder. The .item()/nonzero()
+    # in the general builder stall the launch pipeline: 17.84 ms of a 77.5 ms FP4 correction pass is
+    # GPU idle on that path (23%), against ~0% on the sync-free builders.
+    options['token_keep_cap'] = max(0, int(options.get('token_keep_cap', 0) or 0))
     options['attn_col_alive_ratio'] = float(options.get('attn_col_alive_ratio', defaults['attn_col_alive_ratio']))
     mobile_pscore = str(options.get('mobile_pscore', defaults['mobile_pscore']))
     if mobile_pscore in {'', 'null', 'None'}:
@@ -206,14 +224,14 @@ def normalize_appcorr_kwargs(
             server_pscore = 'patch_pseudo_attn_prob_layermean'
         elif server_pscore == 'cls_attn_prob':
             server_pscore = 'cls_attn_prob_layermean'
-    valid_server_pscores = {
-        'cls_attn_prob',
-        'patch_attn_prob',
-        'patch_attn_prob_layermean',
-        'patch_pseudo_attn_prob',
-        'patch_pseudo_attn_prob_layermean',
-        'cls_attn_prob_layermean',
-    }
+    # Single source of truth: the block owns the set, because it is the code that has to implement
+    # each value. Duplicating the list here meant adding a score in one place and having the
+    # scheduler reject it in the other -- which surfaces as `decide()` raising, no Task ever being
+    # built, and the client sitting on a full patch buffer until its timeout. Nothing in either log
+    # says why.
+    from appcorr.models.dinov3.layers.block import SelfAttentionBlock
+
+    valid_server_pscores = set(SelfAttentionBlock._VALID_SERVER_PSCORES)
     if server_pscore not in valid_server_pscores:
         raise ValueError(
             f"Unknown server_pscore '{server_pscore}'. "
@@ -250,7 +268,25 @@ class ExperimentConfig:
     # Model Settings
     model_name: str = "dinov3_classifier"  # e.g. "dinov3_segmentor_m2f", "dinov3_segmentor_linhead"
     device: str = None  # User can specify "cuda:0", "cpu", etc. Default is None (auto-detect)
-    
+    precision: str = "bf16"
+    fp8_auto_min_rows: int = 3072
+    correct_precision: str = "bf16"
+    correct_compile: bool = False
+    # correct_precision=fp4 only. >0 runs that many correction events through torchao's observer
+    # (numerically exact BF16, recording activation amax) and then bakes a static per-tensor scale,
+    # removing the per-call amax scan. 0 keeps the dynamic per-call scale.
+    correct_fp4_calib_events: int = 1
+    # correct_precision=fp4 only. attn.proj is the worst FP4 candidate of the five correction
+    # Linears -- its input is the attention-core output (least-compressible delta) and it is the one
+    # input no producer fusion can reach -- so it runs FP8 by default. Set "fp4" to force it.
+    correct_fp4_proj_precision: str = "fp8"
+    # Round the correction GEMMs' row count M up to a multiple of this, zero-padding. M changes every
+    # correction round, so without it every shape-specialised consumer -- torch.compile graphs, and
+    # CUDA graph capture in particular -- sees an unbounded set of shapes. Bucketing is a *cost* on
+    # its own (~19% more rows at M=1027, bucket 256); it only pays once something consumes the fixed
+    # shapes. 0 disables.
+    correct_bucket_rows: int = 0
+
     # Dataset Settings
     dataset_name: str = "imagenet-1k"
     dataset_kwargs: Dict[str, Any] = field(default_factory=dict)
@@ -272,6 +308,34 @@ class ExperimentConfig:
     scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
     transmission_kwargs: Dict[str, Any] = field(default_factory=dict)
     appcorr_kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.precision = str(self.precision).lower()
+        if self.precision not in {"bf16", "fp8", "fp4", "auto"}:
+            raise ValueError(
+                "precision must be one of 'bf16', 'fp8', 'fp4', or 'auto', "
+                f"got {self.precision!r}"
+            )
+        self.fp8_auto_min_rows = int(self.fp8_auto_min_rows)
+        if self.fp8_auto_min_rows <= 0:
+            raise ValueError(
+                "fp8_auto_min_rows must be positive, "
+                f"got {self.fp8_auto_min_rows}"
+            )
+        self.correct_precision = str(self.correct_precision).lower()
+        if self.correct_precision not in {"bf16", "fp8", "fp4"}:
+            raise ValueError(
+                "correct_precision must be one of 'bf16', 'fp8', or 'fp4', "
+                f"got {self.correct_precision!r}"
+            )
+        self.correct_compile = bool(self.correct_compile)
+        self.correct_fp4_calib_events = max(0, int(self.correct_fp4_calib_events))
+        self.correct_bucket_rows = max(0, int(self.correct_bucket_rows))
+        if self.correct_fp4_proj_precision not in {"fp4", "fp8"}:
+            raise ValueError(
+                "correct_fp4_proj_precision must be 'fp4' or 'fp8', "
+                f"got {self.correct_fp4_proj_precision!r}"
+            )
 
     def get_input_profile_config(self) -> Dict[str, Any]:
         name = self.input_profile_name or "fixed_image_shape"
@@ -317,6 +381,20 @@ class ExperimentConfig:
                 "num_classes": 150,
                 "autocast_dtype": "float32",
                 "reduce_zero_label": True,
+            }
+            options.update(self.input_profile_kwargs)
+            return options
+        if name == "vggt_omega_512":
+            options = {
+                "name": name,
+                # VGGT derives each frame's canvas from that frame's own aspect ratio instead of
+                # using one fixed shape, so there is deliberately no `mobile_resize_short_side`:
+                # `vggt_resolution` is a token *budget* ((res/patch)**2 tokens), not a side length.
+                "vggt_resolution": 512,
+                "vggt_patch_size": 16,
+                "vggt_resize_mode": "balanced",
+                "vggt_weights_path": "~/cjpark/weights/vggt/vggt_omega_1b_512.pt",
+                "autocast_dtype": "bfloat16",
             }
             options.update(self.input_profile_kwargs)
             return options
@@ -366,6 +444,8 @@ class Patch:
     # Number of correction groups for this image (crop-cover policy: = sliding-crop count,
     # which varies per image). 0 = unset / not applicable.
     num_correction_groups: int = 0
+    # The prompt a VLM request carries alongside its pixels. Empty for vision-only models.
+    text_payload: str = ""
 
 class OpType(Enum):
     # --- Computation Ops ---

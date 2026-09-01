@@ -89,6 +89,8 @@ class DINOv3DeptherExecutor(ModelExecutor):
             raise e
 
         self.model.eval()
+        self.configure_dinov3_approx_precision(self.model.encoder.backbone, config)
+        self.configure_dinov3_correct_precision(self.model.encoder.backbone, config)
         self._sdpa_warmup_done = False
 
     def _maybe_warmup_sdpa_buckets(self, config: Any):
@@ -635,7 +637,9 @@ class DINOv3DeptherExecutor(ModelExecutor):
                 batch_source=self._get_batch_source(None, images, context),
             )
 
-        with torch.autocast("cuda", self.autocast_dtype):
+        # `self.model(...)` runs the backbone as one opaque unit, so `precision` can only reach it
+        # by substituting the quantized blocks into the backbone for the duration of the call.
+        with self.dinov3_full_inference_precision(), torch.autocast("cuda", self.autocast_dtype):
             if use_tta:
                 flipped = torch.flip(input_batch, [-1]).contiguous()
                 pred = self.model(input_batch)
@@ -785,6 +789,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get("depther_group_plans")
 
+        self.begin_dinov3_approx_event()
         with torch.autocast("cuda", self.autocast_dtype):
             for src_idx in range(len(all_x_backbones)):
                 x_tokens = current_features[src_idx] if start_l > 0 else all_x_backbones[src_idx].clone()
@@ -800,9 +805,10 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
                 with torch.cuda.nvtx.range(f"depther_vit_src{src_idx}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
-                        blk = vit_backbone.blocks[lidx]
-                        x_tokens, cache = blk.approx(
+                        x_tokens, cache = self.run_dinov3_approx_block(
+                            lidx,
                             x_tokens, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}",
                             appcorr_method=appcorr_method,
                             attn_cache_candidates=attn_cache_candidates,
                             group_plans=group_plans,
@@ -824,7 +830,7 @@ class DINOv3DeptherExecutor(ModelExecutor):
         context["depther_cache_features"] = all_cache_features
         context["depther_intermediate_outputs"] = all_intermediate_outputs
         context["cache_feature"] = self._aggregate_cache_features(all_cache_features)
-        return {}
+        return self.dinov3_approx_event_metadata()
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get("layers", (0, 40))
@@ -956,12 +962,14 @@ class DINOv3DeptherExecutor(ModelExecutor):
 
             with torch.autocast("cuda", self.autocast_dtype):
                 with torch.cuda.nvtx.range(f"depther_correct_src{src_idx}_g{group_id}_L{start_l}-{end_l}"):
+                    self.begin_dinov3_correct_event()
                     for lidx in range(start_l, end_l):
                         blk = vit_backbone.blocks[lidx]
 
                         if appcorr_method == "partial_channel":
-                            x_feature, cache = blk.correct(
-                                x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                            x_feature, cache = self.run_dinov3_correct_block(
+                                lidx, x_feature, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                                source_key=f"src{src_idx}_layer{lidx}",
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
                                 token_keep_thres=token_keep_thres,
@@ -980,8 +988,9 @@ class DINOv3DeptherExecutor(ModelExecutor):
                                 debug=False,
                             )
                         else:
-                            x_feature, cache = blk.correct(
-                                x_feature, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                            x_feature, cache = self.run_dinov3_correct_block(
+                                lidx, x_feature, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                                source_key=f"src{src_idx}_layer{lidx}",
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
                                 token_keep_thres=token_keep_thres,

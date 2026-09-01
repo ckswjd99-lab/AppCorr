@@ -13,21 +13,28 @@ from .scheduling import (
     DynamicGroupTriggerPolicy,
     GroupTriggerPolicy,
     NYUApproxCorrectPolicy,
+    VGGTInterleavedPolicy,
 )
 from .transmission import (
-    RawTransmissionPolicy, 
-    ZlibTransmissionPolicy, 
+    RawTransmissionPolicy,
+    ZlibTransmissionPolicy,
     COCOWindowProgressiveLaplacianPolicy,
     ADE20KL2L1ProgressiveLaplacianPolicy,
     ADE20KWindowL2L1L0ProgressiveLaplacianPolicy,
     ADE20KWindowProgressiveLaplacianPolicy,
-    LaplacianPyramidPolicy, 
+    FourierADE20KWindowHybridPolicy,
+    LaplacianPyramidPolicy,
     L2L1L0ProgressiveLPyramidPolicy,
     NYUAppCorrLaplacianPolicy,
     NYUAppCorrProgressiveLaplacianPolicy,
     NYUAppCorrRawTransmissionPolicy,
-    ProgressiveLPyramidPolicy, 
-    FullImageCompressionPolicy
+    ProgressiveLPyramidPolicy,
+    FullImageCompressionPolicy,
+    FourierProgressiveTransmissionPolicy,
+    FourierLaplacianHybridPolicy,
+    FourierLaplacianProgressivePolicy,
+    NYUAppCorrFourierLaplacianHybridPolicy,
+    VGGTLaplacianPolicy,
 )
 
 # Registry for dynamic instantiation
@@ -36,6 +43,7 @@ SCHEDULER_REGISTRY = {
     "ADE20KInterleavedDynamic": ADE20KInterleavedDynamicPolicy,
     "ADE20KSequential": ADE20KSequentialPolicy,
     "NYUApproxCorrect": NYUApproxCorrectPolicy,
+    "VGGTInterleaved": VGGTInterleavedPolicy,
     "BatchCountBased": BatchCountBasedPolicy,
     "GroupTrigger": GroupTriggerPolicy,
     "DynamicGroupTrigger": DynamicGroupTriggerPolicy,
@@ -61,7 +69,13 @@ TRANSMISSION_REGISTRY = {
     "ADE20KWindowL2L1L0ProgressiveLaplacian": (
         ADE20KWindowL2L1L0ProgressiveLaplacianPolicy
     ),
+    "FourierADE20KWindowHybrid": FourierADE20KWindowHybridPolicy,
     "FullImageCompression": FullImageCompressionPolicy,
+    "FourierProgressive": FourierProgressiveTransmissionPolicy,
+    "FourierLaplacianHybrid": FourierLaplacianHybridPolicy,
+    "FourierLaplacianProgressive": FourierLaplacianProgressivePolicy,
+    "NYUAppCorrFourierLaplacianHybrid": NYUAppCorrFourierLaplacianHybridPolicy,
+    "VGGTLaplacian": VGGTLaplacianPolicy,
 }
 
 def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:

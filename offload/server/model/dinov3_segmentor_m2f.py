@@ -20,6 +20,48 @@ from .dinov3_segmentor_linhead import GroupCorrectionPlan, QueryState
 from .utils import load_weight_mmap
 
 
+
+# --- correction-stage timing breakdown -------------------------------------------------------
+# CORRECT_FORWARD is a single stage event, so nothing said how its time splits between the 40-block
+# loop and the bookkeeping around it (batching, the K/V scatter-back, splitting the batch apart).
+# That mattered once FP4 cut the block loop's kernel time by 1.23x but the stage as a whole moved
+# only 1.07x. These accumulate CUDA-event time per phase and print every _CB_REPORT_EVERY calls.
+_CB_ACC = {}
+_CB_N = 0
+_CB_REPORT_EVERY = 200
+# Off unless asked for. Recording three timing events per bucket costs nothing measurable on the
+# BF16 path but showed up on FP4, whose launch pipeline is already the binding constraint --
+# instrumentation must not be part of the configuration being measured.
+_CB_ENABLED = bool(os.environ.get("APPCORR_CORRECT_BREAKDOWN"))
+
+
+def _cb_add(name, start_ev, end_ev):
+    _CB_ACC.setdefault(name, []).append((start_ev, end_ev))
+
+
+def _cb_flush(force=False):
+    global _CB_N
+    if not _CB_ENABLED:
+        return
+    _CB_N += 1
+    if not force and _CB_N % _CB_REPORT_EVERY:
+        return
+    torch.cuda.synchronize()
+    tot = {}
+    for name, pairs in _CB_ACC.items():
+        tot[name] = (sum(a.elapsed_time(b) for a, b in pairs), len(pairs))
+    _CB_ACC.clear()
+    if not tot:
+        return
+    grand = sum(v[0] for v in tot.values())
+    parts = " | ".join(
+        f"{k} {v[0] / _CB_N:.2f}ms({100 * v[0] / grand:.0f}%,{v[1] / _CB_N:.1f}x)"
+        for k, v in sorted(tot.items(), key=lambda kv: -kv[1][0])
+    )
+    print(f"[CORRECT-BREAKDOWN] over {_CB_N} calls: {parts}", flush=True)
+    _CB_N = 0
+
+
 class DINOv3SegmentorM2FExecutor(ModelExecutor):
     """ADE20K segmentation executor using the M2F adapter + Mask2Former head."""
 
@@ -307,6 +349,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             raise e
 
         self.model.eval()
+        self.configure_dinov3_approx_precision(
+            self.model.segmentation_model[0].backbone,
+            config,
+        )
+        self.configure_dinov3_correct_precision(
+            self.model.segmentation_model[0].backbone,
+            config,
+        )
         self._make_inference = make_inference
         self._correct_warmup_done = False
 
@@ -737,18 +787,21 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 rescale_to = target_shapes[image_idx]
             aggregated_preds = torch.zeros(1, self.num_classes, *rescale_to, dtype=torch.float32, device=self.device)
             for img_tensor, apply_flip in zip(tta_tensors, flip_flags):
-                pred = self._make_inference(
-                    img_tensor,
-                    self.model,
-                    inference_mode=inference_mode,
-                    decoder_head_type=decoder_head_type,
-                    rescale_to=rescale_to,
-                    n_output_channels=self.num_classes,
-                    crop_size=(crop_size, crop_size),
-                    stride=(stride, stride),
-                    apply_horizontal_flip=apply_flip,
-                    output_activation=partial(F.softmax, dim=1),
-                )
+                # `_make_inference` drives the whole model, so there is no per-block hook here for
+                # `precision` to act on; substitute the quantized blocks for the duration instead.
+                with self.dinov3_full_inference_precision():
+                    pred = self._make_inference(
+                        img_tensor,
+                        self.model,
+                        inference_mode=inference_mode,
+                        decoder_head_type=decoder_head_type,
+                        rescale_to=rescale_to,
+                        n_output_channels=self.num_classes,
+                        crop_size=(crop_size, crop_size),
+                        stride=(stride, stride),
+                        apply_horizontal_flip=apply_flip,
+                        output_activation=partial(F.softmax, dim=1),
+                    )
                 aggregated_preds += pred.float()
                 del pred
 
@@ -1372,6 +1425,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             self._ensure_group_maps_and_plans(context, config)
             all_group_plans = context.get("m2f_group_plans")
 
+        self.begin_dinov3_approx_event()
         with torch.autocast("cuda", self.autocast_dtype):
             for src_idx in range(len(all_x_backbones)):
                 x_tokens = current_features[src_idx] if start_l > 0 else all_x_backbones[src_idx].clone()
@@ -1389,12 +1443,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
                 with torch.cuda.nvtx.range(f"m2f_vit_src{src_idx}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
-                        blk = vit_backbone.blocks[lidx]
                         if cache_mode == "none":
-                            x_tokens = blk(x_tokens, rope)
+                            # tail-full / decomposed one-shot path: stock block forward,
+                            # no correction caches (branch semantics, kept through the merge)
+                            x_tokens = vit_backbone.blocks[lidx](x_tokens, rope)
                         else:
-                            x_tokens, cache = blk.approx(
+                            x_tokens, cache = self.run_dinov3_approx_block(
+                                lidx,
                                 x_tokens, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                                source_key=f"src{src_idx}",
                                 appcorr_method=appcorr_method,
                                 attn_cache_candidates=attn_cache_candidates,
                                 group_plans=group_plans,
@@ -1415,13 +1472,11 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_cache_features"] = all_cache_features
         context["m2f_current_layer"] = end_l
         context["cache_feature"] = self._aggregate_cache_features(all_cache_features)
-        return {
-            "cache_mode": cache_mode,
-            "layer_count": end_l - start_l,
-        }
+        return self.dinov3_approx_event_metadata()
 
     @torch.inference_mode()
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
+        self.begin_dinov3_correct_event()
         layers = params.get("layers", (0, 40))
         start_l, end_l = layers[0], layers[1]
         group_id = params.get("group_id", 0)
@@ -1630,6 +1685,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
                                 token_keep_thres=token_keep_thres,
+                            token_keep_cap=appcorr_options.get("token_keep_cap", 0),
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
                                 mobile_pscore_hint=mobile_pscore_hint,
@@ -1649,6 +1705,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                                 appcorr_method=appcorr_method,
                                 token_keep_ratio=token_keep_ratio,
                                 token_keep_thres=token_keep_thres,
+                            token_keep_cap=appcorr_options.get("token_keep_cap", 0),
                                 mobile_pscore=appcorr_options["mobile_pscore"],
                                 mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
                                 mobile_pscore_hint=mobile_pscore_hint,
@@ -1750,7 +1807,6 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_reentry_candidate_masks: Any,
         context: Dict[str, Any],
     ) -> bool:
-        vit_backbone = self.model.segmentation_model[0].backbone
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
         num_pretokens = 1 + vit_backbone.n_storage_tokens
@@ -1759,6 +1815,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         new_cache_features: List[Dict[str, Any] | None] = [None] * len(all_x_backbones)
         new_intermediate_raw: List[List[torch.Tensor] | None] = [None] * len(all_x_backbones)
         buckets: Dict[Any, List[Dict[str, Any]]] = {}
+        pending: List[Dict[str, Any]] = []
 
         for src_idx, (x_feature, input_tokens, rope, cache) in enumerate(
             zip(current_features, all_x_backbones, all_rope_sincos, all_cache_features)
@@ -1819,17 +1876,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             if dindice.ndim != 2 or dindice.shape[0] != input_tokens.shape[0]:
                 return False
 
-            key = (
-                tuple(input_tokens.shape[1:]),
-                tuple(x_feature.shape[1:]),
-                int(dindice.shape[1]),
-                str(input_tokens.dtype),
-                str(x_feature.dtype),
-                self._m2f_rope_batch_key(rope),
-                self._m2f_mobile_hint_batch_key(mobile_pscore_hint),
-                self._m2f_mobile_hint_batch_key(reentry_candidate_mask),
-            )
-            buckets.setdefault(key, []).append({
+            pending.append({
                 "src_idx": src_idx,
                 "x_feature": x_feature,
                 "input_tokens": input_tokens,
@@ -1838,7 +1885,46 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 "dindice": dindice,
                 "mobile_pscore_hint": mobile_pscore_hint,
                 "reentry_candidate_mask": reentry_candidate_mask,
+                "num_pre": int(input_tokens.shape[1] - rope[0].shape[0]) if rope is not None else 0,
             })
+
+        # --- pad candidate lists to a common length so crops can share one GEMM ---
+        # crop_cover assigns each patch to the FIRST crop covering its centre, so crops of the same
+        # image carry different candidate counts. Because the bucket key includes dindice.shape[1],
+        # they could never batch together: measured 2 crops/request always landing in 2 buckets of
+        # size 1, so every correction GEMM only ever saw one crop's tokens (M median 1028).
+        # Padding by repeating the last real candidate makes the keys match; the padded slots are
+        # flagged invalid so token selection ignores them, leaving the correction unchanged.
+        if pending:
+            max_cand = max(int(it["dindice"].shape[1]) - it["num_pre"] for it in pending)
+            for it in pending:
+                d, npre = it["dindice"], it["num_pre"]
+                n_cand = int(d.shape[1]) - npre
+                valid = torch.ones((d.shape[0], n_cand), dtype=torch.bool, device=d.device)
+                if 0 < n_cand < max_cand:
+                    pad = max_cand - n_cand
+                    d = torch.cat([d, d[:, -1:].expand(-1, pad)], dim=1)
+                    valid = torch.cat(
+                        [valid, torch.zeros((d.shape[0], pad), dtype=torch.bool, device=d.device)],
+                        dim=1,
+                    )
+                    it["dindice"] = d
+                it["cand_valid"] = valid
+
+        for it in pending:
+            key = (
+                tuple(it["input_tokens"].shape[1:]),
+                tuple(it["x_feature"].shape[1:]),
+                int(it["dindice"].shape[1]),
+                str(it["input_tokens"].dtype),
+                str(it["x_feature"].dtype),
+                self._m2f_rope_batch_key(it["rope"]),
+                self._m2f_mobile_hint_batch_key(it["mobile_pscore_hint"]),
+                # None-vs-tensor must not share a bucket: _cat_reentry_candidate_masks
+                # cannot concatenate a mixed list (same rule as the mobile hint above).
+                self._m2f_mobile_hint_batch_key(it["reentry_candidate_mask"]),
+            )
+            buckets.setdefault(key, []).append(it)
 
         bucket_records = []
         for items in buckets.values():
@@ -1856,6 +1942,13 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         for items, batch_cache in bucket_records:
             x_tokens = torch.cat([item["input_tokens"] for item in items], dim=0)
             dindice = torch.cat([item["dindice"] for item in items], dim=0)
+            cand_valid = (
+                torch.cat([item["cand_valid"] for item in items], dim=0)
+                if all(item.get("cand_valid") is not None for item in items)
+                else None
+            )
+            if cand_valid is not None and bool(cand_valid.all()):
+                cand_valid = None   # nothing padded -> skip the masking work entirely
             batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
             rope = items[0]["rope"]
             batch_mobile_pscore_hint = self._cat_mobile_pscore_hints(items)
@@ -1864,20 +1957,28 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             )
             corrected_intermediates = []
 
+            _cb_on = _CB_ENABLED
+            if _cb_on:
+                _ev_a, _ev_b, _ev_c = (
+                    torch.cuda.Event(True), torch.cuda.Event(True), torch.cuda.Event(True)
+                )
+                _ev_a.record()
             with torch.autocast("cuda", self.autocast_dtype):
                 with torch.cuda.nvtx.range(f"m2f_correct_batch{len(items)}_g{group_id}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
-                        blk = vit_backbone.blocks[lidx]
                         tag = f"batch_layer{lidx}"
-                        x_tokens, batch_cache = blk.correct(
+                        x_tokens, batch_cache = self.run_dinov3_correct_block(
+                            lidx,
                             x_tokens,
                             dindice,
                             rope,
                             batch_cache,
-                            tag=tag,
+                            tag,
+                            source_key=tag,
                             appcorr_method="partial_token",
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
+                            token_keep_cap=appcorr_options.get("token_keep_cap", 0),
                             mobile_pscore=appcorr_options["mobile_pscore"],
                             mobile_pscore_weight=appcorr_options["mobile_pscore_weight"],
                             mobile_pscore_hint=batch_mobile_pscore_hint,
@@ -1892,11 +1993,14 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                             reentry_ratio=appcorr_options[
                                 "l1_l0_reentry_ratio"
                             ],
+                            candidate_valid_mask=cand_valid,
                             debug=False,
                         )
                         if lidx in interaction_indexes:
                             corrected_intermediates.append(x_tokens)
 
+            if _cb_on:
+                _ev_b.record()
             if (disjoint_l1_l0 or conditional_pscore) and group_id == 1:
                 self._capture_l1_selected_token_masks(
                     items,
@@ -1915,6 +2019,10 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
             self._scatter_m2f_correct_batch_cache(items, batch_cache, start_l, end_l)
             self._add_m2f_batch_total_stats(items[0]["cache"], batch_cache)
+            if _cb_on:
+                _ev_c.record()
+                _cb_add("block_loop", _ev_a, _ev_b)
+                _cb_add("cache_scatter", _ev_b, _ev_c)
 
             x_splits = torch.split(x_tokens, batch_sizes, dim=0)
             intermediate_splits = [
@@ -1963,6 +2071,8 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context["m2f_intermediate_raw"] = new_intermediate_raw
         context["m2f_current_layer"] = end_l
         context["cache_feature"] = self._aggregate_cache_features(new_cache_features)
+        _cb_flush()
+
         return True
 
     @staticmethod
@@ -2088,18 +2198,24 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         start_l: int,
         end_l: int,
     ) -> None:
+        # The gather above collects both `_kv` and `_blocks_out_sum` into the batch cache; this
+        # returned only `_kv`. That asymmetry silently swallowed the persisted correction on the m2f
+        # path: the corrected increment was written into a batch cache that then went out of scope,
+        # so both arms of an A/B came out bit-identical with no error anywhere.
+        suffixes = ("_kv", "_blocks_out_sum")
         batch_sizes = [int(item["input_tokens"].shape[0]) for item in items]
         offsets = [0]
         for size in batch_sizes[:-1]:
             offsets.append(offsets[-1] + size)
 
         for lidx in range(start_l, end_l):
-            batch_kv = batch_cache.get(f"batch_layer{lidx}_kv")
-            if batch_kv is None:
-                continue
-            for item, offset, size in zip(items, offsets, batch_sizes):
-                key = f"src{item['src_idx']}_layer{lidx}_kv"
-                item["cache"][key] = batch_kv[offset:offset + size].detach().clone()
+            for suffix in suffixes:
+                batched = batch_cache.get(f"batch_layer{lidx}{suffix}")
+                if batched is None:
+                    continue
+                for item, offset, size in zip(items, offsets, batch_sizes):
+                    key = f"src{item['src_idx']}_layer{lidx}{suffix}"
+                    item["cache"][key] = batched[offset:offset + size].detach().clone()
 
     @classmethod
     def _add_m2f_batch_total_stats(cls, dst_cache: Dict[str, Any], batch_cache: Dict[str, Any]) -> None:
@@ -2534,6 +2650,15 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         if not appcorr_options.get("generated_from_client", False):
             return None
 
+        # For grid/block_grid, `num_groups` *is* the partition count. For crop_cover it is neither
+        # that nor the number of correction rounds: the rounds come from the image's own sliding
+        # crops (1-5 in practice at 896/596, typically 2-3), assigned in
+        # `_build_crop_cover_group_map`, which never reads this value.
+        #
+        # So crop_cover configs no longer carry it: the transmission side computes the crop count
+        # itself (`ADE20KWindowProgressiveLaplacianPolicy._resolve_num_groups`), and this side must
+        # not read the absent value as "grouping off" -- hence the crop_cover exemption below.
+        # Verified behaviour-neutral: an 8-image check gives 55.19083875742932 either way.
         num_groups = max(int(appcorr_options.get("num_groups", 1)), 1)
         grouping_strategy = str(
             config.transmission_kwargs.get(
@@ -2547,7 +2672,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_group_maps = []
         for input_tokens, (tok_h, tok_w), group_context in zip(all_input_tokens, token_shapes, source_group_contexts):
             num_tokens = tok_h * tok_w
-            if num_groups == 1 and not l2l1l0_mode:
+            if num_groups == 1 and grouping_strategy != "crop_cover" and not l2l1l0_mode:
                 group_map = torch.zeros(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
             elif grouping_strategy == "grid":
                 group_map = self._build_crop_grid_group_map(
