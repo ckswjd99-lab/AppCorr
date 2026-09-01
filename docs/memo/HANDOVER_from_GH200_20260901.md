@@ -12,8 +12,9 @@ that session's conversation.
   a new output-format class) → FLOPs-first n=8 pass → ceiling/floor bs=8
   (~42 min each) → corrected k0.25/k0.50 (~1h each) → streaming k1.0 (~3.5h).
   A Mistral V* FLOPs pass (n=12, minutes) can piggyback on the same load.
-- **Remaining V* compute gaps: Mistral, Qwen2.5** — both drivers already
-  support vstar via get_spec; awaiting user go.
+- ~~Remaining V* compute gaps: Mistral, Qwen2.5~~ **CLOSED on B200 2026-09-01**
+  (cea9022: mistral24b/vstar + qwen25vl_32b/vstar in inprocess_flops.json,
+  table cells wired). Do not redo.
 - Deferred cleanups: `make_eval_table.py` md-format row-length bug;
   `--group-by-image` (shared image-prefix KV) gate candidate for gemma-family
   VisDrone multi-question (rejected on qwen35: hybrid linear-attention state).
