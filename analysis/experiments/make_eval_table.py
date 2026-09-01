@@ -255,6 +255,10 @@ SPEC = [
         ("SA-Co crowded (cgF1)",    None, ("inproc", "sam3", "coco")),
         ("SA-Co sa1b (cgF1)",       None, ("inproc", "sam3", "coco")),
         ("SA-Co attributes (cgF1)", None, ("inproc", "sam3", "coco")),
+        ("SA-Co metaclip (cgF1)",    None, ("inproc", "sam3", "coco")),
+        ("SA-Co fg-sports (cgF1)",   None, ("inproc", "sam3", "coco")),
+        ("SA-Co fg-food (cgF1)",     None, ("inproc", "sam3", "coco")),
+        ("SA-Co wiki-common (cgF1)", None, ("inproc", "sam3", "coco")),
     ]),
     ("OpenCLIP (2.5B)", [
         ("ImageNet-1k (Top-1)",        None, ("offload", "openclip_imagenet")),
@@ -477,6 +481,10 @@ VFM_OURS = {
     ("SAM 3 (0.85B)", "SA-Co crowded (cgF1)"):    ("sam3_saco_crowded", "cgF1", 100.0),
     ("SAM 3 (0.85B)", "SA-Co sa1b (cgF1)"):       ("sam3_saco_sa1b", "cgF1", 100.0),
     ("SAM 3 (0.85B)", "SA-Co attributes (cgF1)"): ("sam3_saco_attributes", "cgF1", 100.0),
+    ("SAM 3 (0.85B)", "SA-Co metaclip (cgF1)"):    ("sam3_saco_metaclip", "cgF1", 100.0),
+    ("SAM 3 (0.85B)", "SA-Co fg-sports (cgF1)"):   ("sam3_saco_fg_sports_equipment", "cgF1", 100.0),
+    ("SAM 3 (0.85B)", "SA-Co fg-food (cgF1)"):     ("sam3_saco_fg_food", "cgF1", 100.0),
+    ("SAM 3 (0.85B)", "SA-Co wiki-common (cgF1)"): ("sam3_saco_wiki_common", "cgF1", 100.0),
     ("OpenCLIP (2.5B)", "ImageNet-1k (Top-1)"): ("openclip_imagenet", "top1_acc", 1.0),
     ("OpenCLIP (2.5B)", "ImageNet-1k (Top-5)"): ("openclip_imagenet", "top5_acc", 1.0),
     ("OpenCLIP (2.5B)", "COCO Ret. val2017 (i2t R@1)"): ("cocoret", "i2t_R@1", 1.0),
@@ -497,6 +505,19 @@ CAPABILITY_LIMIT = {
 }
 
 VFM_DIR = os.path.join(RESULTS, "vfm_accuracy")
+
+for _sub, _lbl in (("metaclip", "metaclip"), ("fg_sports_equipment", "fg-sports"),
+                   ("fg_food", "fg-food"), ("wiki_common", "wiki-common")):
+    _fc = {}
+    for _arm in ("floor", "ceiling"):
+        _p = os.path.join(VFM_DIR, f"sam3_saco_{_sub}_{_arm}.json")
+        if os.path.exists(_p):
+            try:
+                _fc[_arm] = 100.0 * json.load(open(_p))["cgF1"]
+            except (KeyError, ValueError):
+                pass
+    if _fc:
+        LITERALS.setdefault(("SAM 3 (0.85B)", f"SA-Co {_lbl} (cgF1)"), {}).update(_fc)
 
 
 def vfm_accuracy(tag: str, key: str, scale: float) -> Optional[float]:
