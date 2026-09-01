@@ -90,9 +90,13 @@ class ADE20KWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
             n = max(n, len(self._compute_crops(gh * ph, gw * pw, crop, stride)))
         return n
 
-    def _precompute_group_assignments(self, strategy, residual_structure, num_groups):
+    def _precompute_group_assignments(self, strategy, residual_structure, num_groups, config=None):
+        # Signature must track ProgressiveLPyramidPolicy's (config was added there for the
+        # crop_cover group-count derivation); the parent's encode calls this positionally.
         if strategy != "crop_cover":
-            return super()._precompute_group_assignments(strategy, residual_structure, num_groups)
+            return super()._precompute_group_assignments(
+                strategy, residual_structure, num_groups, config
+            )
 
         structure = list(residual_structure)
         if not structure:

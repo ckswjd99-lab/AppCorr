@@ -1807,6 +1807,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_reentry_candidate_masks: Any,
         context: Dict[str, Any],
     ) -> bool:
+        vit_backbone = self.model.segmentation_model[0].backbone
         token_keep_ratio = appcorr_options["token_keep_ratio"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
         num_pretokens = 1 + vit_backbone.n_storage_tokens
