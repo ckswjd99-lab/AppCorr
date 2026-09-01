@@ -59,11 +59,44 @@ not a selection shift.
 - Costs unchanged from July: the L1 band still adds ~9-12% bytes
   (2715 vs 2424 KB/img here) and one decode/select round.
 
-## Full-2000 promotion
+## Full-2000 promotion (complete, 2026-09-02)
 
-Running (`refix2000_{l2l0_t4e5,l2l1l0_disjoint,l2l1l0_eqthr}`); sequential
-full-2000 ceiling 62.236 reused (fix-independent, reuse-validated). Results to
-be appended here.
+Floor 56.013 / ceiling 62.236 reused (fix-independent, reuse-validated).
+GH200 note: the m2f interleaved working set is ~70GB steady and allocator
+fragmentation OOM'd the 95GB card by image 260 — `PYTORCH_CUDA_ALLOC_CONF=
+expandable_segments:True` is REQUIRED here (memory then flat for 2000 images);
+July's B200 (192GB) never saw this.
+
+| arm | mIoU | gap recovered | selected ptl/req | corr TF/img |
+|---|---:|---:|---:|---:|
+| floor (L2 approx-only) | 56.013 | 0% | — | 0 |
+| L2-L0, t=4e-5 | **61.826** | 93.4% | 118,450 | 45.8 |
+| L2-L1-L0 strict disjoint | **61.126** | 82.2% | 120,820 (L1 35,895 + L0 84,924) | 46.8 |
+| L2-L1-L0 equal threshold | **61.902** | 94.6% | 217,449 (L1 68,035 + L0 149,414) | 84.2 |
+| ceiling (full) | 62.236 | 100% | — | — |
+
+(L2-L0 reproduces the canonical post-fix 61.846 to 0.02 across a different GPU
+and the merged branch.)
+
+## Final verdicts (supersede the paired-100 section's optimism)
+
+- **Disjoint's July −1.47 splits into ~0.77 bug + ~0.70 genuine.** At full-2000
+  the never-revisit cost is real: −0.70 vs L2-L0 at equal total correction
+  FLOPs. The July mechanism reading ("pixel-space Rfine small ≠ final feature
+  adequate") survives at half size, now on clean footing. What disjoint still
+  buys: ~30% of correction executes one round earlier (overlappable) — whether
+  that critical-compute gain is worth −0.70 needs arrival-anchored accounting.
+- **Equal threshold: +0.08 over L2-L0 for +84% correction work** — same shape
+  as July (+0.11 for +83.5%). Its n=100 above-full reading (53.42 vs 52.92) did
+  NOT survive full-2000 (61.90 vs ceiling 62.24) — another instance of the
+  standing n=100-is-a-sanity-check rule.
+- **The July hard rejection softens but the operating points still don't win
+  on accuracy-per-total-FLOP.** The two doors the fixes opened: (1) the
+  critical-FLOPs axis for disjoint, (2) **conditional re-entry re-tuned
+  post-fix** — July tuned it as compensation for the bug; a small re-entry
+  ratio on top of disjoint may now buy back the 0.70 for a fraction of
+  eq-thr's 38 extra TF. That sweep (reentry_ratio ∈ {0.1, 0.25, 0.5}, paired
+  100) is the obvious next experiment, and cheap.
 
 ## Not yet re-tested
 
