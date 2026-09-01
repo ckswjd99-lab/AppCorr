@@ -51,11 +51,16 @@ SHADE_MACRO = r"\cellcolor{gray!15}"
 # headline is mean(val) -- the VQA soft score -- NOT the driver's running % (which prints the
 # ok-rate, sc>=0.5).
 QWEN35_PYR_DIR = os.path.join(RESULTS, "qwen35_accuracy_pyr")
-QWEN35_PYR_EXPECTED = {"refcoco": 8811, "textvqa": 5000, "vstar": 191}
+QWEN35_PYR_EXPECTED = {"refcoco": 8811, "textvqa": 5000, "vstar": 191,
+                       "visdrone_det": 448, "visdrone_count": 2350}
 QWEN35_PYR_ROWS = {"RefCOCO val (Acc.@0.5)": ("refcoco", "ok"),
                    "RefCOCO val (mIoU)":     ("refcoco", "val"),
                    "TextVQA (VQA Acc.)":     ("textvqa", "val"),
-                   "V*Bench (Acc.)":         ("vstar", "ok")}
+                   "V*Bench (Acc.)":         ("vstar", "ok"),
+                   "VisDrone Count (Exact Acc.)": ("visdrone_count", "ok"),
+                   "VisDrone Count (Soft)":       ("visdrone_count", "val"),
+                   "VisDrone Det (Acc.@0.5)":     ("visdrone_det", "ok"),
+                   "VisDrone Det (mIoU)":         ("visdrone_det", "val")}
 
 # Muse Glimmer campaign jsonls (same schema, same driver family).
 MG_PYR_DIR = os.path.join(RESULTS, "museglimmer_accuracy_pyr")
