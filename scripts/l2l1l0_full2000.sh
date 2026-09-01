@@ -18,7 +18,11 @@ run_arm() {
   local name=$1 cfg=$2 pb=$3
   preflight "$name"
   echo "=== ARM $name start $(date +%H:%M:%S) ==="
+  # expandable_segments is REQUIRED on the 95GB GH200: the m2f interleaved
+  # working set is ~70GB steady and allocator fragmentation (21GB by image 260)
+  # OOMs without it. With it, memory is flat (80.25GB at img 41 == img 118).
   RECV_PORT=$pb SEND_PORT=$((pb+1)) CUDA_VISIBLE_DEVICES=0 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     offload/run_local.sh "$cfg" -nr 2000 -nw 1 --set device=cuda:0 \
     --set exp_id="refix2000_${name}" \
     > "$LOGDIR/refix2000_${name}.log" 2>&1
