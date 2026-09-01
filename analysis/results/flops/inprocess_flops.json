@@ -121,7 +121,16 @@
    "total_k0.25": 8887.3,
    "total_k0.50": 9864.9
   },
-  "_streaming_note": "k1.00/total_k1.00 measured 2026-09-01 (n=12, own-run ratios crit/full and total/full self-consistent) and expressed at each dataset's stored `full` scale -- the n=12 subset's mean image size differs from the original full measurement's (infovqa +34%, pope -20%), so raw GF values are subset-normalized the same way offload arms are batch-normalized. Raw run: ov2_streaming_flops.json."
+  "_streaming_note": "k1.00/total_k1.00 measured 2026-09-01 (n=12, own-run ratios crit/full and total/full self-consistent) and expressed at each dataset's stored `full` scale -- the n=12 subset's mean image size differs from the original full measurement's (infovqa +34%, pope -20%), so raw GF values are subset-normalized the same way offload arms are batch-normalized. Raw run: ov2_streaming_flops.json.",
+  "vstar": {
+   "full": 109621.0,
+   "k0.25": 8006.9,
+   "total_k0.25": 131436.0,
+   "k0.50": 14780.3,
+   "total_k0.50": 151142.9,
+   "k1.00": 28846.4,
+   "total_k1.00": 144145.2
+  }
  },
  "gemma3": {
   "_samples": 16,
@@ -306,6 +315,15 @@
    "total_k0.25": 11978.7,
    "k0.50": 2201.7,
    "total_k0.50": 13317.2
+  },
+  "vstar": {
+   "full": 49677.1,
+   "k1.00": 12585.2,
+   "total_k1.00": 80504.1,
+   "k0.25": 6687.5,
+   "total_k0.25": 56911.3,
+   "k0.50": 8656.2,
+   "total_k0.50": 64778.3
   }
  },
  "qwen35_122b": {
@@ -359,6 +377,15 @@
    "total_k0.25": 16658.3,
    "k0.50": 3578.2,
    "total_k0.50": 17996.9
+  },
+  "vstar": {
+   "full": 66564.6,
+   "k1.00": 16974.8,
+   "total_k1.00": 96454.2,
+   "k0.25": 11077.1,
+   "total_k0.25": 72861.3,
+   "k0.50": 13045.8,
+   "total_k0.50": 80728.3
   }
  },
  "gemma4": {
@@ -478,6 +505,33 @@
    "total_k0.25": 73738.1,
    "k0.50": 15545.1,
    "total_k0.50": 77762.3
+  },
+  "visdrone_count": {
+   "full": 102893.8,
+   "k1.00": 25756.7,
+   "total_k1.00": 127271.1,
+   "k0.25": 21085.1,
+   "total_k0.25": 109417.9,
+   "k0.50": 22640.5,
+   "total_k0.50": 115720.0
+  },
+  "visdrone_det": {
+   "full": 91927.2,
+   "k1.00": 24140.6,
+   "total_k1.00": 113077.8,
+   "k0.25": 20095.1,
+   "total_k0.25": 97638.4,
+   "k0.50": 21441.4,
+   "total_k0.50": 103093.6
+  },
+  "vstar": {
+   "full": 306496.5,
+   "k1.00": 76739.5,
+   "total_k1.00": 384062.4,
+   "k0.25": 61174.5,
+   "total_k0.25": 324258.4,
+   "k0.50": 66372.4,
+   "total_k0.50": 345188.1
   }
  }
 }

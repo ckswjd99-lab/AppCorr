@@ -132,7 +132,7 @@ SPEC = [
         ("MMMU val (Acc.)",        ("ov2", "mmmu"),        ("inproc", "ov2", "mmmu")),
         ("RefCOCO val (Acc.@0.5)", ("ov2", "refcoco"),     ("inproc", "ov2", "refcoco")),
         ("VSR zeroshot (Acc.)",    ("ov2", "vsr"),         None),
-        ("V*Bench (Acc.)",         None, None),
+        ("V*Bench (Acc.)",         None, ("inproc", "ov2", "vstar")),
     ]),
     ("Qwen2.5-VL (33.5B)$^\\S$", [
         ("RefCOCO val (Acc.@0.5)",    None, ("inproc", "qwen25vl_32b", "refcoco")),
@@ -161,7 +161,7 @@ SPEC = [
         ("VisDrone Count (Soft)",       None, ("inproc", "qwen35_moe", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_moe", "visdrone_det")),
         ("VisDrone Det (mIoU)",         None, ("inproc", "qwen35_moe", "visdrone_det")),
-        ("V*Bench (Acc.)",              None, None),
+        ("V*Bench (Acc.)",              None, ("inproc", "qwen35_moe", "vstar")),
     ]),
     # Gemma 4 31B: Ours = INTERLEAVED g=4 since 2026-08-31 (port-plan step 4 landed; walk
     # gate bitwise, identity gate in ceiling's flicker set). Accuracy cells prefer
@@ -202,17 +202,17 @@ SPEC = [
     ("Muse Glimmer (29.6B)", [
         ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    ("inproc", "museglimmer30b", "mmvp")),
         ("CV-Bench (Acc.)",        ("museglimmer30b", "cvbench"), ("inproc", "museglimmer30b", "cvbench")),
-        ("V*Bench (Acc.)",         None, None),
+        ("V*Bench (Acc.)",         None, ("inproc", "museglimmer30b", "vstar")),
         # 2026-09-01 MG campaign (user scope: RefCOCO/VisDrone/TextVQA, arms floor/ceiling/
         # streaming k1.0). visdrone_det is a capability-limit row (~1-2% every arm), kept per
         # the Mistral precedent. FLOPs: refcoco/textvqa from museglimmer_arms_flops.json.
         ("RefCOCO val (Acc.@0.5)", None, ("inproc", "museglimmer30b", "refcoco")),
         ("RefCOCO val (mIoU)",     None, ("inproc", "museglimmer30b", "refcoco")),
         ("TextVQA (VQA Acc.)",     None, ("inproc", "museglimmer30b", "textvqa")),
-        ("VisDrone Count (Exact Acc.)", None, None),
-        ("VisDrone Count (Soft)",       None, None),
-        ("VisDrone Det (Acc.@0.5)",     None, None),
-        ("VisDrone Det (mIoU)",         None, None),
+        ("VisDrone Count (Exact Acc.)", None, ("inproc", "museglimmer30b", "visdrone_count")),
+        ("VisDrone Count (Soft)",       None, ("inproc", "museglimmer30b", "visdrone_count")),
+        ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "museglimmer30b", "visdrone_det")),
+        ("VisDrone Det (mIoU)",         None, ("inproc", "museglimmer30b", "visdrone_det")),
     ]),
     # 122B-FP8: DeepGEMM mis-generates on this B200 (sm_100; per-row outputs bit-perfect, end
     # tokens drift -- transformers 5.13 documents it); accuracy IS measurable under the Triton
@@ -228,7 +228,7 @@ SPEC = [
         ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_122b", "textvqa")),
         ("VisDrone Count (Exact Acc.)", None, ("inproc", "qwen35_122b", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_122b", "visdrone_det")),
-        ("V*Bench (Acc.)",              None, None),
+        ("V*Bench (Acc.)",              None, ("inproc", "qwen35_122b", "vstar")),
     ]),
     ("OpenVLA (7B)", [
         ("LIBERO-Spatial (Success Rate)", None, None),
