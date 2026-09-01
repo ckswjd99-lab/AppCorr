@@ -460,6 +460,24 @@
   "cvbench": {
    "full": 63326.4
   },
-  "_note": "full-forward only (no axis port arms yet in the table); attention term included, re-measured 2026-09-01 on the B200 box via tf515. n=12."
+  "_note": "full-forward only (no axis port arms yet in the table); attention term included, re-measured 2026-09-01 on the B200 box via tf515. n=12.",
+  "refcoco": {
+   "full": 30666.9,
+   "k1.00": 8963.4,
+   "total_k1.00": 36625.7,
+   "k0.25": 7845.1,
+   "total_k0.25": 32379.4,
+   "k0.50": 8219.7,
+   "total_k0.50": 33890.2
+  },
+  "textvqa": {
+   "full": 69353.4,
+   "k1.00": 17524.3,
+   "total_k1.00": 85093.6,
+   "k0.25": 14550.5,
+   "total_k0.25": 73738.1,
+   "k0.50": 15545.1,
+   "total_k0.50": 77762.3
+  }
  }
 }
