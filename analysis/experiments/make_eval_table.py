@@ -143,7 +143,7 @@ SPEC = [
         ("CV-Bench (Acc.)",           None, None),
         ("VisDrone Count (Exact Acc.)", None, None),
         ("VisDrone Det (Acc.@0.5)",     None, None),
-        ("V*Bench (Acc.)",              None, None),
+        ("V*Bench (Acc.)",              None, ("inproc", "qwen25vl_32b", "vstar")),
     ]),
     ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
@@ -197,7 +197,7 @@ SPEC = [
         ("VisDrone Count (Soft)",       ("mistral24b", "visdrone_count"), ("inproc", "mistral24b", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     ("mistral24b", "visdrone_det"),   ("inproc", "mistral24b", "visdrone_det")),
         ("VisDrone Det (mIoU)",         ("mistral24b", "visdrone_det"),   ("inproc", "mistral24b", "visdrone_det")),
-        ("V*Bench (Acc.)",              None, None),
+        ("V*Bench (Acc.)",              None, ("inproc", "mistral24b", "vstar")),
     ]),
     ("Muse Glimmer (29.6B)", [
         ("MMVP (Acc.)",            ("museglimmer30b", "mmvp"),    ("inproc", "museglimmer30b", "mmvp")),
@@ -480,6 +480,17 @@ VFM_OURS = {
     ("OpenCLIP (2.5B)", "COCO Ret. one-shot g=1 (t2i R@1)"): ("cocoret_g1", "t2i_R@1", 1.0),
 }
 
+# (base model, dataset label) pairs where the MODEL fails the TASK outright (floor ~= ceiling at
+# degenerate accuracy), so the cells say nothing about the streaming axis. Rendered with a
+# $\diamond$ after the dataset label per the user's 2026-09-01 directive. MG RefCOCO was cut at
+# ceiling 7.26% (6450/8811, decision: skip remaining arms); MG VisDrone Det ceiling is 2.23%.
+CAPABILITY_LIMIT = {
+    ("Muse Glimmer (29.6B)", "RefCOCO val (Acc.@0.5)"),
+    ("Muse Glimmer (29.6B)", "RefCOCO val (mIoU)"),
+    ("Muse Glimmer (29.6B)", "VisDrone Det (Acc.@0.5)"),
+    ("Muse Glimmer (29.6B)", "VisDrone Det (mIoU)"),
+}
+
 VFM_DIR = os.path.join(RESULTS, "vfm_accuracy")
 
 
@@ -751,6 +762,8 @@ def build_rows(keeps, groups: int):
             else:
                 cells.append(f"({f.format(ceiling_v)})" if lit.get("probe") else f.format(ceiling_v))
             cells.append(fmt_tf(full_gf, None))
+            if (base_model, label) in CAPABILITY_LIMIT:
+                label = label + r"\,$\diamond$"
             block.append((label, cells))
         out.append((model, block))
     return out
@@ -796,7 +809,7 @@ def emit_latex(table, keeps) -> str:
              r"unshaded: they are a reduced-scale probe (n$=$240 per arm) measured under the "
              r"Triton finegrained-fp8 fallback (the DeepGEMM path mis-generates on sm\_100), not "
              r"full-split values, and must not be compared 1:1 against full-split cells; compute "
-             r"figures are shape-determined and kernel-independent.}")
+             r"figures are shape-determined and kernel-independent. $\diamond$: the model is not capable of the task itself (floor $\approx$ ceiling at degenerate accuracy), so these rows carry no signal about the method.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
