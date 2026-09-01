@@ -77,22 +77,15 @@ class L2L1L0ProgressiveLPyramidPolicy(ProgressiveLPyramidPolicy):
         prev_level: int,
         level: int,
         config: ExperimentConfig,
+        image_hw: tuple[int, int] | None = None,
     ) -> np.ndarray:
-        previous = gaussians[prev_level]
-        current = gaussians[level]
-        predicted = self._iterative_upsample_native(
-            previous,
-            prev_level,
-            level,
-            gaussians,
-        )
-        residual = current.astype(np.int16) - predicted.astype(np.int16)
-        return self._project_band_to_target(
-            residual,
-            level,
-            config,
-            np.int16,
-        )
+        # Closed loop (see LaplacianPyramidPolicy._closed_loop_residual): the decoder predicts
+        # from the previous level as *transmitted*, not from the native gaussian, so the residual
+        # must be built against that same predictor. The L1 band is sent as one complete group,
+        # so at L0 time the decoder's state is exactly project(gaussians[1]) and the chain stays
+        # lossless level to level. The open-loop form this replaces left ~2% relative L2 even
+        # with every residual delivered.
+        return self._closed_loop_residual(gaussians, prev_level, level, config, image_hw)
 
     def _encode_complete_residual_band(
         self,

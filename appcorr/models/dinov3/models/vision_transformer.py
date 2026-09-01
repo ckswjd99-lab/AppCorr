@@ -98,6 +98,37 @@ def create_group_index(num_tokens: int, num_groups: int, strategy: str, device: 
         cols = torch.arange(W, device=device).unsqueeze(0)
         grid_2d = (rows * s // max(H, 1)) * s + (cols * s // max(W, 1)) + 1
         group_idx = grid_2d.flatten()
+    elif strategy == "expansion":
+        # Centre-out concentric rings of ~equal area. Must match `_precompute_group_assignments`
+        # in offload/policies/transmission/progressive.py exactly -- the client decides which
+        # patches ride in which group, and this decides which tokens get corrected for it. The key
+        # is integer-only for that reason: a float radius lets the two sides break ties differently,
+        # and the failure is silent.
+        token_hw = kwargs.get("token_hw")
+        if token_hw is None:
+            H = W = int(num_tokens ** 0.5)
+        else:
+            H, W = map(int, token_hw)
+        if H * W != num_tokens:
+            raise ValueError(
+                f"expansion grouping requires token_hw whose product matches num_tokens, "
+                f"got token_hw=({H}, {W}) and num_tokens={num_tokens}"
+            )
+        if num_groups > num_tokens:
+            raise ValueError(
+                f"expansion grouping needs at least one token per group, got "
+                f"num_groups={num_groups} for {num_tokens} tokens"
+            )
+        rows = torch.arange(H, device=device).unsqueeze(1)
+        cols = torch.arange(W, device=device).unsqueeze(0)
+        dr = (2 * rows - (H - 1)) ** 2 * max(W - 1, 1) ** 2
+        dc = (2 * cols - (W - 1)) ** 2 * max(H - 1, 1) ** 2
+        key = (dr + dc).flatten()
+        # Stable sort so ties fall in flat-index order, which is what the numpy side does.
+        order = torch.argsort(key, stable=True)
+        ranks = torch.empty(num_tokens, dtype=torch.long, device=device)
+        ranks[order] = torch.arange(num_tokens, device=device)
+        group_idx = ranks * num_groups // num_tokens + 1
     elif strategy == "geometric":
         probs = torch.rand(num_tokens, device=device)
 

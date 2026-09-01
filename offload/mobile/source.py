@@ -1,4 +1,5 @@
 import multiprocessing
+import queue
 import time
 import torch
 import numpy as np
@@ -8,7 +9,14 @@ from dataclasses import asdict
 
 from offload.common import ExperimentConfig
 from offload.common.protocol import normalize_appcorr_kwargs
-from offload.policies import get_transmission
+from offload.policies import TRANSMISSION_REGISTRY, get_transmission
+# Module level on purpose: _policy_takes_raw_images runs once per request from SourceModule, which
+# also has sender/receiver threads. Importing inside that call would take the import lock on every
+# request from a worker thread -- a deadlock hazard, not just overhead.
+from offload.policies.transmission.laplacian import LaplacianPyramidPolicy
+from offload.policies.transmission.nyu_appcorr_progressive import (
+    NYUAppCorrRawTransmissionPolicy,
+)
 from offload.mobile.dataset import get_dataset_loader
 
 import os
@@ -71,14 +79,22 @@ class SourceModule(multiprocessing.Process):
         self.num_warmup = max(int(num_warmup), 0)
 
     @staticmethod
-    def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
-        if image.ndim != 3:
+    def _tensor_to_hwc_uint8(image) -> np.ndarray:
+        # Loaders whose items are ragged cannot collate into a tensor and hand over numpy instead
+        # (Co3D: one native shape per sequence, 288 distinct shapes across the dataset). Accept
+        # both rather than forcing those loaders through a pointless tensor round-trip.
+        if isinstance(image, np.ndarray):
+            if image.ndim != 3 or image.shape[-1] != 3:
+                raise RuntimeError(f"Expected an HWC RGB array, got {tuple(image.shape)}")
+            image_np = image
+        elif image.ndim != 3:
             raise RuntimeError(f"Expected image tensor [C,H,W] or [H,W,C], got {tuple(image.shape)}")
-        if image.shape[0] == 3:
-            image = image.permute(1, 2, 0)
-        elif image.shape[-1] != 3:
-            raise RuntimeError(f"Expected 3-channel image tensor, got {tuple(image.shape)}")
-        image_np = image.detach().cpu().numpy()
+        else:
+            if image.shape[0] == 3:
+                image = image.permute(1, 2, 0)
+            elif image.shape[-1] != 3:
+                raise RuntimeError(f"Expected 3-channel image tensor, got {tuple(image.shape)}")
+            image_np = image.detach().cpu().numpy()
         if image_np.dtype != np.uint8:
             image_np = np.clip(image_np, 0, 255).astype(np.uint8)
         return np.ascontiguousarray(image_np)
@@ -93,22 +109,29 @@ class SourceModule(multiprocessing.Process):
             return {}
         return {'target_shape': (int(orig_h), int(orig_w))}
 
+    @staticmethod
+    def _policy_takes_raw_images(policy_name: str) -> bool:
+        """Whether this policy's `encode()` wants raw HWC uint8 arrays instead of
+        `{'image', 'metadata'}` dicts.
+
+        Decided from the policy class, not a hand-maintained name list. The list this replaced was
+        missing `FourierADE20KWindowHybrid`, so every config using it was handed dicts, and
+        `_as_image_list` then produced a malformed shape that surfaced far away as
+        `ValueError: not enough values to unpack` inside `_target_hw_for_level`. Any policy added in
+        future is classified automatically.
+
+        `NYUAppCorrRaw` is the one non-Laplacian policy that also takes raw arrays.
+        """
+        cls = TRANSMISSION_REGISTRY.get(policy_name)
+        if cls is None:
+            return False
+        return issubclass(cls, (LaplacianPyramidPolicy, NYUAppCorrRawTransmissionPolicy))
+
     def _prepare_encode_input(self, images, curr_bs: int, labels=None):
         policy_name = self.config.transmission_policy_name
         preserve_input_shape = bool(self.config.transmission_kwargs.get('preserve_input_shape', False))
         label_list = self._labels_to_list(labels, curr_bs) if labels is not None else []
-        laplacian_policies = {
-            "Laplacian",
-            "ProgressiveLaplacian",
-            "L2L1L0ProgressiveLaplacian",
-            "COCOWindowProgressiveLaplacian",
-            "ADE20KL2L1ProgressiveLaplacian",
-            "ADE20KWindowProgressiveLaplacian",
-            "ADE20KWindowL2L1L0ProgressiveLaplacian",
-            "NYUAppCorrLaplacian",
-            "NYUAppCorrProgressiveLaplacian",
-            "NYUAppCorrRaw",
-        }
+        takes_raw_images = self._policy_takes_raw_images(policy_name)
         if isinstance(images, (list, tuple)):
             real_imgs_np = [self._tensor_to_hwc_uint8(img) for img in images]
             if preserve_input_shape:
@@ -118,7 +141,7 @@ class SourceModule(multiprocessing.Process):
                     for idx, image_np in enumerate(real_imgs_np)
                 ]
                 self._current_target_shapes = target_shapes
-                if policy_name in laplacian_policies:
+                if takes_raw_images:
                     return real_imgs_np
                 encoded_items = [
                     {
@@ -134,7 +157,7 @@ class SourceModule(multiprocessing.Process):
                         for _ in range(pad_count)
                     )
                 return encoded_items
-            if policy_name in laplacian_policies:
+            if takes_raw_images:
                 return real_imgs_np
 
             server_batch_size = self.config.batch_size
@@ -159,7 +182,7 @@ class SourceModule(multiprocessing.Process):
                 for idx, image_np in enumerate(real_imgs_np)
             ]
             self._current_target_shapes = target_shapes
-            if policy_name in laplacian_policies:
+            if takes_raw_images:
                 return real_imgs_np
             encoded_items = [
                 {
@@ -277,7 +300,24 @@ class SourceModule(multiprocessing.Process):
             group_idx += 1
             t_pipeline_start = time.time()
 
-        result = self.feedback_queue.get()
+        # Bounded wait. Every patch group has been sent by now, so the only thing left is the
+        # server's result -- and if the server never produces one, an unbounded `get()` wedges the
+        # run silently: no traceback, no log line, both sides parked in a socket read until an
+        # external timeout kills them. That is how a scheduler bug once cost 45 minutes per config
+        # and stayed invisible in every log. The ceiling is deliberately far above any legitimate
+        # wait (a first request carries the server's model load, ~250 s for ViT-7B) so it can only
+        # ever fire on a genuine hang; override with APPCORR_RESULT_TIMEOUT for slower models.
+        timeout_s = float(os.environ.get('APPCORR_RESULT_TIMEOUT', 900))
+        try:
+            result = self.feedback_queue.get(timeout=timeout_s)
+        except queue.Empty:
+            raise RuntimeError(
+                f"[Source] No result from the server for {timeout_s:.0f}s "
+                f"(request #{self._requests_completed if hasattr(self, '_requests_completed') else '?'}, "
+                f"{len(all_patches)} patches sent across {group_idx} group(s)). "
+                "The server accepted the groups but never returned -- check the server log for a "
+                "pipeline error, or for a scheduler waiting on a group that never completed."
+            ) from None
         t_result_recv = time.time()
 
         server_events = []

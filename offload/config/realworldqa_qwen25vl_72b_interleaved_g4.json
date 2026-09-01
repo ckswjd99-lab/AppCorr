@@ -1,0 +1,23 @@
+{
+    "exp_id": "realworldqa_qwen25vl_72b_interleaved_g4",
+    "model_name": "qwen25vl_realworldqa",
+    "dataset_name": "realworldqa",
+    "dataset_kwargs": {
+        "model_path": "Qwen/Qwen2.5-VL-72B-Instruct"
+    },
+    "batch_size": 1,
+    "image_shape": [896, 896, 3],
+    "patch_size": [28, 28],
+    "scheduler_policy_name": "GroupTrigger",
+    "transmission_policy_name": "ProgressiveLaplacian",
+    "transmission_kwargs": {
+        "pyramid_levels": [2, 0],
+        "grouping_strategy": "grid",
+        "num_groups": 4,
+        "total_layers": 80,
+        "compression_level": 1
+    },
+    "appcorr_kwargs": {
+        "generated_from_client": true
+    }
+}

@@ -74,9 +74,33 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
         return np.ascontiguousarray(np.clip(projected, 0, 255).astype(np.uint8, copy=False))
 
     @classmethod
-    def _downsample_base(cls, image: np.ndarray, config: ExperimentConfig) -> np.ndarray:
+    def _downsample_base(cls, native_image: np.ndarray, config: ExperimentConfig) -> np.ndarray:
+        """Group-0 global image: degrade in NATIVE coordinates, hand over at the configured size.
+
+        Takes the **original** image, not the model-canvas projection. That distinction is the whole
+        point: the canvas is an upscale of the original (COCO's median 480x640 becomes 1024x1024), so
+        downscaling the canvas to the 352x352 the global branch consumes is only a 1.36x/1.82x
+        reduction of the original -- an upsample/downsample round trip that leaves the real content
+        almost intact. The approximate pass then loses nothing, the residual carries nothing, and the
+        approx-only floor measures the same as the full-transmission ceiling (0.7033 vs 0.7034 mAP at
+        n=100), which makes the comparison meaningless. See the pyramid contract in AGENTS.md.
+
+        Degrading first at 1/`global_base_downscale` of the *original* makes L0 vs the global a real
+        gap: 480x640 -> 160x213 keeps 11% of the pixels rather than 40%. The result is then resized
+        to `_base_hw` because the network and the server are both defined by the model's
+        configuration -- the transmitted size stays the DINOv3 global input size regardless of how
+        hard the content was degraded.
+        """
+        factor = int(config.transmission_kwargs.get('global_base_downscale', cls._N_WINDOWS_H))
         base_h, base_w = cls._base_hw(config)
-        return cls._resize_to_hw(image, (base_h, base_w), np.uint8)
+        if factor > 1:
+            nh, nw = native_image.shape[:2]
+            native_image = cls._resize_to_hw(
+                native_image,
+                (max(1, round(nh / factor)), max(1, round(nw / factor))),
+                np.uint8,
+            )
+        return cls._resize_to_hw(native_image, (base_h, base_w), np.uint8)
 
     @classmethod
     def _upsample_base(cls, base: np.ndarray, config: ExperimentConfig) -> np.ndarray:
@@ -120,7 +144,10 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
         full_grid_w = w // pw
         all_h, all_w, h_cum, w_cum = self._window_slices(config)
 
-        for b_idx, image in enumerate(projected_images):
+        # The base is built from the ORIGINAL image, not `projected_images` -- degrading the canvas
+        # projection would be degrading something that is already an upscale. The residual below
+        # still works in canvas coordinates, because that is the space the server reconstructs in.
+        for b_idx, image in enumerate(image_list):
             base = self._downsample_base(image, config)
             bases.append(base)
 
@@ -145,6 +172,14 @@ class COCOWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
         for patch in base_patches:
             patch.batch_group_total = len(base_patches)
         yield base_patches
+
+        if config.transmission_kwargs.get('base_only', False):
+            # Ablation mode: send only the global base, no windowed correction —
+            # for measuring "how good is the fast global pass alone" against a
+            # single-shot FULL_INFERENCE scheduler (BatchCountBased), the same
+            # methodology as coco_approx_only_l2.json but using this policy's
+            # actual production base generation instead of a plain pyramid level.
+            return
 
         preds = [self._upsample_base(base, config) for base in bases]
         for group_id in range(1, self._N_WINDOWS_H * self._N_WINDOWS_W + 1):

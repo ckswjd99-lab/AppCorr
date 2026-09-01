@@ -6,6 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
+from ._strict import note_fallback
+
 
 _MAIN_BLOCK_M = 32
 _MAIN_BLOCK_N = 128
@@ -96,22 +98,39 @@ def _pscore_from_cudnn_lse_keyblock_atomic_kernel(
     )
 
 
-def _supports_main_attention_pscore(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> bool:
+def _unsupported_reason(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> str | None:
+    """Why the fused pscore kernel cannot run, or None if it can.
+
+    A reason string rather than a bool so the fallback can say which constraint failed -- several of
+    these (the 32-head, 128-dim shape in particular) are specific to the ViT-7B this kernel was
+    written for, and a different backbone falls back for a legitimate reason that still needs to be
+    visible in a latency measurement.
+    """
     if torch.is_grad_enabled():
-        return False
+        return "autograd is enabled"
     if not (q.is_cuda and k.is_cuda and v.is_cuda):
-        return False
+        return "q/k/v are not all on CUDA"
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
-        return False
+        return f"q/k/v must be 4-D, got {q.ndim}/{k.ndim}/{v.ndim}"
     if q.shape != k.shape or q.shape != v.shape:
-        return False
+        return f"q/k/v shapes differ: {tuple(q.shape)}/{tuple(k.shape)}/{tuple(v.shape)}"
     if q.dtype not in {torch.float16, torch.bfloat16}:
-        return False
+        return f"dtype {q.dtype} is not fp16/bf16"
     if k.dtype != q.dtype or v.dtype != q.dtype:
-        return False
+        return "q/k/v dtypes differ"
 
     _batch, num_heads, num_tokens, head_dim = q.shape
-    return num_heads == 32 and head_dim == _MAIN_BLOCK_D and 0 < num_tokens <= 4096
+    if num_heads != 32:
+        return f"kernel is specialised for 32 heads, got {num_heads}"
+    if head_dim != _MAIN_BLOCK_D:
+        return f"kernel is specialised for head_dim {_MAIN_BLOCK_D}, got {head_dim}"
+    if not (0 < num_tokens <= 4096):
+        return f"num_tokens {num_tokens} outside (0, 4096]"
+    return None
+
+
+def _supports_main_attention_pscore(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> bool:
+    return _unsupported_reason(q, k, v) is None
 
 
 def _sdpa_lse_cudnn(
@@ -132,7 +151,12 @@ def _sdpa_lse_cudnn(
             False,
             scale=float(scale),
         )
-    except RuntimeError:
+    except RuntimeError as exc:
+        # Do not swallow this. A RuntimeError here is usually Triton failing to compile, which is
+        # indistinguishable from "unsupported shape" to the caller and produces a silently slower
+        # run rather than an error.
+        note_fallback("sdpa_with_pscore_triton", "the fused attention call raised",
+                      detail=f"{type(exc).__name__}: {exc}")
         return None
 
     attn_out, lse = out[0], out[1]
@@ -203,11 +227,14 @@ def sdpa_with_pscore_triton(
     Unsupported shapes return None so the caller can use the dense fallback.
     """
     _ = debug_name
-    if not _supports_main_attention_pscore(q, k, v):
+    reason = _unsupported_reason(q, k, v)
+    if reason is not None:
+        note_fallback("sdpa_with_pscore_triton", reason)
         return None
 
     cudnn_out = _sdpa_lse_cudnn(q, k, v, scale)
     if cudnn_out is None:
+        note_fallback("sdpa_with_pscore_triton", "cuDNN SDPA did not return a usable (out, lse)")
         return None
 
     attn_out, lse = cudnn_out

@@ -217,6 +217,50 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             curr = curr.astype(np.uint8) 
         return curr
 
+    def _decoder_upsample(self, img, start_lvl, end_lvl, config, image_hw):
+        """Exactly the inter-level upsample the *decoder* will perform.
+
+        The two decode paths do not agree -- the preserve_input_shape one resizes to
+        `_target_hw_for_level`, the other pyrUps against `config.image_shape` -- so predicting with
+        the wrong one reintroduces the mismatch this is here to remove.
+        """
+        if self._is_preserve_input_shape(config) and image_hw is not None:
+            return self._iterative_upsample_to_hw(
+                img, start_lvl, end_lvl, self._target_hw_for_level(config, end_lvl, image_hw)
+            )
+        H, W = config.image_shape[:2]
+        return self._iterative_upsample(img, start_lvl, end_lvl, H, W)
+
+    def _closed_loop_residual(self, gaussians, prev_lvl, tgt_lvl, config, image_hw):
+        """Residual against the predictor the decoder will actually form, on the grid it will use.
+
+        The open-loop version this replaces predicted from the *native* gaussian
+        (`_iterative_upsample_native(prev_g, ...)`) and then projected the residual onto the
+        transmission grid. The decoder has no access to that native gaussian: it holds the base
+        already resampled to `_target_hw_for_level`, which for VGGT is not even a dyadic reduction of
+        the level-0 grid (a 688-tall canvas gives a 96-tall level-3 base, not 86, because each level
+        is patch-aligned independently). Predictor and residual therefore disagreed, and sending the
+        *entire* residual still left 2.5% relative L2 -- on a scheme that is supposed to be lossless.
+
+        Closed loop makes it lossless by construction: predict from what is transmitted, difference
+        against the target on the same grid, and the decoder's `clip(pred + residual)` lands exactly
+        on the target. No state has to be carried between levels, because with the loop closed the
+        decoder's reconstruction at level L *is* `project(gaussians[L])`.
+        """
+        prev_tx = np.asarray(
+            self._project_band_to_target(gaussians[prev_lvl], prev_lvl, config, np.uint8, image_hw)
+        )
+        tgt_tx = np.asarray(
+            self._project_band_to_target(gaussians[tgt_lvl], tgt_lvl, config, np.uint8, image_hw)
+        )
+        pred = np.asarray(self._decoder_upsample(prev_tx, prev_lvl, tgt_lvl, config, image_hw))
+        if pred.shape != tgt_tx.shape:
+            raise RuntimeError(
+                f"closed-loop predictor shape {pred.shape[:2]} != target grid {tgt_tx.shape[:2]} "
+                f"for levels {prev_lvl}->{tgt_lvl}; encoder and decoder disagree about the grid"
+            )
+        return tgt_tx.astype(np.int16) - pred.astype(np.int16)
+
     def _process_image_encode_single_layer(self, b_idx, image, tgt_lvl_idx, levels, config):
         max_lvl = max(levels)
         local_patches = []
@@ -233,11 +277,9 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
             self._create_patches_vectorized(local_patches, projected, b_idx, tgt_lvl, config, np.uint8)
         else:
             prev_lvl = levels[tgt_lvl_idx - 1]
-            prev_g = gaussians[prev_lvl]
-            pred = self._iterative_upsample_native(prev_g, prev_lvl, tgt_lvl, gaussians)
-            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            projected = self._project_band_to_target(residual, tgt_lvl, config, np.int16, image_hw)
-            self._create_patches_vectorized(local_patches, projected, b_idx, tgt_lvl, config, np.int16)
+            # Already on the transmission grid -- do not project it again.
+            residual = self._closed_loop_residual(gaussians, prev_lvl, tgt_lvl, config, image_hw)
+            self._create_patches_vectorized(local_patches, residual, b_idx, tgt_lvl, config, np.int16)
 
         return local_patches
 
@@ -284,11 +326,12 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
                 curr_img = np.clip(curr_img.astype(np.int16) + res_img, 0, 255).astype(np.uint8)
             
             prev_lvl = lvl
-        
-        # The model input is always expressed at config.image_shape, even when
-        # only a coarse base level is transmitted (for example levels=[2]).
-        # Without this final expansion, base-only decode returns H/4 x W/4 and
-        # cannot be placed in the fixed-size output batch.
+
+        # Always finish at config.image_shape, even when 0 was not an explicit configured level
+        # (e.g. pyramid_levels=[2] alone -- a heavily-downsampled approx-only base with no
+        # residual levels still has to be upsampled back before the model sees it, matching what
+        # every other pyramid_levels config produces). Without this, base-only decode returns
+        # H/4 x W/4 and cannot be placed in the fixed-size output batch.
         if prev_lvl > 0:
             curr_img = self._iterative_upsample(curr_img, prev_lvl, 0, H, W)
 
@@ -340,6 +383,7 @@ class LaplacianPyramidPolicy(ITransmissionPolicy):
 
             prev_lvl = lvl
 
+        # Same rationale as _process_image_decode: always finish at config.image_shape.
         if prev_lvl > 0:
             tgt_hw = self._target_hw_for_level(config, 0, target_shape)
             curr_img = self._iterative_upsample_to_hw(curr_img, prev_lvl, 0, tgt_hw)

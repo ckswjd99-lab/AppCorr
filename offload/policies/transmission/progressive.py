@@ -34,10 +34,19 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             return self._compute_patch_residual_energy(crop)
         return self._compute_patch_residual_rms(crop)
 
+    def _resolve_num_groups(self, config: ExperimentConfig, image_list) -> int:
+        """How many transmission groups `encode` will emit.
+
+        For grid/block_grid this *is* the partition count and comes from the config. Strategies that
+        derive their own grouping override this -- see the crop_cover version, where the count is a
+        property of the image, not a setting.
+        """
+        return int(config.transmission_kwargs.get('num_groups', 4))
+
     def encode(self, images: np.ndarray, config: ExperimentConfig) -> Generator[List[Patch], None, None]:
         image_list = self._as_image_list(images)
         B = len(image_list)
-        num_groups = config.transmission_kwargs.get('num_groups', 4)
+        num_groups = self._resolve_num_groups(config, image_list)
         mobile_pscore = self._resolve_mobile_pscore(config)
         preserve = self._is_preserve_input_shape(config)
 
@@ -64,9 +73,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         yield base_patches # Yield Group 0 (Base Layer) Immediately!
 
         grouping_strategy = config.transmission_kwargs.get('grouping_strategy', 'uniform_diff')
+        DATA_DEPENDENT_STRATEGIES = {'uniform_diff', 'energy_asc', 'energy_desc'}
 
-        if grouping_strategy == 'uniform_diff':
-            # Collect all then group (Non-pipelined fallback)
+        if grouping_strategy in DATA_DEPENDENT_STRATEGIES:
+            # Collect all then group (Non-pipelined fallback) -- these strategies need to see
+            # actual patch content (size or energy) before assigning groups.
             batch_candidates = [[] for _ in range(B)]
             with ThreadPoolExecutor() as executor:
                 futures = [
@@ -75,10 +86,14 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 ]
                 for b, f in enumerate(futures):
                     batch_candidates[b] = f.result()
-                    
+
             residual_patches = []
             if any(batch_candidates):
-                self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
+                if grouping_strategy == 'uniform_diff':
+                    self._apply_uniform_diff_grouping(residual_patches, batch_candidates, num_groups)
+                else:
+                    descending = (grouping_strategy == 'energy_desc')
+                    self._apply_energy_grouping(residual_patches, batch_candidates, num_groups, descending=descending)
 
             group_counts = {}
             for p in residual_patches:
@@ -97,9 +112,12 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             # Pre-calculate group assignments per image (may differ with preserve_input_shape)
             per_image_assignments = []
             for b in range(B):
-                residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
+                if grouping_strategy in ('top_energy', 'top_energy_threshold'):
+                    residual_structure = self._collect_residual_metadata_scored(gaussians_batch[b], config, image_hws[b])
+                else:
+                    residual_structure = self._collect_residual_metadata(gaussians_batch[b], config, image_hws[b])
                 per_image_assignments.append(
-                    self._precompute_group_assignments(grouping_strategy, residual_structure, num_groups)
+                    self._precompute_group_assignments(grouping_strategy, residual_structure, num_groups, config)
                 )
 
             # Compress and yield group-by-group
@@ -150,7 +168,46 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 })
         return structure
 
-    def _precompute_group_assignments(self, strategy, residual_structure, num_groups):
+    def _collect_residual_metadata_scored(self, gaussians, config, image_hw=None):
+        """Same as `_collect_residual_metadata`, but also computes each crop's actual residual
+        pixel data and attaches an importance score (`_compute_patch_pscore_hint`, same signal
+        `_process_image_group_residuals` uses per-patch) -- needed by the 'top_energy' keep-rate
+        grouping strategy to rank merge-groups by how much high-frequency detail their residual
+        actually carries, before deciding which ones are worth ever transmitting/correcting."""
+        levels = sorted(config.transmission_kwargs.get('pyramid_levels', [2, 0]), reverse=True)
+        ph, pw = config.patch_size
+        mobile_pscore = "residual_energy"  # keep-rate importance ranking always uses energy, regardless of mobile_pscore config
+
+        structure = []
+        prev_lvl = levels[0]
+        prev_img = gaussians[prev_lvl]
+        for lvl in levels[1:]:
+            curr_g = gaussians[lvl]
+            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
+            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
+            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
+
+            rh, rw = residual.shape[:2]
+            gh, gw = rh // ph, rw // pw
+            num_crops = gh * gw
+            for i in range(num_crops):
+                row, col = divmod(i, gw)
+                y, x = row * ph, col * pw
+                crop = residual[y : y + ph, x : x + pw]
+                pscore = self._compute_patch_pscore_hint(crop, mobile_pscore)
+                structure.append({
+                    'spatial_idx': i,
+                    'res_level': lvl,
+                    'grid_hw': (gh, gw),
+                    'row': row,
+                    'col': col,
+                    'pscore': pscore,
+                })
+            prev_img = curr_g
+            prev_lvl = lvl
+        return structure
+
+    def _precompute_group_assignments(self, strategy, residual_structure, num_groups, config=None):
         """Pre-calculate group ID for N items based on strategy."""
         if isinstance(residual_structure, int):
             N = residual_structure
@@ -181,6 +238,59 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                  group_ids = np.resize(group_ids, N)
             elif len(group_ids) > N:
                  group_ids = group_ids[:N]
+            return group_ids
+
+        elif strategy == 'expansion':
+            # Centre-out concentric rings, each holding ~N/num_groups patches.
+            #
+            # The ordering key is deliberately all-integer. This assignment has to be reproduced
+            # bit-for-bit by `create_group_index` on the server, and a float radius would leave the
+            # two free to disagree on ties -- which shows up as the server correcting different
+            # tokens than the client sent, with no error anywhere.
+            #
+            # Key: squared Euclidean distance from the grid centre, normalised to the grid's aspect
+            # by cross-multiplying instead of dividing. Doubling the coordinates keeps the centre
+            # exact for even side lengths. Squared-Euclidean rather than Chebyshev because it takes
+            # far more distinct values, so few patches tie -- with Chebyshev a whole square ring ties
+            # at once and the boundary between two groups cut it into a top half and a bottom half
+            # instead of a thin arc. Equal area comes from splitting by *rank*, not by radius, so the
+            # one ring that straddles a boundary is shared and areas stay equal to within one patch.
+            #
+            # Unlike grid/block_grid, num_groups need not be a perfect square.
+            if structure is not None and all('row' in item and 'col' in item for item in structure):
+                grid_hw_by_level = {}
+                for item in structure:
+                    if item.get('grid_hw') is not None:
+                        grid_hw_by_level[int(item.get('res_level', 0))] = tuple(
+                            int(v) for v in item['grid_hw']
+                        )
+                fb_h = max(int(i['row']) for i in structure) + 1
+                fb_w = max(int(i['col']) for i in structure) + 1
+                keys = []
+                for idx, item in enumerate(structure):
+                    gh, gw = grid_hw_by_level.get(int(item.get('res_level', 0)), (fb_h, fb_w))
+                    r, c = int(item['row']), int(item['col'])
+                    dr, dc = 2 * r - (gh - 1), 2 * c - (gw - 1)
+                    keys.append((dr * dr * max(gw - 1, 1) ** 2
+                                 + dc * dc * max(gh - 1, 1) ** 2, idx))
+            else:
+                side = int(round(N ** 0.5))
+                keys = []
+                for idx in range(N):
+                    r, c = divmod(idx, side)
+                    dr, dc = 2 * r - (side - 1), 2 * c - (side - 1)
+                    keys.append((dr * dr * max(side - 1, 1) ** 2
+                                 + dc * dc * max(side - 1, 1) ** 2, idx))
+
+            if num_groups > len(keys):
+                raise ValueError(
+                    f"expansion grouping needs at least one patch per group, got "
+                    f"num_groups={num_groups} for {len(keys)} patches"
+                )
+            order = sorted(range(len(keys)), key=lambda i: keys[i])
+            group_ids = np.empty(len(keys), dtype=int)
+            for rank, i in enumerate(order):
+                group_ids[i] = rank * num_groups // len(keys) + 1
             return group_ids
 
         elif strategy == 'block_grid':
@@ -219,9 +329,77 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 group_ids = group_ids[:N]
             return group_ids
             
+        elif strategy == 'sequential':
+            # Contiguous prefix chunks in flattened (raster) sequence order -- for autoregressive
+            # (causally-masked) decoders, correcting group k only benefits positions that causally
+            # attend to it; a spatially-scattered group (e.g. 'grid's checkerboard tiling) leaves
+            # gaps throughout the sequence, so many later positions still depend on uncorrected
+            # earlier ones even after their own group arrives. Taking prefix chunks in sequence
+            # order instead means every corrected group extends a strictly-growing corrected
+            # *prefix*, so intermediate (pre-100%) rounds get maximal benefit from what has arrived.
+            if structure is not None and all('spatial_idx' in item for item in structure):
+                order = np.asarray([int(item['spatial_idx']) for item in structure], dtype=int)
+            else:
+                order = np.arange(N, dtype=int)
+            return 1 + (order * num_groups) // max(N, 1)
+
+        elif strategy == 'top_energy':
+            # Importance-ranked keep-rate thresholding: rank every merge-group's residual by
+            # `_compute_patch_pscore_hint` (residual energy) and only ever transmit/correct the top
+            # `keep_rate` fraction (transmission_kwargs['keep_rate'], default 1.0 = keep everything).
+            # The rest are assigned group_id=0 -- the same id the base/coarse pyramid layer uses, so
+            # `correct_forward`'s `group_map[0] == group_id` lookup for group_id=1 (the only residual
+            # group callers should configure with num_groups=1) never matches them: they simply never
+            # get corrected, remaining approx-only (from the base layer) for the whole request. This
+            # is a *static* one-shot selection (not a progressive multi-round schedule), so it should
+            # always be paired with num_groups=1 in the caller's config.
+            if structure is None or not all('pscore' in item for item in structure):
+                raise ValueError(
+                    "'top_energy' grouping requires per-item 'pscore' -- pass residual_structure "
+                    "built via _collect_residual_metadata_scored(), not _collect_residual_metadata()."
+                )
+            keep_rate = 1.0
+            if config is not None:
+                keep_rate = float(config.transmission_kwargs.get('keep_rate', 1.0))
+            keep_rate = min(max(keep_rate, 0.0), 1.0)
+            scores = np.asarray([float(item['pscore']) for item in structure], dtype=np.float64)
+            keep_n = int(round(keep_rate * N))
+            group_ids = np.zeros(N, dtype=int)
+            if keep_n > 0:
+                # argsort descending, ties broken by original (raster) order for determinism
+                order = np.argsort(-scores, kind='stable')
+                keep_idx = order[:keep_n]
+                group_ids[keep_idx] = 1
+            return group_ids
+
+        elif strategy == 'top_energy_threshold':
+            # Absolute-threshold keep-rate selection: correct every merge-group whose residual
+            # importance score (`pscore`) meets or exceeds an ABSOLUTE cutoff
+            # (transmission_kwargs['pscore_threshold']), instead of a fixed top-K% fraction like
+            # 'top_energy'. The number of corrected groups therefore varies per image with how
+            # much residual energy it actually contains -- a texture-heavy image gets a larger
+            # correction budget than a flat/smooth one at the same threshold, whereas
+            # 'top_energy' always corrects exactly keep_rate*N groups regardless of the pscore
+            # distribution's shape. Same group_id=0/1 semantics as 'top_energy' (uncorrected
+            # groups get group_id=0, matching the base/coarse layer's id so they're never
+            # selected by correct_forward's group_id=1 lookup) -- still a *static* one-shot
+            # selection, pair with num_groups=1.
+            if structure is None or not all('pscore' in item for item in structure):
+                raise ValueError(
+                    "'top_energy_threshold' grouping requires per-item 'pscore' -- pass "
+                    "residual_structure built via _collect_residual_metadata_scored(), not "
+                    "_collect_residual_metadata()."
+                )
+            threshold = 0.0
+            if config is not None:
+                threshold = float(config.transmission_kwargs.get('pscore_threshold', 0.0))
+            scores = np.asarray([float(item['pscore']) for item in structure], dtype=np.float64)
+            group_ids = np.where(scores >= threshold, 1, 0).astype(int)
+            return group_ids
+
         elif strategy == 'random':
             return np.random.randint(1, num_groups + 1, size=N)
-            
+
         elif strategy == 'geometric':
             probs = np.random.rand(N)
             group_ids = np.floor(-np.log2(1 - probs)) + 1
@@ -249,14 +427,13 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         # Up-sample sequentially and collect group members
         
         prev_lvl = levels[0]
-        prev_img = gaussians[prev_lvl]
         
         struct_idx = 0
         for lvl in levels[1:]:
-            curr_g = gaussians[lvl]
-            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
-            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
+            # Closed loop: predict from what the decoder receives, not from the native gaussian.
+            # See LaplacianPyramidPolicy._closed_loop_residual -- the open-loop form left 2.5%
+            # relative L2 even when the whole residual was transmitted.
+            residual = self._closed_loop_residual(gaussians, prev_lvl, lvl, config, image_hw)
 
             # Identify patches in this level
             ph, pw = config.patch_size
@@ -286,7 +463,6 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                     )
                 struct_idx += 1
             
-            prev_img = curr_g
             prev_lvl = lvl
             
         return local_patches
@@ -318,15 +494,10 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
 
         # Start from base layer and upsample
         prev_lvl = levels[0]
-        prev_img = gaussians[prev_lvl]
 
         for lvl in levels[1:]:
-            curr_g = gaussians[lvl]
-
-            # Residual Layer: Collect
-            pred = self._iterative_upsample_native(prev_img, prev_lvl, lvl, gaussians)
-            residual = curr_g.astype(np.int16) - pred.astype(np.int16)
-            residual = self._project_band_to_target(residual, lvl, config, np.int16, image_hw)
+            # Residual Layer: Collect (closed loop -- see _closed_loop_residual)
+            residual = self._closed_loop_residual(gaussians, prev_lvl, lvl, config, image_hw)
             
             # Use vectorized collection
             self._collect_residual_candidates_vectorized(
@@ -334,7 +505,6 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
                 dtype=np.int16, compression=comp_lvl, mobile_pscore=mobile_pscore
             )
             
-            prev_img = curr_g
             prev_lvl = lvl
         
         return local_candidates
@@ -388,9 +558,11 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
             data = crop.tobytes()
             compressed = zlib.compress(data, level=compression)
             pscore_hint = self._compute_patch_pscore_hint(crop, mobile_pscore)
+            residual_energy = self._compute_patch_residual_energy(crop)
             candidate_list.append({
                 'image_idx': b_idx, 'spatial_idx': i, 'res_level': lvl,
                 'data': compressed, 'size': len(compressed), 'pscore_hint': pscore_hint,
+                'residual_energy': residual_energy,
             })
 
     def _apply_random_grouping(self, final_patch_list, batch_candidates, num_groups):
@@ -492,6 +664,56 @@ class ProgressiveLPyramidPolicy(LaplacianPyramidPolicy):
         rank_to_group_id = np.searchsorted(boundaries, cumsum_sizes) + 1
         
         # Assign groups to patches
+        for b in range(B):
+            for rank in range(N):
+                spatial_idx_at_rank = sorted_indices[b, rank]
+                assigned_group = int(rank_to_group_id[rank])
+                c = batch_candidates[b][spatial_idx_at_rank]
+                self._add_patch(final_patch_list, c, assigned_group)
+
+    def _apply_energy_grouping(self, final_patch_list, batch_candidates, num_groups, descending=False):
+        """Assign group IDs so each group carries roughly equal total residual ENERGY (sum of
+        squared residual pixel values, `_compute_patch_residual_energy` -- true signal energy, not
+        `_apply_uniform_diff_grouping`'s compressed-byte-size proxy and independent of whatever
+        `mobile_pscore` is configured for pscore_hint).
+
+        `descending=True` ("energy_desc"): group 1 gets the highest-energy (fewest, most
+        informative) patches first -- latency-hiding priority order, mirroring the OpenVLA fork's
+        "energy" transmission mode (offload/policies/transmission/vla_patch_canvas.py).
+        `descending=False` ("energy_asc", default): group 1 gets the lowest-energy (most numerous,
+        least informative) patches first, deferring high-value content to later groups -- the
+        reverse priority. Testing both directions against the classifier/detector/segmentor/depther
+        pipelines to see whether front-loading high-value content actually matters for accuracy
+        under a fixed group/latency budget (see analysis/experiments/ENERGY_GROUPING_LOG.md).
+        """
+        B = len(batch_candidates)
+        if B == 0: return
+        N = len(batch_candidates[0])
+        if N == 0: return
+
+        energy_matrix = np.zeros((B, N), dtype=np.float64)
+        for b in range(B):
+            for i in range(N):
+                energy_matrix[b, i] = float(batch_candidates[b][i].get('residual_energy', 0.0))
+
+        sort_key = -energy_matrix if descending else energy_matrix
+        sorted_indices = np.argsort(sort_key, axis=1)
+        sorted_energy = np.take_along_axis(energy_matrix, sorted_indices, axis=1)
+
+        avg_sorted_energy = np.mean(sorted_energy, axis=0)
+        cumsum_energy = np.cumsum(avg_sorted_energy)
+        total_energy = cumsum_energy[-1]
+
+        if total_energy <= 0 or num_groups <= 0:
+            for b in range(B):
+                for c in batch_candidates[b]:
+                    self._add_patch(final_patch_list, c, 1)
+            return
+
+        target_sum = total_energy / num_groups
+        boundaries = np.arange(1, num_groups) * target_sum
+        rank_to_group_id = np.searchsorted(boundaries, cumsum_energy) + 1
+
         for b in range(B):
             for rank in range(N):
                 spatial_idx_at_rank = sorted_indices[b, rank]

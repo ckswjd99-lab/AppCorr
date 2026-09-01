@@ -50,8 +50,14 @@ class ADE20KApproxCorrectPolicy(ISchedulingPolicy):
         if len(buffer) < target_count:
             return None
 
+        # Deliberately not `del buffer[:target_count]`. SchedulerModule already drops
+        # `len(task.payload)` patches once `decide` returns, so deleting here too consumes twice as
+        # many. That is harmless while the buffer holds nothing but this group, and destructive as
+        # soon as the next request's patches have arrived: the following group loses its first
+        # `target_count` patches, never reaches its own `batch_group_total`, and `decide` returns
+        # None forever -- client and server then deadlock with nothing written to any log. The other
+        # scheduling policies all leave consumption to the caller.
         current_batch_patches = buffer[:target_count]
-        del buffer[:target_count]
 
         t_id = next(task_id_gen)
 

@@ -27,11 +27,11 @@ Environment overrides:
   LISTEN_HOST     Bind host for listener sockets. Default: 0.0.0.0
 
 Examples:
-  offload/run_local.sh offload/config/coco_interleaved_dynamic.json
-  offload/run_local.sh offload/config/ade20k_m2f_sequential.json -nr 10
-  offload/run_local.sh offload/config/nyu_sequential.json -d ~/data/NYU -nr 10
-  offload/run_local.sh offload/config/ade20k_m2f_sequential.json -nr 10 -ns
-  offload/run_local.sh offload/config/ade20k_m2f_sequential.json -rc -nr 10
+  offload/run_local.sh offload/config/coco/coco_interleaved_dynamic.json
+  offload/run_local.sh offload/config/ade20k/ade20k_m2f_sequential.json -nr 10
+  offload/run_local.sh offload/config/nyu/nyu_sequential.json -d ~/data/NYU -nr 10
+  offload/run_local.sh offload/config/ade20k/ade20k_m2f_sequential.json -nr 10 -ns
+  offload/run_local.sh offload/config/ade20k/ade20k_m2f_sequential.json -rc -nr 10
 EOF
 }
 

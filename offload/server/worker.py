@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import time
 import torch
@@ -50,6 +51,7 @@ class WorkerModule(multiprocessing.Process):
         self.policy = None
         self.executor = None
         self.sr_engine = None
+        self._loaded_model_identity = None
 
     def run(self):
         print("[Worker] Started.")
@@ -62,6 +64,15 @@ class WorkerModule(multiprocessing.Process):
 
         # Monitor Queue (GPU Worker → Reaper Thread)
         self.monitor_queue = queue.Queue()
+
+        # Set once the FIRST CONFIG has been applied (self.config/self.policy assigned) by the GPU
+        # worker thread below. self.config is written only in _gpu_worker's message loop (a
+        # different thread than _decoder_worker, which merely forwards CONFIG onward via
+        # gpu_queue) -- without this, a TASK message that races ahead of gpu_queue's CONFIG
+        # processing can reach _decoder_worker while self.config is still None (AttributeError) or
+        # still holds a stale previous-request config. Created here (not __init__) since
+        # threading.Event isn't picklable and __init__ runs in the parent process before spawn.
+        self._config_ready = threading.Event()
 
         # Global timing anchor: ties CPU wall-clock to the CUDA timeline.
         # anchor_cpu + anchor_ev.elapsed_time(ev) / 1000.0 -> absolute timestamp.
@@ -109,6 +120,19 @@ class WorkerModule(multiprocessing.Process):
                 msg_type, payload = msg
 
                 if msg_type == 'CONFIG':
+                    # Set up everything this thread reads, before forwarding. It uses `self.config`
+                    # and `self.policy` while decoding, but only the GPU worker used to assign
+                    # either -- so both reads depended on that thread draining its queue before the
+                    # first task reached us. When it lost, the AttributeError killed this thread and
+                    # the run died much later and far away, as `KeyError: '<tag>_kv'` in the
+                    # correction path, because the approximate pass never ran.
+                    #
+                    # `self.policy` is listed here deliberately: fixing `self.config` alone moved the
+                    # failure to `'NoneType' object has no attribute 'decode'` with the same
+                    # downstream signature. Anything the decoder reads has to be initialised here.
+                    # `get_transmission` is a pure lookup, so building it twice is harmless.
+                    self.config = payload
+                    self.policy = get_transmission(self.config.transmission_policy_name)
                     self.gpu_queue.put(msg)
                     continue
 
@@ -119,6 +143,13 @@ class WorkerModule(multiprocessing.Process):
                 if msg_type == 'TASK':
                     task = payload
                     req_id = task.request_id
+
+                    # See _config_ready's docstring in __init__: guards against a TASK racing ahead
+                    # of the GPU-worker thread's processing of the CONFIG this decoder thread just
+                    # forwarded onward. Only blocks on the FIRST CONFIG of a fresh process (already
+                    # ready for every later message in practice); does not block the GPU worker
+                    # thread itself, which never waits on this event.
+                    self._config_ready.wait()
 
                     if req_id not in self.sessions:
                         self.sessions[req_id] = self._create_session_context()
@@ -219,9 +250,25 @@ class WorkerModule(multiprocessing.Process):
                         self.device = torch.device(self.config.device)
                         print(f"[Worker] Device overridden by Config: {self.device}")
                     self.policy = get_transmission(self.config.transmission_policy_name)
+                    self._config_ready.set()
                     self._validate_lowres_sr_config()
+                    self._check_triton_runtime()
                     self._load_sr_engine()
-                    self._load_model(self.config.model_name)
+                    # Skip re-loading the model executor if nothing that would change WHICH
+                    # weights/executor are loaded has changed since the last CONFIG (e.g. only
+                    # image_shape differs, as when a driver resends CONFIG per-image for native-
+                    # resolution runs) -- reloading a large model (tens to 100+ GB) on every such
+                    # CONFIG message is always wasteful and was never intentional; every other
+                    # config field (image_shape, transmission_kwargs, etc.) is still applied fresh
+                    # above/below regardless of this skip.
+                    model_identity = (
+                        self.config.model_name,
+                        json.dumps(self.config.dataset_kwargs, sort_keys=True, default=str),
+                        self.device,
+                    )
+                    if self.executor is None or model_identity != self._loaded_model_identity:
+                        self._load_model(self.config.model_name)
+                        self._loaded_model_identity = model_identity
                     print(f"[Worker] Configured. Policy: {self.config.transmission_policy_name}, "
                           f"Model: {self.config.model_name}, Device: {self.device}")
                     continue
@@ -706,6 +753,10 @@ class WorkerModule(multiprocessing.Process):
         # Computation Ops
         elif op == OpType.FULL_INFERENCE:
             self.executor.full_inference(task, context, self.config)
+            # Record which precision the stock forward actually ran at. Without this the only way
+            # to tell FP4 from BF16 here is to diff the accuracy against a BF16 twin -- which is
+            # how a silently-BF16 `precision=fp4` went unnoticed across three executors.
+            return self.executor.dinov3_approx_event_metadata()
 
         elif op == OpType.APPROX_FORWARD:
             return self.executor.approx_forward(instr.params, context, self.config)
@@ -725,6 +776,38 @@ class WorkerModule(multiprocessing.Process):
                 context['final_results'] = {}
             context['final_results'].update(final_batch_results)
             context['active_indices'] = torch.empty(0, device=self.device, dtype=torch.long)
+
+    def _check_triton_runtime(self):
+        """Configure the compile toolchain for *every* model, then prove Triton can compile.
+
+        `_configure_compile_environment()` supplies CPATH, TRITON_PTXAS_PATH and a libcuda symlink
+        for a triton wheel that ships without them. It used to be reachable only through the DINOv3
+        precision controller, so any executor that does not build one -- VGGT-Omega, for instance --
+        hit `Cannot find ptxas` at its first correction. Calling it here makes it model-agnostic.
+
+        The verification then compiles a real kernel. Import success proves nothing: triton imports
+        cleanly with no `cuda.h` and no `ptxas` and only fails when something is compiled, which in
+        a long run is the first correction, hours in.
+
+        Reported rather than raised, because approx-only and FULL_INFERENCE configs never touch a
+        Triton kernel. The correction path raises on its own, from `note_fallback`, at the moment it
+        would otherwise have silently degraded.
+        """
+        from appcorr.models.dinov3.layers.triton_kernels import (
+            TritonFallbackError,
+            verify_triton_runtime,
+        )
+        from offload.server.model.dinov3_precision import _configure_compile_environment
+
+        _configure_compile_environment()
+        try:
+            verify_triton_runtime(raise_on_failure=True)
+        except TritonFallbackError as exc:
+            print("!!! [Worker] TRITON IS BROKEN HERE -- any correction latency measured in this "
+                  "run is meaningless.", flush=True)
+            print(str(exc), flush=True)
+            return
+        print("[Worker] Triton runtime verified (kernels compile).", flush=True)
 
     def _create_session_context(self) -> Dict[str, Any]:
         return {

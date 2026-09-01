@@ -55,7 +55,15 @@ class ImageNetLoader(DatasetLoader):
         ])
 
         val_dataset = datasets.ImageFolder(root=self.root, transform=val_transforms)
-        
+
+        # ImageFolder orders samples by class directory, so a front slice (e.g. via -nr) would only
+        # cover the first few classes. sample_stride takes an evenly-spaced subset across the whole
+        # (class-sorted) dataset instead, so a 10%-scale sanity run still spans all 1000 classes.
+        sample_stride = self.kwargs.get('sample_stride')
+        if sample_stride:
+            indices = list(range(0, len(val_dataset), int(sample_stride)))
+            val_dataset = torch.utils.data.Subset(val_dataset, indices)
+
         return torch.utils.data.DataLoader(
             val_dataset,
             batch_size=self.batch_size,
@@ -119,13 +127,13 @@ class COCO2017Loader(DatasetLoader):
         self.num_workers = num_workers
         self.coco_results = []
         self.processed_ids = []
+        self.fo_dataset = None
+        self.filepaths = None
         
         # Lazy load heavy dependencies
-        import fiftyone.zoo as foz
         from pycocotools.coco import COCO
         import os
 
-        print("[COCOLoader] Loading FiftyOne COCO-2017 Validation Split...")
         load_kwargs = {
             "split": kwargs.get("split", "validation"),
             "download_if_necessary": kwargs.get("download_if_necessary", True),
@@ -138,25 +146,84 @@ class COCO2017Loader(DatasetLoader):
         dataset_name = kwargs.get("fo_dataset_name") or kwargs.get("dataset_name")
         if dataset_name:
             load_kwargs["dataset_name"] = dataset_name
-        self.fo_dataset = foz.load_zoo_dataset("coco-2017", **load_kwargs)
-        sample_count = len(self.fo_dataset)
-        if sample_count == 0:
-            dataset_source = load_kwargs.get("dataset_dir", "FiftyOne default zoo directory")
-            print(
-                f"!!! [COCOLoader] COCO validation split is empty at {dataset_source}. "
-                "Dropping the empty FiftyOne dataset and reloading from disk."
+
+        try:
+            import fiftyone.zoo as foz
+        except ImportError:
+            data_dir_candidates = []
+            direct_data_dir = kwargs.get("data_dir") or kwargs.get("image_dir")
+            if direct_data_dir:
+                data_dir_candidates.append(os.path.expanduser(direct_data_dir))
+            if dataset_dir:
+                expanded_dataset_dir = os.path.expanduser(dataset_dir)
+                data_dir_candidates.extend([
+                    os.path.join(expanded_dataset_dir, "validation", "data"),
+                    os.path.join(expanded_dataset_dir, "val2017"),
+                    expanded_dataset_dir,
+                ])
+            data_dir_candidates.append(
+                os.path.expanduser("~/fiftyone/coco-2017/validation/data")
             )
-            reload_kwargs = dict(load_kwargs)
-            reload_kwargs["drop_existing_dataset"] = True
-            self.fo_dataset = foz.load_zoo_dataset("coco-2017", **reload_kwargs)
+            data_dir = next(
+                (
+                    candidate
+                    for candidate in data_dir_candidates
+                    if os.path.isdir(candidate)
+                    and any(name.endswith(".jpg") for name in os.listdir(candidate))
+                ),
+                None,
+            )
+            if data_dir is None:
+                raise RuntimeError(
+                    "FiftyOne is unavailable and no local COCO validation image "
+                    f"directory was found in {data_dir_candidates}"
+                )
+            self.filepaths = sorted(
+                os.path.join(data_dir, name)
+                for name in os.listdir(data_dir)
+                if name.endswith(".jpg")
+            )
+            sample_count = len(self.filepaths)
+            print(
+                "[COCOLoader] FiftyOne unavailable; loaded "
+                f"{sample_count} validation images directly from {data_dir}."
+            )
+        else:
+            print("[COCOLoader] Loading FiftyOne COCO-2017 Validation Split...")
+            self.fo_dataset = foz.load_zoo_dataset("coco-2017", **load_kwargs)
             sample_count = len(self.fo_dataset)
+            if sample_count == 0:
+                dataset_source = load_kwargs.get(
+                    "dataset_dir",
+                    "FiftyOne default zoo directory",
+                )
+                print(
+                    f"!!! [COCOLoader] COCO validation split is empty at {dataset_source}. "
+                    "Dropping the empty FiftyOne dataset and reloading from disk."
+                )
+                reload_kwargs = dict(load_kwargs)
+                reload_kwargs["drop_existing_dataset"] = True
+                self.fo_dataset = foz.load_zoo_dataset(
+                    "coco-2017",
+                    **reload_kwargs,
+                )
+                sample_count = len(self.fo_dataset)
         print(f"[COCOLoader] Loaded {sample_count} samples.")
         if sample_count == 0:
             dataset_source = load_kwargs.get("dataset_dir", "FiftyOne default zoo directory")
             raise RuntimeError(f"COCO validation split is empty at {dataset_source}.")
         
         ann_file = kwargs.get("ann_file") or kwargs.get("annotation_file")
-        self.ann_file = os.path.expanduser(ann_file or "~/fiftyone/coco-2017/raw/instances_val2017.json")
+        default_ann_file = "~/fiftyone/coco-2017/raw/instances_val2017.json"
+        if dataset_dir:
+            dataset_ann_file = os.path.join(
+                os.path.expanduser(dataset_dir),
+                "raw",
+                "instances_val2017.json",
+            )
+            if os.path.exists(dataset_ann_file):
+                default_ann_file = dataset_ann_file
+        self.ann_file = os.path.expanduser(ann_file or default_ann_file)
         if not os.path.exists(self.ann_file):
             print(f"!!! [COCOLoader] Annotation file not found at {self.ann_file}. Evaluation might fail.")
         else:
@@ -169,9 +236,13 @@ class COCO2017Loader(DatasetLoader):
         import os
 
         class FiftyOneTorchDataset(Dataset):
-            def __init__(self, fo_dataset, transform=None):
-                self.sample_ids = fo_dataset.values("id")
-                self.filepaths = fo_dataset.values("filepath")
+            def __init__(self, fo_dataset, filepaths=None, transform=None):
+                if fo_dataset is not None:
+                    self.sample_ids = fo_dataset.values("id")
+                    self.filepaths = fo_dataset.values("filepath")
+                else:
+                    self.sample_ids = None
+                    self.filepaths = filepaths
                 self.transform = transform
             
             def __len__(self):
@@ -203,7 +274,11 @@ class COCO2017Loader(DatasetLoader):
         to_uint8 = v2.ToDtype(torch.uint8, scale=False)
         tfm = v2.Compose([to_tensor, to_uint8])
 
-        ds = FiftyOneTorchDataset(self.fo_dataset, transform=tfm)
+        ds = FiftyOneTorchDataset(
+            self.fo_dataset,
+            filepaths=self.filepaths,
+            transform=tfm,
+        )
 
         def collate_native(batch):
             images, labels = zip(*batch)
@@ -765,6 +840,9 @@ def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> Datas
         return COCO2017Loader(root, batch_size, **kwargs)
     elif name in {'ade20k', 'scene_parse_150'}:
         return ADE20KLoader(root, batch_size, **kwargs)
+    elif name in {'co3dv2', 'co3d'}:
+        from .co3d_loader import CO3DSequenceLoader
+        return CO3DSequenceLoader(root, batch_size, **kwargs)
     elif name == 'nyu_depth':
         return NYUDepthLoader(root, batch_size, **kwargs)
     else:

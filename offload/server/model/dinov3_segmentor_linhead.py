@@ -240,6 +240,8 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
         linear_head.eval()
         self.vit_backbone = backbone
         self.linear_head = linear_head
+        self.configure_dinov3_approx_precision(self.vit_backbone, config)
+        self.configure_dinov3_correct_precision(self.vit_backbone, config)
 
     # ── Preprocess / output ────────────────────────────────────────────
 
@@ -541,6 +543,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
         self._ensure_group_maps_and_plans(context, config)
         all_group_plans = context.get("slinhead_group_plans")
 
+        self.begin_dinov3_approx_event()
         with torch.autocast("cuda", self.autocast_dtype):
             for src_idx in range(len(all_x_backbones)):
                 x_tokens = current_features[src_idx] if start_l > 0 else all_x_backbones[src_idx].clone()
@@ -555,9 +558,10 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
 
                 with torch.cuda.nvtx.range(f"slinhead_vit_src{src_idx}_L{start_l}-{end_l}"):
                     for lidx in range(start_l, end_l):
-                        blk = vit_backbone.blocks[lidx]
-                        x_tokens, cache = blk.approx(
+                        x_tokens, cache = self.run_dinov3_approx_block(
+                            lidx,
                             x_tokens, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}",
                             appcorr_method=appcorr_method,
                             attn_cache_candidates=attn_cache_candidates,
                             group_plans=group_plans,
@@ -573,7 +577,7 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
         context["slinhead_current_features"] = current_features
         context["slinhead_cache_features"] = all_cache_features
         context["cache_feature"] = self._aggregate_cache_features(all_cache_features)
-        return {}
+        return self.dinov3_approx_event_metadata()
 
     def correct_forward(self, params: Dict[str, Any], context: Dict[str, Any], config: Any):
         layers = params.get("layers", (0, 40))
@@ -692,11 +696,13 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
             x_temp = input_tokens
 
             with torch.autocast("cuda", self.autocast_dtype):
+                self.begin_dinov3_correct_event()
                 for lidx in range(start_l, end_l):
                     blk = vit_backbone.blocks[lidx]
                     if appcorr_method == "partial_channel":
-                        x_temp, cache = blk.correct(
-                            x_temp, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx, x_temp, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,
@@ -714,8 +720,9 @@ class DINOv3SegmentorLinheadExecutor(ModelExecutor):
                             debug=False,
                         )
                     else:
-                        x_temp, cache = blk.correct(
-                            x_temp, dindice, rope, cache, tag=f"src{src_idx}_layer{lidx}",
+                        x_temp, cache = self.run_dinov3_correct_block(
+                            lidx, x_temp, dindice, rope, cache, f"src{src_idx}_layer{lidx}",
+                            source_key=f"src{src_idx}_layer{lidx}",
                             appcorr_method=appcorr_method,
                             token_keep_ratio=token_keep_ratio,
                             token_keep_thres=token_keep_thres,

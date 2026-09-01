@@ -1,5 +1,18 @@
 # ADE20K m2f — `crop_cover` grouping + per-image variable group count (sweep)
 
+> **Pre-fix numbers.** Every interleaved-correction figure here was measured before
+> the persist fix (2026-08-16, `96889a5`), while interleaved correction discarded
+> all but the last round. On ADE20K the same configuration moved 61.042 -> 61.597 mIoU once the
+> corrected increment was persisted (80.8% -> 89.7% of the floor-ceiling gap). Comparisons *within*
+> this memo shared the defect and are likely to survive it; the absolute values will not. See
+> [[dinov3_correct_low_precision_status]].
+>
+> **Two fixes, not one.** These numbers also predate the closed-loop transmission fix
+> (2026-08-17, `378e21d`): the `[2,0]` Laplacian round trip lost 1.85% relative L2 on ADE20K even
+> with the whole residual sent, because the encoder predicted from the native gaussian while the
+> decoder predicted from the resampled base. Correcting both fixes moved ADE20K interleaved from
+> 80.8% of the floor-ceiling gap to **93.7%**. Anything measured on this page carries both.
+
 **Setup:** same backbone/data as the grid/block_grid memo — DINOv3 ViT-7B + m2f head, ADE20K val
 2000, sliding-window (896 crop / 596 stride), partial-token correction (`mobile_pscore=residual_energy`,
 `server_pscore=patch_attn_prob_layermean`, `pscore_fusion=geo_mean`), base = unchanged 1/4-res

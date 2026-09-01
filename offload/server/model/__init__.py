@@ -2,7 +2,10 @@ import torch
 from .base import ModelExecutor
 
 def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
-    if "dinov3_classifier" in name:
+    if "vggt_omega" in name:
+        from .vggt_omega import VGGTOmegaExecutor
+        return VGGTOmegaExecutor(device)
+    elif "dinov3_classifier" in name:
         from .dinov3_classifier import DINOv3ClassifierExecutor
         return DINOv3ClassifierExecutor(device)
     elif "dinov3_detector" in name:
@@ -21,6 +24,15 @@ def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
     elif "dinov3_depther" in name:
         from .dinov3_depther import DINOv3DeptherExecutor
         return DINOv3DeptherExecutor(device)
+    elif "sam3" in name:
+        from .sam3_executor import Sam3Executor
+        return Sam3Executor(device)
+    elif "openclip" in name:
+        from .openclip_executor import OpenCLIPExecutor
+        return OpenCLIPExecutor(device)
+    elif "qwen25vl" in name:
+        from .qwen25vl_executor import Qwen25VLExecutor
+        return Qwen25VLExecutor(device)
     else:
         if "dinov3" in name:
              from .dinov3_classifier import DINOv3ClassifierExecutor
