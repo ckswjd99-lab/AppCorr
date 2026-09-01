@@ -238,8 +238,16 @@
    "k1.00": 10346.9,
    "total_k1.00": 34040.5
   },
-  "_note": "text-split schedule totals (GH200 2026-08-27: pre-image text every round, post-image text final round only; the every-round schedule re-corrected the whole text block g times, 0.56x of full, keep-independent). criticals unchanged by construction. k0.25 accuracy verified schedule-neutral on the 2000-subset (-0.05pp); k0.50 full-split accuracy re-verification lands ~21:20 and may adjust that one accuracy cell.",
-  "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)"
+  "_schedule": "text-split: pre-image text corrected every round, post-image text final round only (accuracy-neutral at full scale: k0.50 A/B -0.02pp, flips 21:23, n=8604; k0.25 subset A/B -0.05pp)",
+  "vstar": {
+   "full": 418641.3,
+   "k0.25": 30382.3,
+   "total_k0.25": 531392.0,
+   "k0.50": 56262.0,
+   "total_k0.50": 634910.7,
+   "k1.00": 106979.8,
+   "total_k1.00": 459022.6
+  }
  },
  "qwen35_moe": {
   "_note": "streaming arm, g=4: progressively recomputes 100% of tokens at k1.00; k0.25/k0.50 are the keep-limited variants. ALL datasets re-measured 2026-08-31 with hooks.patch_attention (attention term included; the pre-fix numbers are in git history). Sources: qwen35_flops_attnfix_legacy4.json + qwen35_flops_restrack.json (flops_report_qwen35.py, 12 samples).",
@@ -478,6 +486,15 @@
    "total_k0.25": 75501.8,
    "k0.50": 70609.5,
    "total_k0.50": 77130.7
+  },
+  "vstar": {
+   "full": 120970.7,
+   "k0.25": 110823.5,
+   "total_k0.25": 124363.2,
+   "k0.50": 114205.9,
+   "total_k0.50": 127745.6,
+   "k1.00": 29536.3,
+   "total_k1.00": 133177.2
   }
  },
  "museglimmer30b": {
