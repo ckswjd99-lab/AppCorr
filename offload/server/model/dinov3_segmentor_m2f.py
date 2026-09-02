@@ -187,6 +187,25 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         return threshold if level_threshold is None else level_threshold
 
     @staticmethod
+    def _token_keep_ratio_for_group(
+        appcorr_options: Dict[str, Any],
+        *,
+        group_id: int,
+        l2l1l0_mode: bool,
+    ) -> float:
+        # Mirror of _token_keep_threshold_for_group for the ratio (top-k) selection mode:
+        # group 1 is the complete L1 band, later groups are L0. A level ratio only engages
+        # when the corresponding threshold is null (thresholds win in _select_patch_keep_mask).
+        ratio = appcorr_options["token_keep_ratio"]
+        if not l2l1l0_mode:
+            return ratio
+        if group_id == 1:
+            level_ratio = appcorr_options.get("l1_token_keep_ratio")
+        else:
+            level_ratio = appcorr_options.get("l0_token_keep_ratio")
+        return ratio if level_ratio is None else float(level_ratio)
+
+    @staticmethod
     def _patch_hw(config: Any) -> tuple[int, int]:
         if isinstance(config.patch_size, int):
             return int(config.patch_size), int(config.patch_size)
@@ -1512,8 +1531,12 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
 
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         appcorr_method = appcorr_options["method"]
-        token_keep_ratio = appcorr_options["token_keep_ratio"]
         l2l1l0_mode = self._uses_l2l1l0_transmission(config)
+        token_keep_ratio = self._token_keep_ratio_for_group(
+            appcorr_options,
+            group_id=group_id,
+            l2l1l0_mode=l2l1l0_mode,
+        )
         disjoint_l1_l0 = self._uses_l1_l0_disjoint_support(config)
         conditional_pscore = self._uses_l1_l0_conditional_pscore(config)
         conditional_reentry = self._uses_l1_l0_conditional_reentry(config)
@@ -1549,6 +1572,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                 all_cached_dindices=all_cached_dindices,
                 all_mobile_pscore_hints=all_mobile_pscore_hints,
                 appcorr_options=appcorr_options,
+                token_keep_ratio=token_keep_ratio,
                 token_keep_thres=token_keep_thres,
                 disjoint_l1_l0=disjoint_l1_l0,
                 conditional_pscore=conditional_pscore,
@@ -1800,6 +1824,7 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         all_cached_dindices: Any,
         all_mobile_pscore_hints: Any,
         appcorr_options: Dict[str, Any],
+        token_keep_ratio: float,
         token_keep_thres: float | None,
         disjoint_l1_l0: bool,
         conditional_pscore: bool,
@@ -1808,7 +1833,6 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
         context: Dict[str, Any],
     ) -> bool:
         vit_backbone = self.model.segmentation_model[0].backbone
-        token_keep_ratio = appcorr_options["token_keep_ratio"]
         sdpa_query_bucket_size = appcorr_options["sdpa_query_bucket_size"]
         num_pretokens = 1 + vit_backbone.n_storage_tokens
 
@@ -2699,6 +2723,13 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
                     group_context,
                     config,
                 )
+            elif grouping_strategy == "quarter_cover":
+                group_map = self._build_quarter_cover_group_map(
+                    input_tokens,
+                    tok_h,
+                    tok_w,
+                    group_context,
+                )
             else:
                 group_map = create_group_index(
                     num_tokens,
@@ -3005,6 +3036,46 @@ class DINOv3SegmentorM2FExecutor(ModelExecutor):
             y1, y2, x1, x2 = crops[idx]
             cover = (rc >= y1) & (rc < y2) & (cc >= x1) & (cc < x2)
             group_map[cover] = idx + 1
+        return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
+
+    def _build_quarter_cover_group_map(
+        self,
+        input_tokens: torch.Tensor,
+        tok_h: int,
+        tok_w: int,
+        group_context: Dict[str, Any] | None,
+    ) -> torch.Tensor:
+        # Assign each of this crop's tokens to the GLOBAL image quadrant of its center
+        # (TL=1, TR=2, BL=3, BR=4). Must match the mobile side's quarter assignment in
+        # ADE20KWindowL2L1L0ProgressiveLaplacianPolicy._precompute_group_assignments
+        # ("quarter_cover"): integer grid coordinates, boundary at (grid+1)//2.
+        num_tokens = tok_h * tok_w
+        if not group_context:
+            return torch.ones(input_tokens.shape[0], num_tokens, dtype=torch.long, device=self.device)
+
+        y1c, y2c, x1c, x2c = (int(v) for v in group_context.get("crop", (0, tok_h * 16, 0, tok_w * 16)))
+        h_img, w_img = (int(v) for v in group_context.get("image_hw", (y2c - y1c, x2c - x1c)))
+        apply_flip = bool(group_context.get("apply_flip", False))
+
+        patch_h = max((y2c - y1c) // max(tok_h, 1), 1)
+        patch_w = max((x2c - x1c) // max(tok_w, 1), 1)
+        row_centers = y1c + torch.arange(tok_h, device=self.device, dtype=torch.long) * patch_h + patch_h // 2
+        col_centers = x1c + torch.arange(tok_w, device=self.device, dtype=torch.long) * patch_w + patch_w // 2
+        if apply_flip:
+            col_centers = (w_img - 1) - col_centers
+
+        rc = row_centers.view(tok_h, 1).expand(tok_h, tok_w).reshape(-1)
+        cc = col_centers.view(1, tok_w).expand(tok_h, tok_w).reshape(-1)
+
+        grid_h = max((h_img + patch_h - 1) // patch_h, 1)
+        grid_w = max((w_img + patch_w - 1) // patch_w, 1)
+        grid_r = torch.clamp(rc // patch_h, max=grid_h - 1)
+        grid_c = torch.clamp(cc // patch_w, max=grid_w - 1)
+        group_map = (
+            (grid_r >= (grid_h + 1) // 2).long() * 2
+            + (grid_c >= (grid_w + 1) // 2).long()
+            + 1
+        )
         return group_map.unsqueeze(0).expand(input_tokens.shape[0], -1)
 
     def prepare_group_maps_and_dindices(self, task: Task | None, context: Dict[str, Any], config: Any):

@@ -93,6 +93,22 @@ class ADE20KWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
     def _precompute_group_assignments(self, strategy, residual_structure, num_groups, config=None):
         # Signature must track ProgressiveLPyramidPolicy's (config was added there for the
         # crop_cover group-count derivation); the parent's encode calls this positionally.
+        if strategy == "quarter_cover":
+            # Fixed spatial quadrants of the L0 grid (TL=1, TR=2, BL=3, BR=4): four equal
+            # correction groups regardless of the sliding-crop count, so the interleaved
+            # scheduler's balanced chunks land on total_layers/5 with the L1 group.
+            structure = list(residual_structure)
+            if not structure:
+                return np.zeros(0, dtype=int)
+            rows = np.array([int(item["row"]) for item in structure])
+            cols = np.array([int(item["col"]) for item in structure])
+            grid_h = int(rows.max()) + 1
+            grid_w = int(cols.max()) + 1
+            return (
+                (rows >= (grid_h + 1) // 2).astype(int) * 2
+                + (cols >= (grid_w + 1) // 2).astype(int)
+                + 1
+            )
         if strategy != "crop_cover":
             return super()._precompute_group_assignments(
                 strategy, residual_structure, num_groups, config
@@ -294,10 +310,11 @@ class ADE20KWindowL2L1L0ProgressiveLaplacianPolicy(
         grouping_strategy = str(
             config.transmission_kwargs.get("grouping_strategy", "crop_cover")
         )
-        if grouping_strategy != "crop_cover":
+        if grouping_strategy not in {"crop_cover", "quarter_cover"}:
             raise ValueError(
                 "ADE20KWindowL2L1L0ProgressiveLaplacian requires "
-                f"grouping_strategy='crop_cover', got {grouping_strategy!r}"
+                "grouping_strategy 'crop_cover' or 'quarter_cover', "
+                f"got {grouping_strategy!r}"
             )
         appcorr_options = normalize_appcorr_kwargs(
             config.appcorr_kwargs,
@@ -631,7 +648,13 @@ class ADE20KWindowL2L1L0ProgressiveLaplacianPolicy(
         image_hw = tuple(int(value) for value in image.shape[:2])
         self._active_config = config
         self._active_image_hw = image_hw
-        l0_num_groups = len(self._crops_for_image(config, image_hw))
+        grouping_strategy = str(
+            config.transmission_kwargs.get("grouping_strategy", "crop_cover")
+        )
+        if grouping_strategy == "quarter_cover":
+            l0_num_groups = 4
+        else:
+            l0_num_groups = len(self._crops_for_image(config, image_hw))
         num_correction_groups = 1 + l0_num_groups
         mobile_pscore = self._resolve_mobile_pscore(config)
 
@@ -748,7 +771,7 @@ class ADE20KWindowL2L1L0ProgressiveLaplacianPolicy(
             if int(item["res_level"]) == 0
         ]
         assignments = self._precompute_group_assignments(
-            "crop_cover",
+            grouping_strategy,
             l0_structure,
             l0_num_groups,
         )

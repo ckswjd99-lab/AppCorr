@@ -18,6 +18,8 @@ def default_appcorr_kwargs() -> Dict[str, Any]:
         'token_keep_thres': None,
         'l1_token_keep_thres': None,
         'l0_token_keep_thres': None,
+        'l1_token_keep_ratio': None,
+        'l0_token_keep_ratio': None,
         'l1_pscore_mode': 'residual_energy',
         'l0_pscore_mode': 'incremental_residual_energy',
         'l1_l0_support_mode': 'independent',
@@ -120,6 +122,11 @@ def normalize_appcorr_kwargs(
             if level_threshold is None
             else float(level_threshold)
         )
+    for level_key in ('l1_token_keep_ratio', 'l0_token_keep_ratio'):
+        level_ratio = options.get(level_key, defaults[level_key])
+        if level_ratio in {'', 'null', 'None'}:
+            level_ratio = None
+        options[level_key] = None if level_ratio is None else float(level_ratio)
     options['l1_pscore_mode'] = str(
         options.get('l1_pscore_mode', defaults['l1_pscore_mode'])
     ).lower()
