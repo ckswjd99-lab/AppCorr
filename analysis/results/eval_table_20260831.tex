@@ -1,7 +1,7 @@
 % requires \usepackage[table]{xcolor} in the preamble (for \cellcolor)
 \begin{table*}[t]
 \vspace{-0.1in}
-\caption{Evaluation Results across Different Configurations. Crit.\ Comp.\ is backbone prefill FLOPs per instruction that can only begin once the whole image has arrived (decode excluded); Comp.\ is the arm's total backbone compute including work overlapped with transmission. Parentheses give the ratio to the Full-res.\ computation. Ours uses interleaved $g{=}4$; shaded Ours and Streaming accuracy cells retain $\geq$98\% of the Full-res.\ accuracy. The Streaming (k$=$1.0) block is the causal-LLM category: the LLM prefills exactly once in arrival-order chunks while the vision encoder corrects everything progressively -- total $\approx$ full + one vision pass, critical $\approx 1/g$. Only causal models qualify (Gemma 3's image tokens are bidirectional; VFMs have no LLM). $^\dagger$Qwen3.5's Ours columns are keep-limited STREAMING arms (band-wise top-$k$ selection), not interleaved correction. $^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive per-round selection arm (2026-08-26); accuracy cells are the progressive arm's where re-measured (2026-08-28 sweep) and the earlier upfront arm's otherwise. $^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds (measured equivalent); the 25\% arm excludes 8/8811 images (0.09\%, a since-fixed driver defect) with bounds restricted to the same kept set -- the 50\% arm has full coverage. \textsuperscript{\P}122B-FP8 accuracy cells are PARENTHESIZED and unshaded: they are a reduced-scale probe (n$=$240 per arm) measured under the Triton finegrained-fp8 fallback (the DeepGEMM path mis-generates on sm\_100), not full-split values, and must not be compared 1:1 against full-split cells; compute figures are shape-determined and kernel-independent.}
+\caption{Evaluation Results across Different Configurations. Crit.\ Comp.\ is backbone prefill FLOPs per instruction that can only begin once the whole image has arrived (decode excluded); Comp.\ is the arm's total backbone compute including work overlapped with transmission. Parentheses give the ratio to the Full-res.\ computation. Ours uses interleaved $g{=}4$; shaded Ours and Streaming accuracy cells retain $\geq$98\% of the Full-res.\ accuracy. The Streaming (k$=$1.0) block is the causal-LLM category: the LLM prefills exactly once in arrival-order chunks while the vision encoder corrects everything progressively -- total $\approx$ full + one vision pass, critical $\approx 1/g$. Only causal models qualify (Gemma 3's image tokens are bidirectional; VFMs have no LLM). $^\dagger$Qwen3.5's Ours columns are keep-limited STREAMING arms (band-wise top-$k$ selection), not interleaved correction. $^\ddagger$Gemma 3 and LLaVA-OV2 compute figures are from the progressive per-round selection arm (2026-08-26); accuracy cells are the progressive arm's where re-measured (2026-08-28 sweep) and the earlier upfront arm's otherwise. $^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds (measured equivalent); the 25\% arm excludes 8/8811 images (0.09\%, a since-fixed driver defect) with bounds restricted to the same kept set -- the 50\% arm has full coverage. \textsuperscript{\P}122B-FP8 accuracy cells are PARENTHESIZED and unshaded: they are a reduced-scale probe (n$=$240 per arm) measured under the Triton finegrained-fp8 fallback (the DeepGEMM path mis-generates on sm\_100), not full-split values, and must not be compared 1:1 against full-split cells; compute figures are shape-determined and kernel-independent. $\diamond$: the model is not capable of the task itself (floor $\approx$ ceiling at degenerate accuracy), so these rows carry no signal about the method.}
 \label{tab:evaluation_results}
 \begin{center}\begin{small}\begin{sc}
 \resizebox{\textwidth}{!}{%
@@ -18,13 +18,17 @@
 & NYUv2 (AbsRel $\downarrow$) & 0.0530 (94.5\%) & \cellcolor{gray!15}0.0497 (100.8\%) & 80.42\,TF (116.6\%) & 4.58\,TF (6.6\%) & \cellcolor{gray!15}0.0490 (102.3\%) & 91.05\,TF (132.0\%) & 8.83\,TF (12.8\%) & -- & -- & -- & 0.0501 & 69.00\,TF \\
 & Co3Dv2 (Rot. deg $\downarrow$) & 5.440 (53.0\%) & -- & -- & -- & -- & -- & -- & -- & -- & -- & 2.885 & -- \\
 \midrule
-\multirow{6}{*}{\shortstack[l]{SAM 3\\(0.85B)}}
+\multirow{10}{*}{\shortstack[l]{SAM 3\\(0.85B)}}
 & COCO Tracker (Mask AP) & 53.74 (89.4\%) & 58.05 (96.6\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & \cellcolor{gray!15}59.46 (98.9\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 60.10 & 5.81\,TF \\
 & COCO Detector (Mask AP) & 43.32 (85.1\%) & 48.45 (95.2\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & \cellcolor{gray!15}50.09 (98.4\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 50.92 & 5.81\,TF \\
 & LVIS Detector (Mask AP) & 41.21 (73.1\%) & 49.30 (87.4\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & 53.80 (95.4\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 56.38 & 5.81\,TF \\
 & SA-Co crowded (cgF1) & 53.15 (90.2\%) & 55.94 (94.9\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & 57.32 (97.2\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 58.95 & 5.81\,TF \\
 & SA-Co sa1b (cgF1) & 52.78 (97.8\%) & \cellcolor{gray!15}53.04 (98.3\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & \cellcolor{gray!15}53.63 (99.4\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 53.94 & 5.81\,TF \\
 & SA-Co attributes (cgF1) & 53.96 (99.5\%) & \cellcolor{gray!15}54.37 (100.3\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & \cellcolor{gray!15}54.42 (100.4\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 54.21 & 5.81\,TF \\
+& SA-Co metaclip (cgF1) & 44.63 (92.6\%) & 46.31 (96.1\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & \cellcolor{gray!15}47.63 (98.8\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 48.20 & 5.81\,TF \\
+& SA-Co fg-sports (cgF1) & 65.58 (96.2\%) & \cellcolor{gray!15}67.44 (99.0\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & \cellcolor{gray!15}68.00 (99.8\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 68.15 & 5.81\,TF \\
+& SA-Co fg-food (cgF1) & 54.41 (94.9\%) & 55.46 (96.8\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & \cellcolor{gray!15}56.21 (98.1\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 57.31 & 5.81\,TF \\
+& SA-Co wiki-common (cgF1) & 38.69 (88.5\%) & 41.13 (94.1\%) & 6.61\,TF (113.8\%) & 0.75\,TF (12.9\%) & 42.47 (97.2\%) & 7.41\,TF (127.5\%) & 1.08\,TF (18.7\%) & -- & -- & -- & 43.70 & 5.81\,TF \\
 \midrule
 \multirow{6}{*}{\shortstack[l]{OpenCLIP\\(2.5B)}}
 & ImageNet-1k (Top-1) & 65.92 (85.5\%) & 66.77 (86.6\%) & 1.13\,TF (116.7\%) & 0.064\,TF (6.7\%) & 72.52 (94.0\%) & 1.28\,TF (132.3\%) & 0.12\,TF (12.9\%) & -- & -- & -- & 77.14 & 0.97\,TF \\
@@ -74,7 +78,7 @@
 & MMMU val (Acc.) & 52.16 (95.9\%) & 53.21 (97.9\%) & 19.39\,TF (127.0\%) & 2.43\,TF (15.9\%) & \cellcolor{gray!15}54.49 (100.2\%) & 21.81\,TF (142.8\%) & 3.28\,TF (21.5\%) & -- & -- & -- & 54.38 & 15.27\,TF \\
 & RefCOCO val (Acc.@0.5) & 6.14 (100.1\%) & \cellcolor{gray!15}6.21 (101.2\%) & 8.89\,TF (129.0\%) & 1.33\,TF (19.2\%) & \cellcolor{gray!15}6.23 (101.5\%) & 9.86\,TF (143.2\%) & 1.70\,TF (24.7\%) & -- & -- & -- & 6.14 & 6.89\,TF \\
 & VSR zeroshot (Acc.) & 77.74 (98.7\%) & \cellcolor{gray!15}77.58 (98.4\%) & -- & -- & \cellcolor{gray!15}77.25 (98.0\%) & -- & -- & \cellcolor{gray!15}78.97 (100.2\%) & -- & -- & 78.81 & -- \\
-& V*Bench (Acc.) & 74.87 (87.2\%) & 78.01 (90.9\%) & -- & -- & 83.25 (97.0\%) & -- & -- & \cellcolor{gray!15}84.29 (98.2\%) & -- & -- & 85.86 & -- \\
+& V*Bench (Acc.) & 74.87 (87.2\%) & 78.01 (90.9\%) & 131.44\,TF (119.9\%) & 8.01\,TF (7.3\%) & 83.25 (97.0\%) & 151.14\,TF (137.9\%) & 14.78\,TF (13.5\%) & \cellcolor{gray!15}84.29 (98.2\%) & 144.15\,TF (131.5\%) & 28.85\,TF (26.3\%) & 85.86 & 109.62\,TF \\
 \midrule
 \multirow{10}{*}{\shortstack[l]{Mistral Small 3.1\\(24B)}}
 & MMVP (Acc.) & 68.33 (97.6\%) & -- & -- & -- & -- & -- & -- & -- & -- & -- & 70.00 & 12.65\,TF \\
@@ -86,19 +90,19 @@
 & VisDrone Count (Soft) & 30.30 (73.3\%) & 37.04 (89.5\%) & 78.79\,TF (102.3\%) & 71.68\,TF (93.1\%) & 39.20 (94.8\%) & 80.57\,TF (104.6\%) & 73.46\,TF (95.4\%) & \cellcolor{gray!15}41.25 (99.7\%) & 83.52\,TF (108.5\%) & 17.80\,TF (23.1\%) & 41.37 & 77.01\,TF \\
 & VisDrone Det (Acc.@0.5) & 0.00 & 0.00 & 75.50\,TF (102.2\%) & 68.98\,TF (93.4\%) & 0.00 & 77.13\,TF (104.4\%) & 70.61\,TF (95.6\%) & 0.00 & -- & -- & 0.00 & 73.87\,TF \\
 & VisDrone Det (mIoU) & 0.56 (136.6\%) & 0.38 (91.9\%) & 75.50\,TF (102.2\%) & 68.98\,TF (93.4\%) & 0.29 (71.5\%) & 77.13\,TF (104.4\%) & 70.61\,TF (95.6\%) & 0.35 (84.3\%) & -- & -- & 0.41 & 73.87\,TF \\
-& V*Bench (Acc.) & 50.26 (96.0\%) & \cellcolor{gray!15}53.40 (102.0\%) & -- & -- & \cellcolor{gray!15}54.97 (105.0\%) & -- & -- & \cellcolor{gray!15}51.83 (99.0\%) & -- & -- & 52.36 & -- \\
+& V*Bench (Acc.) & 50.26 (96.0\%) & \cellcolor{gray!15}53.40 (102.0\%) & 124.36\,TF (102.8\%) & 110.82\,TF (91.6\%) & \cellcolor{gray!15}54.97 (105.0\%) & 127.75\,TF (105.6\%) & 114.21\,TF (94.4\%) & \cellcolor{gray!15}51.83 (99.0\%) & 133.18\,TF (110.1\%) & 29.54\,TF (24.4\%) & 52.36 & 120.97\,TF \\
 \midrule
 \multirow{10}{*}{\shortstack[l]{Muse Glimmer\\(29.6B)}}
 & MMVP (Acc.) & 70.00 (94.2\%) & -- & -- & -- & -- & -- & -- & -- & -- & -- & 74.33 & 8.68\,TF \\
 & CV-Bench (Acc.) & 67.63 (96.4\%) & -- & -- & -- & -- & -- & -- & -- & -- & -- & 70.13 & 63.33\,TF \\
-& V*Bench (Acc.) & 61.26 (80.1\%) & 67.02 (87.7\%) & -- & -- & 71.20 (93.2\%) & -- & -- & \cellcolor{gray!15}76.96 (100.7\%) & -- & -- & 76.44 & -- \\
-& RefCOCO val (Acc.@0.5) & -- & -- & 32.38\,TF (105.6\%) & 7.85\,TF (25.6\%) & -- & 33.89\,TF (110.5\%) & 8.22\,TF (26.8\%) & -- & 36.63\,TF (119.4\%) & 8.96\,TF (29.2\%) & -- & 30.67\,TF \\
-& RefCOCO val (mIoU) & -- & -- & 32.38\,TF (105.6\%) & 7.85\,TF (25.6\%) & -- & 33.89\,TF (110.5\%) & 8.22\,TF (26.8\%) & -- & 36.63\,TF (119.4\%) & 8.96\,TF (29.2\%) & -- & 30.67\,TF \\
+& V*Bench (Acc.) & 61.26 (80.1\%) & 67.02 (87.7\%) & 324.26\,TF (105.8\%) & 61.17\,TF (20.0\%) & 71.20 (93.2\%) & 345.19\,TF (112.6\%) & 66.37\,TF (21.7\%) & \cellcolor{gray!15}76.96 (100.7\%) & 384.06\,TF (125.3\%) & 76.74\,TF (25.0\%) & 76.44 & 306.50\,TF \\
+& RefCOCO val (Acc.@0.5)\,$\diamond$ & -- & -- & 32.38\,TF (105.6\%) & 7.85\,TF (25.6\%) & -- & 33.89\,TF (110.5\%) & 8.22\,TF (26.8\%) & -- & 36.63\,TF (119.4\%) & 8.96\,TF (29.2\%) & -- & 30.67\,TF \\
+& RefCOCO val (mIoU)\,$\diamond$ & -- & -- & 32.38\,TF (105.6\%) & 7.85\,TF (25.6\%) & -- & 33.89\,TF (110.5\%) & 8.22\,TF (26.8\%) & -- & 36.63\,TF (119.4\%) & 8.96\,TF (29.2\%) & -- & 30.67\,TF \\
 & TextVQA (VQA Acc.) & 54.79 (81.4\%) & -- & 73.74\,TF (106.3\%) & 14.55\,TF (21.0\%) & -- & 77.76\,TF (112.1\%) & 15.55\,TF (22.4\%) & \cellcolor{gray!15}67.18 (99.8\%) & 85.09\,TF (122.7\%) & 17.52\,TF (25.3\%) & 67.35 & 69.35\,TF \\
-& VisDrone Count (Exact Acc.) & 7.53 (54.8\%) & -- & -- & -- & -- & -- & -- & -- & -- & -- & 13.74 & -- \\
-& VisDrone Count (Soft) & 19.86 (53.4\%) & -- & -- & -- & -- & -- & -- & -- & -- & -- & 37.20 & -- \\
-& VisDrone Det (Acc.@0.5) & 2.23 (142.9\%) & -- & -- & -- & -- & -- & -- & 1.12 (71.4\%) & -- & -- & 1.56 & -- \\
-& VisDrone Det (mIoU) & 2.27 (104.6\%) & -- & -- & -- & -- & -- & -- & 2.02 (93.2\%) & -- & -- & 2.17 & -- \\
+& VisDrone Count (Exact Acc.) & 7.53 (54.8\%) & -- & 109.42\,TF (106.3\%) & 21.09\,TF (20.5\%) & -- & 115.72\,TF (112.5\%) & 22.64\,TF (22.0\%) & 13.45 (97.8\%) & 127.27\,TF (123.7\%) & 25.76\,TF (25.0\%) & 13.74 & 102.89\,TF \\
+& VisDrone Count (Soft) & 19.86 (53.4\%) & -- & 109.42\,TF (106.3\%) & 21.09\,TF (20.5\%) & -- & 115.72\,TF (112.5\%) & 22.64\,TF (22.0\%) & \cellcolor{gray!15}36.88 (99.1\%) & 127.27\,TF (123.7\%) & 25.76\,TF (25.0\%) & 37.20 & 102.89\,TF \\
+& VisDrone Det (Acc.@0.5)\,$\diamond$ & 2.23 (142.9\%) & -- & 97.64\,TF (106.2\%) & 20.10\,TF (21.9\%) & -- & 103.09\,TF (112.1\%) & 21.44\,TF (23.3\%) & 1.12 (71.4\%) & 113.08\,TF (123.0\%) & 24.14\,TF (26.3\%) & 1.56 & 91.93\,TF \\
+& VisDrone Det (mIoU)\,$\diamond$ & 2.27 (104.6\%) & -- & 97.64\,TF (106.2\%) & 20.10\,TF (21.9\%) & -- & 103.09\,TF (112.1\%) & 21.44\,TF (23.3\%) & 2.02 (93.2\%) & 113.08\,TF (123.0\%) & 24.14\,TF (26.3\%) & 2.17 & 91.93\,TF \\
 \midrule
 \multirow{9}{*}{\shortstack[l]{Qwen2.5-VL\\(33.5B)$^\S$}}
 & RefCOCO val (Acc.@0.5) & 79.68 (90.4\%) & 86.10 (97.6\%) & 46.03\,TF (144.8\%) & 6.17\,TF (19.4\%) & \cellcolor{gray!15}87.30 (99.0\%) & 52.86\,TF (166.3\%) & 7.88\,TF (24.8\%) & \cellcolor{gray!15}89.55 (101.5\%) & 34.04\,TF (107.1\%) & 10.35\,TF (32.6\%) & 88.19 & 31.78\,TF \\
@@ -109,7 +113,7 @@
 & CV-Bench (Acc.) & 72.52 (90.8\%) & 75.09 (94.0\%) & -- & -- & 77.52 (97.1\%) & -- & -- & \cellcolor{gray!15}78.96 (98.9\%) & -- & -- & 79.87 & -- \\
 & VisDrone Count (Exact Acc.) & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
 & VisDrone Det (Acc.@0.5) & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-& V*Bench (Acc.) & 60.73 (76.8\%) & 70.68 (89.4\%) & -- & -- & 74.87 (94.7\%) & -- & -- & \cellcolor{gray!15}78.01 (98.7\%) & -- & -- & 79.06 & -- \\
+& V*Bench (Acc.) & 60.73 (76.8\%) & 70.68 (89.4\%) & 531.39\,TF (126.9\%) & 30.38\,TF (7.3\%) & 74.87 (94.7\%) & 634.91\,TF (151.7\%) & 56.26\,TF (13.4\%) & \cellcolor{gray!15}78.01 (98.7\%) & 459.02\,TF (109.6\%) & 106.98\,TF (25.6\%) & 79.06 & 418.64\,TF \\
 \midrule
 \multirow{13}{*}{\shortstack[l]{Qwen3.5-MoE\\(35B-A3B)$^\dagger$}}
 & ChartQA (Relaxed Acc.) & 60.76 (68.6\%) & 83.68 (94.5\%) & 4.81\,TF (110.5\%) & 0.86\,TF (19.8\%) & \cellcolor{gray!15}86.80 (98.0\%) & 5.27\,TF (121.3\%) & 0.98\,TF (22.5\%) & \cellcolor{gray!15}88.32 (99.7\%) & 6.21\,TF (142.8\%) & 1.21\,TF (27.9\%) & 88.56 & 4.35\,TF \\
@@ -120,11 +124,11 @@
 & RefCOCO val (Acc.@0.5) & 91.02 (97.6\%) & -- & 3.23\,TF (109.6\%) & 0.73\,TF (24.7\%) & -- & 3.52\,TF (119.3\%) & 0.80\,TF (27.1\%) & \cellcolor{gray!15}92.74 (99.5\%) & 4.09\,TF (138.7\%) & 0.94\,TF (32.0\%) & 93.24 & 2.95\,TF \\
 & RefCOCO val (mIoU) & 82.77 (96.2\%) & -- & 3.23\,TF (109.6\%) & 0.73\,TF (24.7\%) & -- & 3.52\,TF (119.3\%) & 0.80\,TF (27.1\%) & \cellcolor{gray!15}85.34 (99.2\%) & 4.09\,TF (138.7\%) & 0.94\,TF (32.0\%) & 86.04 & 2.95\,TF \\
 & TextVQA (VQA Acc.) & 69.51 (79.5\%) & 83.15 (95.1\%) & 8.38\,TF (111.4\%) & 1.31\,TF (17.5\%) & 85.13 (97.4\%) & 9.27\,TF (123.3\%) & 1.54\,TF (20.4\%) & \cellcolor{gray!15}86.29 (98.7\%) & 11.05\,TF (146.9\%) & 1.98\,TF (26.3\%) & 87.43 & 7.52\,TF \\
-& VisDrone Count (Exact Acc.) & -- & -- & 13.83\,TF (112.4\%) & 1.95\,TF (15.9\%) & -- & 15.44\,TF (125.5\%) & 2.35\,TF (19.1\%) & -- & 18.65\,TF (151.6\%) & 3.16\,TF (25.7\%) & -- & 12.30\,TF \\
-& VisDrone Count (Soft) & -- & -- & 13.83\,TF (112.4\%) & 1.95\,TF (15.9\%) & -- & 15.44\,TF (125.5\%) & 2.35\,TF (19.1\%) & -- & 18.65\,TF (151.6\%) & 3.16\,TF (25.7\%) & -- & 12.30\,TF \\
-& VisDrone Det (Acc.@0.5) & -- & -- & 11.98\,TF (111.9\%) & 1.87\,TF (17.5\%) & -- & 13.32\,TF (124.4\%) & 2.20\,TF (20.6\%) & -- & 16.00\,TF (149.5\%) & 2.87\,TF (26.8\%) & -- & 10.70\,TF \\
-& VisDrone Det (mIoU) & -- & -- & 11.98\,TF (111.9\%) & 1.87\,TF (17.5\%) & -- & 13.32\,TF (124.4\%) & 2.20\,TF (20.6\%) & -- & 16.00\,TF (149.5\%) & 2.87\,TF (26.8\%) & -- & 10.70\,TF \\
-& V*Bench (Acc.) & 72.77 (86.3\%) & 79.58 (94.4\%) & -- & -- & \cellcolor{gray!15}83.77 (99.4\%) & -- & -- & \cellcolor{gray!15}83.77 (99.4\%) & -- & -- & 84.29 & -- \\
+& VisDrone Count (Exact Acc.) & 11.45 (61.7\%) & 13.79 (74.3\%) & 13.83\,TF (112.4\%) & 1.95\,TF (15.9\%) & 15.57 (83.9\%) & 15.44\,TF (125.5\%) & 2.35\,TF (19.1\%) & 17.49 (94.3\%) & 18.65\,TF (151.6\%) & 3.16\,TF (25.7\%) & 18.55 & 12.30\,TF \\
+& VisDrone Count (Soft) & 31.48 (64.1\%) & 37.86 (77.1\%) & 13.83\,TF (112.4\%) & 1.95\,TF (15.9\%) & 41.52 (84.5\%) & 15.44\,TF (125.5\%) & 2.35\,TF (19.1\%) & 46.49 (94.6\%) & 18.65\,TF (151.6\%) & 3.16\,TF (25.7\%) & 49.13 & 12.30\,TF \\
+& VisDrone Det (Acc.@0.5) & 29.46 (59.5\%) & 38.17 (77.0\%) & 11.98\,TF (111.9\%) & 1.87\,TF (17.5\%) & 45.31 (91.4\%) & 13.32\,TF (124.4\%) & 2.20\,TF (20.6\%) & 47.10 (95.0\%) & 16.00\,TF (149.5\%) & 2.87\,TF (26.8\%) & 49.55 & 10.70\,TF \\
+& VisDrone Det (mIoU) & 25.42 (59.1\%) & 33.15 (77.1\%) & 11.98\,TF (111.9\%) & 1.87\,TF (17.5\%) & 38.47 (89.4\%) & 13.32\,TF (124.4\%) & 2.20\,TF (20.6\%) & 41.55 (96.6\%) & 16.00\,TF (149.5\%) & 2.87\,TF (26.8\%) & 43.01 & 10.70\,TF \\
+& V*Bench (Acc.) & 72.77 (86.3\%) & 79.58 (94.4\%) & 56.91\,TF (114.6\%) & 6.69\,TF (13.5\%) & \cellcolor{gray!15}83.77 (99.4\%) & 64.78\,TF (130.4\%) & 8.66\,TF (17.4\%) & \cellcolor{gray!15}83.77 (99.4\%) & 80.50\,TF (162.1\%) & 12.59\,TF (25.3\%) & 84.29 & 49.68\,TF \\
 \midrule
 \multirow{8}{*}{\shortstack[l]{Qwen3.5-MoE\\(122B-A10B FP8)$^\dagger$\textsuperscript{\P}}}
 & ChartQA (Relaxed Acc.) & -- & -- & -- & -- & -- & -- & -- & -- & 7.52\,TF (124.4\%) & 1.75\,TF (28.9\%) & -- & 6.04\,TF \\
@@ -134,7 +138,7 @@
 & TextVQA (VQA Acc.) & (67.78) & (81.81) & 11.85\,TF (107.3\%) & 2.29\,TF (20.7\%) & (83.89) & 12.74\,TF (115.3\%) & 2.51\,TF (22.7\%) & (86.11) & 14.52\,TF (131.4\%) & 2.96\,TF (26.7\%) & (85.97) & 11.05\,TF \\
 & VisDrone Count (Exact Acc.) & -- & -- & 18.98\,TF (108.0\%) & 3.35\,TF (19.1\%) & -- & 20.59\,TF (117.1\%) & 3.75\,TF (21.3\%) & -- & 23.80\,TF (135.4\%) & 4.56\,TF (25.9\%) & -- & 17.58\,TF \\
 & VisDrone Det (Acc.@0.5) & -- & -- & 16.66\,TF (107.6\%) & 3.24\,TF (20.9\%) & -- & 18.00\,TF (116.2\%) & 3.58\,TF (23.1\%) & -- & 20.68\,TF (133.5\%) & 4.25\,TF (27.4\%) & -- & 15.49\,TF \\
-& V*Bench (Acc.) & 73.82 (85.5\%) & 82.20 (95.2\%) & -- & -- & \cellcolor{gray!15}86.39 (100.0\%) & -- & -- & \cellcolor{gray!15}85.34 (98.8\%) & -- & -- & 86.39 & -- \\
+& V*Bench (Acc.) & 73.82 (85.5\%) & 82.20 (95.2\%) & 72.86\,TF (109.5\%) & 11.08\,TF (16.6\%) & \cellcolor{gray!15}86.39 (100.0\%) & 80.73\,TF (121.3\%) & 13.05\,TF (19.6\%) & \cellcolor{gray!15}85.34 (98.8\%) & 96.45\,TF (144.9\%) & 16.97\,TF (25.5\%) & 86.39 & 66.56\,TF \\
 \midrule\midrule
 \multirow{4}{*}{\shortstack[l]{OpenVLA\\(7B)}}
 & LIBERO-Spatial (Success Rate) & 17.20 (20.8\%) & -- & -- & -- & -- & -- & -- & \cellcolor{gray!15}81.60 (98.6\%) & -- & -- & 82.80 & -- \\
