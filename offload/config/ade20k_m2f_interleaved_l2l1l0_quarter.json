@@ -1,0 +1,61 @@
+{
+  "model_name": "dinov3_segmentor_m2f",
+  "dataset_name": "ade20k",
+  "dataset_kwargs": {
+    "emit_original_image": true
+  },
+  "exp_id": "ade20k_m2f_l2l1l0_quarter",
+  "batch_size": 1,
+  "image_shape": [
+    896,
+    896,
+    3
+  ],
+  "patch_size": [
+    16,
+    16
+  ],
+  "input_profile_name": "dinov3_ade20k_m2f_official",
+  "input_profile_kwargs": {
+    "server_eval_mode": "single",
+    "server_rescale_to": "original",
+    "m2f_slide_merge_stage": "pre_head"
+  },
+  "scheduler_policy_name": "ADE20KWindowInterleaved",
+  "scheduler_kwargs": {
+    "total_layers": 40,
+    "final_full_layers": 0
+  },
+  "transmission_policy_name": "ADE20KWindowL2L1L0ProgressiveLaplacian",
+  "transmission_kwargs": {
+    "pyramid_levels": [
+      2,
+      1,
+      0
+    ],
+    "grouping_strategy": "quarter_cover",
+    "num_groups": 16,
+    "compression_level": 1,
+    "preserve_input_shape": true
+  },
+  "appcorr_kwargs": {
+    "generated_from_client": true,
+    "method": "partial_token",
+    "token_keep_thres": null,
+    "l1_token_keep_thres": null,
+    "l0_token_keep_thres": null,
+    "l1_pscore_mode": "positive_residual_difference",
+    "l0_pscore_mode": "conditional_cumulative_residual_energy",
+    "l1_l0_support_mode": "conditional_reentry",
+    "l1_l0_reentry_ratio": 0.5,
+    "l1_remaining_energy_ratio_max": null,
+    "mobile_pscore": "residual_energy",
+    "mobile_pscore_weight": 1.0,
+    "server_pscore": "patch_attn_prob_layermean",
+    "server_pscore_weight": 1.0,
+    "pscore_fusion": "geo_mean",
+    "sdpa_query_bucket_size": 64,
+    "l1_token_keep_ratio": 0.5,
+    "l0_token_keep_ratio": 0.5
+  }
+}
