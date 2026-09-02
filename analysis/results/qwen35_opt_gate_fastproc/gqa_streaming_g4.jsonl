@@ -1,0 +1,240 @@
+{"i": 0, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 1, "pred": "woman", "gold": "women", "ok": 0, "val": 0.0}
+{"i": 2, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 3, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 4, "pred": "3 feet", "gold": "short", "ok": 0, "val": 0.0}
+{"i": 5, "pred": "computer", "gold": "keyboard", "ok": 0, "val": 0.0}
+{"i": 6, "pred": "ocean", "gold": "ocean", "ok": 1, "val": 1.0}
+{"i": 7, "pred": "red", "gold": "red", "ok": 1, "val": 1.0}
+{"i": 8, "pred": "brown", "gold": "brown", "ok": 1, "val": 1.0}
+{"i": 9, "pred": "curtains", "gold": "drapes", "ok": 0, "val": 0.0}
+{"i": 10, "pred": "curtains", "gold": "drapes", "ok": 0, "val": 0.0}
+{"i": 11, "pred": "people", "gold": "woman", "ok": 0, "val": 0.0}
+{"i": 12, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 13, "pred": "pictures", "gold": "picture", "ok": 0, "val": 0.0}
+{"i": 14, "pred": "yes", "gold": "no", "ok": 0, "val": 0.0}
+{"i": 15, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 16, "pred": "keyboard", "gold": "keyboard", "ok": 1, "val": 1.0}
+{"i": 17, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 18, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 19, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 20, "pred": "right", "gold": "right", "ok": 1, "val": 1.0}
+{"i": 21, "pred": "yes", "gold": "no", "ok": 0, "val": 0.0}
+{"i": 22, "pred": "white", "gold": "white", "ok": 1, "val": 1.0}
+{"i": 23, "pred": "pan", "gold": "pan", "ok": 1, "val": 1.0}
+{"i": 24, "pred": " table", "gold": "table", "ok": 1, "val": 1.0}
+{"i": 25, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 26, "pred": "small", "gold": "large", "ok": 0, "val": 0.0}
+{"i": 27, "pred": "cake", "gold": "marshmallow", "ok": 0, "val": 0.0}
+{"i": 28, "pred": "aluminum", "gold": "aluminum", "ok": 1, "val": 1.0}
+{"i": 29, "pred": "left", "gold": "left", "ok": 1, "val": 1.0}
+{"i": 30, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 31, "pred": "yes", "gold": "no", "ok": 0, "val": 0.0}
+{"i": 32, "pred": "white", "gold": "white", "ok": 1, "val": 1.0}
+{"i": 33, "pred": "black", "gold": "white", "ok": 0, "val": 0.0}
+{"i": 34, "pred": "brown", "gold": "red", "ok": 0, "val": 0.0}
+{"i": 35, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 36, "pred": "windows", "gold": "window", "ok": 0, "val": 0.0}
+{"i": 37, "pred": "left", "gold": "left", "ok": 1, "val": 1.0}
+{"i": 38, "pred": "concrete", "gold": "concrete", "ok": 1, "val": 1.0}
+{"i": 39, "pred": "small", "gold": "small", "ok": 1, "val": 1.0}
+{"i": 40, "pred": "concrete", "gold": "concrete", "ok": 1, "val": 1.0}
+{"i": 41, "pred": "tank top", "gold": "tank top", "ok": 1, "val": 1.0}
+{"i": 42, "pred": "tank top", "gold": "tank top", "ok": 1, "val": 1.0}
+{"i": 43, "pred": "shorts", "gold": "hat", "ok": 0, "val": 0.0}
+{"i": 44, "pred": "on", "gold": "off", "ok": 0, "val": 0.0}
+{"i": 45, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 46, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 47, "pred": "shirt", "gold": "tank top", "ok": 0, "val": 0.0}
+{"i": 48, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 49, "pred": "bananas", "gold": "bananas", "ok": 1, "val": 1.0}
+{"i": 50, "pred": "white", "gold": "white", "ok": 1, "val": 1.0}
+{"i": 51, "pred": "bananas", "gold": "bananas", "ok": 1, "val": 1.0}
+{"i": 52, "pred": "right", "gold": "right", "ok": 1, "val": 1.0}
+{"i": 53, "pred": "left", "gold": "right", "ok": 0, "val": 0.0}
+{"i": 54, "pred": "girl in middle", "gold": "woman", "ok": 0, "val": 0.0}
+{"i": 55, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 56, "pred": "cabinet", "gold": "cabinet", "ok": 1, "val": 1.0}
+{"i": 57, "pred": "left", "gold": "left", "ok": 1, "val": 1.0}
+{"i": 58, "pred": "gray", "gold": "gray", "ok": 1, "val": 1.0}
+{"i": 59, "pred": "woman", "gold": "girl", "ok": 0, "val": 0.0}
+{"i": 60, "pred": "woman", "gold": "girl", "ok": 0, "val": 0.0}
+{"i": 61, "pred": "waiting", "gold": "standing", "ok": 0, "val": 0.0}
+{"i": 62, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 63, "pred": "wall", "gold": "wall", "ok": 1, "val": 1.0}
+{"i": 64, "pred": "sparse", "gold": "dense", "ok": 0, "val": 0.0}
+{"i": 65, "pred": "sushi", "gold": "cookies", "ok": 0, "val": 0.0}
+{"i": 66, "pred": "van", "gold": "van", "ok": 1, "val": 1.0}
+{"i": 67, "pred": "van", "gold": "van", "ok": 1, "val": 1.0}
+{"i": 68, "pred": "picture", "gold": "picture frame", "ok": 0, "val": 0.0}
+{"i": 69, "pred": "train", "gold": "pavement", "ok": 0, "val": 0.0}
+{"i": 70, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 71, "pred": "tan", "gold": "beige", "ok": 0, "val": 0.0}
+{"i": 72, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 73, "pred": "bed", "gold": "bed", "ok": 1, "val": 1.0}
+{"i": 74, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 75, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 76, "pred": "narrow", "gold": "narrow", "ok": 1, "val": 1.0}
+{"i": 77, "pred": "stove", "gold": "stove", "ok": 1, "val": 1.0}
+{"i": 78, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 79, "pred": "cookies", "gold": "cookies", "ok": 1, "val": 1.0}
+{"i": 80, "pred": "dirty", "gold": "clean", "ok": 0, "val": 0.0}
+{"i": 81, "pred": "baseball field", "gold": "field", "ok": 1, "val": 1.0}
+{"i": 82, "pred": "black", "gold": "black", "ok": 1, "val": 1.0}
+{"i": 83, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 84, "pred": "brown", "gold": "light brown", "ok": 0, "val": 0.0}
+{"i": 85, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 86, "pred": "shirt", "gold": "gown", "ok": 0, "val": 0.0}
+{"i": 87, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 88, "pred": "ski clothes", "gold": "gloves", "ok": 0, "val": 0.0}
+{"i": 89, "pred": "ski suit", "gold": "gloves", "ok": 0, "val": 0.0}
+{"i": 90, "pred": "dress", "gold": "gown", "ok": 0, "val": 0.0}
+{"i": 91, "pred": "steps", "gold": "stairs", "ok": 0, "val": 0.0}
+{"i": 92, "pred": "shelf", "gold": "shelf", "ok": 1, "val": 1.0}
+{"i": 93, "pred": "tables", "gold": "tables", "ok": 1, "val": 1.0}
+{"i": 94, "pred": " shelf", "gold": "shelf", "ok": 1, "val": 1.0}
+{"i": 95, "pred": "wide", "gold": "wide", "ok": 1, "val": 1.0}
+{"i": 96, "pred": "left", "gold": "left", "ok": 1, "val": 1.0}
+{"i": 97, "pred": "keyboard", "gold": "phone", "ok": 0, "val": 0.0}
+{"i": 98, "pred": "people", "gold": "gift", "ok": 0, "val": 0.0}
+{"i": 99, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 100, "pred": "no", "gold": "yes", "ok": 0, "val": 0.0}
+{"i": 101, "pred": "glass", "gold": "glass", "ok": 1, "val": 1.0}
+{"i": 102, "pred": "plastic", "gold": "glass", "ok": 0, "val": 0.0}
+{"i": 103, "pred": "dog", "gold": "dog", "ok": 1, "val": 1.0}
+{"i": 104, "pred": "black", "gold": "black", "ok": 1, "val": 1.0}
+{"i": 105, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 106, "pred": "monitor", "gold": "monitor", "ok": 1, "val": 1.0}
+{"i": 107, "pred": "sitting", "gold": "resting", "ok": 0, "val": 0.0}
+{"i": 108, "pred": "plastic", "gold": "plastic", "ok": 1, "val": 1.0}
+{"i": 109, "pred": "yes", "gold": "no", "ok": 0, "val": 0.0}
+{"i": 110, "pred": "car", "gold": "cars", "ok": 0, "val": 0.0}
+{"i": 111, "pred": "car", "gold": "cars", "ok": 0, "val": 0.0}
+{"i": 112, "pred": "blue", "gold": "blue", "ok": 1, "val": 1.0}
+{"i": 113, "pred": "cars", "gold": "cars", "ok": 1, "val": 1.0}
+{"i": 114, "pred": "car", "gold": "cars", "ok": 0, "val": 0.0}
+{"i": 115, "pred": "luggage", "gold": "luggage", "ok": 1, "val": 1.0}
+{"i": 116, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 117, "pred": "no", "gold": "yes", "ok": 0, "val": 0.0}
+{"i": 118, "pred": "light", "gold": "traffic light", "ok": 0, "val": 0.0}
+{"i": 119, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 120, "pred": "sink", "gold": "countertop", "ok": 0, "val": 0.0}
+{"i": 121, "pred": "white", "gold": "white", "ok": 1, "val": 1.0}
+{"i": 122, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 123, "pred": "cloth", "gold": "cloth", "ok": 1, "val": 1.0}
+{"i": 124, "pred": "black and white", "gold": "black and white", "ok": 1, "val": 1.0}
+{"i": 125, "pred": "woman", "gold": "man", "ok": 0, "val": 0.0}
+{"i": 126, "pred": "right", "gold": "right", "ok": 1, "val": 1.0}
+{"i": 127, "pred": "no", "gold": "yes", "ok": 0, "val": 0.0}
+{"i": 128, "pred": "chair", "gold": "table", "ok": 0, "val": 0.0}
+{"i": 129, "pred": "brunette", "gold": "blond", "ok": 0, "val": 0.0}
+{"i": 130, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 131, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 132, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 133, "pred": "boy", "gold": "child", "ok": 0, "val": 0.0}
+{"i": 134, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 135, "pred": "male", "gold": "male", "ok": 1, "val": 1.0}
+{"i": 136, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 137, "pred": "bare", "gold": "lush", "ok": 0, "val": 0.0}
+{"i": 138, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 139, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 140, "pred": "color", "gold": "color", "ok": 1, "val": 1.0}
+{"i": 141, "pred": "large", "gold": "small", "ok": 0, "val": 0.0}
+{"i": 142, "pred": "right", "gold": "right", "ok": 1, "val": 1.0}
+{"i": 143, "pred": "male", "gold": "male", "ok": 1, "val": 1.0}
+{"i": 144, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 145, "pred": "black", "gold": "black", "ok": 1, "val": 1.0}
+{"i": 146, "pred": "men", "gold": "chair", "ok": 0, "val": 0.0}
+{"i": 147, "pred": "men", "gold": "chair", "ok": 0, "val": 0.0}
+{"i": 148, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 149, "pred": "man", "gold": "soccer player", "ok": 0, "val": 0.0}
+{"i": 150, "pred": "computer", "gold": "keyboard", "ok": 0, "val": 0.0}
+{"i": 151, "pred": "police", "gold": "policeman", "ok": 0, "val": 0.0}
+{"i": 152, "pred": "washer", "gold": "dishwasher", "ok": 0, "val": 0.0}
+{"i": 153, "pred": "teal", "gold": "teal", "ok": 1, "val": 1.0}
+{"i": 154, "pred": "black", "gold": "gray", "ok": 0, "val": 0.0}
+{"i": 155, "pred": "left", "gold": "left", "ok": 1, "val": 1.0}
+{"i": 156, "pred": "bike", "gold": "bike", "ok": 1, "val": 1.0}
+{"i": 157, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 158, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 159, "pred": "jacket", "gold": "jacket", "ok": 1, "val": 1.0}
+{"i": 160, "pred": "monitor", "gold": "monitor", "ok": 1, "val": 1.0}
+{"i": 161, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 162, "pred": "cake", "gold": "marshmallow", "ok": 0, "val": 0.0}
+{"i": 163, "pred": "chair", "gold": "chair", "ok": 1, "val": 1.0}
+{"i": 164, "pred": "chair", "gold": "chair", "ok": 1, "val": 1.0}
+{"i": 165, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 166, "pred": "rectangular", "gold": "rectangular", "ok": 1, "val": 1.0}
+{"i": 167, "pred": "crowd", "gold": "sneakers", "ok": 0, "val": 0.0}
+{"i": 168, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 169, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 170, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 171, "pred": "woman", "gold": "snowboarder", "ok": 0, "val": 0.0}
+{"i": 172, "pred": "table", "gold": "coffee table", "ok": 0, "val": 0.0}
+{"i": 173, "pred": "table", "gold": "coffee table", "ok": 0, "val": 0.0}
+{"i": 174, "pred": "table", "gold": "coffee table", "ok": 0, "val": 0.0}
+{"i": 175, "pred": "man in middle", "gold": "spectator", "ok": 0, "val": 0.0}
+{"i": 176, "pred": "bench", "gold": "sofa", "ok": 0, "val": 0.0}
+{"i": 177, "pred": " wall", "gold": "poster", "ok": 0, "val": 0.0}
+{"i": 178, "pred": "sofa", "gold": "sofa", "ok": 1, "val": 1.0}
+{"i": 179, "pred": "watching", "gold": "looking up", "ok": 0, "val": 0.0}
+{"i": 180, "pred": "bench", "gold": "sofa", "ok": 0, "val": 0.0}
+{"i": 181, "pred": "coins", "gold": "shelf", "ok": 0, "val": 0.0}
+{"i": 182, "pred": "shirt", "gold": "robe", "ok": 0, "val": 0.0}
+{"i": 183, "pred": "right", "gold": "right", "ok": 1, "val": 1.0}
+{"i": 184, "pred": "striped", "gold": "white", "ok": 0, "val": 0.0}
+{"i": 185, "pred": "no", "gold": "yes", "ok": 0, "val": 0.0}
+{"i": 186, "pred": "books", "gold": "jar", "ok": 0, "val": 0.0}
+{"i": 187, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 188, "pred": "6ft", "gold": "tall", "ok": 0, "val": 0.0}
+{"i": 189, "pred": "brown", "gold": "dark brown", "ok": 0, "val": 0.0}
+{"i": 190, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 191, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 192, "pred": "refrigerator", "gold": "refrigerator", "ok": 1, "val": 1.0}
+{"i": 193, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 194, "pred": "table", "gold": "chair", "ok": 0, "val": 0.0}
+{"i": 195, "pred": "table", "gold": "chair", "ok": 0, "val": 0.0}
+{"i": 196, "pred": "clean", "gold": "clean", "ok": 1, "val": 1.0}
+{"i": 197, "pred": "chair", "gold": "chair", "ok": 1, "val": 1.0}
+{"i": 198, "pred": "cow", "gold": "cow", "ok": 1, "val": 1.0}
+{"i": 199, "pred": "skateboarder", "gold": "skateboarder", "ok": 1, "val": 1.0}
+{"i": 200, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 201, "pred": "left", "gold": "left", "ok": 1, "val": 1.0}
+{"i": 202, "pred": "broccoli", "gold": "broccoli", "ok": 1, "val": 1.0}
+{"i": 203, "pred": "counter", "gold": "countertop", "ok": 0, "val": 0.0}
+{"i": 204, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 205, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 206, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 207, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 208, "pred": "laptop", "gold": "laptop", "ok": 1, "val": 1.0}
+{"i": 209, "pred": "yes", "gold": "no", "ok": 0, "val": 0.0}
+{"i": 210, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 211, "pred": "large", "gold": "large", "ok": 1, "val": 1.0}
+{"i": 212, "pred": "flowers", "gold": "flowers", "ok": 1, "val": 1.0}
+{"i": 213, "pred": "yes", "gold": "no", "ok": 0, "val": 0.0}
+{"i": 214, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 215, "pred": "plastic", "gold": "plastic", "ok": 1, "val": 1.0}
+{"i": 216, "pred": "yes", "gold": "yes", "ok": 1, "val": 1.0}
+{"i": 217, "pred": "fire truck", "gold": "ambulance", "ok": 0, "val": 0.0}
+{"i": 218, "pred": " truck", "gold": "truck", "ok": 1, "val": 1.0}
+{"i": 219, "pred": "no", "gold": "yes", "ok": 0, "val": 0.0}
+{"i": 220, "pred": "fire truck", "gold": "ambulance", "ok": 0, "val": 0.0}
+{"i": 221, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 222, "pred": "yes", "gold": "no", "ok": 0, "val": 0.0}
+{"i": 223, "pred": "grass", "gold": "grass", "ok": 1, "val": 1.0}
+{"i": 224, "pred": "grass", "gold": "grass", "ok": 1, "val": 1.0}
+{"i": 225, "pred": "no", "gold": "yes", "ok": 0, "val": 0.0}
+{"i": 226, "pred": "no", "gold": "yes", "ok": 0, "val": 0.0}
+{"i": 227, "pred": "woman", "gold": "women", "ok": 0, "val": 0.0}
+{"i": 228, "pred": "woman", "gold": "women", "ok": 0, "val": 0.0}
+{"i": 229, "pred": " table", "gold": "restaurant", "ok": 0, "val": 0.0}
+{"i": 230, "pred": "snowboard", "gold": "cell phone", "ok": 0, "val": 0.0}
+{"i": 231, "pred": "speaker", "gold": "speaker", "ok": 1, "val": 1.0}
+{"i": 232, "pred": "book", "gold": "books", "ok": 0, "val": 0.0}
+{"i": 233, "pred": "left", "gold": "left", "ok": 1, "val": 1.0}
+{"i": 234, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 235, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 236, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 237, "pred": "no", "gold": "no", "ok": 1, "val": 1.0}
+{"i": 238, "pred": "truck", "gold": "truck", "ok": 1, "val": 1.0}
+{"i": 239, "pred": " desk", "gold": "shelf", "ok": 0, "val": 0.0}

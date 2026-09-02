@@ -1,0 +1,25 @@
+{
+ "_model": "meta-models/Muse-Glimmer-30B",
+ "_samples": 12,
+ "_groups": 4,
+ "visdrone_count": {
+  "full": 102893.8,
+  "floor": 102893.8,
+  "crit_g4_k0.25": 21085.1,
+  "total_g4_k0.25": 109417.9,
+  "crit_g4_k0.50": 22640.5,
+  "total_g4_k0.50": 115720.0,
+  "crit_g4": 25756.7,
+  "total_g4": 127271.1
+ },
+ "visdrone_det": {
+  "full": 91927.2,
+  "floor": 91927.2,
+  "crit_g4_k0.25": 20095.1,
+  "total_g4_k0.25": 97638.4,
+  "crit_g4_k0.50": 21441.4,
+  "total_g4_k0.50": 103093.6,
+  "crit_g4": 24140.6,
+  "total_g4": 113077.8
+ }
+}
