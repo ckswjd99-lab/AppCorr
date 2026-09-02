@@ -91,12 +91,40 @@ and the merged branch.)
   NOT survive full-2000 (61.90 vs ceiling 62.24) — another instance of the
   standing n=100-is-a-sanity-check rule.
 - **The July hard rejection softens but the operating points still don't win
-  on accuracy-per-total-FLOP.** The two doors the fixes opened: (1) the
-  critical-FLOPs axis for disjoint, (2) **conditional re-entry re-tuned
-  post-fix** — July tuned it as compensation for the bug; a small re-entry
-  ratio on top of disjoint may now buy back the 0.70 for a fraction of
-  eq-thr's 38 extra TF. That sweep (reentry_ratio ∈ {0.1, 0.25, 0.5}, paired
-  100) is the obvious next experiment, and cheap.
+  on accuracy-per-total-FLOP.** The re-entry sweep below measured the whole
+  spectrum between disjoint and eq-thr and found no knee.
+
+## Re-entry ratio sweep (full-2000, B200, 2026-09-02)
+
+Single-knob design: the disjoint operating point (l1 1e-5, l0 4e-5, no safety
+gate — July's l0=1.2e-4 retune and 0.5 gate were bug-era compensations) with
+only `l1_l0_reentry_ratio` moving. Run on the NHN B200 (GH200 contended);
+L1 counter constant at 35,895 tl across arms, as re-entry only touches L0.
+
+| r | mIoU | Δ vs disjoint | total corr tl | corr TF | buy-back / extra TF |
+|---:|---:|---:|---:|---:|---:|
+| 0 (disjoint) | 61.126 | — | 120,820 | 46.8 | — |
+| 0.10 | 61.363 | +0.24 | 140,188 | 54.3 | 0.032/TF |
+| 0.25 | 61.563 | +0.44 | 162,874 | 63.0 | 0.027/TF |
+| 0.50 | 61.719 | +0.59 | 197,049 | 76.3 | 0.020/TF |
+| ~1 (eq-thr) | 61.902 | +0.78 | 217,449 | 84.2 | 0.021/TF |
+| L2-L0 (ref) | **61.826** | — | **118,450** | **45.8** | — |
+
+Monotone, roughly linear, mildly diminishing: **no cheap sweet spot.** Every
+multi-level point is dominated by plain L2-L0 on accuracy-per-total-FLOP
+(the curve only passes L2-L0's mIoU at eq-thr, +0.08 for +84% compute).
+
+## Track verdict (accuracy axis: CLOSED, clean negative)
+
+July's rejection was contaminated but directionally right on this axis; it is
+now established cleanly and more completely than in July: the never-revisit
+staleness cost is ~0.70 mIoU, buying it back is linear in recomputation with
+no knee, and no L2-L1-L0 operating point beats L2-L0 per total FLOP. What
+remains open is only the **critical-compute/scheduling axis**: strict disjoint
+(r=0) executes 30% of correction one round earlier at −0.70 mIoU; whether that
+is worth anything requires arrival-anchored accounting in this pipeline, and
+should be attempted only if the paper needs a multi-level chapter. The L1-only
+anchor rule stands: any such claim must also beat L1-only transmission.
 
 ## Not yet re-tested
 
