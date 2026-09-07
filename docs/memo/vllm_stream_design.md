@@ -327,7 +327,7 @@ run-to-run jitter of a few samples per thousand; the one-shot arms are determini
 |---|---|---|---|
 | Qwen2.5-VL-7B | GPU0 `--gpu-mem 0.3` | GPU0 `--family qwen25vl` | gated end-to-end (above) |
 | Qwen2.5-VL-32B | GPU0 `--gpu-mem 0.45` | GPU0 `--family qwen25vl` | same axis; HF 32B bf16 ~67 GB |
-| Qwen3.5-35B-A3B | GPU0 `--gpu-mem 0.45 --max-num-seqs 64` | GPU0 `--family qwen35` | axis gated bitwise in-process; socket: ceiling arm decoded through the server with first token == HF (margin 0.25 at pos 2, the engine band), then the HF twin OOMed -- engine 79 GB + HF 82 GB peak + OpenVLA 17 GB fills GPU0; rerun the gate once GPU0 is free. `--max-num-seqs` must be <= the mamba cache blocks (431 at 0.45) or the server refuses to start |
+| Qwen3.5-35B-A3B | GPU0 `--gpu-mem 0.44 --max-num-seqs 64` | GPU0 `--family qwen35` | gated end-to-end: stream 4/4 exact (16/16 tokens), floor/ceiling near-ties at margin 0-0.375 (`bridge_gate_qwen3.5-35b-a3b.json`); stream `ttft_from_last_chunk` 13-19 ms. `--max-num-seqs` must be <= the mamba cache blocks (431 at 0.45) or the server refuses to start; the HF twin needs no_grad (an autograd graph on the 1.8k-token prefill pushed it to 82 GB and OOMed the shared GPU) |
 | Qwen3.5-122B-A10B-FP8 | GPU1 `--gpu-mem 0.9` | GPU0 `--family qwen35 --host 127.0.0.1` | HF side alone fills GPU0; the socket makes the split free |
 
 Bridge/driver code is family-agnostic (the sink only sees `[T, D]` embeds + `[3, T]` mrope +
