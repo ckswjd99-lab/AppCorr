@@ -1,0 +1,71 @@
+{
+    "date": "2026-07-29",
+    "branch": "develop/dinov3-l2l1l0-tail-full",
+    "task": "ADE20K DINOv3 ViT-7B Mask2Former",
+    "num_images": 100,
+    "labels_order_matched": true,
+    "threshold": 0.00004,
+    "l1_endpoint_pixel_identical": true,
+    "flops_per_recomputed_query_layer": 387006464,
+    "full_sequential": {
+        "mIoU": 52.92288696479569,
+        "aAcc": 84.08007692187066,
+        "bytes_per_image": 3164118.56,
+        "backbone_tflops_per_image": 90.43969537474561,
+        "end_to_end_ms": 404.68968391418457
+    },
+    "l1_only_decomposed": {
+        "mIoU": 52.65364697816651,
+        "aAcc": 83.86339528409681,
+        "bytes_per_image": 496560.91,
+        "backbone_tflops_per_image": 90.43969537474561,
+        "backbone_ms": 173.21585178375244,
+        "end_to_end_ms": 578.5592269897461
+    },
+    "l2_l1_threshold": {
+        "mIoU": 46.50900642612969,
+        "aAcc": 81.90086607980635,
+        "bytes_per_image": 691960.37,
+        "selected_patch_queries_per_sample": 701.5430107526881,
+        "full_patch_queries_per_sample": 3136.0,
+        "patch_query_layer_keep_percent": 22.370631720430108,
+        "pscore_coverage_percent": 99.52924421554684,
+        "patch_token_layers_per_image": 52194.8,
+        "query_token_layers_per_image": 52566.8,
+        "correction_tflops_per_image": 20.3436913917952,
+        "total_backbone_tflops_per_image": 110.78338676654081,
+        "approx_backbone_ms": 220.6862449645996,
+        "correction_ms": 98.841872215271,
+        "end_to_end_ms": 953.5190033912658
+    },
+    "l1_only_minus_full": {
+        "mIoU_points": -0.2692399866291737,
+        "aAcc_points": -0.21668163777384564,
+        "bytes_percent": -84.30650114450832
+    },
+    "l2_l1_minus_l1_only": {
+        "mIoU_points": -6.144640552036826,
+        "aAcc_points": -1.9625292042904618,
+        "bytes_percent": 39.35055218100032,
+        "end_to_end_percent": 64.80922935970482
+    },
+    "paired_per_image_l2_l1_minus_l1": {
+        "mean_mIoU_points": -2.844294733548458,
+        "bootstrap_95ci": [
+            -4.773189384128183,
+            -0.9020175099012537
+        ],
+        "wins": 35,
+        "ties": 0,
+        "losses": 65,
+        "bootstrap_samples": 100000,
+        "seed": 20260729
+    },
+    "full_support_first_image": {
+        "l1_only_mIoU": 69.2587099002175,
+        "l2_l1_mIoU": 69.25562054491792,
+        "difference_points": -0.0030893552995792106,
+        "prediction_hash_equal": false
+    },
+    "conclusion": "L1-only is within 0.269 mIoU of full, but the unchanged 4e-5 L2-to-L1 threshold keeps only 22.37% of query-layer work and loses 6.145 mIoU versus that L1 endpoint; this operating point is not usable."
+}

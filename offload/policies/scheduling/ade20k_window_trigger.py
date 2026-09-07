@@ -3,6 +3,7 @@ from typing import Any, List, Optional
 from offload.common.protocol import ExperimentConfig, Instruction, OpType, Task
 
 from ..interface import ISchedulingPolicy
+from .group_trigger import build_balanced_layer_boundaries
 
 
 class ADE20KWindowInterleavedPolicy(ISchedulingPolicy):
@@ -32,17 +33,13 @@ class ADE20KWindowInterleavedPolicy(ISchedulingPolicy):
 
     @classmethod
     def _layer_boundaries(cls, config: ExperimentConfig, num_groups: int) -> List[int]:
-        total = cls._total_layers(config)
-        n = max(int(num_groups), 1)
-        base = total // n
-        remainder = total % n
-        boundaries = [0]
-        cursor = 0
-        for idx in range(n):
-            cursor += base + (1 if idx < remainder else 0)
-            boundaries.append(cursor)
-        boundaries[-1] = total
-        return boundaries
+        return list(
+            build_balanced_layer_boundaries(
+                cls._total_layers(config),
+                max(int(num_groups), 1),
+                int(config.scheduler_kwargs.get("final_full_layers", 0)),
+            )
+        )
 
     def decide(self, buffer, config: ExperimentConfig, task_id_gen: Any, **kwargs) -> Optional[Task]:
         if not buffer:
@@ -75,6 +72,8 @@ class ADE20KWindowInterleavedPolicy(ISchedulingPolicy):
         total = self._total_layers(config)
         n = max(self.num_groups, 1)
         boundaries = self._layer_boundaries(config, n)
+        progressive_end = boundaries[-1]
+        final_full_layers = total - progressive_end
 
         instructions = [Instruction(OpType.LOAD_INPUT), Instruction(OpType.PREPARE_TOKENS)]
 
@@ -88,8 +87,31 @@ class ADE20KWindowInterleavedPolicy(ISchedulingPolicy):
             instructions.append(Instruction(OpType.APPROX_FORWARD, {"layers": (chunk_start, chunk_end)}))
             return instructions
 
-        # Final residual group (group_id == n): correct the whole model, then head.
-        instructions.append(Instruction(OpType.CORRECT_FORWARD, {"layers": (0, total), "group_id": group_id}))
+        if group_id > n:
+            raise ValueError(
+                f"Unexpected group_id={group_id}; final group is {n}"
+            )
+
+        # Final residual group: correct only layers with approximation caches,
+        # then execute the deferred suffix once on the final-resolution feature.
+        if progressive_end > 0:
+            instructions.append(
+                Instruction(
+                    OpType.CORRECT_FORWARD,
+                    {"layers": (0, progressive_end), "group_id": group_id},
+                )
+            )
+        if final_full_layers > 0:
+            instructions.append(
+                Instruction(
+                    OpType.APPROX_FORWARD,
+                    {
+                        "layers": (progressive_end, total),
+                        "cache_mode": "none",
+                        "phase": "final_full",
+                    },
+                )
+            )
         instructions.append(Instruction(OpType.HEAD_INFERENCE))
         instructions.append(Instruction(OpType.EXIT_ALL))
         instructions.append(Instruction(OpType.SEND_RESPONSE))

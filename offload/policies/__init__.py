@@ -19,9 +19,12 @@ from .transmission import (
     RawTransmissionPolicy,
     ZlibTransmissionPolicy,
     COCOWindowProgressiveLaplacianPolicy,
+    ADE20KL2L1ProgressiveLaplacianPolicy,
+    ADE20KWindowL2L1L0ProgressiveLaplacianPolicy,
     ADE20KWindowProgressiveLaplacianPolicy,
     FourierADE20KWindowHybridPolicy,
     LaplacianPyramidPolicy,
+    L2L1L0ProgressiveLPyramidPolicy,
     NYUAppCorrLaplacianPolicy,
     NYUAppCorrProgressiveLaplacianPolicy,
     NYUAppCorrRawTransmissionPolicy,
@@ -56,9 +59,16 @@ TRANSMISSION_REGISTRY = {
     "Laplacian": LaplacianPyramidPolicy,
     "NYUAppCorrLaplacian": NYUAppCorrLaplacianPolicy,
     "ProgressiveLaplacian": ProgressiveLPyramidPolicy,
+    "L2L1L0ProgressiveLaplacian": L2L1L0ProgressiveLPyramidPolicy,
     "NYUAppCorrProgressiveLaplacian": NYUAppCorrProgressiveLaplacianPolicy,
     "COCOWindowProgressiveLaplacian": COCOWindowProgressiveLaplacianPolicy,
+    "ADE20KL2L1ProgressiveLaplacian": (
+        ADE20KL2L1ProgressiveLaplacianPolicy
+    ),
     "ADE20KWindowProgressiveLaplacian": ADE20KWindowProgressiveLaplacianPolicy,
+    "ADE20KWindowL2L1L0ProgressiveLaplacian": (
+        ADE20KWindowL2L1L0ProgressiveLaplacianPolicy
+    ),
     "FourierADE20KWindowHybrid": FourierADE20KWindowHybridPolicy,
     "FullImageCompression": FullImageCompressionPolicy,
     "FourierProgressive": FourierProgressiveTransmissionPolicy,
