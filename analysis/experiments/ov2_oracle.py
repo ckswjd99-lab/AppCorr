@@ -307,10 +307,18 @@ def main():
     ds = spec.load(load_dataset)
     n = len(ds) if a.full else min(a.num_samples, len(ds))
     idxs = list(range(len(ds)))[:n] if a.full else list(range(0, len(ds), max(1, len(ds) // n)))[:n]
-    print(f"[ov2] {a.dataset} arm={a.arm} keep={a.keep if axis else None} "
-          f"pscore={a.pscore if axis else None} level=L{a.level} "
-          f"groups={a.groups if a.arm in ('interleaved', 'parity') else None}  "
-          f"{n} of {len(ds)}", flush=True)
+    # Echo only the knobs this arm actually uses. A header that prints `groups=None` for an arm
+    # driven by `--groups` is worse than no header: a sweep script once passed groups=1999 (bash's
+    # GROUPS builtin) and the log said `groups=None`, so nothing looked wrong.
+    banded = a.arm in ("interleaved", "parity", "streaming")
+    knobs = [f"level=L{a.level}"] if a.arm != "ceiling" else []
+    if a.arm in AXIS_ARMS and a.arm != "streaming":
+        knobs += [f"keep={a.keep}", f"pscore={a.pscore}"]
+    if banded:
+        knobs.append(f"groups={a.groups}")
+    print(f"[ov2] {a.dataset} arm={a.arm} {' '.join(knobs)}  {n} of {len(ds)}", flush=True)
+    assert not banded or 1 <= a.groups <= 64, (
+        f"--groups {a.groups} is not a plausible band count; bands are arrival rounds, not tokens")
 
     total, correct, t0 = 0.0, 0, time.time()
     per_sample, stat_acc = [], {}

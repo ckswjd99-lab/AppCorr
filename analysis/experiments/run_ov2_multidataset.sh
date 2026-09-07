@@ -1,23 +1,32 @@
 #!/usr/bin/env bash
-# LLaVA-OneVision-2 unified axis across datasets: floor / corrected / interleaved / ceiling.
+# LLaVA-OneVision-2 across datasets. Baselines by default; correction arms only when asked.
 #
-# The dataset set matches docs/memo/gemma3_multidataset_results.md so the two model families land on
-# one axis. Three of those five carry an interpretable preservation number (ChartQA, TextVQA,
-# InfoVQA); POPE and RealWorldQA are kept because a NARROW gap is itself the finding -- Gemma 3's
-# 1.20pp and 0.78pp gaps make preservation arithmetic rather than evidence, and OV2 has to be shown
-# to be in the same position rather than assumed into it.
+# floor and ceiling are METHOD-INDEPENDENT. They depend on the model, the dataset and the
+# degradation level -- not on how correction is scheduled -- so measuring them broadly is durable
+# work that survives any change to the correction arm. The correction arms are not: keep ratio,
+# band count and the method itself are all still moving, and every run of them is provisional until
+# those settle.
 #
-# Every arm on a dataset must run over the SAME examples, which `--full` guarantees.
-# floor/ceiling for chartqa and textvqa already exist under analysis/results/ov2_<ds>/ and are
-# reused rather than recomputed -- the driver's stock path is unchanged, and the smoke run
-# reproduced the ceiling to 0.3pp on a 100-sample subset.
+# So `ARMS=baselines` (the default) measures only floor and ceiling, and `ARMS=all` adds the
+# streaming arm. Run the baselines everywhere first; run correction arms when the configuration is
+# final and the numbers are meant to be quoted.
+#
+# ORDER: cheap and interpretable first. A dataset whose floor-ceiling gap turns out to be narrow
+# cannot carry a preservation number at all (Gemma 3's POPE gap was 1.20pp and RealWorldQA's
+# 0.78pp, which makes preservation arithmetic rather than evidence), so knowing the gap early is
+# what decides whether a correction arm is worth running there later.
+#
+# Every arm on a dataset runs over the SAME examples, which `--full` guarantees. Existing results
+# are reused, never recomputed.
 set -u
 cd /NHNHOME/share/cjpark/AppCorr-ov2
 PY=/home/nxclab/anaconda3/envs/appcorr/bin/python
 export CUDA_VISIBLE_DEVICES=${GPU:-0}
-KEEP=${KEEP:-0.55}
-GROUPS=${GROUPS:-4}
-DATASETS=${DATASETS:-"chartqa textvqa infovqa realworldqa pope"}
+# NOT `GROUPS`: that is a bash builtin holding the caller's group ids, so `${GROUPS:-4}` silently
+# yields the primary GID (1999 here) and the sweep launches with --groups 1999.
+BANDS=${BANDS:-4}
+ARMS=${ARMS:-baselines}          # baselines | all
+DATASETS=${DATASETS:-"realworldqa pope chartqa textvqa infovqa docvqa"}
 
 run () {   # run <dataset> <tag> <extra args...>
   local ds=$1 tag=$2; shift 2
@@ -26,16 +35,15 @@ run () {   # run <dataset> <tag> <extra args...>
   echo "[start] $ds/$tag  $(date +%H:%M:%S)"
   $PY analysis/experiments/ov2_oracle.py --dataset "$ds" --full --level 2 \
       --out-json "$out/$tag.json" "$@" > "$out/$tag.log" 2>&1
-  echo "[done ] $ds/$tag  $(date +%H:%M:%S)  $(grep -aoE '"accuracy": [0-9.]+' "$out/$tag.log" | head -1)"
+  local rc=$?
+  echo "[done ] $ds/$tag  $(date +%H:%M:%S)  rc=$rc  $(grep -aoE '"accuracy": [0-9.]+' "$out/$tag.log" | head -1)"
 }
 
 for DS in $DATASETS; do
-  # Order matters for triage, not for correctness: the two cheap stock arms first, so a dataset
-  # whose gap turns out to be narrow is known to be uninterpretable before hours go into its
-  # correction arms.
-  run "$DS" ceiling  --arm ceiling
-  run "$DS" floor    --arm floor
-  run "$DS" "corrected_k${KEEP}"        --arm corrected   --keep "$KEEP"
-  run "$DS" "interleaved_g${GROUPS}_k${KEEP}" --arm interleaved --keep "$KEEP" --groups "$GROUPS"
+  run "$DS" ceiling --arm ceiling
+  run "$DS" floor   --arm floor
+  if [ "$ARMS" = "all" ]; then
+    run "$DS" "streaming_g${BANDS}" --arm streaming --groups "$BANDS"
+  fi
 done
-echo "OV2 MULTIDATASET SWEEP COMPLETE $(date)"
+echo "OV2 SWEEP COMPLETE (ARMS=$ARMS) $(date)"
