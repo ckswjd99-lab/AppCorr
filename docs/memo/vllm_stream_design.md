@@ -312,7 +312,7 @@ otherwise the client, not the engine, is the bottleneck.
 |---|---|---|---|
 | Qwen2.5-VL-7B | GPU0 `--gpu-mem 0.3` | GPU0 `--family qwen25vl` | gated end-to-end (above) |
 | Qwen2.5-VL-32B | GPU0 `--gpu-mem 0.45` | GPU0 `--family qwen25vl` | same axis; HF 32B bf16 ~67 GB |
-| Qwen3.5-35B-A3B | GPU0 `--gpu-mem 0.45` | GPU0 `--family qwen35` | axis gated bitwise in-process; socket plumbing check pending (needs ~70 GB HF + engine on one GPU -> after OpenVLA) |
+| Qwen3.5-35B-A3B | GPU0 `--gpu-mem 0.45 --max-num-seqs 64` | GPU0 `--family qwen35` | axis gated bitwise in-process; socket: ceiling arm decoded through the server with first token == HF (margin 0.25 at pos 2, the engine band), then the HF twin OOMed -- engine 79 GB + HF 82 GB peak + OpenVLA 17 GB fills GPU0; rerun the gate once GPU0 is free. `--max-num-seqs` must be <= the mamba cache blocks (431 at 0.45) or the server refuses to start |
 | Qwen3.5-122B-A10B-FP8 | GPU1 `--gpu-mem 0.9` | GPU0 `--family qwen35 --host 127.0.0.1` | HF side alone fills GPU0; the socket makes the split free |
 
 Bridge/driver code is family-agnostic (the sink only sees `[T, D]` embeds + `[3, T]` mrope +
