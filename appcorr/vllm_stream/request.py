@@ -32,6 +32,7 @@ import json
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
+import numpy as np
 import torch
 from vllm.v1.request import Request
 
@@ -39,6 +40,20 @@ STREAM_HEADER = "x-appcorr-stream"
 MROPE_HEADER = "x-appcorr-mrope"
 MROPE_DELTA_HEADER = "x-appcorr-mrope-delta"
 MODES = ("open", "oneshot", "append", "final")
+
+
+def cpu_cat(a: torch.Tensor, b: torch.Tensor, dim: int) -> torch.Tensor:
+    """`torch.cat` for small CPU tensors that does not go through the intra-op thread pool.
+
+    With the default thread count (72 here) `torch.cat` on a 1 MB CPU tensor costs ~90 ms of
+    OpenMP fork/join, single-threaded it is 0.06 ms; the engine process should not have its
+    thread count changed by us, so the copy is done by numpy (a plain memcpy). bf16 has no numpy
+    dtype -- the bytes are moved as int16."""
+    assert a.device.type == "cpu" and b.device.type == "cpu", (a.device, b.device)
+    b = b.to(a.dtype)
+    view = torch.int16 if a.dtype == torch.bfloat16 else a.dtype
+    out = np.concatenate([a.contiguous().view(view).numpy(), b.contiguous().view(view).numpy()], axis=dim)
+    return torch.from_numpy(out).view(a.dtype)
 
 
 @dataclass
@@ -121,11 +136,11 @@ class StreamingRequest(Request):
         assert self.stream_open, f"{self.request_id}: append after final"
         assert self.num_output_tokens == 0, f"{self.request_id}: append after sampling started"
         t = chunk.num_tokens
-        self.prompt_embeds = torch.cat([self.prompt_embeds, chunk.embeds.to(self.prompt_embeds.dtype)], dim=0)
+        self.prompt_embeds = cpu_cat(self.prompt_embeds, chunk.embeds, dim=0)
         self._all_token_ids.extend([0] * t)
         self.num_prompt_tokens += t
         if chunk.mrope_positions is not None:
             assert self.mrope_positions is not None, "mrope positions on append but none at open"
-            self.mrope_positions = torch.cat([self.mrope_positions, chunk.mrope_positions], dim=1)
+            self.mrope_positions = cpu_cat(self.mrope_positions, chunk.mrope_positions, dim=1)
             self.mrope_delta = chunk.mrope_delta
         self.stream_open = not chunk.final

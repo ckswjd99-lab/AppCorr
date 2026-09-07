@@ -20,6 +20,7 @@ Select with `scheduler_cls="appcorr.vllm_stream.scheduler.StreamingScheduler"`.
 """
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Optional
 
@@ -28,7 +29,7 @@ from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import RequestStatus
 
-from .request import StreamChunk, StreamingRequest
+from .request import StreamChunk, StreamingRequest, cpu_cat
 
 
 @dataclass
@@ -42,9 +43,10 @@ def _merge_chunks(chunks: list[StreamChunk]) -> StreamChunk:
         return chunks[0]
     pos = None
     if chunks[0].mrope_positions is not None:
-        pos = torch.cat([c.mrope_positions for c in chunks], dim=1)
-    return StreamChunk(embeds=torch.cat([c.embeds for c in chunks], dim=0),
-                       final=chunks[-1].final, mrope_positions=pos, mrope_delta=chunks[-1].mrope_delta)
+        pos = functools.reduce(lambda a, b: cpu_cat(a, b, dim=1), [c.mrope_positions for c in chunks])
+    emb = functools.reduce(lambda a, b: cpu_cat(a, b, dim=0), [c.embeds for c in chunks])
+    return StreamChunk(embeds=emb, final=chunks[-1].final, mrope_positions=pos,
+                       mrope_delta=chunks[-1].mrope_delta)
 
 
 class StreamingScheduler(Scheduler):
