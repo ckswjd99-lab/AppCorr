@@ -84,6 +84,7 @@ def rescale_box(pred: str, size) -> str:
     return f"{x1 * w_ / 1000:.1f},{y1 * h_ / 1000:.1f},{x2 * w_ / 1000:.1f},{y2 * h_ / 1000:.1f}"
 
 
+@torch.no_grad()
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--family", choices=["qwen25vl", "qwen35"], required=True)
@@ -103,6 +104,9 @@ def main():
     ap.add_argument("--concurrency", type=int, default=1,
                     help="requests kept in flight on the server (vllm backend only)")
     ap.add_argument("--think", action="store_true", help="qwen35: enable_thinking in the template")
+    ap.add_argument("--prefetch", type=int, default=0,
+                    help="samples to preprocess ahead on a CPU thread (0 = inline); use for "
+                         "throughput runs so the HF image processor is not the bottleneck")
     ap.add_argument("--out", default="analysis/results/qwen_vllm_accuracy")
     args = ap.parse_args()
     if args.backend == "hf":
@@ -178,16 +182,45 @@ def main():
                 img = img.convert("RGB")
             return img, q, gold
 
-        def vision(i, sink):
-            """Run this arm's vision + chunk pushes for sample i; returns (extra-fields, HF twin
-            (logits, cache, start_pos) when backend=hf else None)."""
+        def prep(i):
+            """CPU side of one sample: degrade + HF image processor (two images for the
+            streaming arm). Runs on the prefetch thread when --prefetch > 0."""
             img, q, gold = build(i)
             t0 = time.perf_counter()
             base = degrade(img, args.level, args.degrade_filter)
+            if arm == "streaming":
+                inputs = axis.build_inputs(img, q, **tmpl_kw)
+                px_base = axis.build_inputs(base, q, **tmpl_kw)["pixel_values"]
+            else:
+                inputs = axis.build_inputs(img if arm == "ceiling" else base, q, **tmpl_kw)
+                px_base = None
+            return {"img": img, "gold": gold, "inputs": inputs, "px_base": px_base,
+                    "t_prep_ms": (time.perf_counter() - t0) * 1e3}
+
+        if args.prefetch > 0:
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prep")
+            futs = {}
+
+            def prepared(k):
+                """prep(pending[k]) with the next --prefetch samples already submitted."""
+                for j in range(k, min(k + 1 + args.prefetch, len(pending))):
+                    if j not in futs:
+                        futs[j] = pool.submit(prep, pending[j])
+                return futs.pop(k).result()
+        else:
+            def prepared(k):
+                return prep(pending[k])
+
+        def vision(k, sink):
+            """Run this arm's vision + chunk pushes for pending[k]; returns (extra-fields, HF
+            twin (logits, cache, start_pos) when backend=hf else None)."""
+            p = prepared(k)
+            img, gold = p["img"], p["gold"]
+            inputs = p["inputs"].to("cuda:0")
             hf = None
             if arm == "streaming":
-                inputs = axis.build_inputs(img, q, **tmpl_kw).to("cuda:0")
-                px_base = axis.build_inputs(base, q, **tmpl_kw)["pixel_values"].to("cuda:0")
+                px_base = p["px_base"].to("cuda:0")
                 torch.cuda.synchronize()
                 t1 = time.perf_counter()
                 lg, kv, st = axis.streaming_forward(inputs, px_base, args.groups, keep=args.keep,
@@ -197,8 +230,6 @@ def main():
                 if sink is None:
                     hf = (lg, kv, st["decode_start_pos"])
             else:
-                use = img if arm == "ceiling" else base
-                inputs = axis.build_inputs(use, q, **tmpl_kw).to("cuda:0")
                 torch.cuda.synchronize()
                 t1 = time.perf_counter()
                 emb, pos, delta = axis.oneshot_embeds(inputs, inputs["pixel_values"])
@@ -214,15 +245,15 @@ def main():
             # path (degrade + HF image processor -- two images for the streaming arm);
             # t_vision: the GPU vision pass incl. the chunk pushes -- the number to set beside
             # the server's ttft_open_ms (which for the streaming arm already contains it).
-            extra["t_prep_ms"] = (t1 - t0) * 1e3
+            extra["t_prep_ms"] = p["t_prep_ms"]
             extra["t_vision_ms"] = (time.perf_counter() - t1) * 1e3
             extra["prompt_tokens"] = int(inputs["input_ids"].shape[1])
             return gold, img.size, extra, hf
 
         if args.backend == "hf":
-            for i in pending:
+            for k, i in enumerate(pending):
                 try:
-                    gold, size, extra, (lg, kv, dp) = vision(i, None)
+                    gold, size, extra, (lg, kv, dp) = vision(k, None)
                     toks = greedy_tokens(axis, lg, kv, dp, args.max_tokens)
                 except torch.cuda.OutOfMemoryError:
                     torch.cuda.empty_cache()
@@ -243,11 +274,11 @@ def main():
                               "t_client_done_ms": (time.perf_counter() - extra.pop("_t_start")) * 1e3})
                 record(i, res["text"], gold, size, extra)
 
-            for i in pending:
+            for k, i in enumerate(pending):
                 sink = bridge.sink(f"{arm}-{i}", max_tokens=args.max_tokens)
                 t_start = time.perf_counter()
                 try:
-                    gold, size, extra, _ = vision(i, sink)
+                    gold, size, extra, _ = vision(k, sink)
                 except torch.cuda.OutOfMemoryError:
                     torch.cuda.empty_cache()
                     if sink.opened and not sink.closed:
@@ -261,6 +292,8 @@ def main():
             while inflight:
                 drain_one()
         fh.close()
+        if args.prefetch > 0:
+            pool.shutdown(wait=True)
         el = time.perf_counter() - t_arm0
         if scored:
             print(f"Final Summary: {{\"dataset\": \"{args.dataset}\", \"model\": \"{slug}\", "

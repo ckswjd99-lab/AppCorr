@@ -306,6 +306,21 @@ Smoke (8 RealWorldQA samples, 7B, shared GPU0; NOT campaign data): ceiling `t_vi
 image processing); a throughput run should precompute pixel tensors or use loader workers,
 otherwise the client, not the engine, is the bottleneck.
 
+`--prefetch N` preprocesses N samples ahead on a CPU thread: per-sample wall 1591 -> 1291 ms
+at concurrency 2 on 7B, but the thread contends with the launch-bound correct loop for the
+GIL and inflates `t_vision_ms` (360 -> 680 ms) -- use it for throughput runs, not for the
+latency columns.
+
+**The streaming arm is timing-dependent on near-tie samples (expected, not a defect).**
+RealWorldQA #504 flipped Yes/No between identical runs. Isolated with the same five vision
+chunks pushed three ways (vision output bitwise identical across runs): all chunks queued
+before the engine steps -> one prefill -> "No" (logprobs No -0.73 / Yes -0.73, a dead heat);
+chunks 30 ms apart -> five prefill steps -> "Yes" (-0.669 / -0.794); each way reproducible
+4/4. The prefill-chunk boundaries follow arrival timing, and vLLM's chunked prefill has the
+~0.2 nat band measured in the D arm above, so a sample within that band can land either way
+from run to run. Report streaming accuracy with a paired count against the ceiling, and expect
+run-to-run jitter of a few samples per thousand; the one-shot arms are deterministic.
+
 ### How to run each model (nothing started yet)
 
 | model | server | driver | note |

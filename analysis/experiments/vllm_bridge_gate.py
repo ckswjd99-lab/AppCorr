@@ -47,6 +47,7 @@ def lcp(a, b):
     return n
 
 
+@torch.no_grad()
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--family", choices=["qwen25vl", "qwen35"], required=True)
