@@ -1,7 +1,9 @@
 import json
 import multiprocessing
 import time
+import os
 import torch
+from contextlib import nullcontext
 import numpy as np
 import traceback
 import re
@@ -470,6 +472,36 @@ class WorkerModule(multiprocessing.Process):
             print(f"!!! [Worker] Failed to load executor: {e}")
             self.executor = None
             raise e
+        self._open_flop_session(model_name)
+
+    def _open_flop_session(self, model_name: str):
+        """Start backbone FLOP accounting, if `APPCORR_FLOPS=1` asked for it.
+
+        Opened once per worker rather than per task: installing and removing hooks around every
+        instruction would itself cost more than the ops being measured on the small ones.
+
+        An executor that has not declared `backbone_modules()` is refused rather than silently
+        counted as zero. Zero is the failure this whole feature would be most likely to report and
+        least likely to have noticed.
+        """
+        from appcorr import flops as _flops
+
+        self.flop_counter = None
+        self._flop_stack = None
+        if not _flops.enabled_by_default():
+            return
+        roots = self.executor.backbone_modules() if self.executor is not None else None
+        if not roots:
+            raise RuntimeError(
+                f"APPCORR_FLOPS=1 but the '{model_name}' executor does not declare "
+                f"backbone_modules(); it would report zero FLOPs. Declare the backbone subtree "
+                f"(feature trunk for a VFM; vision tower + language model for a VLM) first.")
+        from contextlib import ExitStack
+
+        self._flop_stack = ExitStack()
+        self.flop_counter = self._flop_stack.enter_context(_flops.session(*roots, enabled=True))
+        print(f"[Worker] backbone FLOP accounting ON for {model_name} "
+              f"({sum(1 for _ in roots)} root module(s))")
 
     def _load_sr_engine(self):
         self.sr_engine = None
@@ -505,9 +537,19 @@ class WorkerModule(multiprocessing.Process):
             self.sessions[req_id] = self._create_session_context()
         context = self.sessions[req_id]
 
+        # The transmission group this task carries IS the arrival index: work dispatched under
+        # group g could not have started before group g landed. Tasks with no payload continue an
+        # earlier group, so the last seen value persists in the session context.
+        if getattr(task, 'payload', None):
+            context['_flop_arrival'] = int(getattr(task.payload[0], 'group_id', 0) or 0)
+        arrival = int(context.get('_flop_arrival', 0))
+        fl = getattr(self, 'flop_counter', None)
+
         try:
             session_range = f"APPCORR_SESSION|req={req_id}|task={task.task_id}"
-            with torch.cuda.nvtx.range(session_range):
+            with (fl.request(req_id) if fl is not None else nullcontext()), \
+                 (fl.arrival(arrival) if fl is not None else nullcontext()), \
+                 torch.cuda.nvtx.range(session_range):
                 for instr in task.instructions:
                     nsys_seq = int(context.get('_nsys_seq', 0))
                     context['_nsys_seq'] = nsys_seq + 1
@@ -522,7 +564,9 @@ class WorkerModule(multiprocessing.Process):
                     start_ev.record()
                     with torch.cuda.nvtx.range(nsys_range):
                         with torch.cuda.nvtx.range(instr.op_type.name):
-                            meta = self._dispatch(instr, task, context)
+                            with (fl.stage(instr.op_type.name) if fl is not None
+                                  else nullcontext()):
+                                meta = self._dispatch(instr, task, context)
                     end_ev.record()
 
                     meta = self._merge_nsys_event_meta(
@@ -549,6 +593,12 @@ class WorkerModule(multiprocessing.Process):
             traceback.print_exc()
             if req_id in self.sessions:
                 del self.sessions[req_id]
+
+        # Emit after every task, not only on EXIT_ALL: the sequential (ceiling) configs never send
+        # EXIT_ALL, so hooking the emission there produced no output for exactly the arms the table
+        # needs as its denominator. Rewriting one small JSON per task is free next to the GPU work
+        # it describes.
+        self._emit_flops()
 
     @staticmethod
     def _merge_nsys_event_meta(meta: Any, **nsys_fields) -> Dict[str, Any]:
@@ -694,6 +744,42 @@ class WorkerModule(multiprocessing.Process):
                 context['final_results'] = {}
             context['final_results'].update(final_batch_results)
             context['active_indices'] = torch.empty(0, device=self.device, dtype=torch.long)
+
+    def _emit_flops(self):
+        """Print, and optionally write, the backbone FLOP split accumulated so far.
+
+        Emitted on every EXIT_ALL rather than at shutdown: the worker's exit path varies by run
+        mode, and a measurement that only survives a clean shutdown is one that goes missing on
+        exactly the runs that were interrupted. Rewriting the same file each time is cheap and
+        leaves the last complete state on disk regardless of how the process ends.
+        """
+        fl = getattr(self, 'flop_counter', None)
+        if fl is None or not fl.requests:
+            return
+        agg = fl.aggregate()
+        print(f"[Worker][FLOPS] requests={agg['requests']} "
+              f"mean_total={agg['mean_total_gflops']:.1f} GF "
+              f"mean_critical={agg['mean_critical_gflops']:.1f} GF "
+              f"critical_fraction={agg['critical_fraction']:.4f}", flush=True)
+        print(f"[Worker][FLOPS] by_stage(GF/req)={ {k: round(v, 1) for k, v in agg['mean_stage_gflops'].items()} }",
+              flush=True)
+        out = os.environ.get("APPCORR_FLOPS_OUT")
+        if out:
+            import json as _json
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+                # Batch size matters for comparability: an ImageNet request carries 32 images
+                # while a VLM request carries one, so a per-request mean is not a per-image
+                # number until it is divided by this.
+                bs = int(getattr(self.config, 'batch_size', 1) or 1)
+                with open(out, "w") as f:
+                    _json.dump({"model": getattr(self.config, 'model_name', None),
+                                "batch_size": bs,
+                                "mean_total_gflops_per_image": agg["mean_total_gflops"] / bs,
+                                "mean_critical_gflops_per_image": agg["mean_critical_gflops"] / bs,
+                                **agg}, f, indent=2)
+            except Exception as e:                      # never let reporting kill a run
+                print(f"[Worker][FLOPS] could not write {out}: {e}", flush=True)
 
     def _check_triton_runtime(self):
         """Configure the compile toolchain for *every* model, then prove Triton can compile.

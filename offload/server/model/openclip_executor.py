@@ -49,6 +49,16 @@ class OpenCLIPExecutor(ModelExecutor):
         self.norm_mean = torch.tensor(CLIP_MEAN).view(1, 3, 1, 1).to(self.device).float()
         self.norm_std = torch.tensor(CLIP_STD).view(1, 3, 1, 1).to(self.device).float()
 
+    def backbone_modules(self):
+        """Vision tower plus the projection into the shared embedding space.
+
+        Zero-shot classification's "head" is a precomputed text-prototype matrix, and retrieval has
+        no head at all, so the image embedding IS this VFM's feature and the projection belongs
+        inside the backbone rather than after it.
+        """
+        return [getattr(self.clip_model, "vision_model", None),
+                getattr(self.clip_model, "visual_projection", None)]
+
     def load_model(self, model_name: str, config: Any):
         from transformers import CLIPModel, CLIPProcessor
         from appcorr.models.openclip.vision.backbone import ApproxCorrectCLIPVisionTower
@@ -126,28 +136,73 @@ class OpenCLIPExecutor(ModelExecutor):
         start_l, end_l = params.get("layers", (0, len(self.tower.blocks)))
         x_feature = context["input_tokens"] if start_l == 0 else context.get("current_feature", context["input_tokens"])
         cache = context.get("cache_feature", {})
-        x_feature, cache = self.tower.approx_forward(x_feature, start_l, end_l, cache, tag_prefix="vision")
+        want_mean = self._pscore_kind(config) == "patch_attn_prob_layermean"
+        x_feature, cache = self.tower.approx_forward(x_feature, start_l, end_l, cache,
+                                                     tag_prefix="vision",
+                                                     collect_cls_attn=not want_mean,
+                                                     collect_attn_mean=want_mean)
         # Refresh the importance signal after every approx chunk (not just the final one) -- a
         # partial-depth average is a usable, if less refined, proxy, and later groups' pruning
         # decisions benefit from using whatever depth has been seen so far rather than waiting.
-        cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        cache = (self.tower.finalize_attn_layermean(cache, tag_prefix="vision")
+                 if self._pscore_kind(config) == "patch_attn_prob_layermean"
+                 else self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision"))
         context["current_feature"] = x_feature
         context["cache_feature"] = cache
+
+    @staticmethod
+    def _pscore_kind(config: Any) -> str:
+        """Which attention signal feeds the server side of the importance score.
+
+        `cls_attn_prob_layermean` (default, and what every OpenCLIP result before 2026-08-26 used):
+            the CLS token's attention row. Defensible for CLIP specifically -- the image embedding
+            IS the CLS output -- but that argument holds at the final layer and weakens once the
+            rows are averaged across layers, and it discards all patch-to-patch interaction.
+        `patch_attn_prob_layermean`: the column mean, i.e. attention RECEIVED per token. The signal
+            DINOv3 and Gemma 3 use, and the one that needs no CLS token.
+
+        Read from the RAW config, not the normalised one: `normalize_appcorr_kwargs` supplies its own
+        default for `server_pscore`, so reading the normalised value would silently switch existing
+        configs onto whatever that default happens to be.
+        """
+        raw = getattr(config, "appcorr_kwargs", None) or {}
+        kind = str(raw.get("server_pscore", "cls_attn_prob_layermean"))
+        if kind not in ("cls_attn_prob_layermean", "patch_attn_prob_layermean"):
+            raise ValueError(
+                f"openclip: unknown server_pscore {kind!r}; expected 'cls_attn_prob_layermean' or "
+                "'patch_attn_prob_layermean'. Research code -- an unrecognised selection signal is a "
+                "fault, not something to fall back from."
+            )
+        return kind
 
     def _prune_patch_idx(self, patch_idx: torch.Tensor, context: Dict[str, Any], config: Any) -> torch.Tensor:
         """Applies the validated `residual_energy x avg_cls_attn` thresholded importance score
         (see analysis/experiments/ENERGY_GROUPING_LOG.md's classifier finding, ported here for
         CLIP) to sub-select which of a group's arrived patches actually get corrected this round.
-        No-op (keeps all of patch_idx) if `token_keep_thres` isn't configured, or if the signals
-        aren't ready yet (e.g. mobile_pscore_hint_map has no real residual-energy hints for this
-        group, or no approx chunk has run yet to seed cls_attn_layermean)."""
+        Selection is top-k when the config sets `token_keep_ratio` -- an exact keep rate, the same
+        knob the DINOv3 family exposes -- and thresholded on the same score otherwise. No-op (keeps
+        all of patch_idx) when neither is configured, or when the signals are not ready yet (e.g.
+        mobile_pscore_hint_map carries no real residual-energy hints for this group, or no approx
+        chunk has run to seed cls_attn_layermean)."""
         appcorr_options = normalize_appcorr_kwargs(config.appcorr_kwargs, config.transmission_kwargs)
         token_keep_thres = appcorr_options.get("token_keep_thres")
-        if token_keep_thres is None:
+        # Top-k selection, matching the DINOv3 family's `token_keep_ratio`, so a keep RATE can be
+        # asked for directly instead of being reverse-engineered from a threshold sweep.
+        #
+        # Only honoured when the config states it. `normalize_appcorr_kwargs` defaults the ratio to
+        # 0.2, so reading the normalized value would silently turn every existing OpenCLIP run from
+        # "keep everything" into "keep 20%" -- a behaviour change disguised as a new feature.
+        raw_appcorr = getattr(config, "appcorr_kwargs", None) or {}
+        token_keep_ratio = (float(raw_appcorr["token_keep_ratio"])
+                            if "token_keep_ratio" in raw_appcorr else None)
+        use_topk = token_keep_ratio is not None and token_keep_ratio < 1.0
+        if token_keep_thres is None and not use_topk:
             return patch_idx
 
         cache = context.get("cache_feature", {})
-        layermean = cache.get("vision_cls_attn_layermean")
+        key = ("vision_cls_attn_layermean" if self._pscore_kind(config) == "cls_attn_prob_layermean"
+               else "vision_attn_layermean")
+        layermean = cache.get(key)
         hint_map = context.get("mobile_pscore_hint_map")
         if layermean is None or hint_map is None:
             return patch_idx
@@ -172,7 +227,13 @@ class OpenCLIPExecutor(ModelExecutor):
                 flush=True,
             )
 
-        keep_mask = combined >= token_keep_thres
+        if use_topk:
+            n = int(combined.numel())
+            k = max(1, min(int(round(n * token_keep_ratio)), n))
+            keep_mask = torch.zeros(n, dtype=torch.bool, device=combined.device)
+            keep_mask.scatter_(0, combined.topk(k).indices, True)
+        else:
+            keep_mask = combined >= token_keep_thres
         full_count = float(patch_idx.numel())
         kept_count = float(int(keep_mask.sum().item())) if bool(keep_mask.any()) else full_count
         cache["_token_prune_kept_patch_total"] = cache.get("_token_prune_kept_patch_total", 0.0) + kept_count
@@ -214,7 +275,9 @@ class OpenCLIPExecutor(ModelExecutor):
         x_feature = context["input_tokens"]
         cache = context.get("cache_feature", {})
         x_feature, cache = self.tower.correct_forward(x_feature, patch_idx, start_l, end_l, cache, tag_prefix="vision")
-        cache = self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision")
+        cache = (self.tower.finalize_attn_layermean(cache, tag_prefix="vision")
+                 if self._pscore_kind(config) == "patch_attn_prob_layermean"
+                 else self.tower.finalize_cls_attn_layermean(cache, tag_prefix="vision"))
         context["current_feature"] = x_feature
         context["cache_feature"] = cache
 
@@ -250,13 +313,22 @@ class OpenCLIPExecutor(ModelExecutor):
             context["output"] = image_embeds
 
     def get_final_results(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[int, Any]:
+        """One entry per sample in the batch, keyed by its index within the batch.
+
+        This used to return `{0: output[0]}` -- the first sample only -- while the configs run at
+        `batch_size: 32`. `worker.py` fills the rest with `final_map.get(i, [])`, and the ImageNet
+        evaluator skips an empty prediction for the correct-count but still counts it in the
+        denominator, so the reported accuracy was capped at exactly 1/32 = 3.125%. Measured: top5
+        3.125% (one per batch, 20 batches), top1 2.97% (19 of those 20 correct) -- i.e. the model was
+        fine at ~95% on what it actually scored, and the loss was entirely in this collection step.
+        It hit ceiling, floor and every corrected arm equally, so nothing about the accuracy ordering
+        between them was visible either.
+        """
         if "output" not in context:
             return {}
         output = context["output"]
-        if self.clip_task == "zeroshot":
-            return {0: output[0].cpu().numpy().tolist()}
-        else:
-            return {0: output[0].cpu().numpy().tolist()}
+        rows = output.cpu().numpy().tolist()
+        return {i: row for i, row in enumerate(rows)}
 
     def decide_exit(self, task: Task, context: Dict[str, Any], config: Any) -> Dict[str, Any]:
         return {}

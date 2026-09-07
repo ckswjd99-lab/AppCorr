@@ -76,12 +76,29 @@ class ApproxCorrectCLIPAttention(nn.Module):
         return self.out_proj(x_out)
 
     def approx(self, x: torch.Tensor, cache_feature: Dict[str, Any], tag: str,
-               collect_cls_attn: bool = False):
+               collect_cls_attn: bool = False, collect_attn_mean: bool = False):
         """Full self-attention over all N tokens; caches raw K/V [B, H, N, 2, Dh] for later
         `.correct()` calls to patch. Numerically identical output to `.forward()`.
 
-        If `collect_cls_attn`, also caches the CLS-token attention distribution (head-averaged,
-        `{tag}_cls_attn` [B, N]) -- the per-layer ingredient of `cls_attn_prob_layermean`."""
+        Two importance signals can be cached here, and they are NOT the same quantity:
+
+        `collect_cls_attn` -> `{tag}_cls_attn` [B, N], the CLS token's attention distribution
+            (head-averaged). One ROW of the attention matrix: how much CLS looks at each token.
+        `collect_attn_mean` -> `{tag}_attn_mean` [B, N], the COLUMN mean: how much attention each
+            token RECEIVES, averaged over all queries and heads. This is the signal DINOv3
+            (`patch_attn_prob_layermean`) and Gemma 3 (`vision_patch_attn_layermean`) use, and it
+            needs no CLS token to exist.
+
+        The CLS row is defensible for CLIP specifically -- the image embedding IS the CLS output, so
+        where CLS looks proxies for contribution to the output -- but that argument holds at the
+        final layer and is weakened by averaging across layers, since a patch CLS ignores at layer 3
+        may feed the patch CLS reads at layer 20. It also discards every patch-to-patch interaction:
+        one row of 257. Which one is better is an open question this fork now lets us measure rather
+        than argue, so both are available and neither is hardcoded.
+
+        Cost: the column mean needs the full [B, H, N, N] attention, where the CLS row needs one row
+        of it. At CLIP-bigG's N=257 that is ~1M floats per layer and immaterial; it would not be at
+        thousands of tokens."""
         B, N, C = x.shape
         q, k, v = self._qkv_heads(x)
 
@@ -92,6 +109,13 @@ class ApproxCorrectCLIPAttention(nn.Module):
                 (q[:, :, 0:1] @ k.transpose(-2, -1)) * (self.head_dim ** -0.5), dim=-1
             )  # [B, H, 1, N]
             cache_feature[f"{tag}_cls_attn"] = attn_cls.mean(dim=1).squeeze(1).detach()  # [B, N]
+
+        if collect_attn_mean:
+            attn = torch.softmax(
+                (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5), dim=-1
+            )  # [B, H, N, N] -- row q attends to column k, rows sum to 1
+            # Mean over QUERIES (dim -2) gives, per key position, the attention it received.
+            cache_feature[f"{tag}_attn_mean"] = attn.mean(dim=-2).mean(dim=1).detach()  # [B, N]
 
         x_out = F.scaled_dot_product_attention(q, k, v)
         x_out = x_out.transpose(1, 2).reshape(B, N, C)

@@ -26,6 +26,5 @@
         "server_pscore_weight": 1.0,
         "pscore_fusion": "geo_mean",
         "sdpa_query_bucket_size": 64
-    },
-    "device": "cuda:1"
+    }
 }

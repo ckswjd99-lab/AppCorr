@@ -635,6 +635,20 @@ class DINOv3DetectorExecutor(ModelExecutor):
         if not valid_group_plans:
             self.prepare_group_maps_and_dindices(None, context, config)
 
+    def backbone_modules(self):
+        """The ViT trunk only; the detection head and the encoder transformer are the header.
+
+        Reached via `_get_vit_backbone()`, the same helper every other method here uses. This used
+        to guess at `model.backbone` / `model.encoder.backbone` -- neither of which exists on this
+        build (the real path is `model.detector.backbone[0]._backbone.backbone`) -- so it returned
+        `[None]` and no Linear/Conv hook was ever installed on the trunk. `patch_attention` is
+        global, so attention still got counted, and COCO reported a plausible-looking 1874 GF/image
+        against a closed-form expectation of ~54,900 for 4096 tokens of ViT-7B: 29x low, and lower
+        than 256-token ImageNet, which is what gave it away. Two conventions can disagree; one
+        cannot, so this now defers to the accessor rather than restating the path.
+        """
+        return [self._get_vit_backbone()]
+
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Detector Model (MMap): {model_name}...")
         if self.model is not None:

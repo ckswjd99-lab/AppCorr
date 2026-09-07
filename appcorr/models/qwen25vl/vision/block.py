@@ -41,8 +41,20 @@ class ApproxCorrectQwen25VLVisionBlock(nn.Module):
         x = x + self.mlp(self.norm2(x))
         return x
 
-    def approx(self, x: torch.Tensor, segment_ranges, position_embeddings, cache_feature: Dict[str, Any], tag: str):
-        x_attn, cache_feature = self.attn.approx(self.norm1(x), segment_ranges, position_embeddings, cache_feature, tag)
+    def approx(self, x: torch.Tensor, segment_ranges, position_embeddings, cache_feature: Dict[str, Any], tag: str,
+               collect_attn: bool = False):
+        x_norm = self.norm1(x)
+        if collect_attn:
+            # Server-side pscore signal (received attention, this project's standing
+            # residual-energy x attention pattern -- see attention.py's `incoming_attention`
+            # docstring). Accumulated across whichever layers the caller marks `collect_attn=True`
+            # for (backbone.py restricts this to `fullatt_block_indexes` -- see that file for why);
+            # finalized (divided by layer count) by the caller once the walk is done.
+            attn_stat = self.attn.incoming_attention(x_norm, segment_ranges, position_embeddings)
+            prev = cache_feature.get("vision_patch_attn_layermean_acc")
+            cache_feature["vision_patch_attn_layermean_acc"] = attn_stat if prev is None else prev + attn_stat
+            cache_feature["vision_patch_attn_layermean_n"] = cache_feature.get("vision_patch_attn_layermean_n", 0) + 1
+        x_attn, cache_feature = self.attn.approx(x_norm, segment_ranges, position_embeddings, cache_feature, tag)
         cache_feature[f"{tag}_blocks_out_sum"] = x_attn.detach().clone()
 
         x_mid = x + x_attn
@@ -76,5 +88,15 @@ class ApproxCorrectQwen25VLVisionBlock(nn.Module):
         # `.clone()` previously here was a redundant copy of that fresh allocation.
         x_out = x + blocks_out_sum.to(dtype=x.dtype)
         x_out[token_idx] = (x_attn_active + mlp_out_new).to(dtype=x_out.dtype)
+
+        # Persist the CORRECTED increment over the approximate one -- rule 3 of
+        # docs/memo/interleaved_correction_contract.md, unconditional. Without it a later round
+        # rebuilds this token from the stale approximate increment and discards what this round
+        # fixed, so interleaved keeps only its final round. One-shot cannot expose it. Note the
+        # indexing here is `[token_idx]`, not `[:, token_idx]`: this fork's residual stream carries
+        # no batch dimension, unlike the LLM fork beside it.
+        new_sum = blocks_out_sum.clone()
+        new_sum[token_idx] = ((x_attn_active - x_active) + mlp_out_new).to(new_sum.dtype)
+        cache_feature[f"{tag}_blocks_out_sum"] = new_sum
 
         return x_out, cache_feature

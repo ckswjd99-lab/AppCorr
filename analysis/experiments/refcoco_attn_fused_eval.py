@@ -384,7 +384,8 @@ def main():
         nonlocal correct, processed, iou_sum, keep_frac_sum
         if not batch_items:
             return
-        texts = batched_generate_fallback(executor.model, processor.tokenizer, batch_items, args.max_new_tokens, args.device)
+        texts = batched_generate_fallback(executor.model, processor.tokenizer, batch_items, args.max_new_tokens,
+                                           args.device, executor.image_token_id)
         for (idx, gt, grid_hw, keep_frac), pred_text in zip(batch_meta, texts):
             ok, iou = score_answer(pred_text, gt)
             iou_sum += iou
@@ -411,6 +412,12 @@ def main():
         batch_items.append({"input_ids": context["input_ids"], "first_token": first_token,
                              "pixel_values": context["pixel_values"], "image_grid_thw": context["image_grid_thw"]})
         batch_meta.append((idx, gt, grid_hw, keep_frac))
+        # See refcoco_gqa_batched_eval.py's identical fix / docs/memo/qwen25vl_baseline_mrope_bug.md:
+        # `first_token, context, keep_frac = build_attn_fused_context(...)` only rebinds `context`
+        # after the RHS is fully evaluated, so the PREVIOUS iteration's context dict (its
+        # vision_cache/kv_cache tensors) stays alive for the entire next image's build -- OOMs on
+        # image 2+ at any batch size. `del` here breaks that.
+        del context
         if len(batch_items) >= args.batch_size:
             flush_batch()
     flush_batch()

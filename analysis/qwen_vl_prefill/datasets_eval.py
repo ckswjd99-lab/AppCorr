@@ -320,7 +320,13 @@ class VSRSpec:
 
     def load(self, load_dataset):
         ds = load_dataset(self.hf, split=self.split)
-        return ds.filter(lambda r: os.path.exists(os.path.join(_VSR_IMG_DIR, r["image"])))
+        # load_from_cache_file=False, non-negotiably: this filter's result depends on the
+        # FILESYSTEM (which images sit in _vsr_images), and `datasets` fingerprints only the
+        # lambda -- a cached run from before the image cache was populated returned 0 rows
+        # forever after, and a driver on top of it "completed" three arms in 38 seconds with
+        # rc=0 and nothing scored.
+        return ds.filter(lambda r: os.path.exists(os.path.join(_VSR_IMG_DIR, r["image"])),
+                         load_from_cache_file=False)
 
     def prepare(self, ex, smart_resize, factor, min_px, max_px):
         image = Image.open(os.path.join(_VSR_IMG_DIR, ex["image"])).convert("RGB")
@@ -337,9 +343,324 @@ class VSRSpec:
         return int(pred == gold), float(pred == gold)
 
 
+class CVBenchSpec:
+    """CV-Bench (NYU, 2638 test): pure perception/geometry MCQ over real photos
+    (ADE20K/COCO/Omni3D sources). The dataset ships a ready 'prompt' (question +
+    lettered choices) and answers like '(C)' -- scored on the extracted letter."""
+    name = "cvbench"
+    hf = "nyu-visionx/CV-Bench"
+    split = "test"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = ex["prompt"].strip() + "\nAnswer with the option's letter only."
+        gold = re.sub(r"[^A-Da-d]", "", str(ex["answer"])).upper()
+        return image_r, prompt, gold
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\(([A-Da-d])\)", pred_text) or STANDALONE_LETTER_RE.search(pred_text)
+        pred = (m.group(1) if m else "").upper()
+        return int(pred == gold), float(pred == gold)
+
+
+class MMVPSpec:
+    """MMVP (300): subtle visual discrimination on CLIP-blind pairs. The HF repo
+    stores images as '<Index>.jpg' plus Questions.csv (Index, Question, Options
+    '(a) X (b) Y', Correct Answer '(a)'). We read the CSV and open images by
+    index -- the imagefolder ordering is filename-sorted and NOT index-aligned,
+    so never zip the two datasets together."""
+    name = "mmvp"
+    hf = "MMVP/MMVP"
+
+    def load(self, load_dataset):
+        import csv
+        import glob
+        import os
+        from huggingface_hub import snapshot_download
+        root = snapshot_download(self.hf, repo_type="dataset")
+        img_dir = os.path.join(root, "MMVP Images")
+        rows = []
+        with open(os.path.join(root, "Questions.csv"), newline="") as f:
+            for r in csv.DictReader(f):
+                idx = r["Index"].strip()
+                cand = glob.glob(os.path.join(img_dir, f"{idx}.*"))
+                if not cand:
+                    raise RuntimeError(f"MMVP image missing for index {idx}")
+                rows.append({"path": cand[0], "question": r["Question"],
+                             "options": r["Options"], "answer": r["Correct Answer"]})
+        if len(rows) == 0:
+            raise RuntimeError("VACUOUS: MMVP Questions.csv parsed to 0 rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = Image.open(ex["path"]).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        prompt = (f"{ex['question'].strip()}\n{ex['options'].strip()}\n"
+                  "Answer with (a) or (b) only.")
+        gold = re.sub(r"[^ab]", "", ex["answer"].lower())
+        return image_r, prompt, gold
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\(([ab])\)", pred_text.lower()) or re.search(r"\b([ab])\b", pred_text.lower())
+        pred = m.group(1) if m else ""
+        return int(pred == gold), float(pred == gold)
+
+
+class MMERealWorldSpec:
+    """MME-RealWorld (lmms-eval export, 23.6k QA): high-resolution real-world
+    perception MCQ (five options (A)-(E), answer is the bare letter). Images ride
+    as base64 jpeg in 'bytes'. Category breakdown lives in ex['category'] --
+    keep it in mind when reading aggregates: OCR/diagram categories are not
+    natural photos even though the imagery is high-res real-world capture."""
+    name = "mmerealworld"
+    hf = "yifanzhang114/MME-RealWorld-Lmms-eval"
+    split = "train"          # the export ships everything under 'train'
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import base64
+        import io
+        image = Image.open(io.BytesIO(base64.b64decode(ex["bytes"]))).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        opts = ex["multi-choice options"]
+        if isinstance(opts, str) and opts.startswith("["):
+            import ast
+            opts = ast.literal_eval(opts)
+        opts = "\n".join(opts) if isinstance(opts, (list, tuple)) else str(opts)
+        prompt = (f"{ex['question'].strip()}\n{opts}\n"
+                  "Answer with the option's letter only.")
+        return image_r, prompt, str(ex["answer"]).strip().upper()
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\(([A-Ea-e])\)", pred_text) or STANDALONE_LETTER_RE.search(pred_text)
+        pred = (m.group(1) if m else "").upper()
+        return int(pred == gold), float(pred == gold)
+
+
+class WildVisionSpec:
+    """WildVision-Bench (500): real user instructions -- OPEN-ENDED, no reference
+    answer, officially judged by a pairwise LLM judge. score() therefore raises:
+    use this spec only for generation dumps (degradation A/Bs, judge runs later),
+    never inside an accuracy loop."""
+    name = "wildvision"
+    hf = "WildVision/wildvision-bench"
+    config = "vision_bench_0701"
+    split = "test"
+
+    def load(self, load_dataset):
+        return load_dataset(self.hf, self.config, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = ex["image"].convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        return image_r, ex["instruction"].strip(), ""
+
+    def score(self, pred_text, gold):
+        raise NotImplementedError(
+            "WildVision has no reference answers; it needs a pairwise judge. "
+            "Use generation-dump mode, not the accuracy loop.")
+
+
+
+
+class _VisDroneBase:
+    """VisDrone2019-DET-val (548 drone images, ~2000x1500) via the banu4prasad HF mirror --
+    YOLO-format labels (class cx cy w h, normalized; classes 0-9 = pedestrian, people, bicycle,
+    car, van, truck, tricycle, awning-tricycle, bus, motor). Tiny objects at altitude are exactly
+    what a level-2 pyramid destroys, which is why this is on the resolution-sensitive track.
+    Rows are DERIVED per (image, category) -- both specs group rows by image path so a driver can
+    reuse per-image vision work across the image's questions."""
+    repo = "banu4prasad/VisDrone-Dataset"
+    # question-name -> label-class set (pedestrian+people merged: the walking/standing split is
+    # a detection-annotation nicety no VLM question should depend on)
+    CATS = {"people": {0, 1}, "cars": {3}, "vans": {4}, "trucks": {5},
+            "buses": {8}, "motorcycles": {9}, "bicycles": {2}}
+
+    def _images(self):
+        import glob
+        import os
+        from huggingface_hub import snapshot_download
+        root = snapshot_download(self.repo, repo_type="dataset",
+                                 allow_patterns=["VisDrone2019-DET-val/*"])
+        base = os.path.join(root, "VisDrone2019-DET-val")
+        rows = []
+        for ip in sorted(glob.glob(os.path.join(base, "images", "*.jpg"))):
+            lp = os.path.join(base, "labels",
+                              os.path.basename(ip).rsplit(".", 1)[0] + ".txt")
+            if not os.path.exists(lp):
+                continue
+            boxes = []  # (cls, cx, cy, w, h) normalized
+            with open(lp) as f:
+                for line in f:
+                    t = line.split()
+                    if len(t) == 5:
+                        boxes.append((int(t[0]), *(float(v) for v in t[1:])))
+            rows.append({"path": ip, "boxes": boxes})
+        if not rows:
+            raise RuntimeError("VACUOUS: VisDrone val parsed to 0 images")
+        return rows
+
+
+class VisDroneCountSpec(_VisDroneBase):
+    """Counting: one row per (image, category) with 1 <= N <= 30 ground-truth instances
+    (beyond ~30 the GT itself outruns any VLM's counting; below 1 there is nothing to count).
+    score = (exact match, soft score 1 - min(1, |pred-N|/N)) -- headline is exact-match rate,
+    the soft score plays the mIoU role for graded reporting."""
+    name = "visdrone_count"
+
+    def load(self, load_dataset):
+        rows = []
+        for im in self._images():
+            for cname, clset in self.CATS.items():
+                n = sum(1 for b in im["boxes"] if b[0] in clset)
+                if 1 <= n <= 30:
+                    rows.append({"path": im["path"], "cat": cname, "count": n})
+        if not rows:
+            raise RuntimeError("VACUOUS: no countable (image, category) rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = Image.open(ex["path"]).convert("RGB")
+        prompt = (f"How many {ex['cat']} are in this image? "
+                  "Answer with a single number.")
+        return image, prompt, int(ex["count"])
+
+    def score(self, pred_text, gold):
+        m = re.search(r"\d+", pred_text.replace(",", ""))
+        if not m:
+            return 0, 0.0
+        pred = int(m.group(0))
+        return int(pred == gold), max(0.0, 1.0 - min(1.0, abs(pred - gold) / gold))
+
+
+class VisDroneDetSpec(_VisDroneBase):
+    """Unique-instance grounding: one row per (image, category) with EXACTLY one instance --
+    "the {singular} " is unambiguous there, so free-form bbox output scores like RefCOCO
+    (Acc@IoU0.5, mean IoU) without detection-AP matching machinery. gold is native-pixel
+    x1,y1,x2,y2 (converted from the YOLO-normalized labels at load)."""
+    name = "visdrone_det"
+    SINGULAR = {"people": "person", "cars": "car", "vans": "van", "trucks": "truck",
+                "buses": "bus", "motorcycles": "motorcycle", "bicycles": "bicycle"}
+
+    def load(self, load_dataset):
+        rows = []
+        for im in self._images():
+            for cname, clset in self.CATS.items():
+                inst = [b for b in im["boxes"] if b[0] in clset]
+                if len(inst) == 1:
+                    rows.append({"path": im["path"], "cat": cname, "box": inst[0][1:]})
+        if not rows:
+            raise RuntimeError("VACUOUS: no unique-instance rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        image = Image.open(ex["path"]).convert("RGB")
+        W, H = image.size
+        cx, cy, w, h = ex["box"]
+        gold = ((cx - w / 2) * W, (cy - h / 2) * H, (cx + w / 2) * W, (cy + h / 2) * H)
+        # GROUNDING_PROMPT phrasing reused verbatim-in-shape: the polite "Provide the bounding
+        # box..." form made Mistral open with a conversational preamble ("To provide the bounding
+        # box ... I need ...") that max_new_tokens cut mid-sentence -- ALL SIX arms scored 0.00
+        # including ceiling, the broken-harness signature. The "Output ONLY ..." imperative is
+        # what RefCOCO already uses and the same models emit bare coordinates under it.
+        prompt = GROUNDING_PROMPT.format(expr=f"the {self.SINGULAR[ex['cat']]}")
+        return image, prompt, gold
+
+    def score(self, pred_text, gold):
+        i = _iou(_parse_bbox(pred_text), gold)
+        return int(i > 0.5), i
+
+
+class VStarSpec:
+    """V*Bench (SEAL, Wu & Xie CVPR 2024): 191 MCQ over large images (~2246x1582 mean) that
+    require finding SMALL details -- 115 direct_attributes + 76 relative_position. `text` already
+    carries the four options and the answer-with-letter instruction; `label` is the letter.
+    n=191 IS the whole benchmark: full-split runs are cheap, but every comparison is far under the
+    nr=400 sanity bar -- report with paired stats and intervals, never bare deltas."""
+    name = "vstar"
+    hf = "craigwu/vstar_bench"
+    split = "test"
+
+    def load(self, load_dataset):
+        from huggingface_hub import snapshot_download
+        self.root = snapshot_download(self.hf, repo_type="dataset")
+        return load_dataset(self.hf, split=self.split)
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import os
+        image = Image.open(os.path.join(self.root, ex["image"])).convert("RGB")
+        # Honor the caller's smart_resize like every other spec -- the offload-path drivers
+        # (qwen25vl) rely on spec-side resizing to patch multiples; identity callers are a no-op.
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR) if (tw, th) != image.size else image
+        return image_r, ex["text"], ex["label"].strip().upper()
+
+    def score(self, pred_text, gold):
+        m = re.search(r"[ABCD]", pred_text.upper())
+        ok = int(bool(m) and m.group(0) == gold)
+        return ok, float(ok)
+
+
+class SOUDrivingSpec:
+    """SOUBench Driving scenario (Han et al. 2026, arXiv 2604.22884): SODA-D-sourced small-object
+    MCQ, 1072 rows per subtask x 6 subtasks, images base64-embedded in VLMEvalKit-style TSVs under
+    /NHNHOME/share/cjpark/data/SOU/SOU/Driving. Adopted Driving-ONLY by user decision (the Aerial
+    scenario reuses VisDrone images we already measure). `subtask` selects one TSV (default 1 =
+    CategoryEnumeration); prompt = hint + question + options + letter instruction; scored like
+    every MCQ spec (first A-D letter)."""
+    name = "sou_driving"
+    root = "/NHNHOME/share/cjpark/data/SOU/SOU/Driving"
+    # Selectable via SOU_SUBTASK (1..6); default 3 = CategoryRecognition after the subtask-1
+    # pilot read a 32.5% ceiling on the 35B (random=25 -- no headroom for a resolution story).
+    subtask = int(__import__("os").environ.get("SOU_SUBTASK", "3"))
+
+    def load(self, load_dataset):
+        import csv, glob, sys as _sys
+        csv.field_size_limit(_sys.maxsize)
+        path = sorted(glob.glob(f"{self.root}/*Subtask{self.subtask}_*.tsv"))[0]
+        rows = []
+        with open(path) as f:
+            r = csv.DictReader(f, delimiter="\t")
+            for row in r:
+                rows.append(row)
+        if not rows:
+            raise RuntimeError("VACUOUS: no SOU rows")
+        return rows
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import base64, io
+        image = Image.open(io.BytesIO(base64.b64decode(ex["image"]))).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        if (tw, th) != image.size:
+            image = image.resize((tw, th), Image.BILINEAR)
+        prompt = (ex["hint"].strip() + "\n" + ex["question"].strip() + "\n"
+                  + "\n".join(f"({o}) {ex[o]}" for o in "ABCD")
+                  + "\nAnswer with the option's letter only.")
+        return image, prompt, ex["answer"].strip().upper()
+
+    def score(self, pred_text, gold):
+        m = re.search(r"[ABCD]", pred_text.upper())
+        ok = int(bool(m) and m.group(0) == gold)
+        return ok, float(ok)
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
-         "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec}
+         "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec,
+         "cvbench": CVBenchSpec, "mmvp": MMVPSpec, "mmerealworld": MMERealWorldSpec,
+         "wildvision": WildVisionSpec,
+         "visdrone_count": VisDroneCountSpec, "visdrone_det": VisDroneDetSpec,
+         "vstar": VStarSpec, "sou_driving": SOUDrivingSpec}
 
 
 def get_spec(name):

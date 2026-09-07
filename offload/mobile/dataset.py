@@ -833,6 +833,137 @@ class NYUDepthLoader(DatasetLoader):
         }
 
 
+class COCOCaptionsLoader(DatasetLoader):
+    """COCO val2017 image-text retrieval for the CLIP arms.
+
+    The executor returns one L2-normalised image embedding per sample; recall against the captions
+    is computed here, at the end, from a cache built by
+    `analysis/experiments/build_coco_caption_embeds.py`. The text side never changes with the
+    approximation under test, so it is encoded once rather than on every arm -- and the client holds
+    no model to encode it with anyway.
+
+    No fallbacks (CLAUDE.md): a missing cache, a missing image directory, or an id order that
+    disagrees with the cache all raise. Each of those, papered over, produces a recall number that
+    looks entirely plausible and means nothing.
+    """
+
+    def __init__(self, root: str, batch_size: int, image_size: int = 224, num_workers: int = 4,
+                 **kwargs):
+        super().__init__(root, batch_size, **kwargs)
+        import os
+
+        self.image_size = int(kwargs.get("clip_image_size", image_size) or 224)
+        self.num_workers = num_workers
+        self.embed_dim = None
+        self.image_embeds = {}   # row index -> embedding list
+
+        cache = kwargs.get("caption_embeds") or \
+            "analysis/results/coco_retrieval/caption_embeds_bigg.pt"
+        cache = os.path.expanduser(cache)
+        if not os.path.exists(cache):
+            raise FileNotFoundError(
+                f"COCO caption embedding cache not found: {cache}. Build it first with "
+                "`python analysis/experiments/build_coco_caption_embeds.py`."
+            )
+        blob = torch.load(cache, map_location="cpu")
+        self.cached_image_ids = blob["image_ids"]
+        self.text_embeds = blob["text_embeds"]
+        self.text_to_image = blob["text_to_image"]
+
+        img_dir = kwargs.get("image_dir")
+        if not img_dir:
+            for cand in (os.path.join(str(root or ""), "validation", "data"),
+                         os.path.join(str(root or ""), "val2017"),
+                         os.path.expanduser("~/fiftyone/coco-2017/validation/data")):
+                if cand and os.path.isdir(cand):
+                    img_dir = cand
+                    break
+        if not img_dir or not os.path.isdir(img_dir):
+            raise FileNotFoundError(
+                f"COCO val2017 image directory not found (root={root!r}). "
+                "Pass dataset_kwargs.image_dir explicitly."
+            )
+        self.image_dir = img_dir
+
+        # Same order as the cache: sorted COCO image ids. Asserted, not assumed -- a shifted row
+        # order silently turns recall into a number about the wrong pairs.
+        ids = [int(i) for i in self.cached_image_ids.tolist()]
+        self.files = [os.path.join(img_dir, f"{i:012d}.jpg") for i in ids]
+        missing = [f for f in self.files[:50] if not os.path.exists(f)]
+        if missing:
+            raise FileNotFoundError(
+                f"{len(missing)} of the first 50 COCO val images are absent under {img_dir}, "
+                f"e.g. {missing[0]}. The cache and the image directory disagree."
+            )
+
+    def get_loader(self) -> torch.utils.data.DataLoader:
+        from PIL import Image
+
+        tf = transforms.Compose([
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
+            transforms.PILToTensor(),
+        ])
+        files = self.files
+
+        class _DS(torch.utils.data.Dataset):
+            def __len__(self):
+                return len(files)
+
+            def __getitem__(self, idx):
+                return tf(Image.open(files[idx]).convert("RGB")), idx
+
+        return torch.utils.data.DataLoader(
+            _DS(), batch_size=self.batch_size, shuffle=False,
+            num_workers=self.num_workers, pin_memory=True, drop_last=False)
+
+    def evaluate_batch(self, preds: List[Any], labels: List[Any], **kwargs) -> Dict[str, Any]:
+        """Stash embeddings; retrieval is global, so nothing is scorable per batch."""
+        kept = 0
+        for i, row in enumerate(labels):
+            if i < len(preds) and preds[i]:
+                self.image_embeds[int(row)] = preds[i]
+                kept += 1
+        return {"total": len(labels), "embedded": kept}
+
+    def get_pbar_desc(self) -> str:
+        return f"Embedded: {len(self.image_embeds)}"
+
+    def get_summary(self) -> Dict[str, Any]:
+        n = len(self.cached_image_ids)
+        got = sorted(self.image_embeds.keys())
+        if not got:
+            raise RuntimeError("no image embeddings were collected; the executor returned nothing")
+
+        rows = torch.tensor(got, dtype=torch.long)
+        img = torch.tensor([self.image_embeds[r] for r in got], dtype=torch.float32)
+        img = img / img.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+
+        # Restrict the caption side to the images actually scored, so a partial run (-nr N) is
+        # still a coherent retrieval problem rather than one with unreachable targets.
+        keep_mask = torch.isin(self.text_to_image, rows)
+        txt = self.text_embeds[keep_mask].float()
+        remap = torch.full((n,), -1, dtype=torch.long)
+        remap[rows] = torch.arange(len(rows))
+        t2i = remap[self.text_to_image[keep_mask]]
+
+        sim = txt @ img.T                                  # [captions, images]
+        out: Dict[str, Any] = {"images": len(rows), "captions": int(txt.shape[0])}
+
+        # text -> image: is the caption's own image in the top k?
+        ranks_t2i = (sim > sim.gather(1, t2i.unsqueeze(1))).sum(dim=1)
+        for k in (1, 5, 10):
+            out[f"t2i_R@{k}"] = float((ranks_t2i < k).float().mean() * 100)
+
+        # image -> text: is ANY caption of the image in the top k?
+        sim_i = sim.T                                      # [images, captions]
+        order = sim_i.argsort(dim=1, descending=True)[:, :10]
+        hit = (t2i[order] == torch.arange(len(rows)).unsqueeze(1))
+        for k in (1, 5, 10):
+            out[f"i2t_R@{k}"] = float(hit[:, :k].any(dim=1).float().mean() * 100)
+        return out
+
+
 def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> DatasetLoader:
     if name == 'imagenet-1k':
         return ImageNetLoader(root, batch_size, **kwargs)
@@ -845,5 +976,7 @@ def get_dataset_loader(name: str, root: str, batch_size: int, **kwargs) -> Datas
         return CO3DSequenceLoader(root, batch_size, **kwargs)
     elif name == 'nyu_depth':
         return NYUDepthLoader(root, batch_size, **kwargs)
+    elif name in {'coco_captions', 'coco_retrieval'}:
+        return COCOCaptionsLoader(root, batch_size, **kwargs)
     else:
         raise ValueError(f"Unknown dataset name: {name}")

@@ -1,0 +1,16 @@
+{
+  "model": "dinov3_classifier",
+  "batch_size": 32,
+  "mean_total_gflops_per_image": 4371.34884864,
+  "mean_critical_gflops_per_image": 327.838334976,
+  "requests": 3,
+  "mean_total_gflops": 139883.16315648,
+  "mean_critical_gflops": 10490.826719232,
+  "mean_overlappable_gflops": 129392.336437248,
+  "critical_fraction": 0.07499706528294946,
+  "mean_stage_gflops": {
+    "APPROX_FORWARD": 113527.24733952,
+    "CORRECT_FORWARD": 26098.2177792,
+    "PREPARE_TOKENS": 257.69803776
+  }
+}
