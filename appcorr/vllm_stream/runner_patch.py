@@ -15,6 +15,8 @@ from __future__ import annotations
 import torch
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
+from .request import cpu_cat
+
 _ORIG_UPDATE = GPUModelRunner._update_states
 _ORIG_INIT_MROPE = GPUModelRunner._init_mrope_positions
 _ORIG_PREPROCESS = GPUModelRunner._preprocess
@@ -37,11 +39,11 @@ def _update_states(self: GPUModelRunner, scheduler_output) -> None:
             if st is None:  # finished/aborted meanwhile
                 continue
             assert st.prompt_token_ids is None and st.prompt_embeds is not None, req_id
-            st.prompt_embeds = torch.cat([st.prompt_embeds, chunk.embeds.to(st.prompt_embeds.dtype)], dim=0)
+            st.prompt_embeds = cpu_cat(st.prompt_embeds, chunk.embeds, dim=0)
             st.num_prompt_tokens = int(st.prompt_embeds.shape[0])
             if chunk.mrope_positions is not None:
                 assert st.mrope_positions is not None, req_id
-                st.mrope_positions = torch.cat([st.mrope_positions, chunk.mrope_positions], dim=1)
+                st.mrope_positions = cpu_cat(st.mrope_positions, chunk.mrope_positions, dim=1)
                 st.mrope_position_delta = chunk.mrope_delta
             if req_id in self.input_batch.req_id_to_index:
                 # force the stock re-add path (persistent batch rebuilt from `st`)

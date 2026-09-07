@@ -79,10 +79,17 @@ def main():
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--n-images", type=int, default=4)
     ap.add_argument("--max-tokens", type=int, default=8)
+    ap.add_argument("--upscale", type=float, default=1.0,
+                    help="resize images by this factor before the processor (larger prompts: "
+                         "COCO 640x480 -> ~430 tokens at 1.0, ~3500 at 3.0)")
     ap.add_argument("--gpu-mem", type=float, default=0.35)
     ap.add_argument("--enforce-eager", action="store_true")
-    ap.add_argument("--out", default=os.path.join(ROOT, "analysis/results/vllm_stream/ttft_qwen25vl7b.json"))
+    ap.add_argument("--out", default=None,
+                    help="default analysis/results/vllm_stream/ttft_qwen25vl7b[_x<upscale>].json")
     a = ap.parse_args()
+    if a.out is None:
+        suffix = "" if a.upscale == 1.0 else f"_x{a.upscale:g}"
+        a.out = os.path.join(ROOT, f"analysis/results/vllm_stream/ttft_qwen25vl7b{suffix}.json")
 
     from PIL import Image
     from vllm import SamplingParams
@@ -99,6 +106,8 @@ def main():
     embs = []
     for name in IMAGES[:a.n_images]:
         img = Image.open(os.path.join(COCO, name)).convert("RGB")
+        if a.upscale != 1.0:
+            img = img.resize((round(img.width * a.upscale), round(img.height * a.upscale)), Image.BICUBIC)
         parts = comp.parts(img, QUESTION)
         embs.append((name, comp.embed(parts), comp.image_bounds(parts, a.chunks)))
     # warm-up
