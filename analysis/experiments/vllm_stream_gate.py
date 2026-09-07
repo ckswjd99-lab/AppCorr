@@ -17,10 +17,10 @@ after every step (num_computed == num_prompt-1 while open). Compared against A: 
 rate of the generated sequence, first-divergence index, max |dlogprob| on the common prefix.
 Results merge into `--out` (json) so D from a second invocation lands next to A/B/C.
 
-Run (GPU0, openrlhf_base env, offline HF cache):
+Run (GPU0, appcorr-vllm env = vllm 0.28.0; openrlhf_base = 0.11.2 also works, offline HF cache):
   CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 VLLM_ENABLE_V1_MULTIPROCESSING=0 \
   PYTHONPATH=/NHNHOME/share/cjpark/AppCorr-vllm \
-  /NHNHOME/storage/users/cjpark/shk/conda_envs/openrlhf_base/bin/python \
+  /NHNHOME/storage/users/cjpark/shk/conda_envs/appcorr-vllm/bin/python \
       analysis/experiments/vllm_stream_gate.py --arms A,B,C,C2
   ... --arms D --max-num-batched-tokens 96
 """

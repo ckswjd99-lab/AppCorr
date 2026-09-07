@@ -6,9 +6,10 @@ Stock cached-request updates carry no prompt data, so on a `SchedulerOutput.appc
 entry we (1) extend the cached state and (2) evict the request from the persistent batch so
 the stock `_update_states` re-adds it from the grown state -- the same path a request takes
 after a step it was not scheduled in, so no InputBatch internals are touched here. M-RoPE
-positions for an embeds-only prompt cannot be derived by the runner (no token ids, no mm
-features), so `_init_mrope_positions` takes them from `NewRequestData.appcorr_stream` instead.
-`_preprocess` fixes a stock bug that discards prompt_embeds on multimodal models (see below).
+positions for an embeds-only prompt cannot be derived by the runner (0.11.2 crashes, 0.28.0
+assigns plain text positions), so `_init_mrope_positions` takes them from
+`NewRequestData.appcorr_stream` instead. On 0.11.2 only, `_preprocess` fixes a stock bug that
+discards prompt_embeds on multimodal models (fixed upstream by 0.28.0, see below).
 """
 from __future__ import annotations
 
@@ -64,7 +65,8 @@ def _init_mrope_positions(self: GPUModelRunner, req_state) -> None:
 
 
 def _preprocess(self: GPUModelRunner, scheduler_output, num_input_tokens, intermediate_tensors=None):
-    """vllm 0.11.2 drops `prompt_embeds` on multimodal models: `_prepare_inputs` stages them in
+    """(0.11.2 only; 0.28.0 embeds the token-id rows through `torch.where(is_token_ids, ...)` and
+    leaves the staged rows alone.) vllm 0.11.2 drops `prompt_embeds` on multimodal models: `_prepare_inputs` stages them in
     `self.inputs_embeds` (rows where `is_token_ids` is False), but the multimodal branch of
     `_preprocess` then overwrites the whole buffer with `embed_input_ids(input_ids)` -- the
     placeholder ids of an embeds request -- so the model sees garbage (the text-only
@@ -88,7 +90,9 @@ def _preprocess(self: GPUModelRunner, scheduler_output, num_input_tokens, interm
 def install() -> None:
     if getattr(GPUModelRunner, "_appcorr_stream_patched", False):
         return
+    from . import vllm_version
     GPUModelRunner._update_states = _update_states
     GPUModelRunner._init_mrope_positions = _init_mrope_positions
-    GPUModelRunner._preprocess = _preprocess
+    if vllm_version() == "0.11.2":
+        GPUModelRunner._preprocess = _preprocess
     GPUModelRunner._appcorr_stream_patched = True

@@ -1,4 +1,7 @@
-"""Environment work-arounds for vllm 0.11.2 on this box (not part of the streaming design)."""
+"""Environment work-arounds for vllm 0.11.2 on this box (not part of the streaming design).
+
+No-ops on 0.28.0: the ViT attention moved to `MMEncoderAttention`, whose backend choice takes
+the head size into account."""
 from __future__ import annotations
 
 
@@ -9,6 +12,9 @@ def fix_qwen2_5_vit_upstream_fa() -> None:
     80 ("headdim not being a multiple of 32"). `mm_encoder_attn_backend=TORCH_SDPA` does not help:
     the CUDA branch converts any non-FA choice to FLASH_ATTN when upstream flash_attn is importable.
     Upstream flash_attn (2.8.3 here, what HF uses) handles head dim 80, so make the tower use it."""
+    from . import vllm_version
+    if vllm_version() != "0.11.2":
+        return
     from vllm.model_executor.models import qwen2_5_vl as m
     cls = m.Qwen2_5_VisionAttention
     if getattr(cls, "_appcorr_upstream_fa", False):

@@ -15,7 +15,7 @@ Both TTFTs are wall-clock from the last chunk's availability to the first sample
 case (stream must not be slower than stock beyond per-step overhead). Repeats `--reps` times per
 image after one warm-up; reports median/mean per arm and the paired delta.
 
-Run (GPU0, openrlhf_base env):
+Run (GPU0, appcorr-vllm env = vllm 0.28.0; openrlhf_base = 0.11.2 also works):
   CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 VLLM_ENABLE_V1_MULTIPROCESSING=0 \
   PYTHONPATH=/NHNHOME/share/cjpark/AppCorr-vllm <python> analysis/experiments/vllm_stream_ttft.py \
       --chunks 4 --gap-ms 30 --reps 5

@@ -70,8 +70,8 @@ class StreamingScheduler(Scheduler):
         # else: the runner will get the grown prompt in NewRequestData at first schedule
 
     # -- decorate the stock output ---------------------------------------------------------
-    def schedule(self) -> SchedulerOutput:
-        out = super().schedule()
+    def schedule(self, *args, **kwargs) -> SchedulerOutput:  # 0.28.0 passes `throttle_prefills`
+        out = super().schedule(*args, **kwargs)
         for nr in out.scheduled_new_reqs:
             req = self.requests[nr.req_id]
             if isinstance(req, StreamingRequest):
