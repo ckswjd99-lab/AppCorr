@@ -214,6 +214,20 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
               + ("" if txt_A == txt_I else f"  A={txt_A[:40]!r} I={txt_I[:40]!r}"), flush=True)
         return txt_A, stats
 
+    if arm == "vfm":
+        # Vision half interleaved exactly as `interleaved` does it, then ONE exact prefill.
+        # Gemma 3's vision tower is 73.5% of its backbone in FLOPs, so approximating the LLM half
+        # buys little compute while costing whatever the reconstruction loses. The price is that
+        # the whole prefill lands after the last arrival -- critical goes up, total goes down.
+        #
+        # The LLM budget `tm` is deliberately NOT passed: this arm has no LLM budget. Only the
+        # vision selection `pm` shapes it, which is also why it shares `corrected`'s selection and
+        # stays comparable to `interleaved` on the vision side.
+        hidden, cache = axis.vfm_forward(px, px2, ids, tti, pm, groups)
+        stats["groups"] = groups
+        stats["llm_tokens_corrected"] = int(ids.shape[1])   # the prefill is exact over everything
+        return _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens), stats
+
     if arm == "interleaved":
         # Same selection as `corrected`, split into `groups` arrival rounds. The walk owns the
         # whole axis, so it rebuilds its own approximate pass -- the cache above is only used for
@@ -295,7 +309,7 @@ def main():
     ap.add_argument("--model", default="google/gemma-3-4b-it")
     ap.add_argument("--dataset", default="chartqa")
     ap.add_argument("--arm",
-                    choices=["ceiling", "floor", "corrected", "interleaved", "progressive",
+                    choices=["ceiling", "floor", "corrected", "interleaved", "progressive", "vfm",
                              "parity", "corrected_split", "corrected_patchled"],
                     default="ceiling")
     ap.add_argument("--groups", type=int, default=4,
