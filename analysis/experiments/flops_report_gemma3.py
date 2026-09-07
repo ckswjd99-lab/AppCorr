@@ -70,9 +70,11 @@ def main():
     ap.add_argument("--level", type=int, default=2)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--datasets", nargs="+", default=list(DATASETS))
+    ap.add_argument("--arm", choices=["interleaved", "vfm"], default="interleaved")
     ap.add_argument("--out-json",
                     default="analysis/results/flops/inprocess_flops.json")
     a = ap.parse_args()
+    model_key = "gemma3" if a.arm == "interleaved" else "gemma3_vfm"
 
     from datasets import load_dataset
     from transformers import AutoProcessor, Gemma3ForConditionalGeneration
@@ -136,18 +138,53 @@ def main():
                 energy = patch_energy(px, px2, patch)
                 axis.interleaved_forward_progressive(px, px2, ids, tti, energy, keep, a.groups)
 
-            agg = run(interleaved)
+            # `select` is the pre-2026-08-26 upfront selection (vision tower run once for the
+            # attention term, mask fixed before any correction). It survives only for the vfm arm,
+            # whose single exact prefill needs the whole patch mask up front; the interleaved arm
+            # above selects per round (canonical, user decision 2026-08-26).
+            def select(axis, fl, ids, tti, px, px2, keep=keep):
+                """Upfront selection for the vfm arm (score = energy x received attention, fixed before correction)."""
+                cache = {}
+                with fl.arrival(0), fl.stage("approx"):
+                    vh, cache = axis.vision_approx(axis.vision_prepare(px2), cache,
+                                                   collect_attn=True)
+                score = patch_energy(px, px2, patch)
+                attn = cache.get("vision_patch_attn_layermean")
+                if attn is not None:
+                    score = (score / score.mean().clamp_min(1e-12)) * \
+                        (attn / attn.mean().clamp_min(1e-12)).to(score.device)
+                feats_appr = axis.project(vh)
+                _, ctx = axis.llm_prepare(ids, feats_appr, tti)
+                n_img = ctx["image_positions"].numel()
+                # The composing selection: tokens lead, patches derived, so the per-round patch
+                # groups map onto token groups (the identity interleaving depends on).
+                pooled = axis.pool_patch_score(score)
+                tk = max(1, int(round(keep * n_img)))
+                sel = torch.zeros_like(pooled, dtype=torch.bool).scatter_(
+                    1, pooled.topk(tk, dim=-1).indices, True)
+                pm = axis.token_mask_to_patch_mask(sel, score.shape[1])
+                return pm, sel, ctx
+
+            def vfm(axis, fl, ids, tti, px, px2, keep=keep):
+                # vfm_forward scopes its own arrival()/stage() internally, redoing the same
+                # vision_approx(px2) call `select` already did above (cheap, and keeps the two
+                # arms' selection code identical rather than threading a cache through).
+                pm, _, _ = select(axis, fl, ids, tti, px, px2, keep=keep)
+                axis.vfm_forward(px, px2, ids, tti, pm, a.groups)
+
+            arm_fn = interleaved if a.arm == "interleaved" else vfm
+            agg = run(arm_fn)
             crit, tot = agg["mean_critical_gflops"], agg["mean_total_gflops"]
             rows.append((ds_name, keep, crit, tot, full_g))
-            print(f"  interleaved g={a.groups} keep={keep:.0%}  "
+            print(f"  {a.arm} g={a.groups} keep={keep:.0%}  "
                   f"critical {crit:9.1f}  total {tot:9.1f} GFLOPs   "
                   f"critical/full = {100*crit/full_g:5.1f}%")
-        _save(a.out_json, "gemma3", ds_name, full_g,
+        _save(a.out_json, model_key, ds_name, full_g,
               [(k, c, t) for d, k, c, t, _ in rows if d == ds_name],
               len(idxs), a.groups)
 
 
-    print(f"\n\n═══ Gemma 3 4B-IT  ·  interleaved g={a.groups}  ·  critical vs full inference ═══")
+    print(f"\n\n═══ Gemma 3 4B-IT  ·  {a.arm} g={a.groups}  ·  critical vs full inference ═══")
     print(f"{'dataset':<12}{'keep':>7}{'critical GF':>14}{'full GF':>12}{'% of full':>12}")
     for ds_name, keep, crit, tot, full_g in rows:
         print(f"{ds_name:<12}{keep:>6.0%}{crit:>14.1f}{full_g:>12.1f}{100*crit/full_g:>11.1f}%")
