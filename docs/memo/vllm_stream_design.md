@@ -1,8 +1,11 @@
 # vLLM streaming prefill for AppCorr (`appcorr/vllm_stream/`)
 
-Status: prototype on `develop/vllm-stream`, vLLM 0.11.2 (env `openrlhf_base`), in-process engine
-core, TP=1, Qwen2.5-VL as the first model. No vLLM fork: four monkey-patched hooks + a scheduler
-subclass, installable as a `vllm.general_plugins` entry point.
+Status: prototype on `develop/vllm-stream`, vLLM 0.11.2 (env `openrlhf_base`, someone else's --
+read-only) and vLLM 0.28.0 (env `appcorr-vllm`, ours: torch 2.13.0+cu130, transformers 5.16.1;
+the `appcorr` env keeps torch 2.12.1 and must not get vLLM), in-process engine core, TP=1,
+Qwen2.5-VL as the first model. No vLLM fork: four monkey-patched hooks + a scheduler subclass,
+installable as a `vllm.general_plugins` entry point. 0.28.0 is the target from here on (it has
+Qwen3.5 / Gemma 4 / LLaVA-OneVision-2; 0.11.2 has none of them).
 
 ## What it is
 
@@ -81,6 +84,40 @@ Two stock vLLM 0.11.2 bugs surfaced and are worked around in this package (not u
    head dim 80 ("headdim not being a multiple of 32"); `mm_encoder_attn_backend=TORCH_SDPA`
    does not help (converted back to FLASH_ATTN on CUDA). `compat.fix_qwen2_5_vit_upstream_fa()`.
 
+### Port to vLLM 0.28.0 (2026-09-07, env `appcorr-vllm`)
+
+Same four hooks, same scheduler subclass; what changed (all version-gated in place, 0.11.2 kept):
+
+| 0.11.2 | 0.28.0 | in this package |
+|---|---|---|
+| `LLMEngine.processor.process_inputs(...)` | `LLMEngine.input_processor.process_inputs(..., supported_tasks=)` | `client._ecr` |
+| request ids used verbatim | `add_request` randomises the id (`<id>-<8 hex>`); outputs carry the external id, the engine core the internal one | `StreamingLLM._internal` map; appends are re-addressed to the core id |
+| `Scheduler.schedule()` | `schedule(throttle_prefills)` | pass-through |
+| `_init_mrope_positions` crashes on embeds-only | assigns *text* positions to an embeds-only prompt | hook unchanged (client positions win) |
+| `_preprocess` clobbers prompt_embeds (bug 1) | fixed upstream (`torch.where(is_token_ids, ...)`) | patch installed on 0.11.2 only |
+| `Qwen2_5_VisionAttention` drops `use_upstream_fa` (bug 2) | ViT attention is `MMEncoderAttention`, backend chosen with the head size | `compat` is a no-op on 0.28.0 |
+| `get_mrope_input_positions` scans token ids | walks `mm_features` by `mm_position.offset` + `modality` | `_DuckFeature` grew `modality`, `mm_position`, `identifier`, `data.get` |
+| pixel normalisation in the HF processor | on the device by default (`mm_device_do_normalize=True`) | `StreamingLLM` passes `False` so the stock arm and the composer share the CPU path |
+| sync scheduler, one batch in flight | async scheduling on by default (AsyncScheduler + 2-deep batch queue) | `StreamingLLM` passes `async_scheduling=False`; the hooks were gated on the sync engine |
+| -- | Model Runner V2 is the default for common architectures, but "does not yet support prompt embeds" -> falls back to V1 | our hooks are on V1's `GPUModelRunner`; the day V2 takes prompt_embeds they need a second home |
+| -- | upstream "streaming input sessions" (`resumable=True`, `StreamingUpdate`): token-ids only, the request must *finish* between chunks (one sampled token per chunk, discarded on resume) | not usable for embeds; our hold-back-one is the no-sample-in-between analogue. `_update_streaming_request` in the runner is the stock twin of our `_update_states` hook |
+
+Gate on 0.28.0 (same protocol, `gate_qwen25vl7b_vllm0280.json`; flashinfer/trtllm-gen + cutlass FA
+sm100 kernels, eager, GPU0 shared with the OpenVLA job):
+
+| arm | greedy tokens == A | max dlogprob (common prefix) | first-token dlogprob |
+|---|---|---|---|
+| B one-shot embeds | 8/8 | 0 | 0 |
+| C2 burst append | 8/8 | 0 | 0 |
+| C one chunk per step | 5/8 (div@0, @32, @31) | 0.124 | 0.060 |
+| D stock chunked prefill, 128 tok | 5/8 (same images, same positions) | 0.124 | 0.060 |
+
+B/C2 bit-identical again; C == D on all 8 images to three digits (0.11.2: 7/8), including image 0
+where both flip the *first* token -- the chunk-boundary band of the 0.28.0 kernels is wider than
+0.11.2's (first-token dlogprob 0.060 vs 0.043) and it is stock vLLM's band, not ours. Observation,
+not a mechanism: C and D cut at different boundaries yet land on identical dlogprobs, so what
+separates them from A looks like "chunked vs one-shot prefill", not the boundary position.
+
 ## TTFT under progressive arrival (`analysis/experiments/vllm_stream_ttft.py`)
 
 Chunks become available at t = k * gap (text in the last chunk); `stock` submits one message
@@ -118,7 +155,15 @@ appends are now 0.2-0.7 ms. Stock's own prompt-embeds staging (`copy_` into the 
 * In-process only. `NewRequestData.appcorr_stream` and `SchedulerOutput.appcorr_stream_updates`
   are plain attributes; a multi-process core needs them as msgpack fields (or a side channel).
 * `open` must set `max_tokens` (the Processor derives the default from the first chunk's length).
-* Structured output / spec decode / async scheduling untested with streaming requests.
+* Structured output / spec decode / async scheduling untested with streaming requests (0.28.0:
+  async scheduling is explicitly turned off by `StreamingLLM`).
+* Qwen3-VL / Qwen3.5 (deepstack): the vision tower also emits per-level features that the LM
+  adds to its hidden states at `deepstack_visual_indexes` layers. They travel through a model
+  side buffer (`_set_deepstack_input_embeds`, filled by `embed_input_ids` from mm inputs) and a
+  `prompt_embeds`-only request never fills it -- the stock 0.28.0 prompt_embeds path already
+  drops them for these models. Streaming them needs `[levels, T, D]` per chunk on the wire and a
+  runner hook that scatters the scheduled rows into the buffer in persistent-batch order (the
+  same row bookkeeping the 0.11.2 `_preprocess` fix used). Not done; needs a go.
 * Milestone 2: AppCorr vision (appcorr env, transformers 5) in a separate process, per-round
   merged embeds to the vLLM process over a socket. The TTFT script already has the
   chunk-arrival timeline; the milestone replaces its synthetic `gap` with AppCorr's real

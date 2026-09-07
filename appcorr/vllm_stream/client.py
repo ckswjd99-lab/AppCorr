@@ -53,7 +53,8 @@ class EmbeddedPrompt:
 
 
 class _DuckItem:
-    """Quacks like MultiModalKwargsItem for `MultiModalFeatureSpec.gather_kwargs`."""
+    """Quacks like MultiModalKwargsItem for `MultiModalFeatureSpec.gather_kwargs` (0.11.2) and
+    for `iter_mm_grid_thw`'s `data["image_grid_thw"].data` / `data.get(...)` (0.28.0)."""
     def __init__(self, **fields):
         self._f = {k: type("E", (), {"data": v})() for k, v in fields.items()}
 
@@ -63,10 +64,20 @@ class _DuckItem:
     def __getitem__(self, k):
         return self._f[k]
 
+    def get(self, k, default=None):
+        return self._f.get(k, default)
+
 
 class _DuckFeature:
-    def __init__(self, **fields):
+    """Quacks like MultiModalFeatureSpec: `.data` (both releases), `.modality` and
+    `.mm_position.offset` (0.28.0's `iter_mm_grid_thw` walks features by placeholder offset
+    instead of scanning the token ids)."""
+    def __init__(self, modality: str, offset: int, length: int, **fields):
+        from vllm.multimodal.inputs import PlaceholderRange
         self.data = _DuckItem(**fields)
+        self.modality = modality
+        self.mm_position = PlaceholderRange(offset=offset, length=length)
+        self.identifier = f"appcorr-{modality}-{offset}"
 
 
 class StreamingLLM:
@@ -78,34 +89,58 @@ class StreamingLLM:
         install()
         from vllm import LLM
         self.model_name = model
+        from . import vllm_version
+        self.vllm_version = vllm_version()
+        if self.vllm_version != "0.11.2":
+            # 0.28.0 normalises pixel values on the device by default (HF processor run with
+            # do_normalize/do_rescale off); the composer feeds the HF processor's normalised
+            # output straight to the tower, so keep the stock arm on the same (CPU) path.
+            kw.setdefault("mm_device_do_normalize", False)
+            # 0.28.0 turns async scheduling on by default (AsyncScheduler + a 2-deep batch queue,
+            # sampled ids kept on the GPU). The streaming hooks subclass the sync Scheduler and
+            # were gated on the sync engine; keep the engine sync until the async path is ported.
+            kw.setdefault("async_scheduling", False)
         self.llm = LLM(model=model, enable_prompt_embeds=True, enable_prefix_caching=False,
                        scheduler_cls="appcorr.vllm_stream.scheduler.StreamingScheduler",
                        gpu_memory_utilization=gpu_memory_utilization, max_model_len=max_model_len,
                        enforce_eager=enforce_eager, dtype=dtype, tensor_parallel_size=1, **kw)
         self.engine = self.llm.llm_engine
-        self.processor = self.engine.processor
+        # 0.11.2: `LLMEngine.processor`; 0.28.0: `LLMEngine.input_processor` (+ `supported_tasks`)
+        self.processor = getattr(self.engine, "input_processor", None) or self.engine.processor
         core = self.engine.engine_core  # InprocClient
         self.core = core.engine_core
         assert hasattr(self.core.scheduler, "stream_append"), type(self.core.scheduler)
         self._open: dict[str, float] = {}
+        # 0.28.0 randomises request ids on `add_request` (external id -> "<id>-<8 hex>" inside the
+        # engine; outputs carry the external id). appends must address the internal id.
+        self._internal: dict[str, str] = {}
 
     # -- streaming API ---------------------------------------------------------------------
     def _ecr(self, request_id: str, chunk: StreamChunk, sp, mode: str):
+        extra = {}
+        if self.vllm_version != "0.11.2":
+            extra["supported_tasks"] = self.engine.get_supported_tasks()
         return self.processor.process_inputs(request_id, {"prompt_embeds": chunk.embeds}, sp,
                                              arrival_time=time.time(),
-                                             trace_headers=make_stream_headers(mode, chunk))
+                                             trace_headers=make_stream_headers(mode, chunk), **extra)
+
+    def _core_id(self, request_id: str) -> str:
+        return self._internal.get(request_id, request_id)
 
     def open(self, request_id: str, chunk: StreamChunk, sampling_params) -> None:
         assert sampling_params.max_tokens is not None, "set max_tokens: the prompt length is not known at open"
         mode = "oneshot" if chunk.final else "open"
         ecr = self._ecr(request_id, chunk, sampling_params, mode)
-        self.engine.add_request(request_id, ecr, sampling_params)
+        ret = self.engine.add_request(request_id, ecr, sampling_params)
+        self._internal[request_id] = ret if isinstance(ret, str) else request_id
         self._open[request_id] = time.perf_counter()
 
     def append(self, request_id: str, chunk: StreamChunk) -> None:
         assert request_id in self._open, request_id
-        sp = self.core.scheduler.requests[request_id].sampling_params
+        core_id = self._core_id(request_id)
+        sp = self.core.scheduler.requests[core_id].sampling_params
         ecr = self._ecr(request_id, chunk, sp, "final" if chunk.final else "append")
+        ecr.request_id = core_id
         self.engine.engine_core.add_request(ecr)
 
     def step(self):
@@ -114,6 +149,7 @@ class StreamingLLM:
         for o in outs:
             if o.finished:
                 self._open.pop(o.request_id, None)
+                self._internal.pop(o.request_id, None)
         return outs
 
     def run_until_done(self, request_ids, max_steps: int = 100000):
@@ -128,7 +164,7 @@ class StreamingLLM:
         raise RuntimeError(f"requests {want - set(done)} did not finish in {max_steps} steps")
 
     def stream_state(self, request_id: str):
-        return self.core.scheduler.stream_state(request_id)
+        return self.core.scheduler.stream_state(self._core_id(request_id))
 
     # -- stock reference --------------------------------------------------------------------
     def generate(self, prompts, sampling_params):
@@ -185,7 +221,7 @@ class Qwen25VLComposer:
                 assert vis.shape[0] == L, (vis.shape, L)
                 emb = emb.clone()
                 emb[i0:i0 + L] = vis.to(emb.dtype)
-                feat = _DuckFeature(image_grid_thw=thw[0])
+                feat = _DuckFeature("image", i0, L, image_grid_thw=thw[0])
                 pos, delta = model.get_mrope_input_positions(ids.tolist(), [feat])
             return emb.cpu(), pos.cpu().to(torch.int64), int(delta)
 
