@@ -1,4 +1,4 @@
-"""In-process client: `StreamingLLM` (open / append / step) and Qwen2.5-VL prompt composition.
+"""In-process client: `StreamingLLM` (open / append / step) and Qwen2-VL-family prompt composition.
 
 The prototype runs the engine core in the caller's process (`VLLM_ENABLE_V1_MULTIPROCESSING=0`,
 TP=1) so the scheduler/runner hooks can pass tensors by reference. A chunk is submitted as an
@@ -176,7 +176,13 @@ class StreamingLLM:
 
 class Qwen25VLComposer:
     """Builds the exact prompt vLLM would run for (image, question) and turns it into embeddings
-    using the vLLM model's own embedding table and vision tower, plus stock M-RoPE positions."""
+    using the vLLM model's own embedding table and vision tower, plus stock M-RoPE positions.
+
+    Covers the whole Qwen2-VL family as vLLM models it: Qwen2.5-VL and Qwen3.5 (`<|image_pad|>`
+    span, `get_mrope_input_positions` over placeholder features, tower -> [T, D]). Qwen3-VL proper
+    ships deepstack (`vision_config.deepstack_visual_indexes` non-empty: extra per-level features
+    added at early LM layers through a side buffer the embeds path never fills); the Qwen3.5
+    checkpoints ship it EMPTY, so they take the plain path -- `embed` asserts that."""
 
     def __init__(self, llm: StreamingLLM):
         from transformers import AutoProcessor
@@ -207,14 +213,17 @@ class Qwen25VLComposer:
         vLLM model's own vision tower."""
         ids, pv, thw = parts.input_ids, parts.pixel_values, parts.image_grid_thw
         i0, L = parts.image_start, parts.image_len
+        vllm_config = self.llm.engine.vllm_config  # not every model class keeps `.vllm_config`
 
         def fn(model):
             from vllm.forward_context import set_forward_context
             dev = next(model.parameters()).device
+            assert getattr(model, "deepstack_num_level", 0) == 0, (
+                "deepstack model: the [T, D] embeds wire format cannot carry the per-level features")
             with torch.no_grad():
                 emb = model.embed_input_ids(ids.to(dev))
                 if image_embeds is None:
-                    with set_forward_context(None, model.vllm_config):
+                    with set_forward_context(None, vllm_config):
                         vis = model.visual(pv.to(dev, model.visual.dtype), grid_thw=thw.tolist())
                 else:
                     vis = image_embeds.to(dev, emb.dtype)
@@ -236,3 +245,6 @@ class Qwen25VLComposer:
         rows = L // w
         cuts = [i0 + (rows * k // num_chunks) * w for k in range(1, num_chunks)]
         return [0, *cuts, N]
+
+
+QwenVLComposer = Qwen25VLComposer  # Qwen2.5-VL / Qwen3.5 (see class docstring)

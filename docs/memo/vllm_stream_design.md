@@ -150,6 +150,39 @@ process's thread count is not ours to change, so the concatenations go through n
 appends are now 0.2-0.7 ms. Stock's own prompt-embeds staging (`copy_` into the pinned buffer,
 ~14 calls, 6 ms per step) has the same disease and is left alone (it is paid by both arms).
 
+### Qwen3.5 on 0.28.0 (2026-09-07): same composer, same hooks, gated
+
+The composer is model-agnostic within the Qwen2-VL family (`<|image_pad|>` span, LM embedding
+table + `model.visual(pixel_values, grid_thw)` -> `[T, D]`, `get_mrope_input_positions` over a
+duck-typed placeholder feature), so Qwen3.5 needed no code beyond taking `vllm_config` from the
+engine (the Qwen3.5 model classes do not keep `.vllm_config`) and the deepstack assert above.
+Qwen3.5 is a hybrid (GDN linear attention + full attention, MoE); the hold-back-one chunked
+prefill therefore also exercises vLLM's mamba-state chunking (attention block size raised to
+1056 tokens to match the mamba page). Same protocol (8 COCO images, 4 chunks, 48 greedy tokens,
+eager, GPU0 shared with the OpenVLA job); `gate_qwen35_35b_vllm0280.json`,
+`gate_qwen35_122b_fp8_vllm0280.json`:
+
+| model | arm | greedy tokens == A | max dlogprob (common prefix) | first-token dlogprob |
+|---|---|---|---|---|
+| Qwen3.5-35B-A3B bf16 | B one-shot embeds | 8/8 | 0 | 0 |
+| | C2 burst append | 8/8 | 0 | 0 |
+| | C one chunk per step | 6/8 (div@12, @12) | 0.163 | 2.9e-5 |
+| | D stock chunked prefill, 128 tok | 6/8 (div@39, @12) | 0.209 | 5.1e-5 |
+| Qwen3.5-122B-A10B-FP8 | B one-shot embeds | 8/8 | 0 | 0 |
+| | C2 burst append | 8/8 | 0 | 0 |
+| | C one chunk per step | 6/8 (div@13, @43) | 0.417 | 0.027 |
+| | D stock chunked prefill, 128 tok | 7/8 (div@46) | 0.433 | 0.065 |
+
+Reading: B/C2 bit-identical on both, so the embeds/positions/append plumbing is exact for the
+hybrid stack too. C sits inside D's band on 35B (its max dlogprob is below D's, first token
+~1e-5 for both, so the GDN chunked-state path is nearly exact and the band is the attention
+kernels'). On 122B-FP8 the band is larger for C and D alike (max dlogprob 0.42 / 0.43, first token
+0.027 / 0.065; C 6/8 vs D 7/8 is one image at 8 samples) -- the FP8 MoE GEMMs add
+chunk-shape-dependent rounding; this is the vLLM counterpart of the HF-side finding
+that 122B-FP8 chunked prefill is lossy while 35B bf16 is not, and again stock vLLM's own chunked
+prefill shows it (D), not our hooks. Model load: 35B 23 s, 122B-FP8 50 s; the first 122B run
+spent ~12 min in FP8 MoE kernel JIT/cubin fetch (cached afterwards).
+
 ## Known limits / next
 
 * In-process only. `NewRequestData.appcorr_stream` and `SchedulerOutput.appcorr_stream_updates`
@@ -157,13 +190,16 @@ appends are now 0.2-0.7 ms. Stock's own prompt-embeds staging (`copy_` into the 
 * `open` must set `max_tokens` (the Processor derives the default from the first chunk's length).
 * Structured output / spec decode / async scheduling untested with streaming requests (0.28.0:
   async scheduling is explicitly turned off by `StreamingLLM`).
-* Qwen3-VL / Qwen3.5 (deepstack): the vision tower also emits per-level features that the LM
-  adds to its hidden states at `deepstack_visual_indexes` layers. They travel through a model
-  side buffer (`_set_deepstack_input_embeds`, filled by `embed_input_ids` from mm inputs) and a
-  `prompt_embeds`-only request never fills it -- the stock 0.28.0 prompt_embeds path already
-  drops them for these models. Streaming them needs `[levels, T, D]` per chunk on the wire and a
-  runner hook that scatters the scheduled rows into the buffer in persistent-batch order (the
-  same row bookkeeping the 0.11.2 `_preprocess` fix used). Not done; needs a go.
+* Qwen3-VL proper (deepstack): its vision tower also emits per-level features that the LM adds
+  to its hidden states at `deepstack_visual_indexes` layers, through a model side buffer
+  (`_set_deepstack_input_embeds`, filled by `embed_input_ids` from mm inputs) that a
+  `prompt_embeds`-only request never fills. Streaming them would need `[levels, T, D]` per chunk
+  on the wire and a runner hook scattering the scheduled rows in persistent-batch order. NOT
+  needed for Qwen3.5: every Qwen3.5 checkpoint here (4B, 35B-A3B, 122B-A10B, 122B-A10B-FP8) ships
+  `deepstack_visual_indexes: []` (`deepstack_num_level == 0`, tower output is plain `[T, D]`,
+  and vLLM's `Qwen3_5*ForConditionalGeneration.embed_input_ids` does not compute deepstack at
+  all). `Qwen25VLComposer.embed` asserts `deepstack_num_level == 0` so a real Qwen3-VL fails
+  loudly instead of silently dropping the levels.
 * Milestone 2: AppCorr vision (appcorr env, transformers 5) in a separate process, per-round
   merged embeds to the vLLM process over a socket. The TTFT script already has the
   chunk-arrival timeline; the milestone replaces its synthetic `gap` with AppCorr's real

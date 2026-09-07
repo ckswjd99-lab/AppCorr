@@ -1,4 +1,4 @@
-"""Gate for the vLLM streaming-prefill integration (appcorr.vllm_stream) on Qwen2.5-VL.
+"""Gate for the vLLM streaming-prefill integration (appcorr.vllm_stream) on Qwen2.5-VL / Qwen3.5.
 
 Arms (same images, same question, greedy decoding, logprob of every generated token):
 
@@ -23,6 +23,9 @@ Run (GPU0, appcorr-vllm env = vllm 0.28.0; openrlhf_base = 0.11.2 also works, of
   /NHNHOME/storage/users/cjpark/shk/conda_envs/appcorr-vllm/bin/python \
       analysis/experiments/vllm_stream_gate.py --arms A,B,C,C2
   ... --arms D --max-num-batched-tokens 96
+  Qwen3.5 (hybrid GDN/attention MoE; the composer is the same, no deepstack in these checkpoints):
+  ... --model Qwen/Qwen3.5-35B-A3B --gpu-mem 0.6 --out analysis/results/vllm_stream/gate_qwen35_35b_vllm0280.json
+  ... --model Qwen/Qwen3.5-122B-A10B-FP8 --gpu-mem 0.85 --out analysis/results/vllm_stream/gate_qwen35_122b_fp8_vllm0280.json
 """
 from __future__ import annotations
 
