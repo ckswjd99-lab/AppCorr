@@ -20,6 +20,7 @@ useful counterweight: the heads read only those four blocks, so correction only 
 from typing import Any, Dict
 
 import numpy as np
+import os
 import torch
 
 from offload.common import Task
@@ -32,7 +33,26 @@ class VGGTOmegaExecutor(ModelExecutor):
 
     def __init__(self, device: torch.device):
         super().__init__(device)
-        self.autocast_dtype = torch.bfloat16
+        # APPCORR_VGGT_FP32=1 disables autocast for A/B probes where bf16's shape-dependent
+        # reduction order would mask (or mimic) a semantic difference. fp32 autocast is a no-op
+        # context, so the flag costs nothing when unset.
+        import os as _os
+        self.autocast_dtype = (torch.float32 if _os.environ.get("APPCORR_VGGT_FP32")
+                               else torch.bfloat16)
+
+    def backbone_modules(self):
+        """VGGT's aggregator -- the DINOv3-derived trunk that produces the tokens every head reads.
+
+        The camera, depth and point heads are the header this VFM stops before. `aggregator` is
+        checked first because that is what the VGGT builds in this repo call it; the fallbacks cover
+        a plain `backbone` naming.
+        """
+        m = self.model
+        for attr in ("aggregator", "backbone", "trunk"):
+            sub = getattr(m, attr, None)
+            if sub is not None:
+                return [sub]
+        return [m]
 
     def load_model(self, model_name: str, config: Any = None):
         from appcorr.models.vggt_omega.models.vggt_omega import VGGTOmega
@@ -433,6 +453,13 @@ class VGGTOmegaExecutor(ModelExecutor):
                 context["vggt_tokens"], context["vggt_outputs"] = tokens, outputs
 
         context["vggt_stage"] = hi
+        if correct and os.environ.get("APPCORR_VGGT_TRACE"):
+            cf = context["cache_feature"]
+            kept = cf.get("_token_patch_kept_total", cf.get("_token_pscore_kept_patch_total"))
+            full = cf.get("_token_patch_full_total", cf.get("_token_pscore_full_patch_total"))
+            keys = [k for k in cf if k.startswith("_token")]
+            print(f"[vggt-trace] correct layers=({lo},{hi}) stat_keys={keys} "
+                  f"kept={kept} full={full}", flush=True)
         return {}
 
     @torch.inference_mode()

@@ -17,6 +17,5 @@
     },
     "appcorr_kwargs": {
         "enabled": false
-    },
-    "device": "cuda:1"
+    }
 }

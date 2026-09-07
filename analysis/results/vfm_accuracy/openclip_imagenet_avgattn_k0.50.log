@@ -1,0 +1,40 @@
+[run_local] Starting local AppCorr server...
+[run_local] Server PID: 1745142
+[run_local] Launching mobile client in 2s with config: /NHNHOME/share/cjpark/AppCorr-flops/offload/config/imagenet_clip_bigg_interleaved_g4_avgattn.json
+=== Starting AppCorr Server ===
+[*] Listening for Data on 0.0.0.0:39970
+[*] Listening for Results on 0.0.0.0:39971
+=== Starting AppCorr Mobile Client ===
+[*] Target Server: 127.0.0.1
+[*] Dataset Root: ~/data/imagenet_val
+[*] Config Path: /NHNHOME/share/cjpark/AppCorr-flops/offload/config/imagenet_clip_bigg_interleaved_g4_avgattn.json
+[*] Warm-up Requests: 0
+[*] Batch Size (Images): 32
+[*] Config Overrides: ['appcorr_kwargs.token_keep_ratio=0.50']
+[MobileSender] Connection failed ([Errno 111] Connection refused). Retrying in 1s...
+[MobileReceiver] Connection failed ([Errno 111] Connection refused). Retrying in 1s...
+[MobileSender] Connection failed ([Errno 111] Connection refused). Retrying in 1s...
+[MobileReceiver] Connection failed ([Errno 111] Connection refused). Retrying in 1s...
+[ServerSender] Waiting for Mobile connection on 0.0.0.0:39971...
+[MobileSender] Connected to 127.0.0.1:39970 (local=('127.0.0.1', 51596), peer=('127.0.0.1', 39970))
+[MobileReceiver] Connected to 127.0.0.1:39971 (local=('127.0.0.1', 44986), peer=('127.0.0.1', 39971))
+[ServerSender] Mobile connected from ('127.0.0.1', 44986)
+[ServerSender] Downlink ready sent (local=('127.0.0.1', 39971), peer=('127.0.0.1', 44986))
+[MobileReceiver] Downlink ready from server (server_time=1787734157.475801)
+[ServerReceiver] Listening on 0.0.0.0:39970...
+[ServerReceiver] Connected by ('127.0.0.1', 51596)
+[ServerReceiver] Handshake success. Policy: GroupTrigger
+[ServerReceiver] Received STOP signal or Client disconnected.
+[ServerReceiver] Triggering Server Shutdown...
+[Scheduler] Started.
+[Scheduler] Configured with GroupTrigger
+[Worker] Started.
+[Worker] Started with default device: cuda
+[Decoder Thread] Started.
+[Reaper Thread] Started.
+[GPU Worker] Started.
+[Worker] Triton runtime verified (kernels compile).
+Skipping import of cpp extensions due to incompatible torch version 2.12.1+cu130 for torchao version 0.16.0+cu130             Please see https://github.com/pytorch/ao/issues/2919 for more info
+
+[Main] Shutdown signal received. Cleaning up...
+Server Stopped.

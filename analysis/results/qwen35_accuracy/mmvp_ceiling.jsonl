@@ -1,0 +1,300 @@
+{"i": 0, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 1, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 2, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 3, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 4, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 5, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 6, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 7, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 8, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 9, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 10, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 11, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 12, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 13, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 14, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 15, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 16, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 17, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 18, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 19, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 20, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 21, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 22, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 23, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 24, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 25, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 26, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 27, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 28, "pred": "(a) Correct", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 29, "pred": "(b) Incorrect", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 30, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 31, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 32, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 33, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 34, "pred": "(b) No", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 35, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 36, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 37, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 38, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 39, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 40, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 41, "pred": "(a) Yes", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 42, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 43, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 44, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 45, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 46, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 47, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 48, "pred": "(b) No", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 49, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 50, "pred": "(b) No", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 51, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 52, "pred": "(a) Yes", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 53, "pred": "(a) Yes", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 54, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 55, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 56, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 57, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 58, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 59, "pred": "(a) Yes", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 60, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 61, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 62, "pred": "(b) Incorrect", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 63, "pred": "(b) Incorrect", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 64, "pred": "(a) Correct", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 65, "pred": "(b) Incorrect", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 66, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 67, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 68, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 69, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 70, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 71, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 72, "pred": "(a) Yes", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 73, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 74, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 75, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 76, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 77, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 78, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 79, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 80, "pred": "(a) Yes", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 81, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 82, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 83, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 84, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 85, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 86, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 87, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 88, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 89, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 90, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 91, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 92, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 93, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 94, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 95, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 96, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 97, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 98, "pred": "(b) Short", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 99, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 100, "pred": "(b) Set", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 101, "pred": "(b) Set", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 102, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 103, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 104, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 105, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 106, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 107, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 108, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 109, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 110, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 111, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 112, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 113, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 114, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 115, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 116, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 117, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 118, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 119, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 120, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 121, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 122, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 123, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 124, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 125, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 126, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 127, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 128, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 129, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 130, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 131, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 132, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 133, "pred": "(a) OK/SELECT", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 134, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 135, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 136, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 137, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 138, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 139, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 140, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 141, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 142, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 143, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 144, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 145, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 146, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 147, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 148, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 149, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 150, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 151, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 152, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 153, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 154, "pred": "(b) On the Windowsill", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 155, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 156, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 157, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 158, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 159, "pred": "(b) Both arms", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 160, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 161, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 162, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 163, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 164, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 165, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 166, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 167, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 168, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 169, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 170, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 171, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 172, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 173, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 174, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 175, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 176, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 177, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 178, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 179, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 180, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 181, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 182, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 183, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 184, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 185, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 186, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 187, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 188, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 189, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 190, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 191, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 192, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 193, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 194, "pred": "(a) Yes", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 195, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 196, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 197, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 198, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 199, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 200, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 201, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 202, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 203, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 204, "pred": "(a) Yes", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 205, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 206, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 207, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 208, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 209, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 210, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 211, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 212, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 213, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 214, "pred": "(b) No", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 215, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 216, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 217, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 218, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 219, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 220, "pred": "(a) Yes", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 221, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 222, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 223, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 224, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 225, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 226, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 227, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 228, "pred": "(a) Yes", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 229, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 230, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 231, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 232, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 233, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 234, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 235, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 236, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 237, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 238, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 239, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 240, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 241, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 242, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 243, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 244, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 245, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 246, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 247, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 248, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 249, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 250, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 251, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 252, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 253, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 254, "pred": "(b) No", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 255, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 256, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 257, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 258, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 259, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 260, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 261, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 262, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 263, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 264, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 265, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 266, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 267, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 268, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 269, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 270, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 271, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 272, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 273, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 274, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 275, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 276, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 277, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 278, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 279, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 280, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 281, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 282, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 283, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 284, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 285, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 286, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 287, "pred": "(a)", "gold": "b", "ok": 0, "val": 0.0}
+{"i": 288, "pred": "(a) Correct", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 289, "pred": "(b) Incorrect", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 290, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 291, "pred": "(b) No", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 292, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 293, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 294, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 295, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 296, "pred": "(a)", "gold": "a", "ok": 1, "val": 1.0}
+{"i": 297, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}
+{"i": 298, "pred": "(b)", "gold": "a", "ok": 0, "val": 0.0}
+{"i": 299, "pred": "(b)", "gold": "b", "ok": 1, "val": 1.0}

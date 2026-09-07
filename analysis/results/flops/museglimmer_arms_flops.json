@@ -1,0 +1,25 @@
+{
+ "_model": "meta-models/Muse-Glimmer-30B",
+ "_samples": 12,
+ "_groups": 4,
+ "refcoco": {
+  "full": 30666.9,
+  "floor": 30666.9,
+  "crit_g4_k0.25": 7845.1,
+  "total_g4_k0.25": 32379.4,
+  "crit_g4_k0.50": 8219.7,
+  "total_g4_k0.50": 33890.2,
+  "crit_g4": 8963.4,
+  "total_g4": 36625.7
+ },
+ "textvqa": {
+  "full": 69353.4,
+  "floor": 69353.4,
+  "crit_g4_k0.25": 14550.5,
+  "total_g4_k0.25": 73738.1,
+  "crit_g4_k0.50": 15545.1,
+  "total_g4_k0.50": 77762.3,
+  "crit_g4": 17524.3,
+  "total_g4": 85093.6
+ }
+}

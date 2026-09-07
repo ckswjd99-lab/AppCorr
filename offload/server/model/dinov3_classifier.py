@@ -284,6 +284,10 @@ class DINOv3ClassifierExecutor(ModelExecutor):
     def _get_group_plans(context: Dict[str, Any]) -> Dict[int, GroupCorrectionPlan]:
         return context.setdefault('group_plans', {})
 
+    def backbone_modules(self):
+        """The ViT trunk only. The linear classification head is the header this VFM stops before."""
+        return [getattr(self.model, "backbone", None)]
+
     def load_model(self, model_name: str, config: Any):
         print(f"[Executor] Loading Model (MMap): {model_name}...")
         if self.model is not None:

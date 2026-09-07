@@ -44,6 +44,7 @@ Run (appcorr env):
 """
 
 import argparse
+import gc
 import json
 import sys
 import time
@@ -77,6 +78,15 @@ def parse_args():
     p.add_argument("--grouping-strategy", type=str, default=None)
     p.add_argument("--num-groups", type=int, default=None)
     p.add_argument("--keep-rate", type=float, default=None)
+    p.add_argument("--llm-schedule", choices=["interleaved", "streaming"], default=None,
+                    help="appcorr_kwargs.llm_schedule: 'streaming' = exact contiguous chunked "
+                         "prefill per round (causal-LLM arm; requires sequential grouping); "
+                         "default (unset) keeps the executor's interleaved correction.")
+    p.add_argument("--token-keep-ratio", type=float, default=None,
+                    help="Server-side vision-recompute selection fraction (appcorr_kwargs.token_keep_ratio, "
+                         "read by Qwen25VLExecutor._prune_patch_idx) -- NOT the same knob as --keep-rate, "
+                         "which sets transmission_kwargs.keep_rate (a client-side send/coverage fraction). "
+                         "Omit to leave the executor's vision-side pruning off (keeps every arrived token).")
     p.add_argument("--pscore-threshold", type=float, default=None,
                     help="For --grouping-strategy top_energy_threshold: absolute residual-energy "
                          "cutoff (merge-groups with pscore >= this are corrected) -- the number of "
@@ -107,6 +117,10 @@ def load_base_config_dict(args):
         raw.setdefault("transmission_kwargs", {})["keep_rate"] = args.keep_rate
     if args.pscore_threshold is not None:
         raw.setdefault("transmission_kwargs", {})["pscore_threshold"] = args.pscore_threshold
+    if args.token_keep_ratio is not None:
+        raw.setdefault("appcorr_kwargs", {})["token_keep_ratio"] = args.token_keep_ratio
+    if args.llm_schedule is not None:
+        raw.setdefault("appcorr_kwargs", {})["llm_schedule"] = args.llm_schedule
     return raw
 
 
@@ -137,10 +151,17 @@ def build_first_token_context(executor, encoder, raw_config, config, image_np, p
         ], instructions=[])
         executor.preprocess(image_np[None], task, context, config)
         executor.prepare_tokens(task, context, config)
+        # `mm_token_type_ids` (found 2026-08-25, see docs/memo/qwen25vl_baseline_mrope_bug.md):
+        # without it, HF's `compute_3d_position_ids` cannot compute real M-RoPE and falls back to
+        # plain sequential 1D positions replicated across all 3 mrope axes -- same bug as
+        # `qwen25vl_executor.py::full_inference` had, independently, since this baseline branch
+        # calls stock directly rather than going through that method.
+        mm_token_type_ids = context["image_mask_1d"].long().unsqueeze(0)
         with torch.no_grad():
             outputs = executor.model(
                 input_ids=context["input_ids"], attention_mask=context["attention_mask"],
                 pixel_values=context["pixel_values"], image_grid_thw=context["image_grid_thw"],
+                mm_token_type_ids=mm_token_type_ids,
                 use_cache=False,
             )
             first_token = outputs.logits[:, -1, :].argmax(dim=-1)
@@ -162,22 +183,39 @@ def build_first_token_context(executor, encoder, raw_config, config, image_np, p
             patch_buffer.extend(group_patches)
             canvas = encoder.decode(patch_buffer, config, canvas=canvas)
             task = Task(task_id=0, request_id=0, payload=group_patches, instructions=[])
-            executor.preprocess(canvas, task, context, config)
-            executor.prepare_tokens(task, context, config)
-            if group_id == 0:
-                executor.approx_forward({"layers": (0, total_layers)}, context, config)
-            else:
-                executor.correct_forward({"layers": (0, total_layers), "group_id": group_id}, context, config)
+            # no_grad is LOAD-BEARING here and its absence was expensive: approx/correct_forward
+            # carry no decorator of their own (the offload worker wraps them), so this driver ran
+            # every correction round WITH autograd tracking -- the graph pinned ~27GB of
+            # activations per image (measured: the same build peaks at 68GB under no_grad vs
+            # 95GB without, on a 95GiB card). That overhead, not the images themselves, was the
+            # entire "672x672 hardware ceiling": every OOM-skip in the earlier full-split runs
+            # (8/8811 at k0.25, 207/8811 at k0.50, 143/2000 on the streaming subset) traces to
+            # it. Found via a three-step discriminator: skipped image passes in isolation ->
+            # in-run trace shows BEFORE clean at 66.94GB but per-build peak ~95GB -> the only
+            # difference from the passing probe was its torch.no_grad() wrapper.
+            with torch.no_grad():
+                executor.preprocess(canvas, task, context, config)
+                executor.prepare_tokens(task, context, config)
+                if group_id == 0:
+                    executor.approx_forward({"layers": (0, total_layers)}, context, config)
+                else:
+                    executor.correct_forward({"layers": (0, total_layers), "group_id": group_id}, context, config)
         with torch.no_grad():
             first_token = executor.decode_first_token(context["llm_current_feature"])
 
     return first_token, context
 
 
-def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device):
+def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device, image_token_id):
     """items: list of dicts with input_ids[1,T], attention_mask[1,T], first_token[1],
     pixel_values[P,C], image_grid_thw[1,3]. One batched model.generate() call, left-padded.
-    Returns list of decoded continuation strings, one per item, in the same order."""
+    Returns list of decoded continuation strings, one per item, in the same order.
+
+    `mm_token_type_ids` (found 2026-08-25, see docs/memo/qwen25vl_baseline_mrope_bug.md): without
+    it, `generate()`'s own position-id derivation falls back to plain sequential positions,
+    degrading every continuation token for every arm equally. Derived per-item from `input_ids ==
+    image_token_id` (same definition `_build_prompt`/`preprocess` use), then left-padded/appended
+    identically to `padded_ids`/`attn_mask` so it lines up with the batch's real tokens."""
     pad_id = tokenizer.pad_token_id
     if pad_id is None:
         pad_id = tokenizer.eos_token_id
@@ -201,6 +239,9 @@ def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device):
         L = s.shape[0]
         padded_ids[i, max_len - L:] = s
         attn_mask[i, max_len - L:] = 1
+    # first_token is always a generated text token, never an image token, so deriving from the
+    # padded/extended ids directly (rather than tracking it separately) is exact.
+    mm_token_type_ids = (padded_ids == image_token_id).long()
 
     pixel_values = torch.cat([it["pixel_values"] for it in items], dim=0)
     image_grid_thw = torch.cat([it["image_grid_thw"] for it in items], dim=0)
@@ -209,6 +250,7 @@ def batched_generate_fallback(model, tokenizer, items, max_new_tokens, device):
         gen_ids = model.generate(
             input_ids=padded_ids, attention_mask=attn_mask,
             pixel_values=pixel_values, image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
             max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=pad_id,
         )
 
@@ -232,7 +274,23 @@ def main():
     raw_config = load_base_config_dict(args)
     label = args.label or f"{args.dataset}_batched"
     model_path = raw_config["dataset_kwargs"]["model_path"]
-    is_baseline = raw_config["transmission_policy_name"] != "ProgressiveLaplacian"
+
+    # Found 2026-08-25 (docs/memo/qwen25vl_baseline_mrope_bug.md): the old gate
+    # (`!= "ProgressiveLaplacian"`) misclassified `"Laplacian"` (the approx-only FLOOR -- single
+    # pyramid level, no correction) as baseline too, since it also isn't literally
+    # "ProgressiveLaplacian". That routed the floor arm's images straight to
+    # `executor.model(...)` on the RAW full-resolution array, skipping encode/decode entirely --
+    # confirmed by running it: predictions were character-for-character identical to the real
+    # sequential baseline. Floor silently computed ceiling.
+    #
+    # Allowlist instead of a negative string match, per CLAUDE.md's rule that an unrecognised
+    # config is a fault to raise on, not a case to guess a default for: baselines are the arms
+    # that transmit losslessly and run stock, nothing else. Anything not in this set is a real
+    # transmission policy and MUST resolve via `get_transmission()` -- which raises loudly on an
+    # unregistered name -- rather than silently falling into either branch.
+    BASELINE_TRANSMISSION_POLICIES = {"FullImageCompression", "Raw"}
+    policy_name = raw_config["transmission_policy_name"]
+    is_baseline = policy_name in BASELINE_TRANSMISSION_POLICIES
 
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
     from datasets import load_dataset
@@ -247,7 +305,11 @@ def main():
     ip = processor.image_processor
     min_pixels, max_pixels = ip.size["shortest_edge"], ip.size["longest_edge"]
     factor = ip.patch_size * ip.merge_size * 4
-    encoder = get_transmission(raw_config["transmission_policy_name"]) if not is_baseline else None
+    # `get_transmission(policy_name)` raises on an unregistered name -- the "raise on a name in
+    # neither set" behavior CLAUDE.md asks for, for free: anything not in the baseline allowlist
+    # above must resolve here or the run fails loudly, before any GPU work, rather than silently
+    # taking either branch.
+    encoder = None if is_baseline else get_transmission(policy_name)
 
     if args.dataset == "refcoco":
         ds = load_dataset("lmms-lab/RefCOCO", split="val")
@@ -294,6 +356,31 @@ def main():
     iou_sum = 0.0
     t_start = time.time()
     print_every = 1 if len(indices) <= 40 else max(len(indices) // 200, 10)
+
+    # Resume from an interrupted run: --log-jsonl is opened in APPEND mode, so if the file already
+    # holds scored samples from a killed run of the SAME label, fold them into the counters and
+    # skip re-scoring them. The label check keeps this from silently absorbing a different
+    # condition's rows -- appending across labels is exactly the contamination the .PARTIAL*
+    # quarantine convention exists to prevent, so a label mismatch aborts instead of guessing.
+    # (OOM-skipped indices are never written, so a resume retries them; they just skip again.)
+    already = {}
+    import os as _os_resume
+    if args.log_jsonl and _os_resume.path.exists(args.log_jsonl):
+        with open(args.log_jsonl, encoding="utf-8") as f:
+            for line in f:
+                r = json.loads(line)
+                if r.get("label") != label:
+                    raise SystemExit(
+                        f"--log-jsonl {args.log_jsonl} already holds rows with label "
+                        f"{r.get('label')!r} != {label!r}; refusing to append across conditions. "
+                        f"Rename the old file (.PARTIAL* convention) or pass a fresh path.")
+                already[r["idx"]] = r
+        if already:
+            for r in already.values():
+                correct += int(r["correct"]); processed += 1; iou_sum += float(r.get("iou", 0.0))
+            print(f"[batched] RESUME: {len(already)} samples already scored in {args.log_jsonl}, "
+                  f"skipping them (running_acc so far {100.0*correct/processed:.2f}%)", flush=True)
+
     log_f = open(args.log_jsonl, "a", encoding="utf-8") if args.log_jsonl else None
 
     batch_items = []
@@ -304,7 +391,7 @@ def main():
         if not batch_items:
             return
         texts = batched_generate_fallback(executor.model, processor.tokenizer, batch_items,
-                                           args.max_new_tokens, args.device)
+                                           args.max_new_tokens, args.device, executor.image_token_id)
         for (idx, gt, grid_hw), pred_text in zip(batch_meta, texts):
             if args.dataset == "refcoco":
                 ok, iou = refcoco_score_answer(pred_text, gt)
@@ -327,14 +414,92 @@ def main():
         batch_items.clear()
         batch_meta.clear()
 
+    import os as _os
+    oom_skipped = []
     for idx in indices:
+        if idx in already:
+            continue
         image_np, prompt, gt, grid_hw = load_example(idx)
-        first_token, context = build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline)
+        if _os.environ.get("APPCORR_MEM_TRACE"):
+            print(f"[mem] BEFORE idx={idx}: allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+                  f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB", flush=True)
+        try:
+            first_token, context = build_first_token_context(executor, encoder, raw_config, config, image_np, prompt, is_baseline)
+        except torch.cuda.OutOfMemoryError:
+            # Found 2026-08-26 on interleaved g=4 + keep-rate runs: NOT the earlier `context`-
+            # retention leak (this file's `del context` below already fixes that; `allocated`
+            # returns to the model-only baseline every image, confirmed via APPCORR_MEM_TRACE with
+            # no drift right up to the crash) and NOT generic allocator fragmentation either
+            # (`empty_cache()` per image dropped `reserved` from a ~96GB plateau to a flat ~67GB,
+            # and the crash still happened at the identical image). It is a genuine peak-memory
+            # image: idx=4720 in this dataset resizes to 672x672 (451,584px), ~1.5x the ~301,056px
+            # most images in this range resize to -- g=4 correction's per-round attention
+            # masks/caches scale with sequence length (image-token count), so an unusually large
+            # image's peak legitimately exceeds the ~28GB headroom above the 66.94GB model-resident
+            # baseline that ordinary-sized images fit in. Rather than lose an entire multi-hour run
+            # to one outlier image, skip it (recorded, not silently dropped -- reported in the
+            # summary) and continue; `empty_cache()` clears whatever partial state the failed
+            # attempt left before the next image.
+            print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- CUDA OOM, skipping this sample", flush=True)
+            oom_skipped.append(idx)
+            # gc.collect() BEFORE empty_cache, and it is load-bearing: the raised exception's
+            # traceback holds the failed build_first_token_context frame, whose local `context`
+            # dict owns ~27GB of vision/KV cache tensors, and the frame<->exception reference
+            # cycle keeps all of it alive after the handler exits until the CYCLIC gc runs --
+            # which, at ~1 Python allocation per second in this loop, can be many samples later.
+            # Observed as an OOM cascade: one genuine large-image OOM, then mid-size images
+            # (560x672, alone needing only ~68GB peak vs the 95GB card) OOMing behind ~26GB of
+            # dead-but-uncollected cache until gc happened to run -- 144/2000 skips where the
+            # per-image analysis predicts ~46. empty_cache() alone cannot help: the tensors were
+            # still (cyclically) referenced, so their memory was allocated, not cached-free.
+            gc.collect()
+            torch.cuda.empty_cache()
+            continue
+        except RuntimeError as e:
+            # ORDER MATTERS and it bit us once already: torch.cuda.OutOfMemoryError IS a subclass
+            # of RuntimeError, so this clause MUST come after the OutOfMemoryError one -- a first
+            # version of this handler put RuntimeError first, which intercepted every genuine CUDA
+            # OOM, failed its "mha_graph" message check, re-raised, and killed a full-split run at
+            # the exact image the OOM handler existed to survive.
+            #
+            # What this clause is for: cuDNN's fused-MHA path surfaces memory exhaustion as a
+            # plain RuntimeError ("Expected mha_graph.execute(...).is_good() to be true"), NOT as
+            # torch.cuda.OutOfMemoryError -- its workspace allocation fails inside cuDNN and the
+            # graph execute reports failure without a Python-level OOM ever being raised. Seen
+            # 2026-08-27 killing a full-split keep=0.50 run at sample 260. Match narrowly on the
+            # known message: any other RuntimeError is a real bug and must still crash the run.
+            if "mha_graph" not in str(e):
+                raise
+            print(f"    [SKIP-OOM] idx={idx} grid={grid_hw[0]}x{grid_hw[1]} -- cuDNN MHA workspace "
+                  f"failure (OOM variant), skipping this sample", flush=True)
+            oom_skipped.append(idx)
+            gc.collect()  # same frame<->exception cycle as the OOM handler above
+            torch.cuda.empty_cache()
+            continue
+        if _os.environ.get("APPCORR_MEM_TRACE"):
+            print(f"[mem] AFTER  idx={idx}: allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+                  f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB", flush=True)
         batch_items.append({
             "input_ids": context["input_ids"], "first_token": first_token,
             "pixel_values": context["pixel_values"], "image_grid_thw": context["image_grid_thw"],
         })
         batch_meta.append((idx, gt, grid_hw))
+        # Explicit release, not just `torch.cuda.empty_cache()`: `context` is a live reference (its
+        # vision_cache/kv_cache/llm_input_embeds tensors, ~27GB/image on a 32B model), and Python's
+        # `first_token, context = build_first_token_context(...)` assignment only rebinds `context`
+        # AFTER the RHS is fully evaluated -- so the PREVIOUS iteration's context stayed alive for
+        # the ENTIRE duration of building the next image's context, guaranteeing two images' state
+        # resident simultaneously. Confirmed via torch.cuda.memory_allocated() (APPCORR_MEM_TRACE=1):
+        # allocated stayed at 93.81GB from immediately after image 1 through the start of image 2's
+        # build, not falling back toward the 66.91GB baseline. `del` here breaks that -- only the
+        # four tensors batch_items actually needs stay referenced; everything else in `context`
+        # (which is nearly all of it) is freed before the next image's forward pass starts.
+        del context
+        # Keeps `reserved` from drifting upward across many differently-shaped per-round tensors
+        # (varying image_grid_thw x varying token_idx per g round) -- does not by itself prevent
+        # the genuine large-image OOM above, but keeps the baseline headroom as large as possible
+        # for everything else.
+        torch.cuda.empty_cache()
         if len(batch_items) >= args.batch_size:
             flush_batch()
     flush_batch()
@@ -350,6 +515,9 @@ def main():
     else:
         print(f"    accuracy: {acc:.2f}%  ({correct}/{processed})")
     print(f"    total wall time: {total_wall:.1f}s ({total_wall/max(processed,1):.2f}s/sample avg)")
+    if oom_skipped:
+        print(f"    SKIPPED (CUDA OOM, not scored, not counted in the accuracy above): "
+              f"{len(oom_skipped)}/{len(indices)} -- indices: {oom_skipped}")
 
 
 if __name__ == "__main__":

@@ -100,6 +100,15 @@ def run_one(axis, model, proc, img, prompt, arm, keep, level, cap, patch, dtype,
                                    return_dict=True, return_tensors="pt")["pixel_values"].to(device, dtype)
     assert px2.shape == px.shape, f"degradation changed the input shape: {px.shape} vs {px2.shape}"
 
+    if arm == "progressive":
+        # Canonical per-round selection (2026-08-26): no driver-side scoring pass, no upfront
+        # selection -- the walk scores round r with energy x running attn layermean itself. The
+        # driver supplies only the raw energy term; keep governs the per-round quota.
+        energy = patch_energy(px, px2, patch)
+        hidden, cache = axis.interleaved_forward_progressive(px, px2, ids, tti, energy, keep, groups)
+        stats = {"groups": groups, "keep": keep}
+        return _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens), stats
+
     # --- approximate pass over the WHOLE axis, on the approximate image ----------------------- #
     # The cache every correction reads from has to be built here, on the approximate input. Rebuilding
     # it on corrected features (as an earlier version did) makes the "approximate" state depend on
@@ -249,11 +258,26 @@ def _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens):
     for i in range(axis.n_llm):
         kv.update(cache[f"l{i}_k"], cache[f"l{i}_v"], i)
 
+    # Stop on every id `generate` stops on. Gemma 3's `generation_config` lists [1, 106] while
+    # `config.text_config.eos_token_id` is just 1, and 106 is <end_of_turn> -- the one that actually
+    # ends an assistant turn. Reading only the config let this loop run past the end of the answer
+    # and append whatever came next, on 34-70% of samples depending on the arm. The ceiling arm was
+    # unaffected because it alone calls `generate`, so every comparison against it was biased
+    # against the corrected arms: re-scoring the stored strings at <end_of_turn> moves InfoVQA's
+    # floor +5.38pp and its corrected arm +1.93pp.
+    gcfg = getattr(model, "generation_config", None)
+    eos = getattr(gcfg, "eos_token_id", None) if gcfg is not None else None
+    if eos is None:
+        eos = model.config.text_config.eos_token_id
+    eos = list(eos) if isinstance(eos, (list, tuple)) else [eos]
+
     n = ids.shape[1]
     logits = model.lm_head(axis.llm_finish(hidden)[:, -1:])
     nxt = logits[:, -1].argmax(-1, keepdim=True)
     produced = [nxt]
     for step in range(max_new_tokens - 1):
+        if int(nxt) in eos:            # a one-token answer ends here, not after a second forward
+            break
         pos = torch.tensor([[n + step]], device=ids.device)
         emb = model.model.language_model.get_input_embeddings()(nxt)
         out = model.model.language_model(inputs_embeds=emb, past_key_values=kv,
@@ -261,9 +285,7 @@ def _generate_from_axis(model, proc, axis, hidden, cache, ids, max_new_tokens):
         kv = out.past_key_values
         nxt = model.lm_head(out.last_hidden_state[:, -1:])[:, -1].argmax(-1, keepdim=True)
         produced.append(nxt)
-        if int(nxt) in (model.config.text_config.eos_token_id
-                        if isinstance(model.config.text_config.eos_token_id, (list, tuple))
-                        else [model.config.text_config.eos_token_id]):
+        if int(nxt) in eos:
             break
     return proc.decode(torch.cat(produced, dim=1)[0], skip_special_tokens=True)
 
@@ -273,8 +295,8 @@ def main():
     ap.add_argument("--model", default="google/gemma-3-4b-it")
     ap.add_argument("--dataset", default="chartqa")
     ap.add_argument("--arm",
-                    choices=["ceiling", "floor", "corrected", "interleaved", "parity",
-                             "corrected_split", "corrected_patchled"],
+                    choices=["ceiling", "floor", "corrected", "interleaved", "progressive",
+                             "parity", "corrected_split", "corrected_patchled"],
                     default="ceiling")
     ap.add_argument("--groups", type=int, default=4,
                     help="interleaved rounds; the arm corrects the SAME tokens as `corrected`, "

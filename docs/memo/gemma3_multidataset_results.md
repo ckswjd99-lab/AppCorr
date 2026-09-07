@@ -113,3 +113,29 @@ variants were being compared.
 (patches lead, formerly `corrected_j`) are kept because they were measured, not because they are
 recommended. On full ChartQA all three tie (p >= 0.64) and `corrected_patchled` reaches that tie
 while correcting 45% more LLM tokens. Neither composes with interleaving.
+
+## GQA across three models: the gap is the model's, not the task's (2026-08-26)
+
+Gemma 3's GQA floor sits 0.11pp ABOVE its ceiling, which looks alarming until the same dataset is
+read across the models that ran it:
+
+| model | floor | ceiling | gap |
+|---|---:|---:|---:|
+| Qwen2.5-VL 32B | 55.24 | 60.80 | **+5.56** |
+| LLaVA-OV2 8B | 61.87 | 62.97 | +1.10 |
+| Gemma 3 4B | 42.96 | 42.84 | **-0.11** |
+
+Same task, same degradation level, same 12,578 samples. So "GQA does not need resolution" is wrong --
+Qwen loses 5.56pp to the same degradation. The insensitivity is Gemma 3's.
+
+This is what the hypothesis two sections up predicts (Gemma 3 discards information before degradation
+applies: 896x896 squash, then 4x4 pooling to a FIXED 256 image tokens, where Qwen and OV2 scale token
+count with resolution). Supporting measurement, still not a test of it: on GQA the L2 degradation
+removes MORE relative signal than on TextVQA (0.277 vs 0.169 mean relative residual over 40 images),
+yet Gemma 3's TextVQA gap is 13.1pp and its GQA gap is zero -- so the degradation is working and the
+loss is absorbed elsewhere. GQA's images are also small (median 640x427), so Gemma 3 upscales them to
+the canvas before pooling, and an upscale carries nothing to remove.
+
+**Still not measured**, and the check that would settle it: constrain Qwen to 256 image tokens and
+see whether its GQA gap collapses toward Gemma 3's. Until then this is a consistent story, not a
+demonstrated mechanism.

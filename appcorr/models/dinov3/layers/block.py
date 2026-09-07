@@ -1104,6 +1104,17 @@ class SelfAttentionBlock(nn.Module):
         fixed_query_state = query_plan.fixed_query_state
         active_batch_idx = fixed_query_state.active_batch_idx
         active_token_idx = fixed_query_state.active_token_idx
+        # Probe-only selection dump (APPCORR_SEL_DUMP=<path>): the UNIQUE (row, token) pairs this
+        # call will actually recompute, per tag. Written to settle whether a schedule change altered
+        # WHICH tokens are corrected, independent of how many duplicate slots carried them. The
+        # .tolist() sync is why this stays env-gated and off by default.
+        import os as _os
+        _dump = _os.environ.get("APPCORR_SEL_DUMP")
+        if _dump:
+            _uniq = sorted({(int(b), int(t)) for b, t in
+                            zip(active_batch_idx.tolist(), active_token_idx.tolist())})
+            with open(_dump, "a") as _f:
+                _f.write(f"{tag}\t{_uniq}\n")
         
         with torch.cuda.nvtx.range("correct_attn"):
             # Dedicated row gather: ~3.6x faster than aten advanced indexing (41.0 -> 11.4 us at

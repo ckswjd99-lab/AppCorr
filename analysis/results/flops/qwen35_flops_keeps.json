@@ -1,0 +1,25 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "_samples": 12,
+ "_groups": 4,
+ "chartqa": {
+  "full": 3907.9,
+  "floor": 3907.9,
+  "crit_g4_k0.25": 824.9,
+  "total_g4_k0.25": 4280.9,
+  "crit_g4_k0.50": 917.8,
+  "total_g4_k0.50": 4647.6,
+  "crit_g4": 1101.1,
+  "total_g4": 5384.2
+ },
+ "realworldqa": {
+  "full": 11691.2,
+  "floor": 11691.2,
+  "crit_g4_k0.25": 2239.5,
+  "total_g4_k0.25": 12842.6,
+  "crit_g4_k0.50": 2523.4,
+  "total_g4_k0.50": 13974.1,
+  "crit_g4": 3089.6,
+  "total_g4": 16240.0
+ }
+}

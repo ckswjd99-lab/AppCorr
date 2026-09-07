@@ -86,9 +86,15 @@ class ADE20KWindowProgressiveLaplacianPolicy(ProgressiveLPyramidPolicy):
             n = max(n, len(self._compute_crops(gh * ph, gw * pw, crop, stride)))
         return n
 
-    def _precompute_group_assignments(self, strategy, residual_structure, num_groups):
+    def _precompute_group_assignments(self, strategy, residual_structure, num_groups, config=None):
+        # `config` is accepted and forwarded because the base class grew that parameter and calls
+        # itself with it positionally; this override kept the four-argument signature, so every
+        # crop_cover ADE20K run died with "takes 4 positional arguments but 5 were given" before
+        # producing a single batch. The parameter is unused on the crop_cover branch, which decides
+        # groups from the crop geometry alone.
         if strategy != "crop_cover":
-            return super()._precompute_group_assignments(strategy, residual_structure, num_groups)
+            return super()._precompute_group_assignments(
+                strategy, residual_structure, num_groups, config)
 
         structure = list(residual_structure)
         if not structure:

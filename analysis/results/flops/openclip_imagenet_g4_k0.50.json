@@ -1,0 +1,17 @@
+{
+  "model": "openclip_zeroshot",
+  "batch_size": 32,
+  "mean_total_gflops_per_image": 1279.915200512,
+  "mean_critical_gflops_per_image": 124.671352832,
+  "requests": 3,
+  "mean_total_gflops": 40957.286416384,
+  "mean_critical_gflops": 3989.483290624,
+  "mean_overlappable_gflops": 36967.80312576,
+  "critical_fraction": 0.09740594750505983,
+  "mean_stage_gflops": {
+    "APPROX_FORWARD": 30943.706087424,
+    "CORRECT_FORWARD": 9933.29086464,
+    "HEAD_INFERENCE": 0.13631488,
+    "PREPARE_TOKENS": 80.15314944
+  }
+}

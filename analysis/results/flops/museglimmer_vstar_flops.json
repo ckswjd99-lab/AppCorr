@@ -1,0 +1,15 @@
+{
+ "_model": "meta-models/Muse-Glimmer-30B",
+ "_samples": 12,
+ "_groups": 4,
+ "vstar": {
+  "full": 306496.5,
+  "floor": 306496.5,
+  "crit_g4_k0.25": 61174.5,
+  "total_g4_k0.25": 324258.4,
+  "crit_g4_k0.50": 66372.4,
+  "total_g4_k0.50": 345188.1,
+  "crit_g4": 76739.5,
+  "total_g4": 384062.4
+ }
+}

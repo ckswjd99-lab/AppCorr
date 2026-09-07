@@ -1,0 +1,15 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "_samples": 12,
+ "_groups": 4,
+ "vstar": {
+  "full": 49677.1,
+  "floor": 49677.1,
+  "crit_g4_k0.25": 6687.5,
+  "total_g4_k0.25": 56911.3,
+  "crit_g4_k0.50": 8656.2,
+  "total_g4_k0.50": 64778.3,
+  "crit_g4": 12585.2,
+  "total_g4": 80504.1
+ }
+}

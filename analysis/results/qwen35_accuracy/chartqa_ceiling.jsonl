@@ -1,0 +1,2500 @@
+{"i": 0, "pred": "15", "gold": "14", "ok": 0, "val": 0.0}
+{"i": 1, "pred": "0.57", "gold": "0.57", "ok": 1, "val": 1.0}
+{"i": 2, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 3, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 4, "pred": "23", "gold": "23", "ok": 1, "val": 1.0}
+{"i": 5, "pred": "6", "gold": "6", "ok": 1, "val": 1.0}
+{"i": 6, "pred": "62", "gold": "62", "ok": 1, "val": 1.0}
+{"i": 7, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 8, "pred": "Inspired", "gold": "Inspired", "ok": 1, "val": 1.0}
+{"i": 9, "pred": "3", "gold": "0.03", "ok": 0, "val": 0.0}
+{"i": 10, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 11, "pred": "0.08", "gold": "0.08", "ok": 1, "val": 1.0}
+{"i": 12, "pred": "17", "gold": "17", "ok": 1, "val": 1.0}
+{"i": 13, "pred": "18.3", "gold": "21.6", "ok": 0, "val": 0.0}
+{"i": 14, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 15, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 16, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 17, "pred": "2010", "gold": "2011", "ok": 1, "val": 1.0}
+{"i": 18, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 19, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 20, "pred": "Child Labor (Boys, World, 2000-2012) (ILO)", "gold": "green line", "ok": 0, "val": 0.0}
+{"i": 21, "pred": "2004", "gold": "2008", "ok": 1, "val": 1.0}
+{"i": 22, "pred": "29", "gold": "29", "ok": 1, "val": 1.0}
+{"i": 23, "pred": "0.25", "gold": "1.216666667", "ok": 0, "val": 0.0}
+{"i": 24, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 25, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 26, "pred": "80", "gold": "80", "ok": 1, "val": 1.0}
+{"i": 27, "pred": "77", "gold": "77", "ok": 1, "val": 1.0}
+{"i": 28, "pred": "60", "gold": "0.6", "ok": 0, "val": 0.0}
+{"i": 29, "pred": "61", "gold": "61", "ok": 1, "val": 1.0}
+{"i": 30, "pred": "13", "gold": "13", "ok": 1, "val": 1.0}
+{"i": 31, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 32, "pred": "21", "gold": "24", "ok": 0, "val": 0.0}
+{"i": 33, "pred": "Yes", "gold": "No", "ok": 0, "val": 0.0}
+{"i": 34, "pred": " Italy", "gold": "Italy", "ok": 1, "val": 1.0}
+{"i": 35, "pred": " Mexico", "gold": "Mexico", "ok": 1, "val": 1.0}
+{"i": 36, "pred": "14", "gold": "33", "ok": 0, "val": 0.0}
+{"i": 37, "pred": "Over 30 mins", "gold": "Over 30 mins", "ok": 1, "val": 1.0}
+{"i": 38, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 39, "pred": "22", "gold": "22", "ok": 1, "val": 1.0}
+{"i": 40, "pred": "92", "gold": "92", "ok": 1, "val": 1.0}
+{"i": 41, "pred": "96", "gold": "96", "ok": 1, "val": 1.0}
+{"i": 42, "pred": "21", "gold": "21", "ok": 1, "val": 1.0}
+{"i": 43, "pred": "12", "gold": "12", "ok": 1, "val": 1.0}
+{"i": 44, "pred": "2009", "gold": "2009", "ok": 1, "val": 1.0}
+{"i": 45, "pred": "28.7", "gold": "28.6", "ok": 1, "val": 1.0}
+{"i": 46, "pred": "68", "gold": "68", "ok": 1, "val": 1.0}
+{"i": 47, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 48, "pred": "83", "gold": "83", "ok": 1, "val": 1.0}
+{"i": 49, "pred": "0.213888889", "gold": "2.13", "ok": 0, "val": 0.0}
+{"i": 50, "pred": "Simulation", "gold": "Simulation", "ok": 1, "val": 1.0}
+{"i": 51, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 52, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 53, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 54, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 55, "pred": "0.042361111", "gold": "0.33333333", "ok": 0, "val": 0.0}
+{"i": 56, "pred": "Democrat", "gold": "Democrat (scores 60 to 100)", "ok": 0, "val": 0.0}
+{"i": 57, "pred": "99", "gold": "0.01", "ok": 0, "val": 0.0}
+{"i": 58, "pred": " Libya", "gold": "Libya", "ok": 1, "val": 1.0}
+{"i": 59, "pred": "0.23", "gold": "0.23", "ok": 1, "val": 1.0}
+{"i": 60, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 61, "pred": "87", "gold": "87.5", "ok": 1, "val": 1.0}
+{"i": 62, "pred": "UK", "gold": "UK", "ok": 1, "val": 1.0}
+{"i": 63, "pred": "56.5", "gold": "50.25", "ok": 0, "val": 0.0}
+{"i": 64, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 65, "pred": "0.043055556", "gold": "0.633333333", "ok": 0, "val": 0.0}
+{"i": 66, "pred": "4.1", "gold": "4.1", "ok": 1, "val": 1.0}
+{"i": 67, "pred": "14.5", "gold": "14.5", "ok": 1, "val": 1.0}
+{"i": 68, "pred": "175", "gold": "175", "ok": 1, "val": 1.0}
+{"i": 69, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 70, "pred": "93.45", "gold": "93.45", "ok": 1, "val": 1.0}
+{"i": 71, "pred": "51.045", "gold": "51.04", "ok": 1, "val": 1.0}
+{"i": 72, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 73, "pred": "11", "gold": "21.5", "ok": 0, "val": 0.0}
+{"i": 74, "pred": "302.38", "gold": "3.0238", "ok": 0, "val": 0.0}
+{"i": 75, "pred": "15.22", "gold": "0.1922", "ok": 0, "val": 0.0}
+{"i": 76, "pred": "52", "gold": "52", "ok": 1, "val": 1.0}
+{"i": 77, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 78, "pred": " U.S.", "gold": "U.S.", "ok": 1, "val": 1.0}
+{"i": 79, "pred": "UK", "gold": "UK", "ok": 1, "val": 1.0}
+{"i": 80, "pred": "67", "gold": "67", "ok": 1, "val": 1.0}
+{"i": 81, "pred": "0.295833333", "gold": "1.051388889", "ok": 0, "val": 0.0}
+{"i": 82, "pred": "55", "gold": "55", "ok": 1, "val": 1.0}
+{"i": 83, "pred": "Poll workers in your community", "gold": "Poll workers in your community", "ok": 1, "val": 1.0}
+{"i": 84, "pred": "Rep/Lean Rep", "gold": "Rep/Lean Rep", "ok": 1, "val": 1.0}
+{"i": 85, "pred": "0.484027778", "gold": "0.484375", "ok": 1, "val": 1.0}
+{"i": 86, "pred": "77", "gold": "77", "ok": 1, "val": 1.0}
+{"i": 87, "pred": "126", "gold": "141", "ok": 0, "val": 0.0}
+{"i": 88, "pred": "41", "gold": "41", "ok": 1, "val": 1.0}
+{"i": 89, "pred": "1.538194444", "gold": "1.684722222", "ok": 0, "val": 0.0}
+{"i": 90, "pred": "Nicaragua", "gold": "Nicaragua", "ok": 1, "val": 1.0}
+{"i": 91, "pred": " Yes", "gold": "No", "ok": 0, "val": 0.0}
+{"i": 92, "pred": "8", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 93, "pred": "99", "gold": "99", "ok": 1, "val": 1.0}
+{"i": 94, "pred": "Solomon Islands", "gold": "Solomon Islands", "ok": 1, "val": 1.0}
+{"i": 95, "pred": "Jamaica", "gold": "Jamaica", "ok": 1, "val": 1.0}
+{"i": 96, "pred": "50", "gold": "50", "ok": 1, "val": 1.0}
+{"i": 97, "pred": "35", "gold": "35", "ok": 1, "val": 1.0}
+{"i": 98, "pred": "977633", "gold": "977633", "ok": 1, "val": 1.0}
+{"i": 99, "pred": "1.6", "gold": "1.6", "ok": 1, "val": 1.0}
+{"i": 100, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 101, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 102, "pred": "26", "gold": "0.08", "ok": 0, "val": 0.0}
+{"i": 103, "pred": "65", "gold": "65", "ok": 1, "val": 1.0}
+{"i": 104, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 105, "pred": "3", "gold": "2", "ok": 0, "val": 0.0}
+{"i": 106, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 107, "pred": "1.473611111", "gold": "1.179861111", "ok": 0, "val": 0.0}
+{"i": 108, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 109, "pred": "37", "gold": "37", "ok": 1, "val": 1.0}
+{"i": 110, "pred": "gray", "gold": "Gray", "ok": 1, "val": 1.0}
+{"i": 111, "pred": "57", "gold": "8", "ok": 0, "val": 0.0}
+{"i": 112, "pred": "1.4", "gold": "1.4", "ok": 1, "val": 1.0}
+{"i": 113, "pred": " Yes", "gold": "No", "ok": 0, "val": 0.0}
+{"i": 114, "pred": "2.42", "gold": "2.42", "ok": 1, "val": 1.0}
+{"i": 115, "pred": "0.77", "gold": "0.77", "ok": 1, "val": 1.0}
+{"i": 116, "pred": "12", "gold": "12", "ok": 1, "val": 1.0}
+{"i": 117, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 118, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 119, "pred": "84", "gold": "21", "ok": 0, "val": 0.0}
+{"i": 120, "pred": "30", "gold": "0.3", "ok": 0, "val": 0.0}
+{"i": 121, "pred": "7", "gold": "0.07", "ok": 0, "val": 0.0}
+{"i": 122, "pred": "PP", "gold": "PP", "ok": 1, "val": 1.0}
+{"i": 123, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 124, "pred": "71", "gold": "71", "ok": 1, "val": 1.0}
+{"i": 125, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 126, "pred": "0.3", "gold": "30", "ok": 0, "val": 0.0}
+{"i": 127, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 128, "pred": " Saudi Arabia", "gold": "Saudi Arabia", "ok": 1, "val": 1.0}
+{"i": 129, "pred": "2", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 130, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 131, "pred": "\u7070\u8272", "gold": "gray", "ok": 0, "val": 0.0}
+{"i": 132, "pred": "83", "gold": "83", "ok": 1, "val": 1.0}
+{"i": 133, "pred": "0.32", "gold": "0.32", "ok": 1, "val": 1.0}
+{"i": 134, "pred": "57", "gold": "57", "ok": 1, "val": 1.0}
+{"i": 135, "pred": "1.042361111", "gold": "1.058333333", "ok": 1, "val": 1.0}
+{"i": 136, "pred": "61", "gold": "61", "ok": 1, "val": 1.0}
+{"i": 137, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 138, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 139, "pred": "0.043055556", "gold": "2.125694444", "ok": 0, "val": 0.0}
+{"i": 140, "pred": "2013", "gold": "2013", "ok": 1, "val": 1.0}
+{"i": 141, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 142, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 143, "pred": "1007808", "gold": "2577420", "ok": 0, "val": 0.0}
+{"i": 144, "pred": "Red", "gold": "Red", "ok": 1, "val": 1.0}
+{"i": 145, "pred": "2", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 146, "pred": "92", "gold": "92", "ok": 1, "val": 1.0}
+{"i": 147, "pred": "60.8", "gold": "62.43", "ok": 1, "val": 1.0}
+{"i": 148, "pred": "Favorable", "gold": "Favorable", "ok": 1, "val": 1.0}
+{"i": 149, "pred": "0.854166667", "gold": "0.9375", "ok": 0, "val": 0.0}
+{"i": 150, "pred": "54", "gold": "54", "ok": 1, "val": 1.0}
+{"i": 151, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 152, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 153, "pred": "1969", "gold": "1969", "ok": 1, "val": 1.0}
+{"i": 154, "pred": "Orange", "gold": "orange", "ok": 1, "val": 1.0}
+{"i": 155, "pred": "51", "gold": "57", "ok": 0, "val": 0.0}
+{"i": 156, "pred": "29", "gold": "29", "ok": 1, "val": 1.0}
+{"i": 157, "pred": "2010", "gold": "2010", "ok": 1, "val": 1.0}
+{"i": 158, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 159, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 160, "pred": "2011", "gold": "March 2011", "ok": 1, "val": 1.0}
+{"i": 161, "pred": "Favor", "gold": "Favor", "ok": 1, "val": 1.0}
+{"i": 162, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 163, "pred": "2210", "gold": "2210", "ok": 1, "val": 1.0}
+{"i": 164, "pred": "0.26", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 165, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 166, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 167, "pred": "13\n\n", "gold": "13", "ok": 1, "val": 1.0}
+{"i": 168, "pred": "Blue", "gold": "Blue", "ok": 1, "val": 1.0}
+{"i": 169, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 170, "pred": "Don't know", "gold": "Don't Know", "ok": 1, "val": 1.0}
+{"i": 171, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 172, "pred": "10", "gold": "10", "ok": 1, "val": 1.0}
+{"i": 173, "pred": "69", "gold": "69", "ok": 1, "val": 1.0}
+{"i": 174, "pred": "41", "gold": "41", "ok": 1, "val": 1.0}
+{"i": 175, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 176, "pred": "0.67", "gold": "67", "ok": 0, "val": 0.0}
+{"i": 177, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 178, "pred": "Bad", "gold": "Bad", "ok": 1, "val": 1.0}
+{"i": 179, "pred": "53", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 180, "pred": "Better off", "gold": "Better off", "ok": 1, "val": 1.0}
+{"i": 181, "pred": "Better off", "gold": "Better off", "ok": 1, "val": 1.0}
+{"i": 182, "pred": "Important, but lower priority", "gold": "Important, but lower priority", "ok": 1, "val": 1.0}
+{"i": 183, "pred": "40", "gold": "75", "ok": 0, "val": 0.0}
+{"i": 184, "pred": "Dissatisfied", "gold": "Dissatisfied", "ok": 1, "val": 1.0}
+{"i": 185, "pred": "3.9", "gold": "3.9", "ok": 1, "val": 1.0}
+{"i": 186, "pred": "76", "gold": "76", "ok": 1, "val": 1.0}
+{"i": 187, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 188, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 189, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 190, "pred": "16", "gold": "16", "ok": 1, "val": 1.0}
+{"i": 191, "pred": "65+", "gold": "65+", "ok": 1, "val": 1.0}
+{"i": 192, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 193, "pred": "60", "gold": "60", "ok": 1, "val": 1.0}
+{"i": 194, "pred": "No role", "gold": "No role", "ok": 1, "val": 1.0}
+{"i": 195, "pred": "15", "gold": "15", "ok": 1, "val": 1.0}
+{"i": 196, "pred": "Japan", "gold": "Japan", "ok": 1, "val": 1.0}
+{"i": 197, "pred": "36", "gold": "36", "ok": 1, "val": 1.0}
+{"i": 198, "pred": "5.32", "gold": "5.32", "ok": 1, "val": 1.0}
+{"i": 199, "pred": "16.55", "gold": "5.95", "ok": 0, "val": 0.0}
+{"i": 200, "pred": "Teal", "gold": "Finland", "ok": 0, "val": 0.0}
+{"i": 201, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 202, "pred": " Pink", "gold": "Pink", "ok": 1, "val": 1.0}
+{"i": 203, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 204, "pred": "Heart disease", "gold": "Heart disease", "ok": 1, "val": 1.0}
+{"i": 205, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 206, "pred": "North America", "gold": "North America", "ok": 1, "val": 1.0}
+{"i": 207, "pred": " Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 208, "pred": "Obesity", "gold": "Obesity", "ok": 1, "val": 1.0}
+{"i": 209, "pred": "203", "gold": "203", "ok": 1, "val": 1.0}
+{"i": 210, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 211, "pred": "51.33", "gold": "51.33", "ok": 1, "val": 1.0}
+{"i": 212, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 213, "pred": " Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 214, "pred": "0.1", "gold": "0.1", "ok": 1, "val": 1.0}
+{"i": 215, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 216, "pred": "1.93", "gold": "1931", "ok": 0, "val": 0.0}
+{"i": 217, "pred": "2.88", "gold": "2.88", "ok": 1, "val": 1.0}
+{"i": 218, "pred": "Low bone mineral density", "gold": "Low bone mineral density", "ok": 1, "val": 1.0}
+{"i": 219, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 220, "pred": "27.5", "gold": "27.5", "ok": 1, "val": 1.0}
+{"i": 221, "pred": "10.2", "gold": "10.2", "ok": 1, "val": 1.0}
+{"i": 222, "pred": "18", "gold": "16", "ok": 0, "val": 0.0}
+{"i": 223, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 224, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 225, "pred": "0.0224", "gold": "3.24", "ok": 0, "val": 0.0}
+{"i": 226, "pred": "Burkina Faso", "gold": "Burkina Faso", "ok": 1, "val": 1.0}
+{"i": 227, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 228, "pred": "Lithuania", "gold": "Lithuania", "ok": 1, "val": 1.0}
+{"i": 229, "pred": "28.3", "gold": "28.3", "ok": 1, "val": 1.0}
+{"i": 230, "pred": "0.6", "gold": "0.6", "ok": 1, "val": 1.0}
+{"i": 231, "pred": "0.475", "gold": "0.475", "ok": 1, "val": 1.0}
+{"i": 232, "pred": "0.01", "gold": "0.01", "ok": 1, "val": 1.0}
+{"i": 233, "pred": "0.02", "gold": "0.02", "ok": 1, "val": 1.0}
+{"i": 234, "pred": "1.6", "gold": "1.6", "ok": 1, "val": 1.0}
+{"i": 235, "pred": "3.2", "gold": "3.2", "ok": 1, "val": 1.0}
+{"i": 236, "pred": "20.98", "gold": "20.98", "ok": 1, "val": 1.0}
+{"i": 237, "pred": "0.4", "gold": "0.2", "ok": 0, "val": 0.0}
+{"i": 238, "pred": "41", "gold": "41", "ok": 1, "val": 1.0}
+{"i": 239, "pred": "0.054", "gold": "5.4", "ok": 0, "val": 0.0}
+{"i": 240, "pred": " Nepal", "gold": "Nepal", "ok": 1, "val": 1.0}
+{"i": 241, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 242, "pred": "5.25", "gold": "5.25", "ok": 1, "val": 1.0}
+{"i": 243, "pred": "5.5 trillion", "gold": "252.65", "ok": 0, "val": 0.0}
+{"i": 244, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 245, "pred": "1.6", "gold": "1.6", "ok": 1, "val": 1.0}
+{"i": 246, "pred": "0.964", "gold": "96.4", "ok": 0, "val": 0.0}
+{"i": 247, "pred": " Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 248, "pred": " Green", "gold": "Teal Blue", "ok": 0, "val": 0.0}
+{"i": 249, "pred": "38", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 250, "pred": " Mexico", "gold": "Mexico", "ok": 1, "val": 1.0}
+{"i": 251, "pred": "1.35", "gold": "1.346", "ok": 1, "val": 1.0}
+{"i": 252, "pred": "0.407", "gold": "40.7", "ok": 0, "val": 0.0}
+{"i": 253, "pred": "5.2", "gold": "6.2", "ok": 0, "val": 0.0}
+{"i": 254, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 255, "pred": "41.935", "gold": "41.935", "ok": 1, "val": 1.0}
+{"i": 256, "pred": " Belarus", "gold": "Belarus", "ok": 1, "val": 1.0}
+{"i": 257, "pred": "0.08", "gold": "0.08", "ok": 1, "val": 1.0}
+{"i": 258, "pred": " Mongolia", "gold": "Mongolia", "ok": 1, "val": 1.0}
+{"i": 259, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 260, "pred": "9.29", "gold": "9.29", "ok": 1, "val": 1.0}
+{"i": 261, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 262, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 263, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 264, "pred": "6.85", "gold": "6.85", "ok": 1, "val": 1.0}
+{"i": 265, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 266, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 267, "pred": "47.6", "gold": "47.6", "ok": 1, "val": 1.0}
+{"i": 268, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 269, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 270, "pred": "Greece", "gold": "Greece", "ok": 1, "val": 1.0}
+{"i": 271, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 272, "pred": "Blue", "gold": "gray", "ok": 0, "val": 0.0}
+{"i": 273, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 274, "pred": "Human capital", "gold": "Human capital", "ok": 1, "val": 1.0}
+{"i": 275, "pred": "Human capital", "gold": "742.07", "ok": 0, "val": 0.0}
+{"i": 276, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 277, "pred": "143", "gold": "143", "ok": 1, "val": 1.0}
+{"i": 278, "pred": "48.01", "gold": "48.01", "ok": 1, "val": 1.0}
+{"i": 279, "pred": "32.115", "gold": "32.115", "ok": 1, "val": 1.0}
+{"i": 280, "pred": "0.04", "gold": "0.04", "ok": 1, "val": 1.0}
+{"i": 281, "pred": "0.11", "gold": "0.11", "ok": 1, "val": 1.0}
+{"i": 282, "pred": "0.566", "gold": "56.6", "ok": 0, "val": 0.0}
+{"i": 283, "pred": "13.5", "gold": "13.5", "ok": 1, "val": 1.0}
+{"i": 284, "pred": "0.69", "gold": "0.69", "ok": 1, "val": 1.0}
+{"i": 285, "pred": "0.235", "gold": "0.235", "ok": 1, "val": 1.0}
+{"i": 286, "pred": "0.24", "gold": "24", "ok": 0, "val": 0.0}
+{"i": 287, "pred": "7.86", "gold": "6.2", "ok": 0, "val": 0.0}
+{"i": 288, "pred": " Switzerland", "gold": "Switzerland", "ok": 1, "val": 1.0}
+{"i": 289, "pred": "1540.08", "gold": "1541.08", "ok": 1, "val": 1.0}
+{"i": 290, "pred": "Alcohol", "gold": "Alcohol", "ok": 1, "val": 1.0}
+{"i": 291, "pred": "60", "gold": "60", "ok": 1, "val": 1.0}
+{"i": 292, "pred": " Philippines", "gold": "Philippines", "ok": 1, "val": 1.0}
+{"i": 293, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 294, "pred": " Brazil", "gold": "Brazil", "ok": 1, "val": 1.0}
+{"i": 295, "pred": "3.4", "gold": "3.4", "ok": 1, "val": 1.0}
+{"i": 296, "pred": "United States", "gold": "United States", "ok": 1, "val": 1.0}
+{"i": 297, "pred": "4.19", "gold": "4.19", "ok": 1, "val": 1.0}
+{"i": 298, "pred": "0.95", "gold": "95", "ok": 0, "val": 0.0}
+{"i": 299, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 300, "pred": "Deaths from HIV/AIDS", "gold": "Deaths from HIV/AIDS", "ok": 1, "val": 1.0}
+{"i": 301, "pred": " No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 302, "pred": "Samoa", "gold": "Samoa", "ok": 1, "val": 1.0}
+{"i": 303, "pred": "[Gambia, Niger]", "gold": "[Gambia, Niger]", "ok": 1, "val": 1.0}
+{"i": 304, "pred": "24688.3", "gold": "24688.3", "ok": 1, "val": 1.0}
+{"i": 305, "pred": "82.2", "gold": "82.2", "ok": 1, "val": 1.0}
+{"i": 306, "pred": "13", "gold": "13", "ok": 1, "val": 1.0}
+{"i": 307, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 308, "pred": "10", "gold": "11", "ok": 0, "val": 0.0}
+{"i": 309, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 310, "pred": "Medium car (petrol)", "gold": "Medium car (petrol)", "ok": 1, "val": 1.0}
+{"i": 311, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 312, "pred": " Malawi", "gold": "Malawi", "ok": 1, "val": 1.0}
+{"i": 313, "pred": "1.9106796116504854", "gold": "1.905805459", "ok": 1, "val": 1.0}
+{"i": 314, "pred": "Italy", "gold": "[Italy , 22]", "ok": 0, "val": 0.0}
+{"i": 315, "pred": "0.392857143", "gold": "2.54", "ok": 0, "val": 0.0}
+{"i": 316, "pred": "27.22", "gold": "27.22", "ok": 1, "val": 1.0}
+{"i": 317, "pred": "100.04", "gold": "389.82", "ok": 0, "val": 0.0}
+{"i": 318, "pred": " Blue", "gold": "navy blue", "ok": 0, "val": 0.0}
+{"i": 319, "pred": "0.08", "gold": "0.08", "ok": 1, "val": 1.0}
+{"i": 320, "pred": "8.5", "gold": "8.5", "ok": 1, "val": 1.0}
+{"i": 321, "pred": "10.2", "gold": "10.2", "ok": 1, "val": 1.0}
+{"i": 322, "pred": "3.88", "gold": "3.88", "ok": 1, "val": 1.0}
+{"i": 323, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 324, "pred": "9546.35", "gold": "9545.35", "ok": 1, "val": 1.0}
+{"i": 325, "pred": "14513.35", "gold": "14153.35", "ok": 1, "val": 1.0}
+{"i": 326, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 327, "pred": "65", "gold": "47.68", "ok": 0, "val": 0.0}
+{"i": 328, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 329, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 330, "pred": "Argentina", "gold": "Argentina", "ok": 1, "val": 1.0}
+{"i": 331, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 332, "pred": "Chemistry", "gold": "Chemistry", "ok": 1, "val": 1.0}
+{"i": 333, "pred": " No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 334, "pred": "Venezuela", "gold": "Venezuela", "ok": 1, "val": 1.0}
+{"i": 335, "pred": "0.02", "gold": "0.02", "ok": 1, "val": 1.0}
+{"i": 336, "pred": " Brown", "gold": "brown", "ok": 1, "val": 1.0}
+{"i": 337, "pred": "1.023611111", "gold": "1.015645372", "ok": 1, "val": 1.0}
+{"i": 338, "pred": " Pink", "gold": "Pink", "ok": 1, "val": 1.0}
+{"i": 339, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 340, "pred": "53.9", "gold": "53.9", "ok": 1, "val": 1.0}
+{"i": 341, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 342, "pred": "0.0887", "gold": "8.87", "ok": 0, "val": 0.0}
+{"i": 343, "pred": "32.43", "gold": "32.43", "ok": 1, "val": 1.0}
+{"i": 344, "pred": "7.54", "gold": "7.54", "ok": 1, "val": 1.0}
+{"i": 345, "pred": "1.88466", "gold": "1.88", "ok": 1, "val": 1.0}
+{"i": 346, "pred": "Myanmar", "gold": "Myanmar", "ok": 1, "val": 1.0}
+{"i": 347, "pred": "Zambia", "gold": "Zambia", "ok": 1, "val": 1.0}
+{"i": 348, "pred": "[2014, 2016]", "gold": "[2014, 2016]", "ok": 1, "val": 1.0}
+{"i": 349, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 350, "pred": " Georgia", "gold": "Georgia", "ok": 1, "val": 1.0}
+{"i": 351, "pred": "[Spain]", "gold": "Spain", "ok": 1, "val": 1.0}
+{"i": 352, "pred": " Belize", "gold": "Belize", "ok": 1, "val": 1.0}
+{"i": 353, "pred": " Papua New Guinea", "gold": "Papua New Guinea", "ok": 1, "val": 1.0}
+{"i": 354, "pred": "Benin", "gold": "Benin", "ok": 1, "val": 1.0}
+{"i": 355, "pred": "Sudan", "gold": "Sudan", "ok": 1, "val": 1.0}
+{"i": 356, "pred": "Mongolia", "gold": "Mongolia", "ok": 1, "val": 1.0}
+{"i": 357, "pred": "4", "gold": "6", "ok": 0, "val": 0.0}
+{"i": 358, "pred": " North America", "gold": "North America", "ok": 1, "val": 1.0}
+{"i": 359, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 360, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 361, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 362, "pred": "[Serbia]", "gold": "Hong Kong", "ok": 0, "val": 0.0}
+{"i": 363, "pred": "2004", "gold": "[2003, 2004]", "ok": 1, "val": 1.0}
+{"i": 364, "pred": "Cameroon", "gold": "Cameroon", "ok": 1, "val": 1.0}
+{"i": 365, "pred": " Pink", "gold": "Pink", "ok": 1, "val": 1.0}
+{"i": 366, "pred": " Estonia", "gold": "Estonia", "ok": 1, "val": 1.0}
+{"i": 367, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 368, "pred": "1960", "gold": "1960", "ok": 1, "val": 1.0}
+{"i": 369, "pred": "19", "gold": "2", "ok": 0, "val": 0.0}
+{"i": 370, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 371, "pred": "1990", "gold": "1990", "ok": 1, "val": 1.0}
+{"i": 372, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 373, "pred": " Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 374, "pred": "Purple", "gold": "Purple", "ok": 1, "val": 1.0}
+{"i": 375, "pred": "2006", "gold": "6", "ok": 0, "val": 0.0}
+{"i": 376, "pred": "[2013, 2016]", "gold": "[2013, 2016]", "ok": 1, "val": 1.0}
+{"i": 377, "pred": "[Bolivia, Dominican Republic, Germany]", "gold": "[Germany, Bolivia, Dominican Republic]", "ok": 0, "val": 0.0}
+{"i": 378, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 379, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 380, "pred": "1992", "gold": "1992", "ok": 1, "val": 1.0}
+{"i": 381, "pred": "0.031", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 382, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 383, "pred": "3", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 384, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 385, "pred": "10", "gold": "6", "ok": 0, "val": 0.0}
+{"i": 386, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 387, "pred": "0", "gold": "2", "ok": 0, "val": 0.0}
+{"i": 388, "pred": " Burundi", "gold": "Burundi", "ok": 1, "val": 1.0}
+{"i": 389, "pred": "0.011", "gold": "1.4", "ok": 0, "val": 0.0}
+{"i": 390, "pred": "2004", "gold": "2004", "ok": 1, "val": 1.0}
+{"i": 391, "pred": " [United Kingdom, Cape Verde]", "gold": "[United Kingdom, Cape Verde]", "ok": 1, "val": 1.0}
+{"i": 392, "pred": "Gabon", "gold": "Gabon", "ok": 1, "val": 1.0}
+{"i": 393, "pred": "18", "gold": "18", "ok": 1, "val": 1.0}
+{"i": 394, "pred": " Brown", "gold": "orange", "ok": 0, "val": 0.0}
+{"i": 395, "pred": "2005", "gold": "2005", "ok": 1, "val": 1.0}
+{"i": 396, "pred": "Brown", "gold": "orange", "ok": 0, "val": 0.0}
+{"i": 397, "pred": "1992", "gold": "1992", "ok": 1, "val": 1.0}
+{"i": 398, "pred": " Belize", "gold": "Belize", "ok": 1, "val": 1.0}
+{"i": 399, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 400, "pred": " Asia", "gold": "Asia", "ok": 1, "val": 1.0}
+{"i": 401, "pred": " [1965, 1970]", "gold": "[1965, 1970]", "ok": 1, "val": 1.0}
+{"i": 402, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 403, "pred": "Fiji", "gold": "Fiji", "ok": 1, "val": 1.0}
+{"i": 404, "pred": "1975", "gold": "1975", "ok": 1, "val": 1.0}
+{"i": 405, "pred": "10", "gold": "75", "ok": 0, "val": 0.0}
+{"i": 406, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 407, "pred": " Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 408, "pred": " Eritrea", "gold": "Eritrea", "ok": 1, "val": 1.0}
+{"i": 409, "pred": " South Sudan", "gold": "South Sudan", "ok": 1, "val": 1.0}
+{"i": 410, "pred": "50-69 years old", "gold": "50-69 years old", "ok": 1, "val": 1.0}
+{"i": 411, "pred": "2", "gold": "16", "ok": 0, "val": 0.0}
+{"i": 412, "pred": "Botswana", "gold": "Botswana", "ok": 1, "val": 1.0}
+{"i": 413, "pred": "Botswana", "gold": "Chile", "ok": 0, "val": 0.0}
+{"i": 414, "pred": "Cape Verde", "gold": "Cape Verde", "ok": 1, "val": 1.0}
+{"i": 415, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 416, "pred": " Portugal", "gold": "Portugal", "ok": 1, "val": 1.0}
+{"i": 417, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 418, "pred": "Child (before age 5)", "gold": "Child (before age 5)", "ok": 1, "val": 1.0}
+{"i": 419, "pred": "1990", "gold": "1990", "ok": 1, "val": 1.0}
+{"i": 420, "pred": "1970", "gold": "1970", "ok": 1, "val": 1.0}
+{"i": 421, "pred": "1978", "gold": "1978", "ok": 1, "val": 1.0}
+{"i": 422, "pred": " Ireland", "gold": "Ireland", "ok": 1, "val": 1.0}
+{"i": 423, "pred": " Ireland", "gold": "Ireland", "ok": 1, "val": 1.0}
+{"i": 424, "pred": "Togo", "gold": "Togo", "ok": 1, "val": 1.0}
+{"i": 425, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 426, "pred": "Mali", "gold": "Mali", "ok": 1, "val": 1.0}
+{"i": 427, "pred": "2005", "gold": "2005", "ok": 1, "val": 1.0}
+{"i": 428, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 429, "pred": "Iran", "gold": "Taiwan", "ok": 0, "val": 0.0}
+{"i": 430, "pred": "2012", "gold": "2016", "ok": 1, "val": 1.0}
+{"i": 431, "pred": "Primary school", "gold": "Primary school", "ok": 1, "val": 1.0}
+{"i": 432, "pred": "Switzerland", "gold": "Switzerland", "ok": 1, "val": 1.0}
+{"i": 433, "pred": "2004", "gold": "2004", "ok": 1, "val": 1.0}
+{"i": 434, "pred": " Belgium", "gold": "Belgium", "ok": 1, "val": 1.0}
+{"i": 435, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 436, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 437, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 438, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 439, "pred": "39.5", "gold": "25", "ok": 0, "val": 0.0}
+{"i": 440, "pred": "Tend to favor one side", "gold": "Tend to favor one side", "ok": 1, "val": 1.0}
+{"i": 441, "pred": "Republicans", "gold": "Rep/Lean Rep", "ok": 0, "val": 0.0}
+{"i": 442, "pred": "Blue", "gold": "Blue", "ok": 1, "val": 1.0}
+{"i": 443, "pred": "50", "gold": "98", "ok": 0, "val": 0.0}
+{"i": 444, "pred": "U.S.", "gold": "U.S.", "ok": 1, "val": 1.0}
+{"i": 445, "pred": "U.S.", "gold": "U.S.", "ok": 1, "val": 1.0}
+{"i": 446, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 447, "pred": "1.017361111", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 448, "pred": "62", "gold": "62", "ok": 1, "val": 1.0}
+{"i": 449, "pred": "49", "gold": "49", "ok": 1, "val": 1.0}
+{"i": 450, "pred": "Too little", "gold": "Too little", "ok": 1, "val": 1.0}
+{"i": 451, "pred": "63.8", "gold": "62.6", "ok": 1, "val": 1.0}
+{"i": 452, "pred": "48", "gold": "15", "ok": 0, "val": 0.0}
+{"i": 453, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 454, "pred": "29", "gold": "29", "ok": 1, "val": 1.0}
+{"i": 455, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 456, "pred": "68", "gold": "68", "ok": 1, "val": 1.0}
+{"i": 457, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 458, "pred": "71", "gold": "71", "ok": 1, "val": 1.0}
+{"i": 459, "pred": "24", "gold": "24", "ok": 1, "val": 1.0}
+{"i": 460, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 461, "pred": "0.44", "gold": "44", "ok": 0, "val": 0.0}
+{"i": 462, "pred": "[70]", "gold": "Generally produces accurate conclusions", "ok": 0, "val": 0.0}
+{"i": 463, "pred": "0.085416667", "gold": "0.414285714", "ok": 0, "val": 0.0}
+{"i": 464, "pred": "46", "gold": "46", "ok": 1, "val": 1.0}
+{"i": 465, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 466, "pred": "Ages 18-29", "gold": "Ages 18-29", "ok": 1, "val": 1.0}
+{"i": 467, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 468, "pred": "Dark blue", "gold": "Dark blue", "ok": 1, "val": 1.0}
+{"i": 469, "pred": "56", "gold": "56", "ok": 1, "val": 1.0}
+{"i": 470, "pred": "37", "gold": "37", "ok": 1, "val": 1.0}
+{"i": 471, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 472, "pred": "18", "gold": "18", "ok": 1, "val": 1.0}
+{"i": 473, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 474, "pred": "62", "gold": "45", "ok": 0, "val": 0.0}
+{"i": 475, "pred": "5", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 476, "pred": "52", "gold": "52", "ok": 1, "val": 1.0}
+{"i": 477, "pred": "45.4", "gold": "50.6", "ok": 0, "val": 0.0}
+{"i": 478, "pred": "5", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 479, "pred": "99", "gold": "99", "ok": 1, "val": 1.0}
+{"i": 480, "pred": "51", "gold": "51", "ok": 1, "val": 1.0}
+{"i": 481, "pred": "1.6", "gold": "3.6", "ok": 0, "val": 0.0}
+{"i": 482, "pred": "71", "gold": "71", "ok": 1, "val": 1.0}
+{"i": 483, "pred": "84", "gold": "58", "ok": 0, "val": 0.0}
+{"i": 484, "pred": "42", "gold": "42", "ok": 1, "val": 1.0}
+{"i": 485, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 486, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 487, "pred": "60", "gold": "60", "ok": 1, "val": 1.0}
+{"i": 488, "pred": "Democrats & Republicans", "gold": "Democrats & Republicans", "ok": 1, "val": 1.0}
+{"i": 489, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 490, "pred": "10", "gold": "10", "ok": 1, "val": 1.0}
+{"i": 491, "pred": "0.432291667", "gold": "0.431818182", "ok": 1, "val": 1.0}
+{"i": 492, "pred": "21", "gold": "21", "ok": 1, "val": 1.0}
+{"i": 493, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 494, "pred": "39", "gold": "39", "ok": 1, "val": 1.0}
+{"i": 495, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 496, "pred": "27", "gold": "27", "ok": 1, "val": 1.0}
+{"i": 497, "pred": "1.25", "gold": "1.111111111", "ok": 0, "val": 0.0}
+{"i": 498, "pred": " [Should not, Should]", "gold": "[Should not, Should]", "ok": 1, "val": 1.0}
+{"i": 499, "pred": "0.043055556", "gold": "0.75", "ok": 0, "val": 0.0}
+{"i": 500, "pred": "64", "gold": "46", "ok": 0, "val": 0.0}
+{"i": 501, "pred": "64", "gold": "72", "ok": 0, "val": 0.0}
+{"i": 502, "pred": "67", "gold": "47", "ok": 0, "val": 0.0}
+{"i": 503, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 504, "pred": "Same", "gold": "Same", "ok": 1, "val": 1.0}
+{"i": 505, "pred": "0.44", "gold": "16", "ok": 0, "val": 0.0}
+{"i": 506, "pred": "51", "gold": "62", "ok": 0, "val": 0.0}
+{"i": 507, "pred": "11", "gold": "7", "ok": 0, "val": 0.0}
+{"i": 508, "pred": "65+", "gold": "65+", "ok": 1, "val": 1.0}
+{"i": 509, "pred": "1", "gold": "6", "ok": 0, "val": 0.0}
+{"i": 510, "pred": "51", "gold": "37", "ok": 0, "val": 0.0}
+{"i": 511, "pred": "43", "gold": "39.5", "ok": 0, "val": 0.0}
+{"i": 512, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 513, "pred": "35", "gold": "35", "ok": 1, "val": 1.0}
+{"i": 514, "pred": "213000", "gold": "213", "ok": 0, "val": 0.0}
+{"i": 515, "pred": "151", "gold": "151", "ok": 1, "val": 1.0}
+{"i": 516, "pred": "Bulgaria", "gold": "Bulgaria", "ok": 1, "val": 1.0}
+{"i": 517, "pred": " Ireland", "gold": "Ireland", "ok": 1, "val": 1.0}
+{"i": 518, "pred": "Montenegro", "gold": "Montenegro", "ok": 1, "val": 1.0}
+{"i": 519, "pred": "98", "gold": "98", "ok": 1, "val": 1.0}
+{"i": 520, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 521, "pred": "3", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 522, "pred": "Portugal", "gold": "Portugal", "ok": 1, "val": 1.0}
+{"i": 523, "pred": "7.1", "gold": "7.1", "ok": 1, "val": 1.0}
+{"i": 524, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 525, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 526, "pred": "Blue", "gold": "Blue", "ok": 1, "val": 1.0}
+{"i": 527, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 528, "pred": " Japan", "gold": "Japan", "ok": 1, "val": 1.0}
+{"i": 529, "pred": "0.5", "gold": "0.5", "ok": 1, "val": 1.0}
+{"i": 530, "pred": "Blue", "gold": "Blue", "ok": 1, "val": 1.0}
+{"i": 531, "pred": "17.05", "gold": "17.05", "ok": 1, "val": 1.0}
+{"i": 532, "pred": "4.2", "gold": "4.2", "ok": 1, "val": 1.0}
+{"i": 533, "pred": "9.6", "gold": "9.6", "ok": 1, "val": 1.0}
+{"i": 534, "pred": "98", "gold": "98", "ok": 1, "val": 1.0}
+{"i": 535, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 536, "pred": "United Kingdom", "gold": "United Kingdom", "ok": 1, "val": 1.0}
+{"i": 537, "pred": "0.034", "gold": "0.034", "ok": 1, "val": 1.0}
+{"i": 538, "pred": "Red", "gold": "Red", "ok": 1, "val": 1.0}
+{"i": 539, "pred": "105.3", "gold": "105.3", "ok": 1, "val": 1.0}
+{"i": 540, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 541, "pred": " No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 542, "pred": "Netherlands", "gold": "Netherlands", "ok": 1, "val": 1.0}
+{"i": 543, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 544, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 545, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 546, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 547, "pred": "33.8", "gold": "33.8", "ok": 1, "val": 1.0}
+{"i": 548, "pred": "Cuba", "gold": "Cuba", "ok": 1, "val": 1.0}
+{"i": 549, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 550, "pred": "89", "gold": "89", "ok": 1, "val": 1.0}
+{"i": 551, "pred": "64", "gold": "64", "ok": 1, "val": 1.0}
+{"i": 552, "pred": "36", "gold": "36", "ok": 1, "val": 1.0}
+{"i": 553, "pred": "5", "gold": "4", "ok": 0, "val": 0.0}
+{"i": 554, "pred": "Wrong decision", "gold": "Right decision", "ok": 0, "val": 0.0}
+{"i": 555, "pred": "18", "gold": "64", "ok": 0, "val": 0.0}
+{"i": 556, "pred": "42", "gold": "42", "ok": 1, "val": 1.0}
+{"i": 557, "pred": "Republican", "gold": "Independent", "ok": 0, "val": 0.0}
+{"i": 558, "pred": "6", "gold": "6", "ok": 1, "val": 1.0}
+{"i": 559, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 560, "pred": " Indonesia", "gold": "Indonesia", "ok": 1, "val": 1.0}
+{"i": 561, "pred": "0.96", "gold": "1.06", "ok": 0, "val": 0.0}
+{"i": 562, "pred": "Pink", "gold": "Pink", "ok": 1, "val": 1.0}
+{"i": 563, "pred": "0.11", "gold": "0.11", "ok": 1, "val": 1.0}
+{"i": 564, "pred": "53", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 565, "pred": "21", "gold": "21", "ok": 1, "val": 1.0}
+{"i": 566, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 567, "pred": " Poland", "gold": "Poland", "ok": 1, "val": 1.0}
+{"i": 568, "pred": " Sri Lanka", "gold": "Sri Lanka", "ok": 1, "val": 1.0}
+{"i": 569, "pred": "0.22675", "gold": "22.675", "ok": 0, "val": 0.0}
+{"i": 570, "pred": "East Asia and Pacific", "gold": "East Asia and Pacific", "ok": 1, "val": 1.0}
+{"i": 571, "pred": "9.15", "gold": "9.1", "ok": 1, "val": 1.0}
+{"i": 572, "pred": "Benin", "gold": "Benin", "ok": 1, "val": 1.0}
+{"i": 573, "pred": "0.97075", "gold": "0.99124", "ok": 1, "val": 1.0}
+{"i": 574, "pred": "0.43", "gold": "43", "ok": 0, "val": 0.0}
+{"i": 575, "pred": "0.3325", "gold": "33.25", "ok": 0, "val": 0.0}
+{"i": 576, "pred": " Spain", "gold": "Spain", "ok": 1, "val": 1.0}
+{"i": 577, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 578, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 579, "pred": "2019", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 580, "pred": " Australia", "gold": "Australia", "ok": 1, "val": 1.0}
+{"i": 581, "pred": " [Australia, Italy]", "gold": "[Australia, Italy]", "ok": 1, "val": 1.0}
+{"i": 582, "pred": "[Slovenia, Turkey]", "gold": "[Slovenia, Turkey]", "ok": 1, "val": 1.0}
+{"i": 583, "pred": "2008", "gold": "2008", "ok": 1, "val": 1.0}
+{"i": 584, "pred": "United States", "gold": "United States", "ok": 1, "val": 1.0}
+{"i": 585, "pred": "0", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 586, "pred": "2010", "gold": "2010", "ok": 1, "val": 1.0}
+{"i": 587, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 588, "pred": " [Austria, Chile]", "gold": "[Austria, Chile]", "ok": 1, "val": 1.0}
+{"i": 589, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 590, "pred": "[Lithuania, Saudi Arabia]", "gold": "[Lithuania, Saudi Arabia]", "ok": 1, "val": 1.0}
+{"i": 591, "pred": "Saudi Arabia", "gold": "Saudi Arabia", "ok": 1, "val": 1.0}
+{"i": 592, "pred": " Belgium", "gold": "Belgium", "ok": 1, "val": 1.0}
+{"i": 593, "pred": " New Zealand", "gold": "New Zealand", "ok": 1, "val": 1.0}
+{"i": 594, "pred": " Korea", "gold": "Korea", "ok": 1, "val": 1.0}
+{"i": 595, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 596, "pred": "Ethiopia", "gold": "Ethiopia", "ok": 1, "val": 1.0}
+{"i": 597, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 598, "pred": "1994", "gold": "1994", "ok": 1, "val": 1.0}
+{"i": 599, "pred": "1989", "gold": "1987", "ok": 1, "val": 1.0}
+{"i": 600, "pred": "Chinese Taipei", "gold": "Chinese Taipei", "ok": 1, "val": 1.0}
+{"i": 601, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 602, "pred": "2016", "gold": "2016", "ok": 1, "val": 1.0}
+{"i": 603, "pred": "Brazil", "gold": "Brazil", "ok": 1, "val": 1.0}
+{"i": 604, "pred": " Facebook Messenger", "gold": "Facebook Messenger*", "ok": 1, "val": 1.0}
+{"i": 605, "pred": "3300", "gold": "3300", "ok": 1, "val": 1.0}
+{"i": 606, "pred": " Bridgestone (Japan)", "gold": "Bridgestone (Japan)", "ok": 1, "val": 1.0}
+{"i": 607, "pred": "14.33", "gold": "14.33", "ok": 1, "val": 1.0}
+{"i": 608, "pred": "American Airlines", "gold": "American Airlines", "ok": 1, "val": 1.0}
+{"i": 609, "pred": "12.4", "gold": "12.4", "ok": 1, "val": 1.0}
+{"i": 610, "pred": "969.26", "gold": "969.26", "ok": 1, "val": 1.0}
+{"i": 611, "pred": "45.95", "gold": "39.31", "ok": 0, "val": 0.0}
+{"i": 612, "pred": "1.37", "gold": "[1.34, 1.37]", "ok": 1, "val": 1.0}
+{"i": 613, "pred": "5.31", "gold": "5.11", "ok": 1, "val": 1.0}
+{"i": 614, "pred": "Increased", "gold": "Increased", "ok": 1, "val": 1.0}
+{"i": 615, "pred": "32.5", "gold": "32.5", "ok": 1, "val": 1.0}
+{"i": 616, "pred": "4.3", "gold": "4.3", "ok": 1, "val": 1.0}
+{"i": 617, "pred": "1.2", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 618, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 619, "pred": "1.6", "gold": "-1.6", "ok": 0, "val": 0.0}
+{"i": 620, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 621, "pred": "6", "gold": "7", "ok": 0, "val": 0.0}
+{"i": 622, "pred": "10", "gold": "10", "ok": 1, "val": 1.0}
+{"i": 623, "pred": "0.549019608", "gold": "0.549", "ok": 1, "val": 1.0}
+{"i": 624, "pred": " October", "gold": "October", "ok": 1, "val": 1.0}
+{"i": 625, "pred": "2", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 626, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 627, "pred": "73", "gold": "73", "ok": 1, "val": 1.0}
+{"i": 628, "pred": "537689", "gold": "537689", "ok": 1, "val": 1.0}
+{"i": 629, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 630, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 631, "pred": "59.84", "gold": "59.8", "ok": 1, "val": 1.0}
+{"i": 632, "pred": "Not documented, fate unknown*", "gold": "Not documented, fate unknown*", "ok": 1, "val": 1.0}
+{"i": 633, "pred": "0.25", "gold": "0.25", "ok": 1, "val": 1.0}
+{"i": 634, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 635, "pred": "51", "gold": "31", "ok": 0, "val": 0.0}
+{"i": 636, "pred": "3996", "gold": "3996", "ok": 1, "val": 1.0}
+{"i": 637, "pred": "828", "gold": "828", "ok": 1, "val": 1.0}
+{"i": 638, "pred": "84", "gold": "84", "ok": 1, "val": 1.0}
+{"i": 639, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 640, "pred": "49976", "gold": "49976", "ok": 1, "val": 1.0}
+{"i": 641, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 642, "pred": "increasing", "gold": "increasing", "ok": 1, "val": 1.0}
+{"i": 643, "pred": "4", "gold": "5", "ok": 0, "val": 0.0}
+{"i": 644, "pred": "Pulmonary arterial hypertension", "gold": "Pulmonary arterial hypertension", "ok": 1, "val": 1.0}
+{"i": 645, "pred": "3", "gold": "4", "ok": 0, "val": 0.0}
+{"i": 646, "pred": " Passenger cars", "gold": "Passenger cars", "ok": 1, "val": 1.0}
+{"i": 647, "pred": "2.7", "gold": "3.7", "ok": 0, "val": 0.0}
+{"i": 648, "pred": " Russian Federation", "gold": "Russian Federation", "ok": 1, "val": 1.0}
+{"i": 649, "pred": "44", "gold": "41", "ok": 0, "val": 0.0}
+{"i": 650, "pred": "2009", "gold": "2009", "ok": 1, "val": 1.0}
+{"i": 651, "pred": "6", "gold": "6", "ok": 1, "val": 1.0}
+{"i": 652, "pred": "6.6", "gold": "6.6", "ok": 1, "val": 1.0}
+{"i": 653, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 654, "pred": "123.3", "gold": "123.3", "ok": 1, "val": 1.0}
+{"i": 655, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 656, "pred": "2", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 657, "pred": "70.3", "gold": "70.4", "ok": 1, "val": 1.0}
+{"i": 658, "pred": "Canada", "gold": "Canada", "ok": 1, "val": 1.0}
+{"i": 659, "pred": "1", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 660, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 661, "pred": "52", "gold": "52", "ok": 1, "val": 1.0}
+{"i": 662, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 663, "pred": "11", "gold": "13", "ok": 0, "val": 0.0}
+{"i": 664, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 665, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 666, "pred": "Based on how much we can afford as a family", "gold": "Based on how much we can afford as a family", "ok": 1, "val": 1.0}
+{"i": 667, "pred": "19", "gold": "19", "ok": 1, "val": 1.0}
+{"i": 668, "pred": "2021", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 669, "pred": "33.33", "gold": "33.33", "ok": 1, "val": 1.0}
+{"i": 670, "pred": "CIC Lyonnaise de Banque", "gold": "CIC Lyonnaise de Banque", "ok": 1, "val": 1.0}
+{"i": 671, "pred": "45519", "gold": "44519", "ok": 1, "val": 1.0}
+{"i": 672, "pred": "Periscope", "gold": "Periscope", "ok": 1, "val": 1.0}
+{"i": 673, "pred": "2:1", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 674, "pred": "17", "gold": "17", "ok": 1, "val": 1.0}
+{"i": 675, "pred": "64", "gold": "64", "ok": 1, "val": 1.0}
+{"i": 676, "pred": "2021", "gold": "2011", "ok": 1, "val": 1.0}
+{"i": 677, "pred": "8.38", "gold": "7.76", "ok": 0, "val": 0.0}
+{"i": 678, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 679, "pred": "44.6", "gold": "44.6", "ok": 1, "val": 1.0}
+{"i": 680, "pred": " Jeep", "gold": "Kit (Nike)", "ok": 0, "val": 0.0}
+{"i": 681, "pred": "20.67", "gold": "17.3", "ok": 0, "val": 0.0}
+{"i": 682, "pred": "41856", "gold": "41856", "ok": 1, "val": 1.0}
+{"i": 683, "pred": "39373", "gold": "39146", "ok": 1, "val": 1.0}
+{"i": 684, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 685, "pred": "40", "gold": "40", "ok": 1, "val": 1.0}
+{"i": 686, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 687, "pred": "1.25", "gold": "1.25", "ok": 1, "val": 1.0}
+{"i": 688, "pred": "69", "gold": "69", "ok": 1, "val": 1.0}
+{"i": 689, "pred": "2.225806452", "gold": "2.2258", "ok": 1, "val": 1.0}
+{"i": 690, "pred": " LAAP*", "gold": "LAAP*", "ok": 1, "val": 1.0}
+{"i": 691, "pred": "71.08", "gold": "71.08", "ok": 1, "val": 1.0}
+{"i": 692, "pred": "4", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 693, "pred": "10878", "gold": "10878", "ok": 1, "val": 1.0}
+{"i": 694, "pred": "41.5", "gold": "41.5", "ok": 1, "val": 1.0}
+{"i": 695, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 696, "pred": " Michael Kors", "gold": "Michael Kors", "ok": 1, "val": 1.0}
+{"i": 697, "pred": "25.19", "gold": "25.19", "ok": 1, "val": 1.0}
+{"i": 698, "pred": "Netherlands", "gold": "Netherlands", "ok": 1, "val": 1.0}
+{"i": 699, "pred": "18.67", "gold": "18.6", "ok": 1, "val": 1.0}
+{"i": 700, "pred": "6", "gold": "6", "ok": 1, "val": 1.0}
+{"i": 701, "pred": "1.54", "gold": "1.54", "ok": 1, "val": 1.0}
+{"i": 702, "pred": "18.2", "gold": "18.2", "ok": 1, "val": 1.0}
+{"i": 703, "pred": "22", "gold": "22", "ok": 1, "val": 1.0}
+{"i": 704, "pred": "Very poorly", "gold": "I do not know", "ok": 0, "val": 0.0}
+{"i": 705, "pred": "1:2", "gold": "2", "ok": 0, "val": 0.0}
+{"i": 706, "pred": "6.6", "gold": "6.6", "ok": 1, "val": 1.0}
+{"i": 707, "pred": "17.8", "gold": "17.8", "ok": 1, "val": 1.0}
+{"i": 708, "pred": "19.7", "gold": "19.7", "ok": 1, "val": 1.0}
+{"i": 709, "pred": "19.7", "gold": "19.7", "ok": 1, "val": 1.0}
+{"i": 710, "pred": "Definitely yes", "gold": "Definitely yes", "ok": 1, "val": 1.0}
+{"i": 711, "pred": "18.3", "gold": "18.3", "ok": 1, "val": 1.0}
+{"i": 712, "pred": "2004", "gold": "2004", "ok": 1, "val": 1.0}
+{"i": 713, "pred": "10.78", "gold": "10.53", "ok": 1, "val": 1.0}
+{"i": 714, "pred": "1408", "gold": "1408", "ok": 1, "val": 1.0}
+{"i": 715, "pred": "5910", "gold": "5910", "ok": 1, "val": 1.0}
+{"i": 716, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 717, "pred": "2009", "gold": "2009", "ok": 1, "val": 1.0}
+{"i": 718, "pred": "Staying alert and taking precautions", "gold": "Staying alert and taking precautions", "ok": 1, "val": 1.0}
+{"i": 719, "pred": "6", "gold": "6", "ok": 1, "val": 1.0}
+{"i": 720, "pred": "25-34", "gold": "25-34", "ok": 1, "val": 1.0}
+{"i": 721, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 722, "pred": " Corn", "gold": "Corn", "ok": 1, "val": 1.0}
+{"i": 723, "pred": "1104.17", "gold": "1104.17", "ok": 1, "val": 1.0}
+{"i": 724, "pred": "91817", "gold": "91817", "ok": 1, "val": 1.0}
+{"i": 725, "pred": "67465", "gold": "67465", "ok": 1, "val": 1.0}
+{"i": 726, "pred": "85.89", "gold": "83.29", "ok": 1, "val": 1.0}
+{"i": 727, "pred": "2.13", "gold": "2.87", "ok": 0, "val": 0.0}
+{"i": 728, "pred": " NBA (2015/16)", "gold": "NFL (2016)", "ok": 1, "val": 1.0}
+{"i": 729, "pred": "55.88", "gold": "43.44", "ok": 0, "val": 0.0}
+{"i": 730, "pred": "2008", "gold": "2008", "ok": 1, "val": 1.0}
+{"i": 731, "pred": "1.19", "gold": "0.19", "ok": 0, "val": 0.0}
+{"i": 732, "pred": "1-5 mins", "gold": "1-5 mins", "ok": 1, "val": 1.0}
+{"i": 733, "pred": "33", "gold": "33", "ok": 1, "val": 1.0}
+{"i": 734, "pred": "2021", "gold": "2021", "ok": 1, "val": 1.0}
+{"i": 735, "pred": "590", "gold": "590", "ok": 1, "val": 1.0}
+{"i": 736, "pred": "Black or African American alone", "gold": "Black or African American alone", "ok": 1, "val": 1.0}
+{"i": 737, "pred": "542533", "gold": "542533", "ok": 1, "val": 1.0}
+{"i": 738, "pred": "2009, 2010", "gold": "[2003,2009]", "ok": 0, "val": 0.0}
+{"i": 739, "pred": "0.01", "gold": "0", "ok": 0, "val": 0.0}
+{"i": 740, "pred": "Texas", "gold": "Texas", "ok": 1, "val": 1.0}
+{"i": 741, "pred": "22738", "gold": "22738", "ok": 1, "val": 1.0}
+{"i": 742, "pred": "15017", "gold": "15017", "ok": 1, "val": 1.0}
+{"i": 743, "pred": "6355", "gold": "6411", "ok": 1, "val": 1.0}
+{"i": 744, "pred": "2012", "gold": "2012", "ok": 1, "val": 1.0}
+{"i": 745, "pred": "23.125", "gold": "23.025", "ok": 1, "val": 1.0}
+{"i": 746, "pred": "53", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 747, "pred": "44", "gold": "44", "ok": 1, "val": 1.0}
+{"i": 748, "pred": "10.2", "gold": "10.2", "ok": 1, "val": 1.0}
+{"i": 749, "pred": "19.4", "gold": "59.9", "ok": 0, "val": 0.0}
+{"i": 750, "pred": "1.45", "gold": "1.45", "ok": 1, "val": 1.0}
+{"i": 751, "pred": "0.2", "gold": "0.2", "ok": 1, "val": 1.0}
+{"i": 752, "pred": "2007", "gold": "2007", "ok": 1, "val": 1.0}
+{"i": 753, "pred": "24", "gold": "31.3", "ok": 0, "val": 0.0}
+{"i": 754, "pred": "8.6", "gold": "8.6", "ok": 1, "val": 1.0}
+{"i": 755, "pred": "31", "gold": "31", "ok": 1, "val": 1.0}
+{"i": 756, "pred": "446.13", "gold": "446.13", "ok": 1, "val": 1.0}
+{"i": 757, "pred": "1120.36", "gold": "756.36", "ok": 0, "val": 0.0}
+{"i": 758, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 759, "pred": "100476.8", "gold": "100375.8", "ok": 1, "val": 1.0}
+{"i": 760, "pred": " May '21", "gold": "May '21", "ok": 1, "val": 1.0}
+{"i": 761, "pred": "2.93", "gold": "2.93", "ok": 1, "val": 1.0}
+{"i": 762, "pred": "Canada", "gold": "Canada", "ok": 1, "val": 1.0}
+{"i": 763, "pred": "31", "gold": "31", "ok": 1, "val": 1.0}
+{"i": 764, "pred": "2009", "gold": "2009", "ok": 1, "val": 1.0}
+{"i": 765, "pred": "45.28", "gold": "45.28", "ok": 1, "val": 1.0}
+{"i": 766, "pred": "50.4", "gold": "50.4", "ok": 1, "val": 1.0}
+{"i": 767, "pred": "87", "gold": "87", "ok": 1, "val": 1.0}
+{"i": 768, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 769, "pred": "12", "gold": "12", "ok": 1, "val": 1.0}
+{"i": 770, "pred": "7", "gold": "7", "ok": 1, "val": 1.0}
+{"i": 771, "pred": "Mining", "gold": "Mining", "ok": 1, "val": 1.0}
+{"i": 772, "pred": "Moderna", "gold": "Moderna", "ok": 1, "val": 1.0}
+{"i": 773, "pred": " Folksam", "gold": "Folksam", "ok": 1, "val": 1.0}
+{"i": 774, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 775, "pred": "2016", "gold": "2016", "ok": 1, "val": 1.0}
+{"i": 776, "pred": "May '21", "gold": "May '21", "ok": 1, "val": 1.0}
+{"i": 777, "pred": "7.23", "gold": "7.23", "ok": 1, "val": 1.0}
+{"i": 778, "pred": "6750", "gold": "6750", "ok": 1, "val": 1.0}
+{"i": 779, "pred": "Germany vs. United States", "gold": "[Germany,United States]", "ok": 0, "val": 0.0}
+{"i": 780, "pred": "22", "gold": "22", "ok": 1, "val": 1.0}
+{"i": 781, "pred": "0", "gold": "0", "ok": 1, "val": 1.0}
+{"i": 782, "pred": "Grocery", "gold": "Grocery", "ok": 1, "val": 1.0}
+{"i": 783, "pred": "11.4", "gold": "11.4", "ok": 1, "val": 1.0}
+{"i": 784, "pred": "Robku TV", "gold": "Robku TV", "ok": 1, "val": 1.0}
+{"i": 785, "pred": "14", "gold": "14", "ok": 1, "val": 1.0}
+{"i": 786, "pred": "2007", "gold": "2007", "ok": 1, "val": 1.0}
+{"i": 787, "pred": "410", "gold": "410", "ok": 1, "val": 1.0}
+{"i": 788, "pred": "28.49", "gold": "28.49", "ok": 1, "val": 1.0}
+{"i": 789, "pred": "59.31", "gold": "60.31", "ok": 1, "val": 1.0}
+{"i": 790, "pred": "2.06", "gold": "2.06", "ok": 1, "val": 1.0}
+{"i": 791, "pred": "11", "gold": "12", "ok": 0, "val": 0.0}
+{"i": 792, "pred": " Philosophy", "gold": "Philosophy", "ok": 1, "val": 1.0}
+{"i": 793, "pred": "131028.5", "gold": "131253.5", "ok": 1, "val": 1.0}
+{"i": 794, "pred": "Online authorized dealers", "gold": "Online authorized dealers", "ok": 1, "val": 1.0}
+{"i": 795, "pred": "42.25", "gold": "42.25", "ok": 1, "val": 1.0}
+{"i": 796, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 797, "pred": "6", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 798, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 799, "pred": "93", "gold": "93", "ok": 1, "val": 1.0}
+{"i": 800, "pred": " Canada", "gold": "Canada", "ok": 1, "val": 1.0}
+{"i": 801, "pred": "1.43", "gold": "1.43", "ok": 1, "val": 1.0}
+{"i": 802, "pred": "13942", "gold": "13942", "ok": 1, "val": 1.0}
+{"i": 803, "pred": "24900", "gold": "25397", "ok": 1, "val": 1.0}
+{"i": 804, "pred": "10", "gold": "10", "ok": 1, "val": 1.0}
+{"i": 805, "pred": "[Thailand, South Korea]", "gold": "[Thailand, South Korea]", "ok": 1, "val": 1.0}
+{"i": 806, "pred": "8", "gold": "8", "ok": 1, "val": 1.0}
+{"i": 807, "pred": "61.2", "gold": "61.2", "ok": 1, "val": 1.0}
+{"i": 808, "pred": "48", "gold": "48", "ok": 1, "val": 1.0}
+{"i": 809, "pred": "33.6", "gold": "33.6", "ok": 1, "val": 1.0}
+{"i": 810, "pred": "6.23", "gold": "6.23", "ok": 1, "val": 1.0}
+{"i": 811, "pred": "1246", "gold": "200", "ok": 0, "val": 0.0}
+{"i": 812, "pred": "9", "gold": "8", "ok": 0, "val": 0.0}
+{"i": 813, "pred": "39.27", "gold": "39.27", "ok": 1, "val": 1.0}
+{"i": 814, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 815, "pred": "1:2", "gold": "0.5", "ok": 0, "val": 0.0}
+{"i": 816, "pred": " Estimated revenue in billion U.S. dollars", "gold": "Estimated revenue in billion U.S. dollars", "ok": 1, "val": 1.0}
+{"i": 817, "pred": "2009", "gold": "2009", "ok": 1, "val": 1.0}
+{"i": 818, "pred": "16.7", "gold": "16.7", "ok": 1, "val": 1.0}
+{"i": 819, "pred": "1.8", "gold": "3.38", "ok": 0, "val": 0.0}
+{"i": 820, "pred": "2018", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 821, "pred": "2240.5", "gold": "2408.125", "ok": 0, "val": 0.0}
+{"i": 822, "pred": "Dark blue", "gold": "red", "ok": 0, "val": 0.0}
+{"i": 823, "pred": "0", "gold": "2.33", "ok": 0, "val": 0.0}
+{"i": 824, "pred": "24", "gold": "24", "ok": 1, "val": 1.0}
+{"i": 825, "pred": "59", "gold": "59", "ok": 1, "val": 1.0}
+{"i": 826, "pred": "9", "gold": "8", "ok": 0, "val": 0.0}
+{"i": 827, "pred": "36.1", "gold": "36.1", "ok": 1, "val": 1.0}
+{"i": 828, "pred": "32.4", "gold": "32.4", "ok": 1, "val": 1.0}
+{"i": 829, "pred": "46.8", "gold": "67.6", "ok": 0, "val": 0.0}
+{"i": 830, "pred": "7", "gold": "7", "ok": 1, "val": 1.0}
+{"i": 831, "pred": "9", "gold": "9", "ok": 1, "val": 1.0}
+{"i": 832, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 833, "pred": "6", "gold": "7", "ok": 0, "val": 0.0}
+{"i": 834, "pred": "Analytics", "gold": "Analytics", "ok": 1, "val": 1.0}
+{"i": 835, "pred": "69.9", "gold": "70", "ok": 1, "val": 1.0}
+{"i": 836, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 837, "pred": "26", "gold": "23", "ok": 0, "val": 0.0}
+{"i": 838, "pred": "15.71", "gold": "15.75", "ok": 1, "val": 1.0}
+{"i": 839, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 840, "pred": "55.01", "gold": "55.01", "ok": 1, "val": 1.0}
+{"i": 841, "pred": "16.15", "gold": "16.59", "ok": 1, "val": 1.0}
+{"i": 842, "pred": "856.36", "gold": "856.36", "ok": 1, "val": 1.0}
+{"i": 843, "pred": "2010", "gold": "2010", "ok": 1, "val": 1.0}
+{"i": 844, "pred": " Just the right number", "gold": "Just the right number", "ok": 1, "val": 1.0}
+{"i": 845, "pred": "63", "gold": "63", "ok": 1, "val": 1.0}
+{"i": 846, "pred": "White", "gold": "5", "ok": 0, "val": 0.0}
+{"i": 847, "pred": "38", "gold": "37", "ok": 1, "val": 1.0}
+{"i": 848, "pred": " WhatsApp", "gold": "WhatsApp", "ok": 1, "val": 1.0}
+{"i": 849, "pred": "78", "gold": "78", "ok": 1, "val": 1.0}
+{"i": 850, "pred": "2017", "gold": "[2017, 2023]", "ok": 1, "val": 1.0}
+{"i": 851, "pred": "Digestive health", "gold": "Digestive health", "ok": 1, "val": 1.0}
+{"i": 852, "pred": " Fracture of ribs, sternum and thoracic spine", "gold": "108", "ok": 0, "val": 0.0}
+{"i": 853, "pred": "100.5", "gold": "70", "ok": 0, "val": 0.0}
+{"i": 854, "pred": "91", "gold": "91", "ok": 1, "val": 1.0}
+{"i": 855, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 856, "pred": "2010", "gold": "2010", "ok": 1, "val": 1.0}
+{"i": 857, "pred": "95", "gold": "92.02", "ok": 1, "val": 1.0}
+{"i": 858, "pred": "2007-2008", "gold": "2007-2008", "ok": 1, "val": 1.0}
+{"i": 859, "pred": "23807", "gold": "112249", "ok": 0, "val": 0.0}
+{"i": 860, "pred": "1125", "gold": "1125", "ok": 1, "val": 1.0}
+{"i": 861, "pred": "239.4", "gold": "239.4", "ok": 1, "val": 1.0}
+{"i": 862, "pred": "Facebook", "gold": "Facebook", "ok": 1, "val": 1.0}
+{"i": 863, "pred": "5.76", "gold": "5.76", "ok": 1, "val": 1.0}
+{"i": 864, "pred": "2009", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 865, "pred": "6.27", "gold": "7.53", "ok": 0, "val": 0.0}
+{"i": 866, "pred": "58", "gold": "58", "ok": 1, "val": 1.0}
+{"i": 867, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 868, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 869, "pred": "Data not reported", "gold": "Data not reported", "ok": 1, "val": 1.0}
+{"i": 870, "pred": "100 - 500 euros", "gold": "100 - 500 euros", "ok": 1, "val": 1.0}
+{"i": 871, "pred": "2.22", "gold": "2.44", "ok": 0, "val": 0.0}
+{"i": 872, "pred": " Insured all year, not underinsured", "gold": "Insured all year, not underinsured", "ok": 1, "val": 1.0}
+{"i": 873, "pred": "2003", "gold": "2005", "ok": 1, "val": 1.0}
+{"i": 874, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 875, "pred": "52", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 876, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 877, "pred": "3.4", "gold": "3.4", "ok": 1, "val": 1.0}
+{"i": 878, "pred": "2016", "gold": "2016", "ok": 1, "val": 1.0}
+{"i": 879, "pred": "2013", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 880, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 881, "pred": "38", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 882, "pred": "65", "gold": "65", "ok": 1, "val": 1.0}
+{"i": 883, "pred": "89", "gold": "89", "ok": 1, "val": 1.0}
+{"i": 884, "pred": "105.4", "gold": "105.4", "ok": 1, "val": 1.0}
+{"i": 885, "pred": "197.3", "gold": "197.3", "ok": 1, "val": 1.0}
+{"i": 886, "pred": "Poor", "gold": "Poor", "ok": 1, "val": 1.0}
+{"i": 887, "pred": "40", "gold": "40", "ok": 1, "val": 1.0}
+{"i": 888, "pred": "64.6", "gold": "64.6", "ok": 1, "val": 1.0}
+{"i": 889, "pred": "1535.6", "gold": "832.5", "ok": 0, "val": 0.0}
+{"i": 890, "pred": " Black", "gold": "black", "ok": 1, "val": 1.0}
+{"i": 891, "pred": "153", "gold": "153", "ok": 1, "val": 1.0}
+{"i": 892, "pred": "1592", "gold": "1592", "ok": 1, "val": 1.0}
+{"i": 893, "pred": "495", "gold": "505", "ok": 1, "val": 1.0}
+{"i": 894, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 895, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 896, "pred": "40", "gold": "40", "ok": 1, "val": 1.0}
+{"i": 897, "pred": "56", "gold": "56", "ok": 1, "val": 1.0}
+{"i": 898, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 899, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 900, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 901, "pred": "3684", "gold": "3594", "ok": 1, "val": 1.0}
+{"i": 902, "pred": "2010/11", "gold": "2010/11", "ok": 1, "val": 1.0}
+{"i": 903, "pred": "27721", "gold": "28568", "ok": 1, "val": 1.0}
+{"i": 904, "pred": " Pirates of the Caribbean: Dead Man's Chest", "gold": "Pirates of the Caribbean: Dead Man's Chest", "ok": 1, "val": 1.0}
+{"i": 905, "pred": "Pirates of the Caribbean: Dead Men Tell No Tales", "gold": "Pirates of the Caribbean: The Curse of the Black Pearl", "ok": 0, "val": 0.0}
+{"i": 906, "pred": "16-19 years", "gold": "16-19 years", "ok": 1, "val": 1.0}
+{"i": 907, "pred": "33", "gold": "55", "ok": 0, "val": 0.0}
+{"i": 908, "pred": "MasterChef", "gold": "Cooking (e.g., MasterChef, Chopped, etc.)", "ok": 0, "val": 0.0}
+{"i": 909, "pred": "39", "gold": "39", "ok": 1, "val": 1.0}
+{"i": 910, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 911, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 912, "pred": "599", "gold": "599", "ok": 1, "val": 1.0}
+{"i": 913, "pred": "479.5", "gold": "479.5", "ok": 1, "val": 1.0}
+{"i": 914, "pred": "55", "gold": "55", "ok": 1, "val": 1.0}
+{"i": 915, "pred": "52", "gold": "52", "ok": 1, "val": 1.0}
+{"i": 916, "pred": "165", "gold": "165", "ok": 1, "val": 1.0}
+{"i": 917, "pred": "15", "gold": "15", "ok": 1, "val": 1.0}
+{"i": 918, "pred": "8.5", "gold": "8.5", "ok": 1, "val": 1.0}
+{"i": 919, "pred": "27.5", "gold": "27.5", "ok": 1, "val": 1.0}
+{"i": 920, "pred": "Jimmy Fallon", "gold": "Jimmy Fallon", "ok": 1, "val": 1.0}
+{"i": 921, "pred": "4", "gold": "19", "ok": 0, "val": 0.0}
+{"i": 922, "pred": "99750", "gold": "99750", "ok": 1, "val": 1.0}
+{"i": 923, "pred": "17039", "gold": "18019", "ok": 0, "val": 0.0}
+{"i": 924, "pred": "85", "gold": "85", "ok": 1, "val": 1.0}
+{"i": 925, "pred": "60", "gold": "60", "ok": 1, "val": 1.0}
+{"i": 926, "pred": "6.2", "gold": "6.2", "ok": 1, "val": 1.0}
+{"i": 927, "pred": "5.45", "gold": "5.45", "ok": 1, "val": 1.0}
+{"i": 928, "pred": "69", "gold": "69", "ok": 1, "val": 1.0}
+{"i": 929, "pred": "85", "gold": "85", "ok": 1, "val": 1.0}
+{"i": 930, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 931, "pred": "91.1", "gold": "91.1", "ok": 1, "val": 1.0}
+{"i": 932, "pred": "19.81", "gold": "19.81", "ok": 1, "val": 1.0}
+{"i": 933, "pred": "45.63", "gold": "45.83", "ok": 1, "val": 1.0}
+{"i": 934, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 935, "pred": "66", "gold": "66", "ok": 1, "val": 1.0}
+{"i": 936, "pred": "28.3", "gold": "28.3", "ok": 1, "val": 1.0}
+{"i": 937, "pred": "1.9", "gold": "10", "ok": 0, "val": 0.0}
+{"i": 938, "pred": "63", "gold": "63", "ok": 1, "val": 1.0}
+{"i": 939, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 940, "pred": "71", "gold": "62", "ok": 0, "val": 0.0}
+{"i": 941, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 942, "pred": "2011", "gold": "[2011, 2012]", "ok": 1, "val": 1.0}
+{"i": 943, "pred": "35", "gold": "35", "ok": 1, "val": 1.0}
+{"i": 944, "pred": "2018", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 945, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 946, "pred": "3.7", "gold": "3.7", "ok": 1, "val": 1.0}
+{"i": 947, "pred": "2010", "gold": "2010", "ok": 1, "val": 1.0}
+{"i": 948, "pred": " Female", "gold": "Female", "ok": 1, "val": 1.0}
+{"i": 949, "pred": "18", "gold": "14", "ok": 0, "val": 0.0}
+{"i": 950, "pred": "3.72", "gold": "3.72", "ok": 1, "val": 1.0}
+{"i": 951, "pred": "0.46", "gold": "0.46", "ok": 1, "val": 1.0}
+{"i": 952, "pred": "Cinematography", "gold": "Cinematography", "ok": 1, "val": 1.0}
+{"i": 953, "pred": "50", "gold": "50", "ok": 1, "val": 1.0}
+{"i": 954, "pred": " Joe Biden", "gold": "80", "ok": 0, "val": 0.0}
+{"i": 955, "pred": "38", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 956, "pred": "3.9", "gold": "3.9", "ok": 1, "val": 1.0}
+{"i": 957, "pred": "6.7", "gold": "6.7", "ok": 1, "val": 1.0}
+{"i": 958, "pred": "1461.3", "gold": "1461.3", "ok": 1, "val": 1.0}
+{"i": 959, "pred": "2372.1", "gold": "2372.1", "ok": 1, "val": 1.0}
+{"i": 960, "pred": "Male", "gold": "Male", "ok": 1, "val": 1.0}
+{"i": 961, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 962, "pred": "7.65", "gold": "7.65", "ok": 1, "val": 1.0}
+{"i": 963, "pred": "5.31", "gold": "5.66", "ok": 0, "val": 0.0}
+{"i": 964, "pred": "53.5", "gold": "54.93", "ok": 1, "val": 1.0}
+{"i": 965, "pred": "11.99", "gold": "11.99", "ok": 1, "val": 1.0}
+{"i": 966, "pred": " Men", "gold": "Men", "ok": 1, "val": 1.0}
+{"i": 967, "pred": "19.4", "gold": "19.4", "ok": 1, "val": 1.0}
+{"i": 968, "pred": "49", "gold": "49", "ok": 1, "val": 1.0}
+{"i": 969, "pred": "Less", "gold": "Less", "ok": 1, "val": 1.0}
+{"i": 970, "pred": "16", "gold": "16", "ok": 1, "val": 1.0}
+{"i": 971, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 972, "pred": "20 to 29 years", "gold": "20 to 29 years", "ok": 1, "val": 1.0}
+{"i": 973, "pred": "9 years and younger", "gold": "9 years and younger", "ok": 1, "val": 1.0}
+{"i": 974, "pred": "73.3", "gold": "73.3", "ok": 1, "val": 1.0}
+{"i": 975, "pred": "53.8", "gold": "53.8", "ok": 1, "val": 1.0}
+{"i": 976, "pred": "Media workers", "gold": "Media workers", "ok": 1, "val": 1.0}
+{"i": 977, "pred": "70", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 978, "pred": "12.99", "gold": "12.99", "ok": 1, "val": 1.0}
+{"i": 979, "pred": "18.27", "gold": "18.27", "ok": 1, "val": 1.0}
+{"i": 980, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 981, "pred": "0", "gold": "1", "ok": 0, "val": 0.0}
+{"i": 982, "pred": " gray", "gold": "gray", "ok": 1, "val": 1.0}
+{"i": 983, "pred": "1.09", "gold": "2.72", "ok": 0, "val": 0.0}
+{"i": 984, "pred": "43.9", "gold": "43.9", "ok": 1, "val": 1.0}
+{"i": 985, "pred": "38.8", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 986, "pred": "4", "gold": "5", "ok": 0, "val": 0.0}
+{"i": 987, "pred": "5.6", "gold": "5", "ok": 0, "val": 0.0}
+{"i": 988, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 989, "pred": " Africa", "gold": "Africa", "ok": 1, "val": 1.0}
+{"i": 990, "pred": "13/14", "gold": "18/19", "ok": 0, "val": 0.0}
+{"i": 991, "pred": "991", "gold": "991", "ok": 1, "val": 1.0}
+{"i": 992, "pred": "80.7", "gold": "80.7", "ok": 1, "val": 1.0}
+{"i": 993, "pred": "1.7", "gold": "2", "ok": 0, "val": 0.0}
+{"i": 994, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 995, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 996, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 997, "pred": " Snapchat", "gold": "Snapchat", "ok": 1, "val": 1.0}
+{"i": 998, "pred": " navy blue", "gold": "light blue", "ok": 0, "val": 0.0}
+{"i": 999, "pred": "Cash", "gold": "Cash", "ok": 1, "val": 1.0}
+{"i": 1000, "pred": "66.8", "gold": "66.8", "ok": 1, "val": 1.0}
+{"i": 1001, "pred": "124.4", "gold": "124.4", "ok": 1, "val": 1.0}
+{"i": 1002, "pred": "317", "gold": "317", "ok": 1, "val": 1.0}
+{"i": 1003, "pred": "54", "gold": "54", "ok": 1, "val": 1.0}
+{"i": 1004, "pred": "0.27", "gold": "0.27", "ok": 1, "val": 1.0}
+{"i": 1005, "pred": "0.89", "gold": "0.89", "ok": 1, "val": 1.0}
+{"i": 1006, "pred": "41", "gold": "41", "ok": 1, "val": 1.0}
+{"i": 1007, "pred": "32.67", "gold": "32.66", "ok": 1, "val": 1.0}
+{"i": 1008, "pred": "11.8", "gold": "11.8", "ok": 1, "val": 1.0}
+{"i": 1009, "pred": "50-64 years", "gold": "50-64 years", "ok": 1, "val": 1.0}
+{"i": 1010, "pred": "80", "gold": "80", "ok": 1, "val": 1.0}
+{"i": 1011, "pred": "53", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 1012, "pred": "3280", "gold": "3280", "ok": 1, "val": 1.0}
+{"i": 1013, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 1014, "pred": "Beauty and cosmetics", "gold": "Beauty and cosmetics", "ok": 1, "val": 1.0}
+{"i": 1015, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 1016, "pred": " Binge", "gold": "Binge", "ok": 1, "val": 1.0}
+{"i": 1017, "pred": "9.9", "gold": "9.9", "ok": 1, "val": 1.0}
+{"i": 1018, "pred": "Women", "gold": "Women", "ok": 1, "val": 1.0}
+{"i": 1019, "pred": "I don't discriminate against them, nor do I fear them.", "gold": "I don't discriminate against them, nor do I fear them.", "ok": 1, "val": 1.0}
+{"i": 1020, "pred": "49", "gold": "49", "ok": 1, "val": 1.0}
+{"i": 1021, "pred": "Not worried at all", "gold": "Not worried at all", "ok": 1, "val": 1.0}
+{"i": 1022, "pred": "Blue", "gold": "light blue", "ok": 0, "val": 0.0}
+{"i": 1023, "pred": "Bulimia Nervosa", "gold": "Bulimia Nervosa", "ok": 1, "val": 1.0}
+{"i": 1024, "pred": "Preterm birth complications", "gold": "Preterm birth complications", "ok": 1, "val": 1.0}
+{"i": 1025, "pred": "12", "gold": "12", "ok": 1, "val": 1.0}
+{"i": 1026, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 1027, "pred": "79", "gold": "74", "ok": 0, "val": 0.0}
+{"i": 1028, "pred": "75.6", "gold": "75.6", "ok": 1, "val": 1.0}
+{"i": 1029, "pred": "1.6", "gold": "1.6", "ok": 1, "val": 1.0}
+{"i": 1030, "pred": "4.4", "gold": "4.4", "ok": 1, "val": 1.0}
+{"i": 1031, "pred": "4.1", "gold": "4.2", "ok": 1, "val": 1.0}
+{"i": 1032, "pred": "Hungary", "gold": "Hungary", "ok": 1, "val": 1.0}
+{"i": 1033, "pred": "1.19", "gold": "1.19", "ok": 1, "val": 1.0}
+{"i": 1034, "pred": " Married", "gold": "Married", "ok": 1, "val": 1.0}
+{"i": 1035, "pred": "306", "gold": "306", "ok": 1, "val": 1.0}
+{"i": 1036, "pred": "7000", "gold": "7000", "ok": 1, "val": 1.0}
+{"i": 1037, "pred": "7720", "gold": "7760", "ok": 1, "val": 1.0}
+{"i": 1038, "pred": "Female", "gold": "Female", "ok": 1, "val": 1.0}
+{"i": 1039, "pred": "6.7", "gold": "0.63", "ok": 0, "val": 0.0}
+{"i": 1040, "pred": "100", "gold": "100", "ok": 1, "val": 1.0}
+{"i": 1041, "pred": "Tech", "gold": "Tech", "ok": 1, "val": 1.0}
+{"i": 1042, "pred": "Blue", "gold": "light blue", "ok": 0, "val": 0.0}
+{"i": 1043, "pred": " Professional and related", "gold": "Natural resources, construction, and maintenance", "ok": 0, "val": 0.0}
+{"i": 1044, "pred": "Academic years", "gold": "Year", "ok": 0, "val": 0.0}
+{"i": 1045, "pred": "6", "gold": "7", "ok": 0, "val": 0.0}
+{"i": 1046, "pred": "-3", "gold": "-3", "ok": 1, "val": 1.0}
+{"i": 1047, "pred": "47", "gold": "44", "ok": 0, "val": 0.0}
+{"i": 1048, "pred": "0.1", "gold": "0.1", "ok": 1, "val": 1.0}
+{"i": 1049, "pred": "0", "gold": "0.05", "ok": 0, "val": 0.0}
+{"i": 1050, "pred": " France", "gold": "France", "ok": 1, "val": 1.0}
+{"i": 1051, "pred": "France", "gold": "France", "ok": 1, "val": 1.0}
+{"i": 1052, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 1053, "pred": "In this context, the appropriate behavior", "gold": "They are downplaying the situation", "ok": 0, "val": 0.0}
+{"i": 1054, "pred": "Search ad clicks", "gold": "Navy blue", "ok": 0, "val": 0.0}
+{"i": 1055, "pred": "110", "gold": "110", "ok": 1, "val": 1.0}
+{"i": 1056, "pred": "November 2007", "gold": "November 2007", "ok": 1, "val": 1.0}
+{"i": 1057, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 1058, "pred": " Navy blue", "gold": "Dark blue", "ok": 0, "val": 0.0}
+{"i": 1059, "pred": "Total Millennials (ages 18-33)", "gold": "Total Millennials (ages 18-33)", "ok": 1, "val": 1.0}
+{"i": 1060, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 1061, "pred": "24.8", "gold": "24.75", "ok": 1, "val": 1.0}
+{"i": 1062, "pred": "No", "gold": "Yes", "ok": 0, "val": 0.0}
+{"i": 1063, "pred": "35.2", "gold": "35.2", "ok": 1, "val": 1.0}
+{"i": 1064, "pred": "Very confident", "gold": "Very confident", "ok": 1, "val": 1.0}
+{"i": 1065, "pred": "28", "gold": "98", "ok": 0, "val": 0.0}
+{"i": 1066, "pred": "Girls grade 10", "gold": "Girls grade 10", "ok": 1, "val": 1.0}
+{"i": 1067, "pred": "29.33", "gold": "30.33", "ok": 1, "val": 1.0}
+{"i": 1068, "pred": "9", "gold": "9", "ok": 1, "val": 1.0}
+{"i": 1069, "pred": "1", "gold": "4", "ok": 0, "val": 0.0}
+{"i": 1070, "pred": " Private nonprofit institution", "gold": "Private nonprofit institution", "ok": 1, "val": 1.0}
+{"i": 1071, "pred": " Public institutions", "gold": "Public institutions", "ok": 1, "val": 1.0}
+{"i": 1072, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 1073, "pred": "80", "gold": "80", "ok": 1, "val": 1.0}
+{"i": 1074, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 1075, "pred": "75.68", "gold": "75", "ok": 1, "val": 1.0}
+{"i": 1076, "pred": "More likely", "gold": "More likely", "ok": 1, "val": 1.0}
+{"i": 1077, "pred": "58", "gold": "46", "ok": 0, "val": 0.0}
+{"i": 1078, "pred": "113", "gold": "113", "ok": 1, "val": 1.0}
+{"i": 1079, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 1080, "pred": "Gray", "gold": "gray", "ok": 1, "val": 1.0}
+{"i": 1081, "pred": "15.34", "gold": "100", "ok": 0, "val": 0.0}
+{"i": 1082, "pred": "Service", "gold": "Service", "ok": 1, "val": 1.0}
+{"i": 1083, "pred": "0.1804", "gold": "5.546", "ok": 0, "val": 0.0}
+{"i": 1084, "pred": " No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 1085, "pred": "0.995", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 1086, "pred": "131", "gold": "131", "ok": 1, "val": 1.0}
+{"i": 1087, "pred": "273", "gold": "273", "ok": 1, "val": 1.0}
+{"i": 1088, "pred": "1513", "gold": "2112", "ok": 0, "val": 0.0}
+{"i": 1089, "pred": "5918", "gold": "5564", "ok": 0, "val": 0.0}
+{"i": 1090, "pred": "2021", "gold": "2021", "ok": 1, "val": 1.0}
+{"i": 1091, "pred": "216", "gold": "216", "ok": 1, "val": 1.0}
+{"i": 1092, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 1093, "pred": "6", "gold": "7", "ok": 0, "val": 0.0}
+{"i": 1094, "pred": "41", "gold": "41", "ok": 1, "val": 1.0}
+{"i": 1095, "pred": " Africa", "gold": "Africa", "ok": 1, "val": 1.0}
+{"i": 1096, "pred": "Eastern Europe", "gold": "Eastern Europe", "ok": 1, "val": 1.0}
+{"i": 1097, "pred": "Eastern Europe", "gold": "Eastern Europe", "ok": 1, "val": 1.0}
+{"i": 1098, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 1099, "pred": " Services", "gold": "Services", "ok": 1, "val": 1.0}
+{"i": 1100, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 1101, "pred": "67", "gold": "67", "ok": 1, "val": 1.0}
+{"i": 1102, "pred": "59.66", "gold": "59.66", "ok": 1, "val": 1.0}
+{"i": 1103, "pred": "52.61", "gold": "53.23", "ok": 1, "val": 1.0}
+{"i": 1104, "pred": "49", "gold": "49", "ok": 1, "val": 1.0}
+{"i": 1105, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 1106, "pred": " Netflix", "gold": "Netflix", "ok": 1, "val": 1.0}
+{"i": 1107, "pred": "9.2", "gold": "9.2", "ok": 1, "val": 1.0}
+{"i": 1108, "pred": "Female", "gold": "Female", "ok": 1, "val": 1.0}
+{"i": 1109, "pred": "7", "gold": "7", "ok": 1, "val": 1.0}
+{"i": 1110, "pred": "2018", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 1111, "pred": "2.28", "gold": "1.98", "ok": 0, "val": 0.0}
+{"i": 1112, "pred": "2015", "gold": "[2015, 2016]", "ok": 1, "val": 1.0}
+{"i": 1113, "pred": "40.16", "gold": "39.9", "ok": 1, "val": 1.0}
+{"i": 1114, "pred": "Rabbit", "gold": "Rabbit**", "ok": 1, "val": 1.0}
+{"i": 1115, "pred": "250", "gold": "250", "ok": 1, "val": 1.0}
+{"i": 1116, "pred": "1065731", "gold": "1065731", "ok": 1, "val": 1.0}
+{"i": 1117, "pred": "985468", "gold": "985468", "ok": 1, "val": 1.0}
+{"i": 1118, "pred": "Licensing and other", "gold": "Licensing and other", "ok": 1, "val": 1.0}
+{"i": 1119, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 1120, "pred": "Overall quality of life", "gold": "Overall quality of life", "ok": 1, "val": 1.0}
+{"i": 1121, "pred": "Influence of organized religion", "gold": "Opportunity to get ahead through hard work", "ok": 0, "val": 0.0}
+{"i": 1122, "pred": " Business owners", "gold": "Russia", "ok": 0, "val": 0.0}
+{"i": 1123, "pred": "11:20:26", "gold": "0.55", "ok": 0, "val": 0.0}
+{"i": 1124, "pred": "7", "gold": "7", "ok": 1, "val": 1.0}
+{"i": 1125, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 1126, "pred": " Metro / small bus*", "gold": "Metro / small bus*", "ok": 1, "val": 1.0}
+{"i": 1127, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 1128, "pred": "42.1", "gold": "42.1", "ok": 1, "val": 1.0}
+{"i": 1129, "pred": "4", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 1130, "pred": "37", "gold": "37", "ok": 1, "val": 1.0}
+{"i": 1131, "pred": "1.702702703", "gold": "1.702702703", "ok": 1, "val": 1.0}
+{"i": 1132, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 1133, "pred": "2", "gold": "3", "ok": 0, "val": 0.0}
+{"i": 1134, "pred": "Rest of the Gulf Cooperation Council", "gold": "Rest of the Gulf Cooperation Council", "ok": 1, "val": 1.0}
+{"i": 1135, "pred": "51.1", "gold": "51.1", "ok": 1, "val": 1.0}
+{"i": 1136, "pred": "35 to 44", "gold": "35 to 44", "ok": 1, "val": 1.0}
+{"i": 1137, "pred": "14", "gold": "14", "ok": 1, "val": 1.0}
+{"i": 1138, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 1139, "pred": "No, but I plan to soon", "gold": "No, but I plan to soon", "ok": 1, "val": 1.0}
+{"i": 1140, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 1141, "pred": "67.6", "gold": "70.8", "ok": 1, "val": 1.0}
+{"i": 1142, "pred": "1.585041152", "gold": "1.577", "ok": 1, "val": 1.0}
+{"i": 1143, "pred": "61.2", "gold": "61.2", "ok": 1, "val": 1.0}
+{"i": 1144, "pred": "2009", "gold": "2001", "ok": 1, "val": 1.0}
+{"i": 1145, "pred": "348", "gold": "585", "ok": 0, "val": 0.0}
+{"i": 1146, "pred": " navy blue", "gold": "Navy blue", "ok": 1, "val": 1.0}
+{"i": 1147, "pred": "Yes, almost all of them are corrupt", "gold": "Yes, almost all of them are corrupt", "ok": 1, "val": 1.0}
+{"i": 1148, "pred": "Professional conferences", "gold": "Professional conferences", "ok": 1, "val": 1.0}
+{"i": 1149, "pred": "41", "gold": "42", "ok": 1, "val": 1.0}
+{"i": 1150, "pred": "10", "gold": "10", "ok": 1, "val": 1.0}
+{"i": 1151, "pred": "18", "gold": "18", "ok": 1, "val": 1.0}
+{"i": 1152, "pred": "4", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 1153, "pred": "33", "gold": "33", "ok": 1, "val": 1.0}
+{"i": 1154, "pred": "2", "gold": "2", "ok": 1, "val": 1.0}
+{"i": 1155, "pred": "2.625", "gold": "2.625", "ok": 1, "val": 1.0}
+{"i": 1156, "pred": "No", "gold": "No", "ok": 1, "val": 1.0}
+{"i": 1157, "pred": "6.86", "gold": "74.6", "ok": 0, "val": 0.0}
+{"i": 1158, "pred": "7", "gold": "7", "ok": 1, "val": 1.0}
+{"i": 1159, "pred": "68", "gold": "68", "ok": 1, "val": 1.0}
+{"i": 1160, "pred": "685", "gold": "685", "ok": 1, "val": 1.0}
+{"i": 1161, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 1162, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 1163, "pred": "38.3", "gold": "34.98", "ok": 0, "val": 0.0}
+{"i": 1164, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 1165, "pred": "3", "gold": "3", "ok": 1, "val": 1.0}
+{"i": 1166, "pred": " California", "gold": "California", "ok": 1, "val": 1.0}
+{"i": 1167, "pred": "184238", "gold": "187863.67", "ok": 1, "val": 1.0}
+{"i": 1168, "pred": "Green", "gold": "green", "ok": 1, "val": 1.0}
+{"i": 1169, "pred": "Fox", "gold": "Fox", "ok": 1, "val": 1.0}
+{"i": 1170, "pred": "1.76", "gold": "-30.03", "ok": 0, "val": 0.0}
+{"i": 1171, "pred": "36.28", "gold": "36.28", "ok": 1, "val": 1.0}
+{"i": 1172, "pred": "1433.75", "gold": "1343.75", "ok": 0, "val": 0.0}
+{"i": 1173, "pred": "2019", "gold": "2000", "ok": 1, "val": 1.0}
+{"i": 1174, "pred": "Barclays", "gold": "Barclays", "ok": 1, "val": 1.0}
+{"i": 1175, "pred": "15", "gold": "35", "ok": 0, "val": 0.0}
+{"i": 1176, "pred": "63", "gold": "63", "ok": 1, "val": 1.0}
+{"i": 1177, "pred": " Tablets", "gold": "Tablets", "ok": 1, "val": 1.0}
+{"i": 1178, "pred": "43.4", "gold": "43.4", "ok": 1, "val": 1.0}
+{"i": 1179, "pred": " Casual consumers", "gold": "[Casual consumers**, Non-consumers]", "ok": 0, "val": 0.0}
+{"i": 1180, "pred": "13", "gold": "13", "ok": 1, "val": 1.0}
+{"i": 1181, "pred": "10.56", "gold": "10.57", "ok": 1, "val": 1.0}
+{"i": 1182, "pred": "31.01", "gold": "31.01", "ok": 1, "val": 1.0}
+{"i": 1183, "pred": "9.65", "gold": "9.66", "ok": 1, "val": 1.0}
+{"i": 1184, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 1185, "pred": "23", "gold": "23", "ok": 1, "val": 1.0}
+{"i": 1186, "pred": "56", "gold": "56", "ok": 1, "val": 1.0}
+{"i": 1187, "pred": "6", "gold": "6", "ok": 1, "val": 1.0}
+{"i": 1188, "pred": "12", "gold": "12", "ok": 1, "val": 1.0}
+{"i": 1189, "pred": "54", "gold": "54", "ok": 1, "val": 1.0}
+{"i": 1190, "pred": "Leave", "gold": "Leave", "ok": 1, "val": 1.0}
+{"i": 1191, "pred": "56", "gold": "56", "ok": 1, "val": 1.0}
+{"i": 1192, "pred": "Online shoppers", "gold": "Facebook users", "ok": 0, "val": 0.0}
+{"i": 1193, "pred": "Facebook users", "gold": "Online shoppers", "ok": 0, "val": 0.0}
+{"i": 1194, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 1195, "pred": "5.1", "gold": "4.9", "ok": 1, "val": 1.0}
+{"i": 1196, "pred": "Asians", "gold": "Asians", "ok": 1, "val": 1.0}
+{"i": 1197, "pred": "104", "gold": "104", "ok": 1, "val": 1.0}
+{"i": 1198, "pred": "PDF", "gold": "PDF", "ok": 1, "val": 1.0}
+{"i": 1199, "pred": "85.55", "gold": "85.55", "ok": 1, "val": 1.0}
+{"i": 1200, "pred": "23", "gold": "23", "ok": 1, "val": 1.0}
+{"i": 1201, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 1202, "pred": "48.25", "gold": "48.25", "ok": 1, "val": 1.0}
+{"i": 1203, "pred": "[42.47, 54.91]", "gold": "[42.47, 54.91]", "ok": 1, "val": 1.0}
+{"i": 1204, "pred": "32.03", "gold": "32.03", "ok": 1, "val": 1.0}
+{"i": 1205, "pred": "35.94", "gold": "35.94", "ok": 1, "val": 1.0}
+{"i": 1206, "pred": "3", "gold": "2", "ok": 0, "val": 0.0}
+{"i": 1207, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 1208, "pred": "10901", "gold": "10901", "ok": 1, "val": 1.0}
+{"i": 1209, "pred": "5859", "gold": "5864", "ok": 1, "val": 1.0}
+{"i": 1210, "pred": "6.6 - 10.5 years", "gold": "6.6 - 10.5 years", "ok": 1, "val": 1.0}
+{"i": 1211, "pred": "399075", "gold": "399075", "ok": 1, "val": 1.0}
+{"i": 1212, "pred": "Other medical device", "gold": "Other medical device", "ok": 1, "val": 1.0}
+{"i": 1213, "pred": "62", "gold": "62", "ok": 1, "val": 1.0}
+{"i": 1214, "pred": "Blue", "gold": "blue", "ok": 1, "val": 1.0}
+{"i": 1215, "pred": "1.6", "gold": "2.7", "ok": 0, "val": 0.0}
+{"i": 1216, "pred": "Helps me identify trending products", "gold": "Helps me identify trending products", "ok": 1, "val": 1.0}
+{"i": 1217, "pred": "30.83", "gold": "29.33", "ok": 0, "val": 0.0}
+{"i": 1218, "pred": "Same", "gold": "Same", "ok": 1, "val": 1.0}
+{"i": 1219, "pred": "46", "gold": "46", "ok": 1, "val": 1.0}
+{"i": 1220, "pred": "11.8", "gold": "11.8", "ok": 1, "val": 1.0}
+{"i": 1221, "pred": "5.2", "gold": "5.2", "ok": 1, "val": 1.0}
+{"i": 1222, "pred": " Europe", "gold": "Europe", "ok": 1, "val": 1.0}
+{"i": 1223, "pred": "Yes", "gold": "Yes", "ok": 1, "val": 1.0}
+{"i": 1224, "pred": "61 years and older", "gold": "61 years and older", "ok": 1, "val": 1.0}
+{"i": 1225, "pred": "32", "gold": "32", "ok": 1, "val": 1.0}
+{"i": 1226, "pred": "40-59 years", "gold": "40-59 years", "ok": 1, "val": 1.0}
+{"i": 1227, "pred": "0.6", "gold": "0.6", "ok": 1, "val": 1.0}
+{"i": 1228, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 1229, "pred": "46", "gold": "46", "ok": 1, "val": 1.0}
+{"i": 1230, "pred": "Chinese", "gold": "Chinese", "ok": 1, "val": 1.0}
+{"i": 1231, "pred": "12.03", "gold": "12.03", "ok": 1, "val": 1.0}
+{"i": 1232, "pred": " Mobile", "gold": "Mobile", "ok": 1, "val": 1.0}
+{"i": 1233, "pred": "2.315789474", "gold": "2.315", "ok": 1, "val": 1.0}
+{"i": 1234, "pred": "Compatibility", "gold": "Very concerned", "ok": 0, "val": 0.0}
+{"i": 1235, "pred": "101", "gold": "101", "ok": 1, "val": 1.0}
+{"i": 1236, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 1237, "pred": "4.0", "gold": "4", "ok": 1, "val": 1.0}
+{"i": 1238, "pred": " Rx eyeglasses", "gold": "Rx eyeglasses", "ok": 1, "val": 1.0}
+{"i": 1239, "pred": "17.6", "gold": "17.6", "ok": 1, "val": 1.0}
+{"i": 1240, "pred": "Female", "gold": "Female", "ok": 1, "val": 1.0}
+{"i": 1241, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 1242, "pred": "philippines", "gold": "Philippines", "ok": 1, "val": 1.0}
+{"i": 1243, "pred": "51.14", "gold": "51.14", "ok": 1, "val": 1.0}
+{"i": 1244, "pred": "68", "gold": "68", "ok": 1, "val": 1.0}
+{"i": 1245, "pred": "74.6", "gold": "74.6", "ok": 1, "val": 1.0}
+{"i": 1246, "pred": "2-10 times a day", "gold": "2-10 times a day", "ok": 1, "val": 1.0}
+{"i": 1247, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 1248, "pred": "2013", "gold": "2013", "ok": 1, "val": 1.0}
+{"i": 1249, "pred": "59.33", "gold": "56", "ok": 0, "val": 0.0}
+{"i": 1250, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 1251, "pred": "2013", "gold": "2013", "ok": 1, "val": 1.0}
+{"i": 1252, "pred": "6.8", "gold": "6.8", "ok": 1, "val": 1.0}
+{"i": 1253, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 1254, "pred": "36", "gold": "36", "ok": 1, "val": 1.0}
+{"i": 1255, "pred": "28", "gold": "23", "ok": 0, "val": 0.0}
+{"i": 1256, "pred": "63", "gold": "63", "ok": 1, "val": 1.0}
+{"i": 1257, "pred": "2020", "gold": "2011", "ok": 1, "val": 1.0}
+{"i": 1258, "pred": "80.2", "gold": "80.2", "ok": 1, "val": 1.0}
+{"i": 1259, "pred": "72.3", "gold": "72.3", "ok": 1, "val": 1.0}
+{"i": 1260, "pred": " Ted Baker", "gold": "Ted Baker", "ok": 1, "val": 1.0}
+{"i": 1261, "pred": "74", "gold": "74", "ok": 1, "val": 1.0}
+{"i": 1262, "pred": "50", "gold": "32", "ok": 0, "val": 0.0}
+{"i": 1263, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 1264, "pred": "5G", "gold": "5G", "ok": 1, "val": 1.0}
+{"i": 1265, "pred": "555", "gold": "555", "ok": 1, "val": 1.0}
+{"i": 1266, "pred": "524", "gold": "524", "ok": 1, "val": 1.0}
+{"i": 1267, "pred": "633", "gold": "633", "ok": 1, "val": 1.0}
+{"i": 1268, "pred": "120", "gold": "120", "ok": 1, "val": 1.0}
+{"i": 1269, "pred": "2.5", "gold": "2.5", "ok": 1, "val": 1.0}
+{"i": 1270, "pred": "317", "gold": "317", "ok": 1, "val": 1.0}
+{"i": 1271, "pred": "Jimmy Fallon", "gold": "Jimmy Fallon", "ok": 1, "val": 1.0}
+{"i": 1272, "pred": "315", "gold": "315", "ok": 1, "val": 1.0}
+{"i": 1273, "pred": "315", "gold": "361", "ok": 0, "val": 0.0}
+{"i": 1274, "pred": " Germany", "gold": "Germany", "ok": 1, "val": 1.0}
+{"i": 1275, "pred": " Lam Research", "gold": "ASML", "ok": 0, "val": 0.0}
+{"i": 1276, "pred": "144", "gold": "144", "ok": 1, "val": 1.0}
+{"i": 1277, "pred": "WhatsApp", "gold": "WhatsApp", "ok": 1, "val": 1.0}
+{"i": 1278, "pred": "2000", "gold": "2000", "ok": 1, "val": 1.0}
+{"i": 1279, "pred": "Crafts", "gold": "Crafts", "ok": 1, "val": 1.0}
+{"i": 1280, "pred": "1999", "gold": "1921", "ok": 1, "val": 1.0}
+{"i": 1281, "pred": "9.3", "gold": "9.3", "ok": 1, "val": 1.0}
+{"i": 1282, "pred": "6.6", "gold": "6.6", "ok": 1, "val": 1.0}
+{"i": 1283, "pred": "2000", "gold": "2000", "ok": 1, "val": 1.0}
+{"i": 1284, "pred": " Alaska", "gold": "Alaska", "ok": 1, "val": 1.0}
+{"i": 1285, "pred": "151.25", "gold": "151.25", "ok": 1, "val": 1.0}
+{"i": 1286, "pred": " Tizen", "gold": "Tizen", "ok": 1, "val": 1.0}
+{"i": 1287, "pred": "270", "gold": "270", "ok": 1, "val": 1.0}
+{"i": 1288, "pred": " Moschino", "gold": "Moschino", "ok": 1, "val": 1.0}
+{"i": 1289, "pred": "38", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 1290, "pred": "827", "gold": "827", "ok": 1, "val": 1.0}
+{"i": 1291, "pred": "1.86", "gold": "1.86", "ok": 1, "val": 1.0}
+{"i": 1292, "pred": " LinkedIn", "gold": "LinkedIn", "ok": 1, "val": 1.0}
+{"i": 1293, "pred": "36.9", "gold": "36.9", "ok": 1, "val": 1.0}
+{"i": 1294, "pred": "27.7", "gold": "27.7", "ok": 1, "val": 1.0}
+{"i": 1295, "pred": "1.38", "gold": "1.38", "ok": 1, "val": 1.0}
+{"i": 1296, "pred": "Mercadona", "gold": "Mercadona", "ok": 1, "val": 1.0}
+{"i": 1297, "pred": "Carrefour", "gold": "Carrefour", "ok": 1, "val": 1.0}
+{"i": 1298, "pred": "Lidl", "gold": "Lidl", "ok": 1, "val": 1.0}
+{"i": 1299, "pred": " Australia", "gold": "France", "ok": 0, "val": 0.0}
+{"i": 1300, "pred": "1.33", "gold": "1.33", "ok": 1, "val": 1.0}
+{"i": 1301, "pred": "1.18", "gold": "1.18", "ok": 1, "val": 1.0}
+{"i": 1302, "pred": "2008", "gold": "2008", "ok": 1, "val": 1.0}
+{"i": 1303, "pred": "0.5", "gold": "0.5", "ok": 1, "val": 1.0}
+{"i": 1304, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 1305, "pred": "70", "gold": "70", "ok": 1, "val": 1.0}
+{"i": 1306, "pred": " Brazil", "gold": "Brazil", "ok": 1, "val": 1.0}
+{"i": 1307, "pred": "5.99", "gold": "5.99", "ok": 1, "val": 1.0}
+{"i": 1308, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 1309, "pred": "16", "gold": "16", "ok": 1, "val": 1.0}
+{"i": 1310, "pred": "55.88", "gold": "55.88", "ok": 1, "val": 1.0}
+{"i": 1311, "pred": "29", "gold": "29", "ok": 1, "val": 1.0}
+{"i": 1312, "pred": "31846", "gold": "31846", "ok": 1, "val": 1.0}
+{"i": 1313, "pred": "74.4", "gold": "74.4", "ok": 1, "val": 1.0}
+{"i": 1314, "pred": "26", "gold": "26", "ok": 1, "val": 1.0}
+{"i": 1315, "pred": "5230", "gold": "5230", "ok": 1, "val": 1.0}
+{"i": 1316, "pred": "14766", "gold": "14766", "ok": 1, "val": 1.0}
+{"i": 1317, "pred": "44.5", "gold": "44.5", "ok": 1, "val": 1.0}
+{"i": 1318, "pred": "74.82", "gold": "74.82", "ok": 1, "val": 1.0}
+{"i": 1319, "pred": "26", "gold": "26", "ok": 1, "val": 1.0}
+{"i": 1320, "pred": "15.7", "gold": "15.7", "ok": 1, "val": 1.0}
+{"i": 1321, "pred": "27.23", "gold": "27.23", "ok": 1, "val": 1.0}
+{"i": 1322, "pred": "451176.9", "gold": "451176.9", "ok": 1, "val": 1.0}
+{"i": 1323, "pred": "375967.8", "gold": "375967.8", "ok": 1, "val": 1.0}
+{"i": 1324, "pred": "9.38", "gold": "9.38", "ok": 1, "val": 1.0}
+{"i": 1325, "pred": "126.38", "gold": "126.38", "ok": 1, "val": 1.0}
+{"i": 1326, "pred": "57.05", "gold": "57.05", "ok": 1, "val": 1.0}
+{"i": 1327, "pred": "87.21", "gold": "87.25", "ok": 1, "val": 1.0}
+{"i": 1328, "pred": "40.1", "gold": "40.13", "ok": 1, "val": 1.0}
+{"i": 1329, "pred": "25.9", "gold": "25.9", "ok": 1, "val": 1.0}
+{"i": 1330, "pred": "56.3", "gold": "56.3", "ok": 1, "val": 1.0}
+{"i": 1331, "pred": "54", "gold": "54", "ok": 1, "val": 1.0}
+{"i": 1332, "pred": "987.75", "gold": "987.75", "ok": 1, "val": 1.0}
+{"i": 1333, "pred": "11.4", "gold": "11.4", "ok": 1, "val": 1.0}
+{"i": 1334, "pred": "1.93", "gold": "1.92", "ok": 1, "val": 1.0}
+{"i": 1335, "pred": "1625942", "gold": "1625942", "ok": 1, "val": 1.0}
+{"i": 1336, "pred": "48", "gold": "48", "ok": 1, "val": 1.0}
+{"i": 1337, "pred": "40", "gold": "40", "ok": 1, "val": 1.0}
+{"i": 1338, "pred": "15017", "gold": "15017", "ok": 1, "val": 1.0}
+{"i": 1339, "pred": "51.9", "gold": "51.9", "ok": 1, "val": 1.0}
+{"i": 1340, "pred": "3922", "gold": "3922", "ok": 1, "val": 1.0}
+{"i": 1341, "pred": "3613", "gold": "3613", "ok": 1, "val": 1.0}
+{"i": 1342, "pred": "16", "gold": "16", "ok": 1, "val": 1.0}
+{"i": 1343, "pred": "428.08", "gold": "428.08", "ok": 1, "val": 1.0}
+{"i": 1344, "pred": "6750", "gold": "6750", "ok": 1, "val": 1.0}
+{"i": 1345, "pred": "37", "gold": "37", "ok": 1, "val": 1.0}
+{"i": 1346, "pred": "4.1", "gold": "4.1", "ok": 1, "val": 1.0}
+{"i": 1347, "pred": "52.3", "gold": "52.3", "ok": 1, "val": 1.0}
+{"i": 1348, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 1349, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 1350, "pred": "12.17", "gold": "12.17", "ok": 1, "val": 1.0}
+{"i": 1351, "pred": "509473", "gold": "509473", "ok": 1, "val": 1.0}
+{"i": 1352, "pred": "519462", "gold": "519462", "ok": 1, "val": 1.0}
+{"i": 1353, "pred": "604.4", "gold": "604.4", "ok": 1, "val": 1.0}
+{"i": 1354, "pred": "55937", "gold": "55937", "ok": 1, "val": 1.0}
+{"i": 1355, "pred": "37392", "gold": "37392", "ok": 1, "val": 1.0}
+{"i": 1356, "pred": "6.9", "gold": "6.9", "ok": 1, "val": 1.0}
+{"i": 1357, "pred": "3.5", "gold": "3.5", "ok": 1, "val": 1.0}
+{"i": 1358, "pred": "21.43", "gold": "21.43", "ok": 1, "val": 1.0}
+{"i": 1359, "pred": "21.43", "gold": "21.43", "ok": 1, "val": 1.0}
+{"i": 1360, "pred": "21", "gold": "25", "ok": 0, "val": 0.0}
+{"i": 1361, "pred": "17.2", "gold": "17.2", "ok": 1, "val": 1.0}
+{"i": 1362, "pred": "83", "gold": "83", "ok": 1, "val": 1.0}
+{"i": 1363, "pred": "24", "gold": "24", "ok": 1, "val": 1.0}
+{"i": 1364, "pred": "37", "gold": "37", "ok": 1, "val": 1.0}
+{"i": 1365, "pred": "12721", "gold": "12721", "ok": 1, "val": 1.0}
+{"i": 1366, "pred": "108.91", "gold": "108.91", "ok": 1, "val": 1.0}
+{"i": 1367, "pred": "883", "gold": "883", "ok": 1, "val": 1.0}
+{"i": 1368, "pred": "22", "gold": "22", "ok": 1, "val": 1.0}
+{"i": 1369, "pred": "23", "gold": "23", "ok": 1, "val": 1.0}
+{"i": 1370, "pred": "0.1", "gold": "0.1", "ok": 1, "val": 1.0}
+{"i": 1371, "pred": "1.3", "gold": "1.3", "ok": 1, "val": 1.0}
+{"i": 1372, "pred": "35283", "gold": "35283", "ok": 1, "val": 1.0}
+{"i": 1373, "pred": "5.8", "gold": "5.8", "ok": 1, "val": 1.0}
+{"i": 1374, "pred": "5.9", "gold": "5.9", "ok": 1, "val": 1.0}
+{"i": 1375, "pred": "24", "gold": "24", "ok": 1, "val": 1.0}
+{"i": 1376, "pred": "47", "gold": "47", "ok": 1, "val": 1.0}
+{"i": 1377, "pred": "4.5", "gold": "4.5", "ok": 1, "val": 1.0}
+{"i": 1378, "pred": "4.7", "gold": "4.7", "ok": 1, "val": 1.0}
+{"i": 1379, "pred": "1.2", "gold": "1.2", "ok": 1, "val": 1.0}
+{"i": 1380, "pred": "105.4", "gold": "105.4", "ok": 1, "val": 1.0}
+{"i": 1381, "pred": "113702", "gold": "113702", "ok": 1, "val": 1.0}
+{"i": 1382, "pred": "8.4", "gold": "8.4", "ok": 1, "val": 1.0}
+{"i": 1383, "pred": "1.18", "gold": "1.18", "ok": 1, "val": 1.0}
+{"i": 1384, "pred": "257455", "gold": "257455", "ok": 1, "val": 1.0}
+{"i": 1385, "pred": "3.49", "gold": "3.49", "ok": 1, "val": 1.0}
+{"i": 1386, "pred": "19", "gold": "19", "ok": 1, "val": 1.0}
+{"i": 1387, "pred": "7.68", "gold": "7.68", "ok": 1, "val": 1.0}
+{"i": 1388, "pred": "1.14", "gold": "1.14", "ok": 1, "val": 1.0}
+{"i": 1389, "pred": "114.7", "gold": "114.7", "ok": 1, "val": 1.0}
+{"i": 1390, "pred": "Marlboro", "gold": "Newport", "ok": 0, "val": 0.0}
+{"i": 1391, "pred": "8.8", "gold": "8.8", "ok": 1, "val": 1.0}
+{"i": 1392, "pred": "5.4", "gold": "5.4", "ok": 1, "val": 1.0}
+{"i": 1393, "pred": "15.6", "gold": "15.61", "ok": 1, "val": 1.0}
+{"i": 1394, "pred": "0.98", "gold": "0.98", "ok": 1, "val": 1.0}
+{"i": 1395, "pred": "646.43", "gold": "646.43", "ok": 1, "val": 1.0}
+{"i": 1396, "pred": "6.4", "gold": "6.4", "ok": 1, "val": 1.0}
+{"i": 1397, "pred": "6.4", "gold": "6.4", "ok": 1, "val": 1.0}
+{"i": 1398, "pred": "3.6", "gold": "3.6", "ok": 1, "val": 1.0}
+{"i": 1399, "pred": " Colombia", "gold": "Colombia", "ok": 1, "val": 1.0}
+{"i": 1400, "pred": "6607", "gold": "6607", "ok": 1, "val": 1.0}
+{"i": 1401, "pred": "25101", "gold": "25101", "ok": 1, "val": 1.0}
+{"i": 1402, "pred": "17.3", "gold": "17.3", "ok": 1, "val": 1.0}
+{"i": 1403, "pred": "39.2", "gold": "39.2", "ok": 1, "val": 1.0}
+{"i": 1404, "pred": "85.1", "gold": "85.1", "ok": 1, "val": 1.0}
+{"i": 1405, "pred": "52.45", "gold": "52.45", "ok": 1, "val": 1.0}
+{"i": 1406, "pred": "11277", "gold": "11277", "ok": 1, "val": 1.0}
+{"i": 1407, "pred": "716883", "gold": "716883", "ok": 1, "val": 1.0}
+{"i": 1408, "pred": "582", "gold": "582", "ok": 1, "val": 1.0}
+{"i": 1409, "pred": "478", "gold": "478", "ok": 1, "val": 1.0}
+{"i": 1410, "pred": "47438", "gold": "47438", "ok": 1, "val": 1.0}
+{"i": 1411, "pred": "Facebook", "gold": "Facebook", "ok": 1, "val": 1.0}
+{"i": 1412, "pred": "35", "gold": "35", "ok": 1, "val": 1.0}
+{"i": 1413, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 1414, "pred": "1.73", "gold": "1.73", "ok": 1, "val": 1.0}
+{"i": 1415, "pred": "6.92", "gold": "6.92", "ok": 1, "val": 1.0}
+{"i": 1416, "pred": "22920", "gold": "22920", "ok": 1, "val": 1.0}
+{"i": 1417, "pred": "31731", "gold": "31731", "ok": 1, "val": 1.0}
+{"i": 1418, "pred": "29", "gold": "29", "ok": 1, "val": 1.0}
+{"i": 1419, "pred": "30.27", "gold": "30.27", "ok": 1, "val": 1.0}
+{"i": 1420, "pred": "6.13", "gold": "6.13", "ok": 1, "val": 1.0}
+{"i": 1421, "pred": "6.99", "gold": "6.99", "ok": 1, "val": 1.0}
+{"i": 1422, "pred": " Germany", "gold": "Germany", "ok": 1, "val": 1.0}
+{"i": 1423, "pred": "51", "gold": "51", "ok": 1, "val": 1.0}
+{"i": 1424, "pred": "30.22", "gold": "30.22", "ok": 1, "val": 1.0}
+{"i": 1425, "pred": "17715", "gold": "17715", "ok": 1, "val": 1.0}
+{"i": 1426, "pred": "41.1", "gold": "41.1", "ok": 1, "val": 1.0}
+{"i": 1427, "pred": "1980", "gold": "1980", "ok": 1, "val": 1.0}
+{"i": 1428, "pred": "850", "gold": "850", "ok": 1, "val": 1.0}
+{"i": 1429, "pred": "20616", "gold": "20616", "ok": 1, "val": 1.0}
+{"i": 1430, "pred": "314.02", "gold": "320.66", "ok": 1, "val": 1.0}
+{"i": 1431, "pred": "320.07", "gold": "320.66", "ok": 1, "val": 1.0}
+{"i": 1432, "pred": "11.97", "gold": "11.97", "ok": 1, "val": 1.0}
+{"i": 1433, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 1434, "pred": "24", "gold": "24", "ok": 1, "val": 1.0}
+{"i": 1435, "pred": "UniCredit", "gold": "UniCredit", "ok": 1, "val": 1.0}
+{"i": 1436, "pred": "35075.9", "gold": "35075.9", "ok": 1, "val": 1.0}
+{"i": 1437, "pred": "220", "gold": "220", "ok": 1, "val": 1.0}
+{"i": 1438, "pred": "Brazil", "gold": "Brazil", "ok": 1, "val": 1.0}
+{"i": 1439, "pred": "17.6", "gold": "17.6", "ok": 1, "val": 1.0}
+{"i": 1440, "pred": "2.2", "gold": "2.2", "ok": 1, "val": 1.0}
+{"i": 1441, "pred": " Netherlands", "gold": "Netherlands", "ok": 1, "val": 1.0}
+{"i": 1442, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 1443, "pred": "9.96", "gold": "9.96", "ok": 1, "val": 1.0}
+{"i": 1444, "pred": "4.9", "gold": "4.9", "ok": 1, "val": 1.0}
+{"i": 1445, "pred": "Eagle Ford", "gold": "Eagle Ford", "ok": 1, "val": 1.0}
+{"i": 1446, "pred": "232", "gold": "232", "ok": 1, "val": 1.0}
+{"i": 1447, "pred": "3000", "gold": "2994.52", "ok": 1, "val": 1.0}
+{"i": 1448, "pred": "2.31", "gold": "3.4", "ok": 0, "val": 0.0}
+{"i": 1449, "pred": "14.84", "gold": "14.84", "ok": 1, "val": 1.0}
+{"i": 1450, "pred": "100.58", "gold": "100.6", "ok": 1, "val": 1.0}
+{"i": 1451, "pred": "6.7", "gold": "6.7", "ok": 1, "val": 1.0}
+{"i": 1452, "pred": "7.3", "gold": "7.3", "ok": 1, "val": 1.0}
+{"i": 1453, "pred": "36.11", "gold": "36.11", "ok": 1, "val": 1.0}
+{"i": 1454, "pred": "2574", "gold": "2601", "ok": 1, "val": 1.0}
+{"i": 1455, "pred": "3.2", "gold": "3.2", "ok": 1, "val": 1.0}
+{"i": 1456, "pred": "8.3", "gold": "8.3", "ok": 1, "val": 1.0}
+{"i": 1457, "pred": "6.3", "gold": "6.3", "ok": 1, "val": 1.0}
+{"i": 1458, "pred": "8.3", "gold": "8.3", "ok": 1, "val": 1.0}
+{"i": 1459, "pred": "33.7", "gold": "33.7", "ok": 1, "val": 1.0}
+{"i": 1460, "pred": "924", "gold": "924", "ok": 1, "val": 1.0}
+{"i": 1461, "pred": "Oklahoma", "gold": "Oklahoma", "ok": 1, "val": 1.0}
+{"i": 1462, "pred": "26.26", "gold": "26.26", "ok": 1, "val": 1.0}
+{"i": 1463, "pred": "Uruguay", "gold": "Paraguay", "ok": 0, "val": 0.0}
+{"i": 1464, "pred": "1433934", "gold": "1407401", "ok": 1, "val": 1.0}
+{"i": 1465, "pred": " Fulham", "gold": "Fulham", "ok": 1, "val": 1.0}
+{"i": 1466, "pred": "54", "gold": "54", "ok": 1, "val": 1.0}
+{"i": 1467, "pred": "23.8", "gold": "23.8", "ok": 1, "val": 1.0}
+{"i": 1468, "pred": "0.3", "gold": "0.3", "ok": 1, "val": 1.0}
+{"i": 1469, "pred": "26.22", "gold": "26.22", "ok": 1, "val": 1.0}
+{"i": 1470, "pred": "4.8", "gold": "4.8", "ok": 1, "val": 1.0}
+{"i": 1471, "pred": "42.5", "gold": "42.5", "ok": 1, "val": 1.0}
+{"i": 1472, "pred": "2.5", "gold": "2.5", "ok": 1, "val": 1.0}
+{"i": 1473, "pred": "Emily Dickinson", "gold": "Emily Dickinson", "ok": 1, "val": 1.0}
+{"i": 1474, "pred": "67", "gold": "67", "ok": 1, "val": 1.0}
+{"i": 1475, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 1476, "pred": "57", "gold": "57", "ok": 1, "val": 1.0}
+{"i": 1477, "pred": "169.1", "gold": "169.1", "ok": 1, "val": 1.0}
+{"i": 1478, "pred": "2012", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 1479, "pred": "7870", "gold": "7870", "ok": 1, "val": 1.0}
+{"i": 1480, "pred": "Hokkaido", "gold": "Hokkaido", "ok": 1, "val": 1.0}
+{"i": 1481, "pred": "8", "gold": "375", "ok": 0, "val": 0.0}
+{"i": 1482, "pred": "3376.81", "gold": "3376.81", "ok": 1, "val": 1.0}
+{"i": 1483, "pred": " New York", "gold": "New York", "ok": 1, "val": 1.0}
+{"i": 1484, "pred": "3.4", "gold": "3.4", "ok": 1, "val": 1.0}
+{"i": 1485, "pred": "10", "gold": "5", "ok": 0, "val": 0.0}
+{"i": 1486, "pred": "396.19", "gold": "396.19", "ok": 1, "val": 1.0}
+{"i": 1487, "pred": "4.9", "gold": "4.9", "ok": 1, "val": 1.0}
+{"i": 1488, "pred": "0.27", "gold": "0.28", "ok": 1, "val": 1.0}
+{"i": 1489, "pred": "47.86", "gold": "47.86", "ok": 1, "val": 1.0}
+{"i": 1490, "pred": "37133", "gold": "37133", "ok": 1, "val": 1.0}
+{"i": 1491, "pred": "13.52", "gold": "13.52", "ok": 1, "val": 1.0}
+{"i": 1492, "pred": "13.47", "gold": "13.52", "ok": 1, "val": 1.0}
+{"i": 1493, "pred": "14.25", "gold": "14.25", "ok": 1, "val": 1.0}
+{"i": 1494, "pred": "296.7", "gold": "296.7", "ok": 1, "val": 1.0}
+{"i": 1495, "pred": "1251.8", "gold": "1251.8", "ok": 1, "val": 1.0}
+{"i": 1496, "pred": "2437", "gold": "2437", "ok": 1, "val": 1.0}
+{"i": 1497, "pred": "694", "gold": "694", "ok": 1, "val": 1.0}
+{"i": 1498, "pred": " YouTube", "gold": "YouTube", "ok": 1, "val": 1.0}
+{"i": 1499, "pred": "0.59", "gold": "0.59", "ok": 1, "val": 1.0}
+{"i": 1500, "pred": "54.62", "gold": "54.62", "ok": 1, "val": 1.0}
+{"i": 1501, "pred": "3.4", "gold": "3.4", "ok": 1, "val": 1.0}
+{"i": 1502, "pred": "1055", "gold": "1055", "ok": 1, "val": 1.0}
+{"i": 1503, "pred": "0.05", "gold": "0.05", "ok": 1, "val": 1.0}
+{"i": 1504, "pred": "10.94", "gold": "10.94", "ok": 1, "val": 1.0}
+{"i": 1505, "pred": "Oceania", "gold": "Oceania", "ok": 1, "val": 1.0}
+{"i": 1506, "pred": "1.6", "gold": "1.6", "ok": 1, "val": 1.0}
+{"i": 1507, "pred": "140858", "gold": "140858", "ok": 1, "val": 1.0}
+{"i": 1508, "pred": "4.55", "gold": "4.55", "ok": 1, "val": 1.0}
+{"i": 1509, "pred": "375007", "gold": "377043.2", "ok": 1, "val": 1.0}
+{"i": 1510, "pred": "13.31", "gold": "13.31", "ok": 1, "val": 1.0}
+{"i": 1511, "pred": "32", "gold": "32", "ok": 1, "val": 1.0}
+{"i": 1512, "pred": "49.83", "gold": "49.83", "ok": 1, "val": 1.0}
+{"i": 1513, "pred": "50.02", "gold": "50.02", "ok": 1, "val": 1.0}
+{"i": 1514, "pred": " Computer Science", "gold": "Computer Science", "ok": 1, "val": 1.0}
+{"i": 1515, "pred": " Engineering", "gold": "Engineering", "ok": 1, "val": 1.0}
+{"i": 1516, "pred": "7290", "gold": "7290", "ok": 1, "val": 1.0}
+{"i": 1517, "pred": "4522", "gold": "4522", "ok": 1, "val": 1.0}
+{"i": 1518, "pred": "2016", "gold": "2016", "ok": 1, "val": 1.0}
+{"i": 1519, "pred": "49.18", "gold": "40.03", "ok": 0, "val": 0.0}
+{"i": 1520, "pred": "930", "gold": "930", "ok": 1, "val": 1.0}
+{"i": 1521, "pred": "8.06", "gold": "8.12", "ok": 1, "val": 1.0}
+{"i": 1522, "pred": "17001", "gold": "17001", "ok": 1, "val": 1.0}
+{"i": 1523, "pred": "14.1", "gold": "14.1", "ok": 1, "val": 1.0}
+{"i": 1524, "pred": "239", "gold": "239", "ok": 1, "val": 1.0}
+{"i": 1525, "pred": "82936017", "gold": "82936017", "ok": 1, "val": 1.0}
+{"i": 1526, "pred": "2014", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 1527, "pred": "509", "gold": "509", "ok": 1, "val": 1.0}
+{"i": 1528, "pred": "5.03", "gold": "5.03", "ok": 1, "val": 1.0}
+{"i": 1529, "pred": "37.24", "gold": "37.24", "ok": 1, "val": 1.0}
+{"i": 1530, "pred": "2.62", "gold": "2.62", "ok": 1, "val": 1.0}
+{"i": 1531, "pred": "2287881", "gold": "2287881", "ok": 1, "val": 1.0}
+{"i": 1532, "pred": "82.21", "gold": "82.21", "ok": 1, "val": 1.0}
+{"i": 1533, "pred": " Vinnytsia Oblast", "gold": "Kyiv", "ok": 0, "val": 0.0}
+{"i": 1534, "pred": "49405", "gold": "49405", "ok": 1, "val": 1.0}
+{"i": 1535, "pred": "Alibaba.com", "gold": "Alibaba.com", "ok": 1, "val": 1.0}
+{"i": 1536, "pred": "17.81", "gold": "17.82", "ok": 1, "val": 1.0}
+{"i": 1537, "pred": "2117.4", "gold": "2117.4", "ok": 1, "val": 1.0}
+{"i": 1538, "pred": "30.5", "gold": "30.5", "ok": 1, "val": 1.0}
+{"i": 1539, "pred": "54.5", "gold": "54.5", "ok": 1, "val": 1.0}
+{"i": 1540, "pred": "96", "gold": "96", "ok": 1, "val": 1.0}
+{"i": 1541, "pred": "42.3", "gold": "42.3", "ok": 1, "val": 1.0}
+{"i": 1542, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 1543, "pred": "1.84", "gold": "1.84", "ok": 1, "val": 1.0}
+{"i": 1544, "pred": "13.12", "gold": "13.12", "ok": 1, "val": 1.0}
+{"i": 1545, "pred": "34.07", "gold": "34.07", "ok": 1, "val": 1.0}
+{"i": 1546, "pred": "13.5", "gold": "13.5", "ok": 1, "val": 1.0}
+{"i": 1547, "pred": "41", "gold": "41", "ok": 1, "val": 1.0}
+{"i": 1548, "pred": "10.33", "gold": "10.38", "ok": 1, "val": 1.0}
+{"i": 1549, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 1550, "pred": " Harry Kane", "gold": "Harry Kane", "ok": 1, "val": 1.0}
+{"i": 1551, "pred": "150", "gold": "150", "ok": 1, "val": 1.0}
+{"i": 1552, "pred": "285", "gold": "285", "ok": 1, "val": 1.0}
+{"i": 1553, "pred": "882.32", "gold": "883.42", "ok": 1, "val": 1.0}
+{"i": 1554, "pred": "575.35", "gold": "576.65", "ok": 1, "val": 1.0}
+{"i": 1555, "pred": "12.4", "gold": "12.3", "ok": 1, "val": 1.0}
+{"i": 1556, "pred": "43.3", "gold": "43.2", "ok": 1, "val": 1.0}
+{"i": 1557, "pred": "706", "gold": "706", "ok": 1, "val": 1.0}
+{"i": 1558, "pred": "397", "gold": "397", "ok": 1, "val": 1.0}
+{"i": 1559, "pred": "3.6", "gold": "3.6", "ok": 1, "val": 1.0}
+{"i": 1560, "pred": "3.3", "gold": "3.3", "ok": 1, "val": 1.0}
+{"i": 1561, "pred": "3.3", "gold": "3.3", "ok": 1, "val": 1.0}
+{"i": 1562, "pred": "6.8", "gold": "6.8", "ok": 1, "val": 1.0}
+{"i": 1563, "pred": "628", "gold": "628", "ok": 1, "val": 1.0}
+{"i": 1564, "pred": "25111", "gold": "25111", "ok": 1, "val": 1.0}
+{"i": 1565, "pred": "165.82", "gold": "165.82", "ok": 1, "val": 1.0}
+{"i": 1566, "pred": "9905.6", "gold": "9905.6", "ok": 1, "val": 1.0}
+{"i": 1567, "pred": "34.33", "gold": "34.33", "ok": 1, "val": 1.0}
+{"i": 1568, "pred": "4709852", "gold": "4709852", "ok": 1, "val": 1.0}
+{"i": 1569, "pred": "94", "gold": "94", "ok": 1, "val": 1.0}
+{"i": 1570, "pred": "2017", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 1571, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 1572, "pred": "30.14", "gold": "30.15", "ok": 1, "val": 1.0}
+{"i": 1573, "pred": "964.6", "gold": "965", "ok": 1, "val": 1.0}
+{"i": 1574, "pred": "510.5", "gold": "510", "ok": 1, "val": 1.0}
+{"i": 1575, "pred": "377.72", "gold": "377.72", "ok": 1, "val": 1.0}
+{"i": 1576, "pred": "22", "gold": "22", "ok": 1, "val": 1.0}
+{"i": 1577, "pred": "34.6", "gold": "34.6", "ok": 1, "val": 1.0}
+{"i": 1578, "pred": "23800.7", "gold": "23800.7", "ok": 1, "val": 1.0}
+{"i": 1579, "pred": " YouTube", "gold": "YouTube", "ok": 1, "val": 1.0}
+{"i": 1580, "pred": "1.71", "gold": "1.71", "ok": 1, "val": 1.0}
+{"i": 1581, "pred": "65+", "gold": "65+", "ok": 1, "val": 1.0}
+{"i": 1582, "pred": "9300000", "gold": "9464482", "ok": 1, "val": 1.0}
+{"i": 1583, "pred": "13.99", "gold": "13.99", "ok": 1, "val": 1.0}
+{"i": 1584, "pred": " Vitebsk Oblast", "gold": "Vitebsk Oblast", "ok": 1, "val": 1.0}
+{"i": 1585, "pred": "3.56", "gold": "3.56", "ok": 1, "val": 1.0}
+{"i": 1586, "pred": "3.92", "gold": "3.92", "ok": 1, "val": 1.0}
+{"i": 1587, "pred": " Honshu", "gold": "Honshu", "ok": 1, "val": 1.0}
+{"i": 1588, "pred": "377975", "gold": "377975", "ok": 1, "val": 1.0}
+{"i": 1589, "pred": "85", "gold": "85", "ok": 1, "val": 1.0}
+{"i": 1590, "pred": "1200", "gold": "1200", "ok": 1, "val": 1.0}
+{"i": 1591, "pred": "Cancer", "gold": "Cancer", "ok": 1, "val": 1.0}
+{"i": 1592, "pred": "Heart disease", "gold": "Heart disease", "ok": 1, "val": 1.0}
+{"i": 1593, "pred": "3.13", "gold": "3.13", "ok": 1, "val": 1.0}
+{"i": 1594, "pred": "5.04", "gold": "5.04", "ok": 1, "val": 1.0}
+{"i": 1595, "pred": "68", "gold": "68", "ok": 1, "val": 1.0}
+{"i": 1596, "pred": "2.46", "gold": "2.5", "ok": 1, "val": 1.0}
+{"i": 1597, "pred": "14.5", "gold": "14.5", "ok": 1, "val": 1.0}
+{"i": 1598, "pred": "264", "gold": "264", "ok": 1, "val": 1.0}
+{"i": 1599, "pred": "28.05", "gold": "28.1", "ok": 1, "val": 1.0}
+{"i": 1600, "pred": "12.23", "gold": "12.23", "ok": 1, "val": 1.0}
+{"i": 1601, "pred": "2012", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 1602, "pred": "61", "gold": "61", "ok": 1, "val": 1.0}
+{"i": 1603, "pred": "61", "gold": "61", "ok": 1, "val": 1.0}
+{"i": 1604, "pred": "29.3", "gold": "29.3", "ok": 1, "val": 1.0}
+{"i": 1605, "pred": "24.9", "gold": "24.9", "ok": 1, "val": 1.0}
+{"i": 1606, "pred": "44.3", "gold": "44.3", "ok": 1, "val": 1.0}
+{"i": 1607, "pred": "20.81", "gold": "20.81", "ok": 1, "val": 1.0}
+{"i": 1608, "pred": "Asia", "gold": "Asia", "ok": 1, "val": 1.0}
+{"i": 1609, "pred": "28.44", "gold": "28.44", "ok": 1, "val": 1.0}
+{"i": 1610, "pred": "50", "gold": "50", "ok": 1, "val": 1.0}
+{"i": 1611, "pred": "963000", "gold": "963000", "ok": 1, "val": 1.0}
+{"i": 1612, "pred": "121", "gold": "121", "ok": 1, "val": 1.0}
+{"i": 1613, "pred": "14.3", "gold": "14.3", "ok": 1, "val": 1.0}
+{"i": 1614, "pred": "2018", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 1615, "pred": "5.44", "gold": "5.44", "ok": 1, "val": 1.0}
+{"i": 1616, "pred": "384", "gold": "384", "ok": 1, "val": 1.0}
+{"i": 1617, "pred": " DuckDuckGo", "gold": "DuckDuckGo", "ok": 1, "val": 1.0}
+{"i": 1618, "pred": "25.7", "gold": "25.7", "ok": 1, "val": 1.0}
+{"i": 1619, "pred": "1.65", "gold": "1.65", "ok": 1, "val": 1.0}
+{"i": 1620, "pred": "1.82", "gold": "1.82", "ok": 1, "val": 1.0}
+{"i": 1621, "pred": "83.5", "gold": "83.5", "ok": 1, "val": 1.0}
+{"i": 1622, "pred": "676.4", "gold": "676.4", "ok": 1, "val": 1.0}
+{"i": 1623, "pred": "Volkswagen", "gold": "Volkswagen", "ok": 1, "val": 1.0}
+{"i": 1624, "pred": "46.49", "gold": "46.93", "ok": 1, "val": 1.0}
+{"i": 1625, "pred": "146.38", "gold": "146.29", "ok": 1, "val": 1.0}
+{"i": 1626, "pred": "31", "gold": "31", "ok": 1, "val": 1.0}
+{"i": 1627, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 1628, "pred": "40", "gold": "54", "ok": 0, "val": 0.0}
+{"i": 1629, "pred": " Melilla", "gold": "Melilla", "ok": 1, "val": 1.0}
+{"i": 1630, "pred": " Melilla", "gold": "Catalonia", "ok": 0, "val": 0.0}
+{"i": 1631, "pred": "23.16", "gold": "23.16", "ok": 1, "val": 1.0}
+{"i": 1632, "pred": "33.94", "gold": "33.94", "ok": 1, "val": 1.0}
+{"i": 1633, "pred": "64.9", "gold": "64.9", "ok": 1, "val": 1.0}
+{"i": 1634, "pred": "250", "gold": "250", "ok": 1, "val": 1.0}
+{"i": 1635, "pred": "5.8", "gold": "5.8", "ok": 1, "val": 1.0}
+{"i": 1636, "pred": "4.37", "gold": "4.37", "ok": 1, "val": 1.0}
+{"i": 1637, "pred": "10.4", "gold": "10.3", "ok": 1, "val": 1.0}
+{"i": 1638, "pred": "fab.de", "gold": "fab.de", "ok": 1, "val": 1.0}
+{"i": 1639, "pred": "78", "gold": "78", "ok": 1, "val": 1.0}
+{"i": 1640, "pred": "106.89", "gold": "106.89", "ok": 1, "val": 1.0}
+{"i": 1641, "pred": "7.1", "gold": "7.1", "ok": 1, "val": 1.0}
+{"i": 1642, "pred": "28661", "gold": "28661", "ok": 1, "val": 1.0}
+{"i": 1643, "pred": "20354", "gold": "20354", "ok": 1, "val": 1.0}
+{"i": 1644, "pred": "46210", "gold": "46337", "ok": 1, "val": 1.0}
+{"i": 1645, "pred": "46.5", "gold": "46.5", "ok": 1, "val": 1.0}
+{"i": 1646, "pred": "327", "gold": "327", "ok": 1, "val": 1.0}
+{"i": 1647, "pred": "55.8", "gold": "55.85", "ok": 1, "val": 1.0}
+{"i": 1648, "pred": "133370", "gold": "133370", "ok": 1, "val": 1.0}
+{"i": 1649, "pred": "54132.4", "gold": "54132.4", "ok": 1, "val": 1.0}
+{"i": 1650, "pred": "52", "gold": "52", "ok": 1, "val": 1.0}
+{"i": 1651, "pred": "2294", "gold": "2294", "ok": 1, "val": 1.0}
+{"i": 1652, "pred": "115.31", "gold": "115.31", "ok": 1, "val": 1.0}
+{"i": 1653, "pred": "5.7", "gold": "5.7", "ok": 1, "val": 1.0}
+{"i": 1654, "pred": "73", "gold": "73", "ok": 1, "val": 1.0}
+{"i": 1655, "pred": "51.11", "gold": "51.11", "ok": 1, "val": 1.0}
+{"i": 1656, "pred": "62", "gold": "62", "ok": 1, "val": 1.0}
+{"i": 1657, "pred": " Free State", "gold": "Free State", "ok": 1, "val": 1.0}
+{"i": 1658, "pred": " Western Cape", "gold": "Western Cape", "ok": 1, "val": 1.0}
+{"i": 1659, "pred": "40.1", "gold": "40.1", "ok": 1, "val": 1.0}
+{"i": 1660, "pred": "55.66", "gold": "55.66", "ok": 1, "val": 1.0}
+{"i": 1661, "pred": "4863", "gold": "4863", "ok": 1, "val": 1.0}
+{"i": 1662, "pred": "4863", "gold": "4863", "ok": 1, "val": 1.0}
+{"i": 1663, "pred": "809", "gold": "809", "ok": 1, "val": 1.0}
+{"i": 1664, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 1665, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 1666, "pred": "125.28", "gold": "124.77", "ok": 1, "val": 1.0}
+{"i": 1667, "pred": "293.6", "gold": "293.6", "ok": 1, "val": 1.0}
+{"i": 1668, "pred": "337.8", "gold": "337.8", "ok": 1, "val": 1.0}
+{"i": 1669, "pred": "6192.5", "gold": "6192.5", "ok": 1, "val": 1.0}
+{"i": 1670, "pred": "445", "gold": "445", "ok": 1, "val": 1.0}
+{"i": 1671, "pred": "May 2019", "gold": "May 2020", "ok": 1, "val": 1.0}
+{"i": 1672, "pred": "116", "gold": "116", "ok": 1, "val": 1.0}
+{"i": 1673, "pred": "118401", "gold": "118401", "ok": 1, "val": 1.0}
+{"i": 1674, "pred": " Syria", "gold": "Syria", "ok": 1, "val": 1.0}
+{"i": 1675, "pred": " Afghanistan", "gold": "Afghanistan", "ok": 1, "val": 1.0}
+{"i": 1676, "pred": " Bielefeld-Detmold", "gold": "Bielefeld-Detmold", "ok": 1, "val": 1.0}
+{"i": 1677, "pred": "189.6", "gold": "189.6", "ok": 1, "val": 1.0}
+{"i": 1678, "pred": "192.62", "gold": "192.62", "ok": 1, "val": 1.0}
+{"i": 1679, "pred": "1793.79", "gold": "1793.79", "ok": 1, "val": 1.0}
+{"i": 1680, "pred": "2009", "gold": "2006", "ok": 1, "val": 1.0}
+{"i": 1681, "pred": "252", "gold": "252", "ok": 1, "val": 1.0}
+{"i": 1682, "pred": "540", "gold": "17", "ok": 0, "val": 0.0}
+{"i": 1683, "pred": "Monini", "gold": "Monini", "ok": 1, "val": 1.0}
+{"i": 1684, "pred": "84.37", "gold": "84.94", "ok": 1, "val": 1.0}
+{"i": 1685, "pred": "35.29", "gold": "35.29", "ok": 1, "val": 1.0}
+{"i": 1686, "pred": "2006/07", "gold": "2015/16", "ok": 1, "val": 1.0}
+{"i": 1687, "pred": "2906.53", "gold": "2914.18", "ok": 1, "val": 1.0}
+{"i": 1688, "pred": "19871", "gold": "19871", "ok": 1, "val": 1.0}
+{"i": 1689, "pred": "286.1", "gold": "286.1", "ok": 1, "val": 1.0}
+{"i": 1690, "pred": "1.03", "gold": "1.03", "ok": 1, "val": 1.0}
+{"i": 1691, "pred": "2019", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 1692, "pred": "2017/2018", "gold": "2017/2018", "ok": 1, "val": 1.0}
+{"i": 1693, "pred": "333.54", "gold": "333.54", "ok": 1, "val": 1.0}
+{"i": 1694, "pred": "910987", "gold": "910987", "ok": 1, "val": 1.0}
+{"i": 1695, "pred": "2378", "gold": "2378", "ok": 1, "val": 1.0}
+{"i": 1696, "pred": "43.75", "gold": "43.75", "ok": 1, "val": 1.0}
+{"i": 1697, "pred": "United States", "gold": "Germany", "ok": 0, "val": 0.0}
+{"i": 1698, "pred": "37190", "gold": "37190", "ok": 1, "val": 1.0}
+{"i": 1699, "pred": "489", "gold": "489", "ok": 1, "val": 1.0}
+{"i": 1700, "pred": "23", "gold": "23", "ok": 1, "val": 1.0}
+{"i": 1701, "pred": "444428", "gold": "444428", "ok": 1, "val": 1.0}
+{"i": 1702, "pred": "444428", "gold": "444428", "ok": 1, "val": 1.0}
+{"i": 1703, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 1704, "pred": "1041.6", "gold": "1041.6", "ok": 1, "val": 1.0}
+{"i": 1705, "pred": "2012", "gold": "2013", "ok": 1, "val": 1.0}
+{"i": 1706, "pred": "108.8", "gold": "108.8", "ok": 1, "val": 1.0}
+{"i": 1707, "pred": "106100", "gold": "106100", "ok": 1, "val": 1.0}
+{"i": 1708, "pred": "140300", "gold": "140300", "ok": 1, "val": 1.0}
+{"i": 1709, "pred": "1.1", "gold": "1.1", "ok": 1, "val": 1.0}
+{"i": 1710, "pred": "26276", "gold": "26276", "ok": 1, "val": 1.0}
+{"i": 1711, "pred": "143", "gold": "143", "ok": 1, "val": 1.0}
+{"i": 1712, "pred": "774.71", "gold": "774.71", "ok": 1, "val": 1.0}
+{"i": 1713, "pred": "37.3", "gold": "76", "ok": 0, "val": 0.0}
+{"i": 1714, "pred": "10", "gold": "8", "ok": 0, "val": 0.0}
+{"i": 1715, "pred": "35.7", "gold": "35.7", "ok": 1, "val": 1.0}
+{"i": 1716, "pred": "34.3", "gold": "34.3", "ok": 1, "val": 1.0}
+{"i": 1717, "pred": "2035", "gold": "2035", "ok": 1, "val": 1.0}
+{"i": 1718, "pred": "20444", "gold": "20444", "ok": 1, "val": 1.0}
+{"i": 1719, "pred": "57.04", "gold": "57.04", "ok": 1, "val": 1.0}
+{"i": 1720, "pred": "3979", "gold": "3979", "ok": 1, "val": 1.0}
+{"i": 1721, "pred": "97", "gold": "95", "ok": 1, "val": 1.0}
+{"i": 1722, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 1723, "pred": "95", "gold": "95", "ok": 1, "val": 1.0}
+{"i": 1724, "pred": "237.9", "gold": "237.9", "ok": 1, "val": 1.0}
+{"i": 1725, "pred": "237.9", "gold": "336.73", "ok": 0, "val": 0.0}
+{"i": 1726, "pred": "212654", "gold": "212536", "ok": 1, "val": 1.0}
+{"i": 1727, "pred": "13779.1", "gold": "13779.1", "ok": 1, "val": 1.0}
+{"i": 1728, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 1729, "pred": "82.5", "gold": "82.5", "ok": 1, "val": 1.0}
+{"i": 1730, "pred": "Coca-Cola", "gold": "Coca-Cola", "ok": 1, "val": 1.0}
+{"i": 1731, "pred": "40.78", "gold": "40.78", "ok": 1, "val": 1.0}
+{"i": 1732, "pred": "22", "gold": "22", "ok": 1, "val": 1.0}
+{"i": 1733, "pred": "8066452", "gold": "8092208", "ok": 1, "val": 1.0}
+{"i": 1734, "pred": "6000000", "gold": "8092208", "ok": 0, "val": 0.0}
+{"i": 1735, "pred": "Netflix", "gold": "Amazon", "ok": 0, "val": 0.0}
+{"i": 1736, "pred": "Songs PK", "gold": "Songs PK", "ok": 1, "val": 1.0}
+{"i": 1737, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 1738, "pred": "18278", "gold": "18278", "ok": 1, "val": 1.0}
+{"i": 1739, "pred": "15299", "gold": "15299", "ok": 1, "val": 1.0}
+{"i": 1740, "pred": "14575", "gold": "14600", "ok": 1, "val": 1.0}
+{"i": 1741, "pred": "22637", "gold": "22600", "ok": 1, "val": 1.0}
+{"i": 1742, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 1743, "pred": "71", "gold": "70", "ok": 1, "val": 1.0}
+{"i": 1744, "pred": "70", "gold": "70", "ok": 1, "val": 1.0}
+{"i": 1745, "pred": "18762.59", "gold": "18762.59", "ok": 1, "val": 1.0}
+{"i": 1746, "pred": "23555.3", "gold": "23555.3", "ok": 1, "val": 1.0}
+{"i": 1747, "pred": "League of Legends", "gold": "League of Legends", "ok": 1, "val": 1.0}
+{"i": 1748, "pred": "7982", "gold": "7982", "ok": 1, "val": 1.0}
+{"i": 1749, "pred": "6174", "gold": "6174", "ok": 1, "val": 1.0}
+{"i": 1750, "pred": "5014", "gold": "5857", "ok": 0, "val": 0.0}
+{"i": 1751, "pred": "6174", "gold": "5857", "ok": 0, "val": 0.0}
+{"i": 1752, "pred": "2.1", "gold": "2.1", "ok": 1, "val": 1.0}
+{"i": 1753, "pred": "71.65", "gold": "71.65", "ok": 1, "val": 1.0}
+{"i": 1754, "pred": "362038", "gold": "362038", "ok": 1, "val": 1.0}
+{"i": 1755, "pred": "2.2", "gold": "2.4", "ok": 0, "val": 0.0}
+{"i": 1756, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 1757, "pred": "17.89", "gold": "17.89", "ok": 1, "val": 1.0}
+{"i": 1758, "pred": "57", "gold": "57", "ok": 1, "val": 1.0}
+{"i": 1759, "pred": " Romelu Lukaku", "gold": "Eden Hazard", "ok": 0, "val": 0.0}
+{"i": 1760, "pred": "10085207", "gold": "10085207", "ok": 1, "val": 1.0}
+{"i": 1761, "pred": "14195100", "gold": "14005615", "ok": 1, "val": 1.0}
+{"i": 1762, "pred": "105", "gold": "105", "ok": 1, "val": 1.0}
+{"i": 1763, "pred": "Liguria", "gold": "Liguria", "ok": 1, "val": 1.0}
+{"i": 1764, "pred": "767.16", "gold": "767.16", "ok": 1, "val": 1.0}
+{"i": 1765, "pred": "35294.6", "gold": "35294.6", "ok": 1, "val": 1.0}
+{"i": 1766, "pred": "168", "gold": "168", "ok": 1, "val": 1.0}
+{"i": 1767, "pred": "143", "gold": "143", "ok": 1, "val": 1.0}
+{"i": 1768, "pred": "14", "gold": "14", "ok": 1, "val": 1.0}
+{"i": 1769, "pred": "3.5", "gold": "3.5", "ok": 1, "val": 1.0}
+{"i": 1770, "pred": "130.57", "gold": "130.57", "ok": 1, "val": 1.0}
+{"i": 1771, "pred": "Telia Company AB", "gold": "Telia Company AB", "ok": 1, "val": 1.0}
+{"i": 1772, "pred": "Telia Company AB", "gold": "Telia Company AB", "ok": 1, "val": 1.0}
+{"i": 1773, "pred": "Telia Company AB", "gold": "Telia Company AB", "ok": 1, "val": 1.0}
+{"i": 1774, "pred": "Telia Company AB", "gold": "Telia Company AB", "ok": 1, "val": 1.0}
+{"i": 1775, "pred": "Telia Company AB", "gold": "Telia Company AB", "ok": 1, "val": 1.0}
+{"i": 1776, "pred": " United Arab Emirates", "gold": "United Arab Emirates", "ok": 1, "val": 1.0}
+{"i": 1777, "pred": "5.12", "gold": "5.12", "ok": 1, "val": 1.0}
+{"i": 1778, "pred": "95.6", "gold": "95.6", "ok": 1, "val": 1.0}
+{"i": 1779, "pred": "23.01", "gold": "23.01", "ok": 1, "val": 1.0}
+{"i": 1780, "pred": "25.25", "gold": "25.25", "ok": 1, "val": 1.0}
+{"i": 1781, "pred": "16166", "gold": "16166", "ok": 1, "val": 1.0}
+{"i": 1782, "pred": "16166", "gold": "16166", "ok": 1, "val": 1.0}
+{"i": 1783, "pred": "34236", "gold": "34236", "ok": 1, "val": 1.0}
+{"i": 1784, "pred": "40.3", "gold": "48.8", "ok": 0, "val": 0.0}
+{"i": 1785, "pred": "85.3", "gold": "48.8", "ok": 0, "val": 0.0}
+{"i": 1786, "pred": "40.3", "gold": "40.3", "ok": 1, "val": 1.0}
+{"i": 1787, "pred": "491.46", "gold": "491.46", "ok": 1, "val": 1.0}
+{"i": 1788, "pred": "10419", "gold": "10408", "ok": 1, "val": 1.0}
+{"i": 1789, "pred": "2.76", "gold": "2.76", "ok": 1, "val": 1.0}
+{"i": 1790, "pred": "150105400", "gold": "77658792", "ok": 0, "val": 0.0}
+{"i": 1791, "pred": "4.51", "gold": "4.51", "ok": 1, "val": 1.0}
+{"i": 1792, "pred": "Trina Solar", "gold": "Trina Solar", "ok": 1, "val": 1.0}
+{"i": 1793, "pred": "582", "gold": "582", "ok": 1, "val": 1.0}
+{"i": 1794, "pred": "2000", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 1795, "pred": " Europe", "gold": "Europe", "ok": 1, "val": 1.0}
+{"i": 1796, "pred": "28.2", "gold": "28.6", "ok": 1, "val": 1.0}
+{"i": 1797, "pred": "14.1", "gold": "9.9", "ok": 0, "val": 0.0}
+{"i": 1798, "pred": "Berkshire Hathaway Inc", "gold": "Berkshire Hathaway Inc", "ok": 1, "val": 1.0}
+{"i": 1799, "pred": "185", "gold": "185", "ok": 1, "val": 1.0}
+{"i": 1800, "pred": " Indonesia", "gold": "Indonesia", "ok": 1, "val": 1.0}
+{"i": 1801, "pred": "2013", "gold": "2013", "ok": 1, "val": 1.0}
+{"i": 1802, "pred": "28.52", "gold": "28.52", "ok": 1, "val": 1.0}
+{"i": 1803, "pred": "1990", "gold": "1990", "ok": 1, "val": 1.0}
+{"i": 1804, "pred": "5.6", "gold": "5.6", "ok": 1, "val": 1.0}
+{"i": 1805, "pred": "9.4", "gold": "9.4", "ok": 1, "val": 1.0}
+{"i": 1806, "pred": "3444", "gold": "3444", "ok": 1, "val": 1.0}
+{"i": 1807, "pred": "9", "gold": "9", "ok": 1, "val": 1.0}
+{"i": 1808, "pred": "15.31", "gold": "15.31", "ok": 1, "val": 1.0}
+{"i": 1809, "pred": "16.5", "gold": "16.5", "ok": 1, "val": 1.0}
+{"i": 1810, "pred": "131.45", "gold": "131.45", "ok": 1, "val": 1.0}
+{"i": 1811, "pred": "0.45", "gold": "0.45", "ok": 1, "val": 1.0}
+{"i": 1812, "pred": " Randy Smith", "gold": "Randy Smith", "ok": 1, "val": 1.0}
+{"i": 1813, "pred": "179.9", "gold": "179.9", "ok": 1, "val": 1.0}
+{"i": 1814, "pred": "273.21", "gold": "273.21", "ok": 1, "val": 1.0}
+{"i": 1815, "pred": "2019/20", "gold": "2019/20", "ok": 1, "val": 1.0}
+{"i": 1816, "pred": "3039", "gold": "3069", "ok": 1, "val": 1.0}
+{"i": 1817, "pred": "142", "gold": "109", "ok": 0, "val": 0.0}
+{"i": 1818, "pred": "Apple", "gold": "Apple", "ok": 1, "val": 1.0}
+{"i": 1819, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 1820, "pred": "2010", "gold": "2014", "ok": 1, "val": 1.0}
+{"i": 1821, "pred": "347.82", "gold": "347.82", "ok": 1, "val": 1.0}
+{"i": 1822, "pred": "39.8", "gold": "39.8", "ok": 1, "val": 1.0}
+{"i": 1823, "pred": "195.5", "gold": "195.5", "ok": 1, "val": 1.0}
+{"i": 1824, "pred": "3.9", "gold": "3.9", "ok": 1, "val": 1.0}
+{"i": 1825, "pred": "Generation Z", "gold": "Generation Z", "ok": 1, "val": 1.0}
+{"i": 1826, "pred": "54", "gold": "54", "ok": 1, "val": 1.0}
+{"i": 1827, "pred": "19", "gold": "19", "ok": 1, "val": 1.0}
+{"i": 1828, "pred": "3352.74", "gold": "3352.74", "ok": 1, "val": 1.0}
+{"i": 1829, "pred": "2829.38", "gold": "2829.38", "ok": 1, "val": 1.0}
+{"i": 1830, "pred": "110.06", "gold": "110.06", "ok": 1, "val": 1.0}
+{"i": 1831, "pred": "46.1", "gold": "46.1", "ok": 1, "val": 1.0}
+{"i": 1832, "pred": "43.92", "gold": "43.92", "ok": 1, "val": 1.0}
+{"i": 1833, "pred": "235", "gold": "235", "ok": 1, "val": 1.0}
+{"i": 1834, "pred": "673", "gold": "669.2", "ok": 1, "val": 1.0}
+{"i": 1835, "pred": "1842.4", "gold": "1842.1", "ok": 1, "val": 1.0}
+{"i": 1836, "pred": "2345.3", "gold": "2345.3", "ok": 1, "val": 1.0}
+{"i": 1837, "pred": " BlackRock Investment Management (UK) Limited", "gold": "BlackRock Investment Management (UK) Limited", "ok": 1, "val": 1.0}
+{"i": 1838, "pred": "76.6", "gold": "76.6", "ok": 1, "val": 1.0}
+{"i": 1839, "pred": "30.76", "gold": "30.74", "ok": 1, "val": 1.0}
+{"i": 1840, "pred": " Hank Aaron", "gold": "Hank Aaron", "ok": 1, "val": 1.0}
+{"i": 1841, "pred": "31.1", "gold": "31.1", "ok": 1, "val": 1.0}
+{"i": 1842, "pred": "2411", "gold": "2411", "ok": 1, "val": 1.0}
+{"i": 1843, "pred": "7.3", "gold": "7.3", "ok": 1, "val": 1.0}
+{"i": 1844, "pred": " S7 Airlines", "gold": "S7 Airlines", "ok": 1, "val": 1.0}
+{"i": 1845, "pred": "Aeroflot", "gold": "Aeroflot", "ok": 1, "val": 1.0}
+{"i": 1846, "pred": "14.6", "gold": "14.6", "ok": 1, "val": 1.0}
+{"i": 1847, "pred": "4.91", "gold": "4.91", "ok": 1, "val": 1.0}
+{"i": 1848, "pred": "11.94", "gold": "11.94", "ok": 1, "val": 1.0}
+{"i": 1849, "pred": " Kevin De Bruyne", "gold": "Kevin De Bruyne", "ok": 1, "val": 1.0}
+{"i": 1850, "pred": "150", "gold": "150", "ok": 1, "val": 1.0}
+{"i": 1851, "pred": "57139", "gold": "57139", "ok": 1, "val": 1.0}
+{"i": 1852, "pred": "57139", "gold": "57139", "ok": 1, "val": 1.0}
+{"i": 1853, "pred": " GQ", "gold": "GQ", "ok": 1, "val": 1.0}
+{"i": 1854, "pred": "348.8", "gold": "348.8", "ok": 1, "val": 1.0}
+{"i": 1855, "pred": "803.9", "gold": "803.9", "ok": 1, "val": 1.0}
+{"i": 1856, "pred": "45823.94", "gold": "45823.94", "ok": 1, "val": 1.0}
+{"i": 1857, "pred": "5326.38", "gold": "5326.38", "ok": 1, "val": 1.0}
+{"i": 1858, "pred": "2.46", "gold": "2.46", "ok": 1, "val": 1.0}
+{"i": 1859, "pred": "27.05", "gold": "27.05", "ok": 1, "val": 1.0}
+{"i": 1860, "pred": "2337", "gold": "2337", "ok": 1, "val": 1.0}
+{"i": 1861, "pred": "40.58", "gold": "40.58", "ok": 1, "val": 1.0}
+{"i": 1862, "pred": "150187", "gold": "150187", "ok": 1, "val": 1.0}
+{"i": 1863, "pred": "1413.68", "gold": "1413.68", "ok": 1, "val": 1.0}
+{"i": 1864, "pred": "111", "gold": "113", "ok": 1, "val": 1.0}
+{"i": 1865, "pred": "China", "gold": "China", "ok": 1, "val": 1.0}
+{"i": 1866, "pred": "1999", "gold": "1999", "ok": 1, "val": 1.0}
+{"i": 1867, "pred": " Walter Davis", "gold": "Walter Davis", "ok": 1, "val": 1.0}
+{"i": 1868, "pred": "18", "gold": "18", "ok": 1, "val": 1.0}
+{"i": 1869, "pred": "196", "gold": "196", "ok": 1, "val": 1.0}
+{"i": 1870, "pred": "Scotland", "gold": "Scotland", "ok": 1, "val": 1.0}
+{"i": 1871, "pred": " China", "gold": "China", "ok": 1, "val": 1.0}
+{"i": 1872, "pred": "462", "gold": "462", "ok": 1, "val": 1.0}
+{"i": 1873, "pred": "12.1", "gold": "12.1", "ok": 1, "val": 1.0}
+{"i": 1874, "pred": "678", "gold": "678", "ok": 1, "val": 1.0}
+{"i": 1875, "pred": "3.38", "gold": "3.38", "ok": 1, "val": 1.0}
+{"i": 1876, "pred": "212", "gold": "212", "ok": 1, "val": 1.0}
+{"i": 1877, "pred": "Franco Harris", "gold": "Franco Harris", "ok": 1, "val": 1.0}
+{"i": 1878, "pred": "July 2012", "gold": "July 2014", "ok": 1, "val": 1.0}
+{"i": 1879, "pred": "2007", "gold": "2007", "ok": 1, "val": 1.0}
+{"i": 1880, "pred": "1.53", "gold": "1.53", "ok": 1, "val": 1.0}
+{"i": 1881, "pred": "9.32", "gold": "9.32", "ok": 1, "val": 1.0}
+{"i": 1882, "pred": "102650", "gold": "102650", "ok": 1, "val": 1.0}
+{"i": 1883, "pred": "46832", "gold": "46832", "ok": 1, "val": 1.0}
+{"i": 1884, "pred": "19.3", "gold": "19.3", "ok": 1, "val": 1.0}
+{"i": 1885, "pred": "133", "gold": "133", "ok": 1, "val": 1.0}
+{"i": 1886, "pred": "2020", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 1887, "pred": "6.78", "gold": "6.78", "ok": 1, "val": 1.0}
+{"i": 1888, "pred": "3.56", "gold": "3.56", "ok": 1, "val": 1.0}
+{"i": 1889, "pred": " Leigh Griffiths", "gold": "Leigh Griffiths", "ok": 1, "val": 1.0}
+{"i": 1890, "pred": "32.92", "gold": "32.92", "ok": 1, "val": 1.0}
+{"i": 1891, "pred": "44.4", "gold": "44.4", "ok": 1, "val": 1.0}
+{"i": 1892, "pred": "120", "gold": "120", "ok": 1, "val": 1.0}
+{"i": 1893, "pred": " China", "gold": "China", "ok": 1, "val": 1.0}
+{"i": 1894, "pred": "60", "gold": "60", "ok": 1, "val": 1.0}
+{"i": 1895, "pred": " Rice", "gold": "Rice", "ok": 1, "val": 1.0}
+{"i": 1896, "pred": "117.79", "gold": "117.94", "ok": 1, "val": 1.0}
+{"i": 1897, "pred": "45", "gold": "45", "ok": 1, "val": 1.0}
+{"i": 1898, "pred": "March", "gold": "March", "ok": 1, "val": 1.0}
+{"i": 1899, "pred": "2.77", "gold": "2.77", "ok": 1, "val": 1.0}
+{"i": 1900, "pred": "2714", "gold": "2714", "ok": 1, "val": 1.0}
+{"i": 1901, "pred": "480.91", "gold": "481.55", "ok": 1, "val": 1.0}
+{"i": 1902, "pred": "2019", "gold": "2016", "ok": 1, "val": 1.0}
+{"i": 1903, "pred": "5.05", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 1904, "pred": "6313", "gold": "6313", "ok": 1, "val": 1.0}
+{"i": 1905, "pred": "39", "gold": "39", "ok": 1, "val": 1.0}
+{"i": 1906, "pred": "3521", "gold": "3521", "ok": 1, "val": 1.0}
+{"i": 1907, "pred": " Slovakia", "gold": "Slovakia", "ok": 1, "val": 1.0}
+{"i": 1908, "pred": " Montenegro", "gold": "France", "ok": 0, "val": 0.0}
+{"i": 1909, "pred": "14", "gold": "14", "ok": 1, "val": 1.0}
+{"i": 1910, "pred": "0.4", "gold": "0.4", "ok": 1, "val": 1.0}
+{"i": 1911, "pred": "51258", "gold": "51258", "ok": 1, "val": 1.0}
+{"i": 1912, "pred": "6.51", "gold": "6.5", "ok": 1, "val": 1.0}
+{"i": 1913, "pred": "177", "gold": "207.1", "ok": 0, "val": 0.0}
+{"i": 1914, "pred": "2016", "gold": "2011", "ok": 1, "val": 1.0}
+{"i": 1915, "pred": "19.4", "gold": "19.4", "ok": 1, "val": 1.0}
+{"i": 1916, "pred": "44.7", "gold": "44.7", "ok": 1, "val": 1.0}
+{"i": 1917, "pred": "11.51", "gold": "11.51", "ok": 1, "val": 1.0}
+{"i": 1918, "pred": "6.97", "gold": "6.97", "ok": 1, "val": 1.0}
+{"i": 1919, "pred": "307", "gold": "307", "ok": 1, "val": 1.0}
+{"i": 1920, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 1921, "pred": "971", "gold": "971", "ok": 1, "val": 1.0}
+{"i": 1922, "pred": "43.03", "gold": "43.03", "ok": 1, "val": 1.0}
+{"i": 1923, "pred": "3726.55", "gold": "3718.4", "ok": 1, "val": 1.0}
+{"i": 1924, "pred": "2012", "gold": "2012", "ok": 1, "val": 1.0}
+{"i": 1925, "pred": "68.4", "gold": "68.4", "ok": 1, "val": 1.0}
+{"i": 1926, "pred": "35.49", "gold": "35.49", "ok": 1, "val": 1.0}
+{"i": 1927, "pred": "2006", "gold": "2019", "ok": 1, "val": 1.0}
+{"i": 1928, "pred": "6.26", "gold": "6.26", "ok": 1, "val": 1.0}
+{"i": 1929, "pred": "11.9", "gold": "11.9", "ok": 1, "val": 1.0}
+{"i": 1930, "pred": "31", "gold": "31", "ok": 1, "val": 1.0}
+{"i": 1931, "pred": "3582", "gold": "3582", "ok": 1, "val": 1.0}
+{"i": 1932, "pred": "28", "gold": "28", "ok": 1, "val": 1.0}
+{"i": 1933, "pred": " United States", "gold": "United States", "ok": 1, "val": 1.0}
+{"i": 1934, "pred": "53", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 1935, "pred": "0.87", "gold": "0.87", "ok": 1, "val": 1.0}
+{"i": 1936, "pred": "March 2021", "gold": "March 2021", "ok": 1, "val": 1.0}
+{"i": 1937, "pred": "7.69", "gold": "7.69", "ok": 1, "val": 1.0}
+{"i": 1938, "pred": "September 2012", "gold": "September 2012", "ok": 1, "val": 1.0}
+{"i": 1939, "pred": "18.3", "gold": "18.3", "ok": 1, "val": 1.0}
+{"i": 1940, "pred": "Telstra", "gold": "Telstra", "ok": 1, "val": 1.0}
+{"i": 1941, "pred": "46.3", "gold": "46.3", "ok": 1, "val": 1.0}
+{"i": 1942, "pred": "100", "gold": "6.3", "ok": 0, "val": 0.0}
+{"i": 1943, "pred": "100", "gold": "100", "ok": 1, "val": 1.0}
+{"i": 1944, "pred": "50", "gold": "50", "ok": 1, "val": 1.0}
+{"i": 1945, "pred": "50", "gold": "29", "ok": 0, "val": 0.0}
+{"i": 1946, "pred": "51", "gold": "51", "ok": 1, "val": 1.0}
+{"i": 1947, "pred": "59.17", "gold": "59.17", "ok": 1, "val": 1.0}
+{"i": 1948, "pred": "8.73", "gold": "8.73", "ok": 1, "val": 1.0}
+{"i": 1949, "pred": "36.33", "gold": "36.33", "ok": 1, "val": 1.0}
+{"i": 1950, "pred": "53.62", "gold": "53.62", "ok": 1, "val": 1.0}
+{"i": 1951, "pred": "11.7", "gold": "11.7", "ok": 1, "val": 1.0}
+{"i": 1952, "pred": "90.04", "gold": "90.04", "ok": 1, "val": 1.0}
+{"i": 1953, "pred": "Credit cards", "gold": "Credit cards", "ok": 1, "val": 1.0}
+{"i": 1954, "pred": "23.6", "gold": "23.7", "ok": 1, "val": 1.0}
+{"i": 1955, "pred": "2.6", "gold": "2.6", "ok": 1, "val": 1.0}
+{"i": 1956, "pred": "1.82", "gold": "1.82", "ok": 1, "val": 1.0}
+{"i": 1957, "pred": "52", "gold": "52", "ok": 1, "val": 1.0}
+{"i": 1958, "pred": "140.9", "gold": "140.9", "ok": 1, "val": 1.0}
+{"i": 1959, "pred": "13100.2", "gold": "13100.2", "ok": 1, "val": 1.0}
+{"i": 1960, "pred": "42743", "gold": "42755", "ok": 1, "val": 1.0}
+{"i": 1961, "pred": "32722", "gold": "32702", "ok": 1, "val": 1.0}
+{"i": 1962, "pred": "0.86", "gold": "0.86", "ok": 1, "val": 1.0}
+{"i": 1963, "pred": "8", "gold": "13", "ok": 0, "val": 0.0}
+{"i": 1964, "pred": "13", "gold": "13", "ok": 1, "val": 1.0}
+{"i": 1965, "pred": "23", "gold": "23", "ok": 1, "val": 1.0}
+{"i": 1966, "pred": "2.5", "gold": "2.5", "ok": 1, "val": 1.0}
+{"i": 1967, "pred": "2015", "gold": "2021", "ok": 1, "val": 1.0}
+{"i": 1968, "pred": "2568603", "gold": "2582603", "ok": 1, "val": 1.0}
+{"i": 1969, "pred": "113612", "gold": "113114", "ok": 1, "val": 1.0}
+{"i": 1970, "pred": "101.88", "gold": "101.88", "ok": 1, "val": 1.0}
+{"i": 1971, "pred": "263.44", "gold": "263.44", "ok": 1, "val": 1.0}
+{"i": 1972, "pred": "18.09", "gold": "18.09", "ok": 1, "val": 1.0}
+{"i": 1973, "pred": "18.38", "gold": "18.38", "ok": 1, "val": 1.0}
+{"i": 1974, "pred": "18.4", "gold": "18.4", "ok": 1, "val": 1.0}
+{"i": 1975, "pred": "14.8", "gold": "14.8", "ok": 1, "val": 1.0}
+{"i": 1976, "pred": " Deuce McAllister", "gold": "Deuce McAllister", "ok": 1, "val": 1.0}
+{"i": 1977, "pred": "2717", "gold": "2717", "ok": 1, "val": 1.0}
+{"i": 1978, "pred": " Copa Airlines", "gold": "Copa Airlines", "ok": 1, "val": 1.0}
+{"i": 1979, "pred": "92.01", "gold": "92.01", "ok": 1, "val": 1.0}
+{"i": 1980, "pred": "35.3", "gold": "35.3", "ok": 1, "val": 1.0}
+{"i": 1981, "pred": "28.18", "gold": "28.18", "ok": 1, "val": 1.0}
+{"i": 1982, "pred": "63086", "gold": "63086", "ok": 1, "val": 1.0}
+{"i": 1983, "pred": "675000", "gold": "676411", "ok": 1, "val": 1.0}
+{"i": 1984, "pred": "508000", "gold": "509175", "ok": 1, "val": 1.0}
+{"i": 1985, "pred": "2.82", "gold": "2.82", "ok": 1, "val": 1.0}
+{"i": 1986, "pred": "0.2", "gold": "0.1", "ok": 0, "val": 0.0}
+{"i": 1987, "pred": "2020", "gold": "2022", "ok": 1, "val": 1.0}
+{"i": 1988, "pred": "6.04", "gold": "6.04", "ok": 1, "val": 1.0}
+{"i": 1989, "pred": "346.1", "gold": "346.1", "ok": 1, "val": 1.0}
+{"i": 1990, "pred": "189.2", "gold": "189.2", "ok": 1, "val": 1.0}
+{"i": 1991, "pred": "10.6", "gold": "10.6", "ok": 1, "val": 1.0}
+{"i": 1992, "pred": "776", "gold": "776", "ok": 1, "val": 1.0}
+{"i": 1993, "pred": "60668", "gold": "60668", "ok": 1, "val": 1.0}
+{"i": 1994, "pred": "113454", "gold": "113454", "ok": 1, "val": 1.0}
+{"i": 1995, "pred": "12.8", "gold": "12.8", "ok": 1, "val": 1.0}
+{"i": 1996, "pred": "583", "gold": "583", "ok": 1, "val": 1.0}
+{"i": 1997, "pred": "235", "gold": "235", "ok": 1, "val": 1.0}
+{"i": 1998, "pred": "9.1", "gold": "9.1", "ok": 1, "val": 1.0}
+{"i": 1999, "pred": "3760", "gold": "3710", "ok": 1, "val": 1.0}
+{"i": 2000, "pred": "21", "gold": "21", "ok": 1, "val": 1.0}
+{"i": 2001, "pred": "Conservative", "gold": "Conservative", "ok": 1, "val": 1.0}
+{"i": 2002, "pred": "362.05", "gold": "362.05", "ok": 1, "val": 1.0}
+{"i": 2003, "pred": "4.53", "gold": "4.53", "ok": 1, "val": 1.0}
+{"i": 2004, "pred": "2.7", "gold": "2.7", "ok": 1, "val": 1.0}
+{"i": 2005, "pred": "Ontario", "gold": "Ontario", "ok": 1, "val": 1.0}
+{"i": 2006, "pred": "468", "gold": "468", "ok": 1, "val": 1.0}
+{"i": 2007, "pred": "36", "gold": "36", "ok": 1, "val": 1.0}
+{"i": 2008, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 2009, "pred": "31780", "gold": "31780", "ok": 1, "val": 1.0}
+{"i": 2010, "pred": "16230", "gold": "16230", "ok": 1, "val": 1.0}
+{"i": 2011, "pred": "12.47", "gold": "12.47", "ok": 1, "val": 1.0}
+{"i": 2012, "pred": "19.14", "gold": "19.14", "ok": 1, "val": 1.0}
+{"i": 2013, "pred": "23.89", "gold": "23.31", "ok": 1, "val": 1.0}
+{"i": 2014, "pred": "1986", "gold": "1986", "ok": 1, "val": 1.0}
+{"i": 2015, "pred": "422.22", "gold": "419.35", "ok": 1, "val": 1.0}
+{"i": 2016, "pred": "2.6", "gold": "2.6", "ok": 1, "val": 1.0}
+{"i": 2017, "pred": "17.19", "gold": "17.19", "ok": 1, "val": 1.0}
+{"i": 2018, "pred": "19.27", "gold": "19.27", "ok": 1, "val": 1.0}
+{"i": 2019, "pred": "122", "gold": "31", "ok": 0, "val": 0.0}
+{"i": 2020, "pred": "0-14", "gold": "0-14", "ok": 1, "val": 1.0}
+{"i": 2021, "pred": " Tony Gonzalez", "gold": "Tony Gonzalez", "ok": 1, "val": 1.0}
+{"i": 2022, "pred": "55.5", "gold": "55.5", "ok": 1, "val": 1.0}
+{"i": 2023, "pred": " Hal Greer", "gold": "Hal Greer", "ok": 1, "val": 1.0}
+{"i": 2024, "pred": "317", "gold": "317", "ok": 1, "val": 1.0}
+{"i": 2025, "pred": "George Brett", "gold": "George Brett", "ok": 1, "val": 1.0}
+{"i": 2026, "pred": "249.5", "gold": "249.5", "ok": 1, "val": 1.0}
+{"i": 2027, "pred": "7.9", "gold": "7.9", "ok": 1, "val": 1.0}
+{"i": 2028, "pred": "20.4", "gold": "20.4", "ok": 1, "val": 1.0}
+{"i": 2029, "pred": "238", "gold": "238", "ok": 1, "val": 1.0}
+{"i": 2030, "pred": "372532", "gold": "372532", "ok": 1, "val": 1.0}
+{"i": 2031, "pred": "133.21", "gold": "132.7", "ok": 1, "val": 1.0}
+{"i": 2032, "pred": "10.1", "gold": "10.1", "ok": 1, "val": 1.0}
+{"i": 2033, "pred": "189", "gold": "189", "ok": 1, "val": 1.0}
+{"i": 2034, "pred": "687", "gold": "687", "ok": 1, "val": 1.0}
+{"i": 2035, "pred": " China", "gold": "China", "ok": 1, "val": 1.0}
+{"i": 2036, "pred": "114.7", "gold": "114.7", "ok": 1, "val": 1.0}
+{"i": 2037, "pred": "4285.7", "gold": "4285.7", "ok": 1, "val": 1.0}
+{"i": 2038, "pred": "3.3", "gold": "3.3", "ok": 1, "val": 1.0}
+{"i": 2039, "pred": "211", "gold": "211", "ok": 1, "val": 1.0}
+{"i": 2040, "pred": "74", "gold": "74", "ok": 1, "val": 1.0}
+{"i": 2041, "pred": "238.4", "gold": "238.4", "ok": 1, "val": 1.0}
+{"i": 2042, "pred": "916.58", "gold": "916.58", "ok": 1, "val": 1.0}
+{"i": 2043, "pred": "344.2", "gold": "258.4", "ok": 0, "val": 0.0}
+{"i": 2044, "pred": "2013", "gold": "2013", "ok": 1, "val": 1.0}
+{"i": 2045, "pred": "1297.51", "gold": "1297.51", "ok": 1, "val": 1.0}
+{"i": 2046, "pred": "37.08", "gold": "37.08", "ok": 1, "val": 1.0}
+{"i": 2047, "pred": "1910.4", "gold": "1923.63", "ok": 1, "val": 1.0}
+{"i": 2048, "pred": "636", "gold": "636", "ok": 1, "val": 1.0}
+{"i": 2049, "pred": "1502", "gold": "1502", "ok": 1, "val": 1.0}
+{"i": 2050, "pred": "531.6", "gold": "531.6", "ok": 1, "val": 1.0}
+{"i": 2051, "pred": "Greggs", "gold": "Greggs", "ok": 1, "val": 1.0}
+{"i": 2052, "pred": "199", "gold": "199", "ok": 1, "val": 1.0}
+{"i": 2053, "pred": "233851", "gold": "233851", "ok": 1, "val": 1.0}
+{"i": 2054, "pred": "80.1", "gold": "80.1", "ok": 1, "val": 1.0}
+{"i": 2055, "pred": "43.13", "gold": "43.13", "ok": 1, "val": 1.0}
+{"i": 2056, "pred": " Iran", "gold": "Saudi Arabia", "ok": 0, "val": 0.0}
+{"i": 2057, "pred": "19407.2", "gold": "19407.2", "ok": 1, "val": 1.0}
+{"i": 2058, "pred": "16.47", "gold": "16.47", "ok": 1, "val": 1.0}
+{"i": 2059, "pred": "142.5", "gold": "142.5", "ok": 1, "val": 1.0}
+{"i": 2060, "pred": "106.4", "gold": "106.4", "ok": 1, "val": 1.0}
+{"i": 2061, "pred": "138.9", "gold": "138.9", "ok": 1, "val": 1.0}
+{"i": 2062, "pred": "Lisbon", "gold": "Lisbon", "ok": 1, "val": 1.0}
+{"i": 2063, "pred": "9527", "gold": "9527", "ok": 1, "val": 1.0}
+{"i": 2064, "pred": "3.2", "gold": "3.2", "ok": 1, "val": 1.0}
+{"i": 2065, "pred": "2.1", "gold": "1.1", "ok": 0, "val": 0.0}
+{"i": 2066, "pred": "67.31", "gold": "67.31", "ok": 1, "val": 1.0}
+{"i": 2067, "pred": " Nash Grier", "gold": "Nash Grier", "ok": 1, "val": 1.0}
+{"i": 2068, "pred": "57.16", "gold": "57.16", "ok": 1, "val": 1.0}
+{"i": 2069, "pred": "470862", "gold": "470862", "ok": 1, "val": 1.0}
+{"i": 2070, "pred": "322624", "gold": "322817", "ok": 1, "val": 1.0}
+{"i": 2071, "pred": "2.76", "gold": "2.76", "ok": 1, "val": 1.0}
+{"i": 2072, "pred": "47.47", "gold": "47.47", "ok": 1, "val": 1.0}
+{"i": 2073, "pred": "2015", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 2074, "pred": "64.9", "gold": "64.9", "ok": 1, "val": 1.0}
+{"i": 2075, "pred": "2011", "gold": "2011", "ok": 1, "val": 1.0}
+{"i": 2076, "pred": "0.18", "gold": "0.18", "ok": 1, "val": 1.0}
+{"i": 2077, "pred": "39.9", "gold": "39.9", "ok": 1, "val": 1.0}
+{"i": 2078, "pred": "194.7", "gold": "194.7", "ok": 1, "val": 1.0}
+{"i": 2079, "pred": "1986", "gold": "1986", "ok": 1, "val": 1.0}
+{"i": 2080, "pred": "25.06", "gold": "25.06", "ok": 1, "val": 1.0}
+{"i": 2081, "pred": "37.1", "gold": "37.1", "ok": 1, "val": 1.0}
+{"i": 2082, "pred": "9.07", "gold": "9.07", "ok": 1, "val": 1.0}
+{"i": 2083, "pred": "43", "gold": "43", "ok": 1, "val": 1.0}
+{"i": 2084, "pred": "4762", "gold": "4762", "ok": 1, "val": 1.0}
+{"i": 2085, "pred": "5.9", "gold": "5.9", "ok": 1, "val": 1.0}
+{"i": 2086, "pred": "8.1", "gold": "8.1", "ok": 1, "val": 1.0}
+{"i": 2087, "pred": "11767", "gold": "11767", "ok": 1, "val": 1.0}
+{"i": 2088, "pred": " Paris-Charles-de-Gaulle", "gold": "Paris-Charles-de-Gaulle", "ok": 1, "val": 1.0}
+{"i": 2089, "pred": "26.37", "gold": "26.37", "ok": 1, "val": 1.0}
+{"i": 2090, "pred": "1342", "gold": "1342", "ok": 1, "val": 1.0}
+{"i": 2091, "pred": "HTML", "gold": "HTML", "ok": 1, "val": 1.0}
+{"i": 2092, "pred": "21.1", "gold": "21.1", "ok": 1, "val": 1.0}
+{"i": 2093, "pred": "1.4", "gold": "1.6", "ok": 0, "val": 0.0}
+{"i": 2094, "pred": "41.11", "gold": "41.11", "ok": 1, "val": 1.0}
+{"i": 2095, "pred": "581", "gold": "581", "ok": 1, "val": 1.0}
+{"i": 2096, "pred": "26.81", "gold": "26.81", "ok": 1, "val": 1.0}
+{"i": 2097, "pred": "Indonesia", "gold": "Indonesia", "ok": 1, "val": 1.0}
+{"i": 2098, "pred": "2.4", "gold": "2.4", "ok": 1, "val": 1.0}
+{"i": 2099, "pred": "3.6", "gold": "3.6", "ok": 1, "val": 1.0}
+{"i": 2100, "pred": "47.9", "gold": "47.9", "ok": 1, "val": 1.0}
+{"i": 2101, "pred": "41.8", "gold": "41.8", "ok": 1, "val": 1.0}
+{"i": 2102, "pred": "1.41", "gold": "1.41", "ok": 1, "val": 1.0}
+{"i": 2103, "pred": "410849", "gold": "410849", "ok": 1, "val": 1.0}
+{"i": 2104, "pred": "20.9", "gold": "20.9", "ok": 1, "val": 1.0}
+{"i": 2105, "pred": "104.73", "gold": "104.73", "ok": 1, "val": 1.0}
+{"i": 2106, "pred": "53.41", "gold": "53.41", "ok": 1, "val": 1.0}
+{"i": 2107, "pred": "24.6", "gold": "24.6", "ok": 1, "val": 1.0}
+{"i": 2108, "pred": "67.9", "gold": "67.9", "ok": 1, "val": 1.0}
+{"i": 2109, "pred": "32.5", "gold": "32.5", "ok": 1, "val": 1.0}
+{"i": 2110, "pred": "9.6", "gold": "9.6", "ok": 1, "val": 1.0}
+{"i": 2111, "pred": "28.23", "gold": "28.23", "ok": 1, "val": 1.0}
+{"i": 2112, "pred": "12", "gold": "12", "ok": 1, "val": 1.0}
+{"i": 2113, "pred": "439.47", "gold": "439.37", "ok": 1, "val": 1.0}
+{"i": 2114, "pred": "520", "gold": "517", "ok": 1, "val": 1.0}
+{"i": 2115, "pred": "18.1", "gold": "18.1", "ok": 1, "val": 1.0}
+{"i": 2116, "pred": "4592", "gold": "4592", "ok": 1, "val": 1.0}
+{"i": 2117, "pred": " Thailand", "gold": "Thailand", "ok": 1, "val": 1.0}
+{"i": 2118, "pred": "1413640", "gold": "1413640", "ok": 1, "val": 1.0}
+{"i": 2119, "pred": " na-kd.com", "gold": "na-kd.com", "ok": 1, "val": 1.0}
+{"i": 2120, "pred": "1116.12", "gold": "1115.7", "ok": 1, "val": 1.0}
+{"i": 2121, "pred": "29.44", "gold": "29.44", "ok": 1, "val": 1.0}
+{"i": 2122, "pred": "China", "gold": "China", "ok": 1, "val": 1.0}
+{"i": 2123, "pred": " New Jersey", "gold": "New Jersey", "ok": 1, "val": 1.0}
+{"i": 2124, "pred": "Codelco", "gold": "Codelco", "ok": 1, "val": 1.0}
+{"i": 2125, "pred": "Glencore", "gold": "Glencore", "ok": 1, "val": 1.0}
+{"i": 2126, "pred": "91", "gold": "91", "ok": 1, "val": 1.0}
+{"i": 2127, "pred": "456.4", "gold": "456.4", "ok": 1, "val": 1.0}
+{"i": 2128, "pred": "10519", "gold": "10519", "ok": 1, "val": 1.0}
+{"i": 2129, "pred": "4362.5", "gold": "4362.5", "ok": 1, "val": 1.0}
+{"i": 2130, "pred": "68.08", "gold": "68.08", "ok": 1, "val": 1.0}
+{"i": 2131, "pred": "1.45", "gold": "1.45", "ok": 1, "val": 1.0}
+{"i": 2132, "pred": "1.14", "gold": "1.14", "ok": 1, "val": 1.0}
+{"i": 2133, "pred": "13746", "gold": "13746", "ok": 1, "val": 1.0}
+{"i": 2134, "pred": "30.45", "gold": "30.45", "ok": 1, "val": 1.0}
+{"i": 2135, "pred": "645", "gold": "645", "ok": 1, "val": 1.0}
+{"i": 2136, "pred": "791", "gold": "791", "ok": 1, "val": 1.0}
+{"i": 2137, "pred": "37.91", "gold": "37.91", "ok": 1, "val": 1.0}
+{"i": 2138, "pred": "120", "gold": "120", "ok": 1, "val": 1.0}
+{"i": 2139, "pred": "18", "gold": "18", "ok": 1, "val": 1.0}
+{"i": 2140, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 2141, "pred": "16.1", "gold": "16.1", "ok": 1, "val": 1.0}
+{"i": 2142, "pred": "16.1", "gold": "16.1", "ok": 1, "val": 1.0}
+{"i": 2143, "pred": "31.8", "gold": "31.7", "ok": 1, "val": 1.0}
+{"i": 2144, "pred": "34.01", "gold": "34.01", "ok": 1, "val": 1.0}
+{"i": 2145, "pred": "3781", "gold": "3781", "ok": 1, "val": 1.0}
+{"i": 2146, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 2147, "pred": "3.39", "gold": "3.39", "ok": 1, "val": 1.0}
+{"i": 2148, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 2149, "pred": "36", "gold": "36", "ok": 1, "val": 1.0}
+{"i": 2150, "pred": "39.8", "gold": "39.8", "ok": 1, "val": 1.0}
+{"i": 2151, "pred": "634", "gold": "634", "ok": 1, "val": 1.0}
+{"i": 2152, "pred": "22.9", "gold": "22.9", "ok": 1, "val": 1.0}
+{"i": 2153, "pred": " Todd Helton", "gold": "Todd Helton", "ok": 1, "val": 1.0}
+{"i": 2154, "pred": "72", "gold": "72", "ok": 1, "val": 1.0}
+{"i": 2155, "pred": "75.45", "gold": "75.54", "ok": 1, "val": 1.0}
+{"i": 2156, "pred": "85", "gold": "85", "ok": 1, "val": 1.0}
+{"i": 2157, "pred": "18", "gold": "18", "ok": 1, "val": 1.0}
+{"i": 2158, "pred": "306.23", "gold": "306.23", "ok": 1, "val": 1.0}
+{"i": 2159, "pred": "151.85", "gold": "151.85", "ok": 1, "val": 1.0}
+{"i": 2160, "pred": " Bosnia and Herzegovina", "gold": "Hungary", "ok": 0, "val": 0.0}
+{"i": 2161, "pred": "336.6", "gold": "336.6", "ok": 1, "val": 1.0}
+{"i": 2162, "pred": "356.4", "gold": "356.4", "ok": 1, "val": 1.0}
+{"i": 2163, "pred": "84", "gold": "84", "ok": 1, "val": 1.0}
+{"i": 2164, "pred": "1985", "gold": "1985", "ok": 1, "val": 1.0}
+{"i": 2165, "pred": "3.86", "gold": "3.86", "ok": 1, "val": 1.0}
+{"i": 2166, "pred": "124.51", "gold": "124.65", "ok": 1, "val": 1.0}
+{"i": 2167, "pred": "1.88", "gold": "1.88", "ok": 1, "val": 1.0}
+{"i": 2168, "pred": "442", "gold": "442", "ok": 1, "val": 1.0}
+{"i": 2169, "pred": "329", "gold": "329", "ok": 1, "val": 1.0}
+{"i": 2170, "pred": "352.21", "gold": "352.21", "ok": 1, "val": 1.0}
+{"i": 2171, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 2172, "pred": "471", "gold": "471", "ok": 1, "val": 1.0}
+{"i": 2173, "pred": "373", "gold": "373", "ok": 1, "val": 1.0}
+{"i": 2174, "pred": "223", "gold": "223", "ok": 1, "val": 1.0}
+{"i": 2175, "pred": "1126.83", "gold": "1125", "ok": 1, "val": 1.0}
+{"i": 2176, "pred": "883", "gold": "883", "ok": 1, "val": 1.0}
+{"i": 2177, "pred": " China", "gold": "China", "ok": 1, "val": 1.0}
+{"i": 2178, "pred": "194.7", "gold": "194.3", "ok": 1, "val": 1.0}
+{"i": 2179, "pred": "112.6", "gold": "112.6", "ok": 1, "val": 1.0}
+{"i": 2180, "pred": "11.87", "gold": "11.87", "ok": 1, "val": 1.0}
+{"i": 2181, "pred": "2.92", "gold": "2.92", "ok": 1, "val": 1.0}
+{"i": 2182, "pred": "2.66", "gold": "2.66", "ok": 1, "val": 1.0}
+{"i": 2183, "pred": "2819.63", "gold": "2819.63", "ok": 1, "val": 1.0}
+{"i": 2184, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 2185, "pred": "38884", "gold": "8544", "ok": 0, "val": 0.0}
+{"i": 2186, "pred": "7.3", "gold": "7.3", "ok": 1, "val": 1.0}
+{"i": 2187, "pred": "733", "gold": "733", "ok": 1, "val": 1.0}
+{"i": 2188, "pred": " Hank Aaron", "gold": "Hank Aaron", "ok": 1, "val": 1.0}
+{"i": 2189, "pred": "2012", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 2190, "pred": "28.31", "gold": "28.31", "ok": 1, "val": 1.0}
+{"i": 2191, "pred": "3.89", "gold": "3.89", "ok": 1, "val": 1.0}
+{"i": 2192, "pred": "56.6", "gold": "56.6", "ok": 1, "val": 1.0}
+{"i": 2193, "pred": "51.1", "gold": "51.1", "ok": 1, "val": 1.0}
+{"i": 2194, "pred": "70.85", "gold": "71", "ok": 1, "val": 1.0}
+{"i": 2195, "pred": "100", "gold": "100", "ok": 1, "val": 1.0}
+{"i": 2196, "pred": "15702", "gold": "15702", "ok": 1, "val": 1.0}
+{"i": 2197, "pred": "47158", "gold": "47158", "ok": 1, "val": 1.0}
+{"i": 2198, "pred": "2020/2021", "gold": "2020/2021", "ok": 1, "val": 1.0}
+{"i": 2199, "pred": "4.44", "gold": "4.44", "ok": 1, "val": 1.0}
+{"i": 2200, "pred": "5.33", "gold": "5.33", "ok": 1, "val": 1.0}
+{"i": 2201, "pred": "77", "gold": "77", "ok": 1, "val": 1.0}
+{"i": 2202, "pred": "36282", "gold": "36282", "ok": 1, "val": 1.0}
+{"i": 2203, "pred": "2281", "gold": "2281", "ok": 1, "val": 1.0}
+{"i": 2204, "pred": "32665", "gold": "32665", "ok": 1, "val": 1.0}
+{"i": 2205, "pred": "5", "gold": "5", "ok": 1, "val": 1.0}
+{"i": 2206, "pred": "244", "gold": "244", "ok": 1, "val": 1.0}
+{"i": 2207, "pred": "37", "gold": "37", "ok": 1, "val": 1.0}
+{"i": 2208, "pred": "2.27", "gold": "2.27", "ok": 1, "val": 1.0}
+{"i": 2209, "pred": "19061", "gold": "19098", "ok": 1, "val": 1.0}
+{"i": 2210, "pred": "20600", "gold": "20656", "ok": 1, "val": 1.0}
+{"i": 2211, "pred": "55382.5", "gold": "55382.5", "ok": 1, "val": 1.0}
+{"i": 2212, "pred": "45804", "gold": "45804", "ok": 1, "val": 1.0}
+{"i": 2213, "pred": "6536", "gold": "6536", "ok": 1, "val": 1.0}
+{"i": 2214, "pred": "9562", "gold": "9562", "ok": 1, "val": 1.0}
+{"i": 2215, "pred": "1273.27", "gold": "1273.27", "ok": 1, "val": 1.0}
+{"i": 2216, "pred": "17858", "gold": "17858", "ok": 1, "val": 1.0}
+{"i": 2217, "pred": "9181", "gold": "9181", "ok": 1, "val": 1.0}
+{"i": 2218, "pred": "18.8", "gold": "18.8", "ok": 1, "val": 1.0}
+{"i": 2219, "pred": "16.9", "gold": "16.9", "ok": 1, "val": 1.0}
+{"i": 2220, "pred": "WhatsApp", "gold": "WhatsApp", "ok": 1, "val": 1.0}
+{"i": 2221, "pred": "8.39", "gold": "8.39", "ok": 1, "val": 1.0}
+{"i": 2222, "pred": "1", "gold": "1", "ok": 1, "val": 1.0}
+{"i": 2223, "pred": "7", "gold": "7", "ok": 1, "val": 1.0}
+{"i": 2224, "pred": "65.38", "gold": "65.38", "ok": 1, "val": 1.0}
+{"i": 2225, "pred": "667.6", "gold": "667.61", "ok": 1, "val": 1.0}
+{"i": 2226, "pred": "MTV", "gold": "MTV", "ok": 1, "val": 1.0}
+{"i": 2227, "pred": "2006/07", "gold": "2006/07", "ok": 1, "val": 1.0}
+{"i": 2228, "pred": "6085.7", "gold": "6085.7", "ok": 1, "val": 1.0}
+{"i": 2229, "pred": "19921", "gold": "19921", "ok": 1, "val": 1.0}
+{"i": 2230, "pred": "171.8", "gold": "171.8", "ok": 1, "val": 1.0}
+{"i": 2231, "pred": "319", "gold": "319", "ok": 1, "val": 1.0}
+{"i": 2232, "pred": "126", "gold": "126", "ok": 1, "val": 1.0}
+{"i": 2233, "pred": " British Columbia", "gold": "British Columbia", "ok": 1, "val": 1.0}
+{"i": 2234, "pred": "108.9", "gold": "108.9", "ok": 1, "val": 1.0}
+{"i": 2235, "pred": "20526", "gold": "20526", "ok": 1, "val": 1.0}
+{"i": 2236, "pred": "Sudan", "gold": "Sudan", "ok": 1, "val": 1.0}
+{"i": 2237, "pred": "907", "gold": "907", "ok": 1, "val": 1.0}
+{"i": 2238, "pred": " Franco Harris", "gold": "Franco Harris", "ok": 1, "val": 1.0}
+{"i": 2239, "pred": "100", "gold": "100", "ok": 1, "val": 1.0}
+{"i": 2240, "pred": "557", "gold": "557", "ok": 1, "val": 1.0}
+{"i": 2241, "pred": "41", "gold": "41", "ok": 1, "val": 1.0}
+{"i": 2242, "pred": "Hermes", "gold": "Hermes", "ok": 1, "val": 1.0}
+{"i": 2243, "pred": "143.4", "gold": "143.4", "ok": 1, "val": 1.0}
+{"i": 2244, "pred": "1615.6", "gold": "1615.6", "ok": 1, "val": 1.0}
+{"i": 2245, "pred": "2017", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 2246, "pred": "32.3", "gold": "32.3", "ok": 1, "val": 1.0}
+{"i": 2247, "pred": "Western Digital", "gold": "Western Digital", "ok": 1, "val": 1.0}
+{"i": 2248, "pred": "11", "gold": "11", "ok": 1, "val": 1.0}
+{"i": 2249, "pred": "257", "gold": "257", "ok": 1, "val": 1.0}
+{"i": 2250, "pred": " Schitt's Creek", "gold": "Schitt's Creek", "ok": 1, "val": 1.0}
+{"i": 2251, "pred": "2.29", "gold": "2.29", "ok": 1, "val": 1.0}
+{"i": 2252, "pred": "2020", "gold": "2020", "ok": 1, "val": 1.0}
+{"i": 2253, "pred": "4.28", "gold": "4.28", "ok": 1, "val": 1.0}
+{"i": 2254, "pred": "180.3", "gold": "180.3", "ok": 1, "val": 1.0}
+{"i": 2255, "pred": "41.78", "gold": "41.78", "ok": 1, "val": 1.0}
+{"i": 2256, "pred": "7.7", "gold": "7.7", "ok": 1, "val": 1.0}
+{"i": 2257, "pred": " Radio Times", "gold": "Radio Times", "ok": 1, "val": 1.0}
+{"i": 2258, "pred": "176.19", "gold": "176.19", "ok": 1, "val": 1.0}
+{"i": 2259, "pred": "5.23", "gold": "5.23", "ok": 1, "val": 1.0}
+{"i": 2260, "pred": "316", "gold": "316", "ok": 1, "val": 1.0}
+{"i": 2261, "pred": "267589", "gold": "267579", "ok": 1, "val": 1.0}
+{"i": 2262, "pred": "1.48", "gold": "1.48", "ok": 1, "val": 1.0}
+{"i": 2263, "pred": "53", "gold": "53", "ok": 1, "val": 1.0}
+{"i": 2264, "pred": " Michael Jordan", "gold": "Michael Jordan", "ok": 1, "val": 1.0}
+{"i": 2265, "pred": "42.4", "gold": "42.4", "ok": 1, "val": 1.0}
+{"i": 2266, "pred": "30.1", "gold": "30.1", "ok": 1, "val": 1.0}
+{"i": 2267, "pred": "629.19", "gold": "627.31", "ok": 1, "val": 1.0}
+{"i": 2268, "pred": "100185", "gold": "100185", "ok": 1, "val": 1.0}
+{"i": 2269, "pred": "8.6", "gold": "8.6", "ok": 1, "val": 1.0}
+{"i": 2270, "pred": "1.8", "gold": "1.8", "ok": 1, "val": 1.0}
+{"i": 2271, "pred": "5.1", "gold": "5.1", "ok": 1, "val": 1.0}
+{"i": 2272, "pred": "3.42", "gold": "3.42", "ok": 1, "val": 1.0}
+{"i": 2273, "pred": "0.35", "gold": "0.35", "ok": 1, "val": 1.0}
+{"i": 2274, "pred": " Bridal Guide", "gold": "Bridal Guide", "ok": 1, "val": 1.0}
+{"i": 2275, "pred": "69.88", "gold": "69.88", "ok": 1, "val": 1.0}
+{"i": 2276, "pred": "10.25", "gold": "10.25", "ok": 1, "val": 1.0}
+{"i": 2277, "pred": "7.3", "gold": "7.3", "ok": 1, "val": 1.0}
+{"i": 2278, "pred": "37.5", "gold": "37.5", "ok": 1, "val": 1.0}
+{"i": 2279, "pred": "809.6", "gold": "810", "ok": 1, "val": 1.0}
+{"i": 2280, "pred": "652.9", "gold": "656", "ok": 1, "val": 1.0}
+{"i": 2281, "pred": "180.77", "gold": "180.77", "ok": 1, "val": 1.0}
+{"i": 2282, "pred": "2011", "gold": "2017", "ok": 1, "val": 1.0}
+{"i": 2283, "pred": "32.18", "gold": "32.18", "ok": 1, "val": 1.0}
+{"i": 2284, "pred": "282", "gold": "282", "ok": 1, "val": 1.0}
+{"i": 2285, "pred": "21.6", "gold": "21.6", "ok": 1, "val": 1.0}
+{"i": 2286, "pred": "51.1", "gold": "51.1", "ok": 1, "val": 1.0}
+{"i": 2287, "pred": "23.8", "gold": "23.8", "ok": 1, "val": 1.0}
+{"i": 2288, "pred": "1.75", "gold": "1.75", "ok": 1, "val": 1.0}
+{"i": 2289, "pred": "5.8", "gold": "5.8", "ok": 1, "val": 1.0}
+{"i": 2290, "pred": "2.4", "gold": "1.6", "ok": 0, "val": 0.0}
+{"i": 2291, "pred": "98.71", "gold": "98.7", "ok": 1, "val": 1.0}
+{"i": 2292, "pred": "696", "gold": "696", "ok": 1, "val": 1.0}
+{"i": 2293, "pred": " London", "gold": "London", "ok": 1, "val": 1.0}
+{"i": 2294, "pred": "212.92", "gold": "212.92", "ok": 1, "val": 1.0}
+{"i": 2295, "pred": "448.8", "gold": "448.8", "ok": 1, "val": 1.0}
+{"i": 2296, "pred": " Land Rover", "gold": "Land Rover", "ok": 1, "val": 1.0}
+{"i": 2297, "pred": "6521", "gold": "6521", "ok": 1, "val": 1.0}
+{"i": 2298, "pred": "23.8", "gold": "23.8", "ok": 1, "val": 1.0}
+{"i": 2299, "pred": "147.7", "gold": "147.7", "ok": 1, "val": 1.0}
+{"i": 2300, "pred": "51", "gold": "51", "ok": 1, "val": 1.0}
+{"i": 2301, "pred": " Android", "gold": "Android", "ok": 1, "val": 1.0}
+{"i": 2302, "pred": "1189", "gold": "1189", "ok": 1, "val": 1.0}
+{"i": 2303, "pred": "460.72", "gold": "460.72", "ok": 1, "val": 1.0}
+{"i": 2304, "pred": "83.6", "gold": "83.6", "ok": 1, "val": 1.0}
+{"i": 2305, "pred": "12.15", "gold": "12.15", "ok": 1, "val": 1.0}
+{"i": 2306, "pred": "14.36", "gold": "14.36", "ok": 1, "val": 1.0}
+{"i": 2307, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 2308, "pred": "652.68", "gold": "653.98", "ok": 1, "val": 1.0}
+{"i": 2309, "pred": " EssilorLuxottica", "gold": "EssilorLuxottica", "ok": 1, "val": 1.0}
+{"i": 2310, "pred": "Medicaid", "gold": "Medicaid", "ok": 1, "val": 1.0}
+{"i": 2311, "pred": " India", "gold": "India", "ok": 1, "val": 1.0}
+{"i": 2312, "pred": "2818", "gold": "2818", "ok": 1, "val": 1.0}
+{"i": 2313, "pred": "11209", "gold": "11209", "ok": 1, "val": 1.0}
+{"i": 2314, "pred": "23.68", "gold": "23.68", "ok": 1, "val": 1.0}
+{"i": 2315, "pred": "126", "gold": "126", "ok": 1, "val": 1.0}
+{"i": 2316, "pred": "9.48", "gold": "9.48", "ok": 1, "val": 1.0}
+{"i": 2317, "pred": "30", "gold": "30", "ok": 1, "val": 1.0}
+{"i": 2318, "pred": "3.31", "gold": "3.31", "ok": 1, "val": 1.0}
+{"i": 2319, "pred": "46.6", "gold": "46.6", "ok": 1, "val": 1.0}
+{"i": 2320, "pred": "429", "gold": "429", "ok": 1, "val": 1.0}
+{"i": 2321, "pred": "870.03", "gold": "870.03", "ok": 1, "val": 1.0}
+{"i": 2322, "pred": "891.59", "gold": "891.59", "ok": 1, "val": 1.0}
+{"i": 2323, "pred": "2057.6", "gold": "2057.6", "ok": 1, "val": 1.0}
+{"i": 2324, "pred": "1812", "gold": "1812", "ok": 1, "val": 1.0}
+{"i": 2325, "pred": "12546", "gold": "12546", "ok": 1, "val": 1.0}
+{"i": 2326, "pred": "6404", "gold": "6404", "ok": 1, "val": 1.0}
+{"i": 2327, "pred": "2080", "gold": "2111", "ok": 1, "val": 1.0}
+{"i": 2328, "pred": "568.58", "gold": "568.58", "ok": 1, "val": 1.0}
+{"i": 2329, "pred": "534.3", "gold": "534.3", "ok": 1, "val": 1.0}
+{"i": 2330, "pred": "Espoo", "gold": "Tampere", "ok": 0, "val": 0.0}
+{"i": 2331, "pred": "656920", "gold": "656920", "ok": 1, "val": 1.0}
+{"i": 2332, "pred": "48082", "gold": "48082", "ok": 1, "val": 1.0}
+{"i": 2333, "pred": "39625", "gold": "39625", "ok": 1, "val": 1.0}
+{"i": 2334, "pred": "197", "gold": "197", "ok": 1, "val": 1.0}
+{"i": 2335, "pred": " Stanley Black & Decker", "gold": "Stanley Black & Decker", "ok": 1, "val": 1.0}
+{"i": 2336, "pred": "8.41", "gold": "8.41", "ok": 1, "val": 1.0}
+{"i": 2337, "pred": "1128.6", "gold": "1130.2", "ok": 1, "val": 1.0}
+{"i": 2338, "pred": "37827", "gold": "27935", "ok": 0, "val": 0.0}
+{"i": 2339, "pred": "90.77", "gold": "90.77", "ok": 1, "val": 1.0}
+{"i": 2340, "pred": "362", "gold": "362", "ok": 1, "val": 1.0}
+{"i": 2341, "pred": "285", "gold": "285", "ok": 1, "val": 1.0}
+{"i": 2342, "pred": " Real Madrid CF", "gold": "Real Madrid CF", "ok": 1, "val": 1.0}
+{"i": 2343, "pred": "451", "gold": "451", "ok": 1, "val": 1.0}
+{"i": 2344, "pred": "1385.95", "gold": "1385.95", "ok": 1, "val": 1.0}
+{"i": 2345, "pred": "1198.22", "gold": "1198.22", "ok": 1, "val": 1.0}
+{"i": 2346, "pred": "80000", "gold": "80000", "ok": 1, "val": 1.0}
+{"i": 2347, "pred": "12.74", "gold": "12.74", "ok": 1, "val": 1.0}
+{"i": 2348, "pred": "10.3", "gold": "10.3", "ok": 1, "val": 1.0}
+{"i": 2349, "pred": "9.8", "gold": "9.8", "ok": 1, "val": 1.0}
+{"i": 2350, "pred": "10.7", "gold": "10.7", "ok": 1, "val": 1.0}
+{"i": 2351, "pred": "2007", "gold": "2007", "ok": 1, "val": 1.0}
+{"i": 2352, "pred": "36.5", "gold": "36.5", "ok": 1, "val": 1.0}
+{"i": 2353, "pred": "836", "gold": "944", "ok": 0, "val": 0.0}
+{"i": 2354, "pred": "450.7", "gold": "450.7", "ok": 1, "val": 1.0}
+{"i": 2355, "pred": "247441", "gold": "247441", "ok": 1, "val": 1.0}
+{"i": 2356, "pred": "75505", "gold": "77517", "ok": 1, "val": 1.0}
+{"i": 2357, "pred": "75505", "gold": "77517", "ok": 1, "val": 1.0}
+{"i": 2358, "pred": "144.8", "gold": "144.8", "ok": 1, "val": 1.0}
+{"i": 2359, "pred": "620.2", "gold": "620.2", "ok": 1, "val": 1.0}
+{"i": 2360, "pred": "6.9", "gold": "7.1", "ok": 1, "val": 1.0}
+{"i": 2361, "pred": "0.7", "gold": "0.7", "ok": 1, "val": 1.0}
+{"i": 2362, "pred": "2021", "gold": "2021", "ok": 1, "val": 1.0}
+{"i": 2363, "pred": "14.79", "gold": "14.79", "ok": 1, "val": 1.0}
+{"i": 2364, "pred": "80.1", "gold": "80.1", "ok": 1, "val": 1.0}
+{"i": 2365, "pred": "7", "gold": "7", "ok": 1, "val": 1.0}
+{"i": 2366, "pred": "5.11", "gold": "5.11", "ok": 1, "val": 1.0}
+{"i": 2367, "pred": "2090", "gold": "2015", "ok": 1, "val": 1.0}
+{"i": 2368, "pred": "7.71", "gold": "7.71", "ok": 1, "val": 1.0}
+{"i": 2369, "pred": "10.9", "gold": "10.87", "ok": 1, "val": 1.0}
+{"i": 2370, "pred": "69", "gold": "69", "ok": 1, "val": 1.0}
+{"i": 2371, "pred": "111.5", "gold": "111.55", "ok": 1, "val": 1.0}
+{"i": 2372, "pred": "102.43", "gold": "102.44", "ok": 1, "val": 1.0}
+{"i": 2373, "pred": "2.6", "gold": "2.6", "ok": 1, "val": 1.0}
+{"i": 2374, "pred": "0.43", "gold": "0.43", "ok": 1, "val": 1.0}
+{"i": 2375, "pred": "847", "gold": "849.87", "ok": 1, "val": 1.0}
+{"i": 2376, "pred": "721", "gold": "718.69", "ok": 1, "val": 1.0}
+{"i": 2377, "pred": "13", "gold": "13", "ok": 1, "val": 1.0}
+{"i": 2378, "pred": "1675", "gold": "1675", "ok": 1, "val": 1.0}
+{"i": 2379, "pred": "846", "gold": "846", "ok": 1, "val": 1.0}
+{"i": 2380, "pred": "9.47", "gold": "9.47", "ok": 1, "val": 1.0}
+{"i": 2381, "pred": "Hindus", "gold": "Hindus", "ok": 1, "val": 1.0}
+{"i": 2382, "pred": "53.03", "gold": "53.03", "ok": 1, "val": 1.0}
+{"i": 2383, "pred": "87.2", "gold": "87.2", "ok": 1, "val": 1.0}
+{"i": 2384, "pred": "2018", "gold": "2018", "ok": 1, "val": 1.0}
+{"i": 2385, "pred": "304", "gold": "304", "ok": 1, "val": 1.0}
+{"i": 2386, "pred": "581", "gold": "581", "ok": 1, "val": 1.0}
+{"i": 2387, "pred": "162", "gold": "162", "ok": 1, "val": 1.0}
+{"i": 2388, "pred": " China", "gold": "China", "ok": 1, "val": 1.0}
+{"i": 2389, "pred": "35804.6", "gold": "35804.6", "ok": 1, "val": 1.0}
+{"i": 2390, "pred": "120", "gold": "120", "ok": 1, "val": 1.0}
+{"i": 2391, "pred": "YouTube", "gold": "YouTube", "ok": 1, "val": 1.0}
+{"i": 2392, "pred": "58", "gold": "58", "ok": 1, "val": 1.0}
+{"i": 2393, "pred": "2012", "gold": "2012", "ok": 1, "val": 1.0}
+{"i": 2394, "pred": "10.84", "gold": "10.84", "ok": 1, "val": 1.0}
+{"i": 2395, "pred": "Facebook", "gold": "Facebook", "ok": 1, "val": 1.0}
+{"i": 2396, "pred": "404", "gold": "404", "ok": 1, "val": 1.0}
+{"i": 2397, "pred": "431", "gold": "431", "ok": 1, "val": 1.0}
+{"i": 2398, "pred": "400.4", "gold": "400.4", "ok": 1, "val": 1.0}
+{"i": 2399, "pred": "57.7", "gold": "57.7", "ok": 1, "val": 1.0}
+{"i": 2400, "pred": "8.51", "gold": "8.51", "ok": 1, "val": 1.0}
+{"i": 2401, "pred": " Asia", "gold": "Asia", "ok": 1, "val": 1.0}
+{"i": 2402, "pred": "Female", "gold": "Female", "ok": 1, "val": 1.0}
+{"i": 2403, "pred": "Ontario", "gold": "Ontario", "ok": 1, "val": 1.0}
+{"i": 2404, "pred": " TV", "gold": "TV", "ok": 1, "val": 1.0}
+{"i": 2405, "pred": "4431.94", "gold": "4431.94", "ok": 1, "val": 1.0}
+{"i": 2406, "pred": "12379.83", "gold": "12379.83", "ok": 1, "val": 1.0}
+{"i": 2407, "pred": "1.99", "gold": "1.99", "ok": 1, "val": 1.0}
+{"i": 2408, "pred": "2021", "gold": "2021", "ok": 1, "val": 1.0}
+{"i": 2409, "pred": "2.7", "gold": "2.7", "ok": 1, "val": 1.0}
+{"i": 2410, "pred": "7.9", "gold": "7.9", "ok": 1, "val": 1.0}
+{"i": 2411, "pred": "6.89", "gold": "6.89", "ok": 1, "val": 1.0}
+{"i": 2412, "pred": "1.4", "gold": "1.4", "ok": 1, "val": 1.0}
+{"i": 2413, "pred": "21.27", "gold": "21.27", "ok": 1, "val": 1.0}
+{"i": 2414, "pred": "87.85", "gold": "87.89", "ok": 1, "val": 1.0}
+{"i": 2415, "pred": "14.05", "gold": "14.05", "ok": 1, "val": 1.0}
+{"i": 2416, "pred": "305", "gold": "305", "ok": 1, "val": 1.0}
+{"i": 2417, "pred": "186", "gold": "186", "ok": 1, "val": 1.0}
+{"i": 2418, "pred": "42", "gold": "42", "ok": 1, "val": 1.0}
+{"i": 2419, "pred": "406.6", "gold": "406.6", "ok": 1, "val": 1.0}
+{"i": 2420, "pred": "25", "gold": "25", "ok": 1, "val": 1.0}
+{"i": 2421, "pred": "31.7", "gold": "31.7", "ok": 1, "val": 1.0}
+{"i": 2422, "pred": "Boko Haram", "gold": "Boko Haram", "ok": 1, "val": 1.0}
+{"i": 2423, "pred": "38", "gold": "38", "ok": 1, "val": 1.0}
+{"i": 2424, "pred": "55", "gold": "55", "ok": 1, "val": 1.0}
+{"i": 2425, "pred": "152", "gold": "152", "ok": 1, "val": 1.0}
+{"i": 2426, "pred": "468.08", "gold": "468.08", "ok": 1, "val": 1.0}
+{"i": 2427, "pred": "25.4", "gold": "25.4", "ok": 1, "val": 1.0}
+{"i": 2428, "pred": "467", "gold": "467", "ok": 1, "val": 1.0}
+{"i": 2429, "pred": "46.22", "gold": "46.22", "ok": 1, "val": 1.0}
+{"i": 2430, "pred": "7.2", "gold": "7.2", "ok": 1, "val": 1.0}
+{"i": 2431, "pred": "20", "gold": "20", "ok": 1, "val": 1.0}
+{"i": 2432, "pred": "50", "gold": "50", "ok": 1, "val": 1.0}
+{"i": 2433, "pred": "40.3", "gold": "40.3", "ok": 1, "val": 1.0}
+{"i": 2434, "pred": " Gabriel", "gold": "Gabriel", "ok": 1, "val": 1.0}
+{"i": 2435, "pred": "573.1", "gold": "573.1", "ok": 1, "val": 1.0}
+{"i": 2436, "pred": "44.94", "gold": "44.94", "ok": 1, "val": 1.0}
+{"i": 2437, "pred": "590598", "gold": "590598", "ok": 1, "val": 1.0}
+{"i": 2438, "pred": "659", "gold": "659", "ok": 1, "val": 1.0}
+{"i": 2439, "pred": "Mexico", "gold": "Mexico", "ok": 1, "val": 1.0}
+{"i": 2440, "pred": "753", "gold": "753", "ok": 1, "val": 1.0}
+{"i": 2441, "pred": "6.88", "gold": "6.88", "ok": 1, "val": 1.0}
+{"i": 2442, "pred": "263859", "gold": "263878", "ok": 1, "val": 1.0}
+{"i": 2443, "pred": "55759", "gold": "55759", "ok": 1, "val": 1.0}
+{"i": 2444, "pred": "11.7", "gold": "11.7", "ok": 1, "val": 1.0}
+{"i": 2445, "pred": "25.29", "gold": "25.29", "ok": 1, "val": 1.0}
+{"i": 2446, "pred": "28.1", "gold": "28.1", "ok": 1, "val": 1.0}
+{"i": 2447, "pred": "6.4", "gold": "6.4", "ok": 1, "val": 1.0}
+{"i": 2448, "pred": " Mercadona", "gold": "Mercadona", "ok": 1, "val": 1.0}
+{"i": 2449, "pred": " Carrefour", "gold": "Carrefour", "ok": 1, "val": 1.0}
+{"i": 2450, "pred": "5.9", "gold": "5.9", "ok": 1, "val": 1.0}
+{"i": 2451, "pred": "48", "gold": "48", "ok": 1, "val": 1.0}
+{"i": 2452, "pred": "43", "gold": "43", "ok": 1, "val": 1.0}
+{"i": 2453, "pred": "79", "gold": "79", "ok": 1, "val": 1.0}
+{"i": 2454, "pred": " Niger", "gold": "Niger", "ok": 1, "val": 1.0}
+{"i": 2455, "pred": "15.5", "gold": "15.5", "ok": 1, "val": 1.0}
+{"i": 2456, "pred": "67.07", "gold": "67.07", "ok": 1, "val": 1.0}
+{"i": 2457, "pred": "39.01", "gold": "39.01", "ok": 1, "val": 1.0}
+{"i": 2458, "pred": "14", "gold": "14", "ok": 1, "val": 1.0}
+{"i": 2459, "pred": "4412", "gold": "4412", "ok": 1, "val": 1.0}
+{"i": 2460, "pred": "42.83", "gold": "42.83", "ok": 1, "val": 1.0}
+{"i": 2461, "pred": "Vale", "gold": "Vale", "ok": 1, "val": 1.0}
+{"i": 2462, "pred": "29.4", "gold": "29.4", "ok": 1, "val": 1.0}
+{"i": 2463, "pred": "Germany", "gold": "Germany", "ok": 1, "val": 1.0}
+{"i": 2464, "pred": "18.4", "gold": "18.4", "ok": 1, "val": 1.0}
+{"i": 2465, "pred": "28.7", "gold": "28.7", "ok": 1, "val": 1.0}
+{"i": 2466, "pred": "5517.84", "gold": "5515.82", "ok": 1, "val": 1.0}
+{"i": 2467, "pred": "209", "gold": "209", "ok": 1, "val": 1.0}
+{"i": 2468, "pred": "3.9", "gold": "3.9", "ok": 1, "val": 1.0}
+{"i": 2469, "pred": "0.41", "gold": "0.41", "ok": 1, "val": 1.0}
+{"i": 2470, "pred": "98.96", "gold": "98.96", "ok": 1, "val": 1.0}
+{"i": 2471, "pred": " Belgium", "gold": "Belgium", "ok": 1, "val": 1.0}
+{"i": 2472, "pred": "2018", "gold": "2021", "ok": 1, "val": 1.0}
+{"i": 2473, "pred": "15.9", "gold": "15.9", "ok": 1, "val": 1.0}
+{"i": 2474, "pred": "165", "gold": "165", "ok": 1, "val": 1.0}
+{"i": 2475, "pred": "168.1", "gold": "168.1", "ok": 1, "val": 1.0}
+{"i": 2476, "pred": "210.15", "gold": "209.75", "ok": 1, "val": 1.0}
+{"i": 2477, "pred": "78.34", "gold": "75.19", "ok": 1, "val": 1.0}
+{"i": 2478, "pred": "27573", "gold": "27573", "ok": 1, "val": 1.0}
+{"i": 2479, "pred": "9.5", "gold": "9.3", "ok": 1, "val": 1.0}
+{"i": 2480, "pred": "3", "gold": "3.2", "ok": 0, "val": 0.0}
+{"i": 2481, "pred": "0.85", "gold": "0.85", "ok": 1, "val": 1.0}
+{"i": 2482, "pred": " Sofia Vergara", "gold": "Sofia Vergara", "ok": 1, "val": 1.0}
+{"i": 2483, "pred": "42.5", "gold": "42.5", "ok": 1, "val": 1.0}
+{"i": 2484, "pred": "106", "gold": "106", "ok": 1, "val": 1.0}
+{"i": 2485, "pred": "493.61", "gold": "493.61", "ok": 1, "val": 1.0}
+{"i": 2486, "pred": "1.81", "gold": "1.81", "ok": 1, "val": 1.0}
+{"i": 2487, "pred": "September 2019", "gold": "March 2021", "ok": 1, "val": 1.0}
+{"i": 2488, "pred": "100", "gold": "100", "ok": 1, "val": 1.0}
+{"i": 2489, "pred": "178", "gold": "178", "ok": 1, "val": 1.0}
+{"i": 2490, "pred": "5.5", "gold": "5.5", "ok": 1, "val": 1.0}
+{"i": 2491, "pred": "98", "gold": "98", "ok": 1, "val": 1.0}
+{"i": 2492, "pred": "99", "gold": "99", "ok": 1, "val": 1.0}
+{"i": 2493, "pred": "1038000", "gold": "1038000", "ok": 1, "val": 1.0}
+{"i": 2494, "pred": "197.1", "gold": "197.1", "ok": 1, "val": 1.0}
+{"i": 2495, "pred": "167", "gold": "167", "ok": 1, "val": 1.0}
+{"i": 2496, "pred": "0.75", "gold": "0.75", "ok": 1, "val": 1.0}
+{"i": 2497, "pred": "4.89", "gold": "4.89", "ok": 1, "val": 1.0}
+{"i": 2498, "pred": "Lombardy", "gold": "Autonomous Province of Bolzano", "ok": 0, "val": 0.0}
+{"i": 2499, "pred": "841961", "gold": "841961", "ok": 1, "val": 1.0}

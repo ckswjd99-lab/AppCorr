@@ -33,9 +33,20 @@ rotary position embedding) in place of Llama's plain 1D RoPE:
 
 from typing import Any, Dict
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def _trace_save(name: str, tensor: torch.Tensor):
+    trace_dir = os.environ.get("APPCORR_QWEN_TRACE_DIR")
+    if not trace_dir:
+        return
+    label = os.environ.get("APPCORR_QWEN_TRACE_LABEL", "run")
+    os.makedirs(trace_dir, exist_ok=True)
+    torch.save(tensor.detach().cpu(), os.path.join(trace_dir, f"{label}_{name}.pt"))
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -153,6 +164,10 @@ class ApproxCorrectQwen25VLAttention(nn.Module):
             sin_sel = torch.cat([m[i % 3] for i, m in enumerate(sin_full.split(mrope_section2, dim=-1))], dim=-1).unsqueeze(1)
         q_new = (q_new * cos_sel) + (rotate_half(q_new) * sin_sel)
         k_new = (k_new * cos_sel) + (rotate_half(k_new) * sin_sel)
+        if tag == "llm_layer0":
+            _trace_save("layer0_k_postrope", k_new)
+            _trace_save("layer0_v", v_new)
+            _trace_save("layer0_q_postrope", q_new)
 
         kv[:, :, token_idx, 0] = k_new.to(dtype=kv.dtype)
         kv[:, :, token_idx, 1] = v_new.to(dtype=kv.dtype)
@@ -236,10 +251,32 @@ class ApproxCorrectQwen25VLDecoderLayer(nn.Module):
         )
         x_attn_active = x_active + x_attn_sel
         mlp_out_new = self.mlp(self.post_attention_layernorm(x_attn_active))
+        if tag == "llm_layer0":
+            _trace_save("layer0_input_layernorm_out", x_norm_sel)
+            _trace_save("layer0_attn_out", x_attn_sel)
+            _trace_save("layer0_mlp_out", mlp_out_new)
 
         blocks_out_sum = cache_feature[f"{tag}_blocks_out_sum"]
         residual = blocks_out_sum.to(dtype=x.dtype) if blocks_out_sum.dtype != x.dtype else blocks_out_sum
         x_out = x + residual
         x_out[:, token_idx] = (x_attn_active + mlp_out_new).to(dtype=x_out.dtype)
+
+        # Persist this block's CORRECTED increment over the approximate one, so a later round that
+        # replays this block for a different token group rebuilds the corrected value here instead
+        # of the stale approximate one. Rule 3 of docs/memo/interleaved_correction_contract.md, and
+        # unconditional: skipping it is not a setting, it is the bug -- every round restarts at
+        # stage 0 and reconstructs a token outside the current group as `x + blocks_out_sum`.
+        #
+        # This fork carried the pre-`ac0238f` shape: it read the key and never wrote back. One-shot
+        # correction cannot expose it (no later round reads the stale value), which is why it
+        # survives into new forks; only interleaved is wrong. DINOv3 was fixed as `ac0238f`, CLIP
+        # and SAM 3 since, and these two Qwen forks were the last carrying it.
+        #
+        # `x_attn_active - x_active` is the attention contribution; plus `mlp_out_new` it is exactly
+        # the increment `approx()` above stores under the same key, so the two paths stay
+        # interchangeable. Both terms are already materialised, so it costs nothing.
+        new_sum = blocks_out_sum.clone()
+        new_sum[:, token_idx] = ((x_attn_active - x_active) + mlp_out_new).to(new_sum.dtype)
+        cache_feature[f"{tag}_blocks_out_sum"] = new_sum
 
         return x_out, cache_feature

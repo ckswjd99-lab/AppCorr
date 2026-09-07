@@ -110,16 +110,40 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
         ctx: Dict[str, Any],
         cache_feature: Dict[str, Any],
         tag_prefix: str,
+        collect_attn: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Runs blocks[start_l:end_l] in approx mode. Layer-range chunked (start_l/end_l), matching
         the contract every prior fork uses so the existing GroupTriggerPolicy can drive this tower
-        with no new scheduling code."""
+        with no new scheduling code.
+
+        `collect_attn`: also accumulates the received-attention server_pscore signal (see
+        attention.py's `incoming_attention`), restricted to `fullatt_block_indexes` layers only.
+        Windowed layers (28 of 32, `window_size=112`) split attention into small per-window
+        segments; a token's received-attention mass computed inside a ~112px window is not on the
+        same scale as one computed over a full-attention layer's whole-image segment (a fixed
+        divide-by-segment-length normalization does not fix this -- a windowed segment's uniform
+        baseline is intrinsically larger, being 1/L_window vs 1/L_image). Rather than mix two
+        incomparable scales into one average, this restricts collection to the 4 full-attention
+        layers, where every token's segment is the same (the whole image), so their scores are
+        directly comparable across the image and across layers. Finalized (divided by the number of
+        full-attention layers actually walked) into `cache_feature["vision_patch_attn_layermean"]`
+        once this call's range is done -- valid because round 0's vision approx is always a single
+        full-depth (0..32) call (see qwen25vl_executor.py's `approx_forward`), never chunked across
+        multiple calls, so "the range this call covers" and "the whole tower" are the same thing.
+        """
         for i in range(start_l, end_l):
             blk = self.blocks[i]
             segs_now = self._segments_for_layer(i, ctx)
+            do_collect = collect_attn and (i in self.fullatt_block_indexes)
             x_feature, cache_feature = blk.approx(
-                x_feature, segs_now, ctx["position_embeddings"], cache_feature, tag=f"{tag_prefix}_layer{i}"
+                x_feature, segs_now, ctx["position_embeddings"], cache_feature, tag=f"{tag_prefix}_layer{i}",
+                collect_attn=do_collect,
             )
+        if collect_attn:
+            acc = cache_feature.pop("vision_patch_attn_layermean_acc", None)
+            n = cache_feature.pop("vision_patch_attn_layermean_n", 0)
+            if acc is not None and n > 0:
+                cache_feature["vision_patch_attn_layermean"] = acc / n
         return x_feature, cache_feature
 
     def correct_forward(

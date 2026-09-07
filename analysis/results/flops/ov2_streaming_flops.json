@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "groups": 4,
+    "unit": "GFLOPs/instruction",
+    "note": "backbone prefill only; decode excluded"
+  },
+  "ov2": {
+    "_samples": 12,
+    "chartqa": {
+      "full": 11136.1,
+      "k1.00": 3024.7,
+      "total_k1.00": 13030.7
+    },
+    "infovqa": {
+      "full": 92462.2,
+      "k1.00": 23488.7,
+      "total_k1.00": 121896.8
+    },
+    "textvqa": {
+      "full": 18674.7,
+      "k1.00": 4819.3,
+      "total_k1.00": 22345.9
+    },
+    "docvqa": {
+      "full": 123785.3,
+      "k1.00": 31325.3,
+      "total_k1.00": 164431.9
+    },
+    "realworldqa": {
+      "full": 38564.1,
+      "k1.00": 9728.1,
+      "total_k1.00": 47613.5
+    },
+    "pope": {
+      "full": 5624.8,
+      "k1.00": 1618.5,
+      "total_k1.00": 6455.7
+    },
+    "gqa": {
+      "full": 6047.3,
+      "k1.00": 1774.8,
+      "total_k1.00": 6958.3
+    }
+  }
+}

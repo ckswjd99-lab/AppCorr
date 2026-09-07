@@ -1,0 +1,45 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "_samples": 12,
+ "_groups": 4,
+ "chartqa": {
+  "full": 4347.5,
+  "floor": 4347.5,
+  "crit_g4_k0.25": 860.7,
+  "total_g4_k0.25": 4805.3,
+  "crit_g4_k0.50": 978.9,
+  "total_g4_k0.50": 5271.9,
+  "crit_g4": 1212.2,
+  "total_g4": 6209.3
+ },
+ "realworldqa": {
+  "full": 15855.5,
+  "floor": 15855.5,
+  "crit_g4_k0.25": 2567.9,
+  "total_g4_k0.25": 17832.8,
+  "crit_g4_k0.50": 3091.6,
+  "total_g4_k0.50": 19920.0,
+  "crit_g4": 4135.9,
+  "total_g4": 24099.3
+ },
+ "mmvp": {
+  "full": 767.4,
+  "floor": 767.4,
+  "crit_g4_k0.25": 300.8,
+  "total_g4_k0.25": 822.3,
+  "crit_g4_k0.50": 314.5,
+  "total_g4_k0.50": 876.9,
+  "crit_g4": 341.8,
+  "total_g4": 986.2
+ },
+ "cvbench": {
+  "full": 7868.1,
+  "floor": 7868.1,
+  "crit_g4_k0.25": 1409.2,
+  "total_g4_k0.25": 8854.9,
+  "crit_g4_k0.50": 1672.3,
+  "total_g4_k0.50": 9905.7,
+  "crit_g4": 2198.3,
+  "total_g4": 12007.2
+ }
+}

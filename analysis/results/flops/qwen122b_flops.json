@@ -1,0 +1,17 @@
+{
+ "_model": "Qwen/Qwen3.5-122B-A10B-FP8",
+ "_samples": 12,
+ "_groups": 4,
+ "chartqa": {
+  "full": 6044.4,
+  "floor": 6044.4,
+  "crit_g4": 1747.5,
+  "total_g4": 7520.9
+ },
+ "realworldqa": {
+  "full": 17964.4,
+  "floor": 17964.4,
+  "crit_g4": 4810.6,
+  "total_g4": 22513.2
+ }
+}
