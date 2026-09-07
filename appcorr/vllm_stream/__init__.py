@@ -8,7 +8,9 @@
 
 Pieces: request.py (StreamingRequest, wire format, hold-back-one), scheduler.py
 (StreamingScheduler), engine_patch.py / runner_patch.py (the four hooks), client.py
-(StreamingLLM + Qwen2.5-VL prompt composition). Design memo: docs/memo/vllm_stream_design.md.
+(StreamingLLM + Qwen2.5-VL prompt composition); server.py / bridge.py / wire.py (the two-process
+form: vLLM in one env, the AppCorr vision fork in another, prompt embeds over a socket).
+Design memo: docs/memo/vllm_stream_design.md.
 
 Pinned to the vllm releases in SUPPORTED_VLLM -- `install()` refuses any other version, because
 the hooks wrap private methods whose contracts were read from those releases. Differences between
@@ -38,9 +40,20 @@ def register() -> None:
     install()
 
 
-from .request import StreamChunk, StreamingRequest, make_stream_headers  # noqa: E402
-from .scheduler import StreamingScheduler  # noqa: E402
-from .client import StreamingLLM  # noqa: E402
+# The vllm-dependent modules are imported lazily: `bridge.py` / `wire.py` are imported from the
+# AppCorr process (appcorr env, no vllm), and `import appcorr.vllm_stream.bridge` must not drag
+# `client.py` (which imports vllm) in through this __init__.
+_LAZY = {"StreamChunk": ".request", "StreamingRequest": ".request", "make_stream_headers": ".request",
+         "StreamingScheduler": ".scheduler", "StreamingLLM": ".client"}
+
+
+def __getattr__(name):
+    mod = _LAZY.get(name)
+    if mod is None:
+        raise AttributeError(name)
+    import importlib
+    return getattr(importlib.import_module(mod, __name__), name)
+
 
 __all__ = ["install", "register", "StreamChunk", "StreamingRequest", "StreamingScheduler",
            "StreamingLLM", "make_stream_headers"]

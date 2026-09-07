@@ -72,13 +72,15 @@ class ApproxCorrectQwen25VLVisionBlock(nn.Module):
         position_embeddings_sel,
         cache_feature: Dict[str, Any],
         tag: str,
+        plan=None,
     ):
         token_idx = token_idx.to(x.device)
         x_active = x[token_idx]  # [Q, dim]
         x_norm_sel = self.norm1(x_active)
 
         x_attn_sel, cache_feature = self.attn.correct(
-            x_norm_sel, token_idx, segment_ranges, position_embeddings_sel, cache_feature, tag
+            x_norm_sel, token_idx, segment_ranges, position_embeddings_sel, cache_feature, tag,
+            plan=plan,
         )
         x_attn_active = x_active + x_attn_sel
         mlp_out_new = self.mlp(self.norm2(x_attn_active))
