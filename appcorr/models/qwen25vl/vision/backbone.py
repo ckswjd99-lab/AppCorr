@@ -172,13 +172,37 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
         cos_full, sin_full = ctx["position_embeddings"]
         position_embeddings_sel = (cos_full[token_idx], sin_full[token_idx])
 
+        # One GPU->CPU sync per call (the sorted query positions), from which every layer's
+        # segment slices follow on the CPU -- see attention.correct's `plan`.
+        plans = self.correct_plan(token_idx, ctx)
         for i in range(start_l, end_l):
             blk = self.blocks[i]
             segs_now = self._segments_for_layer(i, ctx)
             x_feature, cache_feature = blk.correct(
-                x_feature, token_idx, segs_now, position_embeddings_sel, cache_feature, tag=f"{tag_prefix}_layer{i}"
+                x_feature, token_idx, segs_now, position_embeddings_sel, cache_feature, tag=f"{tag_prefix}_layer{i}",
+                plan=plans[id(segs_now)],
             )
         return x_feature, cache_feature
+
+    def correct_plan(self, token_idx: torch.Tensor, ctx: Dict[str, Any]):
+        """Per segment-list (full-image and window), the query rows each segment owns:
+        `{id(segment_ranges): (order, inv_order, [(start, length, a, b), ...])}` where
+        `token_idx[order]` is ascending and rows a:b of it fall in [start, start + length)."""
+        import bisect
+        order = torch.argsort(token_idx)
+        inv_order = torch.empty_like(order)
+        inv_order[order] = torch.arange(order.numel(), device=order.device)
+        pos = token_idx[order].tolist()
+        plans = {}
+        for segs in (ctx["cu_seqlens_ranges"], ctx["cu_window_seqlens_ranges"]):
+            owned = []
+            for start, length in segs:
+                a = bisect.bisect_left(pos, start)
+                b = bisect.bisect_left(pos, start + length)
+                if b > a:
+                    owned.append((start, length, a, b))
+            plans[id(segs)] = (order, inv_order, owned)
+        return plans
 
     def get_merged_output(self, x_full: torch.Tensor, ctx: Dict[str, Any]) -> torch.Tensor:
         """merger() -> un-permute by inv_window_index (== stock's `reverse_indices`). `x_full` is

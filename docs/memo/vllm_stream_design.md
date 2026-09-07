@@ -200,7 +200,120 @@ spent ~12 min in FP8 MoE kernel JIT/cubin fetch (cached afterwards).
   and vLLM's `Qwen3_5*ForConditionalGeneration.embed_input_ids` does not compute deepstack at
   all). `Qwen25VLComposer.embed` asserts `deepstack_num_level == 0` so a real Qwen3-VL fails
   loudly instead of silently dropping the levels.
-* Milestone 2: AppCorr vision (appcorr env, transformers 5) in a separate process, per-round
-  merged embeds to the vLLM process over a socket. The TTFT script already has the
-  chunk-arrival timeline; the milestone replaces its synthetic `gap` with AppCorr's real
-  per-round correction times.
+* Milestone 2 (below, 2026-09-07): AppCorr vision (appcorr env, transformers 5) in a separate
+  process, per-round merged embeds to the vLLM process over a socket. Done for the Qwen2.5-VL
+  and Qwen3.5 axes; the campaign driver exists; accuracy / TTFT / throughput runs are NOT
+  started (waiting for the OpenVLA runs to finish and an explicit go).
+
+## Milestone 2: two processes, one socket (2026-09-07)
+
+### Shape
+
+```
+appcorr env (transformers 5, torch 2.12)        appcorr-vllm env (vllm 0.28.0, torch 2.13)
+  QwenVLStreamingAxis.streaming_forward  --TCP-->  StreamServer (server.py)
+     band r corrected+merged -> sink.push()          open/append -> StreamingLLM.open/append
+     ...                                             engine.step() between messages
+     sink.result()  <------------------------------  text, token_ids, timing (server clock)
+```
+
+* `appcorr/vllm_stream/wire.py`: u32 length + JSON header + raw blobs (bf16 as int16 bytes);
+  `Frame`, `FrameParser` (server side, incremental), `send_frame`/`recv_frame` (client side).
+* `appcorr/vllm_stream/server.py`: one selector loop over all client sockets; applies every
+  arrived `open`/`append`/`result`/`abort`, then one `llm.step()` if any request is live, so
+  the engine prefills band r while the vision side corrects band r+1. Several requests may
+  be live (that is the throughput lever). Timing per request on the server's `perf_counter`:
+  `t_open`, `t_final`, `t_first_token`, `t_done` -> `ttft_from_last_chunk_ms`,
+  `ttft_from_open_ms`, `total_ms`; `logprobs=k` returns top-k per generated position.
+  Launch: `CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 VLLM_ENABLE_V1_MULTIPROCESSING=0
+  PYTHONPATH=<repo> <appcorr-vllm python> -m appcorr.vllm_stream.server --model <id>
+  --port 5591 --gpu-mem 0.3` (port 5555 on this box is held by a foreign process).
+* `appcorr/vllm_stream/bridge.py` (no vllm import): `LLMBridge` + `StreamSink`; the sink is
+  what `streaming_forward(..., sink=)` takes, one-shot arms are one `push(final=True)`.
+  Pushes are asynchronous: encoded on the caller, sent by a `bridge-tx` thread, acks read back
+  in order before the next reply-bearing call. Measured on 7B: a blocking push parked the
+  vision side 5-15 ms per band (26-50 ms of a ~100-150 ms streaming pass) because the server
+  only answers between engine steps and a band (~3.7 MB) exceeds the 4 MB loopback send
+  buffer; after the change the caller spends 2-4 ms per push (the chunk's own `.cpu()` sync).
+* `appcorr/models/qwen_vl_axis.py`: the streaming loop shared by `Qwen35Axis`
+  (`qwen35/unified.py`) and `Qwen25VLAxis` (`qwen25vl/unified.py`, new: the only port-specific
+  piece is `_rows_of_groups` through the tower's window permutation). `streaming_forward`
+  returns `(logits, kv, stats)` in-process or `(None, None, stats)` with a sink;
+  `oneshot_embeds` is the floor/ceiling arm. Refactor gated bitwise on 35B; Qwen2.5-VL axis
+  gated by `analysis/experiments/qwen25vl_axis_gate.py` (row mapping fp64-exact, g=1 embeds
+  == stock tower rel-L2 0.00000, first token == stock, keep<1 lands between floor/ceiling).
+
+### Plumbing gate (`analysis/experiments/vllm_bridge_gate.py`)
+
+Per COCO image, ceiling / floor / stream, each through HF in-process AND through the socket.
+Pass rule: the stream arm's first greedy token agrees with its HF twin on every image, and its
+drift is no larger than the one-chunk ceiling arm's (the engine's own numerical band; a
+`first_diff_margin` -- vLLM logprob of its token minus the HF token's -- tells a near-tie from
+a defect). Qwen2.5-VL-7B, 4 images, 16 tokens: floor 4/4 exact, stream 4/4 exact (16/16
+tokens each), ceiling 2/4 with the two misses at margin 0.125 nats ("The"/"This",
+"shows"/"features") -> PASS (`bridge_gate_qwen2.5-vl-7b-instruct.json`). Stream
+`ttft_from_last_chunk` 5-12 ms vs 8-17 ms one-shot; `ttft_from_open` 60-80 ms for the whole
+streaming pass on a shared GPU.
+
+### Two defects found on the way (both fixed, both worth knowing about)
+
+**1. cuDNN SDPA returns a wrong head on real decode activations.** PyTorch's cuDNN attention
+backend (on by default in torch 2.12.1+cu130 on B200) gives a wrong output for ONE head of
+Qwen2.5-VL-7B's decode step: q `[1,28,1,128]`, kv `[1,4,382,128]`, GQA, no mask -> max |diff|
+1.56 vs the math backend (flash: 3.9e-3), head 3 only. Independent of `enable_gqa`, scale,
+mask, contiguity; random tensors of the same shape (even with logit magnitudes to +-18000) do
+NOT trigger it -- data-dependent. Symptom: HF decodes "ribbeded"/"dotteded" where vLLM /
+eager / flash / math give "ribbed"/"dotted"; every HF loop and `model.generate` show it;
+prefill and vision logits are within bf16 noise for all backends (q_len=1 only). Fix:
+`torch.backends.cuda.enable_cudnn_sdp(False)` at import of `qwen_vl_axis.py` (every HF-side
+consumer imports it); repro tensors in `analysis/results/vllm_stream/sdpa_cudnn_repro.pt`.
+Eligibility is head_dim <= 128 (cuDNN refuses 256): Qwen2.5-VL 7B/32B/72B, Mistral-Small-3.1,
+LLaVA-OneVision-2-8B, InternVL3.5-8B are eligible; Qwen3.5-35B/122B, Gemma 4, Gemma 3
+(head_dim 256) are not. Any historical number measured through an HF decode loop on an
+eligible model with this torch build (installed 2026-08-31 after the instance reset) is
+worth a second look; the "7B RefCOCO boxes degenerate" note is a candidate explanation --
+a hypothesis, not checked.
+
+**2. `attention.correct` was sync-bound.** The corrected band's window loop did
+`(token_idx in window).any()` + two boolean gathers per window x 28 windowed layers x 4
+bands (~14k GPU->CPU syncs per 2k-token image): `vision_correct` 2.08 s against 140 ms for
+the whole base pass. `backbone.correct_plan` now sorts the query rows once per call (one
+sync) and derives every layer's `(window, a:b)` slices on the CPU; `attention.correct(plan=)`
+runs the same sdpa on the same rows. A/B on 2 images x keep {1.0, 0.5}: image embeds and
+logits bitwise equal, `streaming_forward` 0.55-1.4 s -> 0.15-0.25 s. The executor path
+(`offload/server/model/qwen25vl_executor.py`) keeps `plan=None` and is untouched. Remaining
+floor: both base and correct passes launch one sdpa per window (~3.6k / ~14.5k launches);
+`vision_correct` ~150-230 ms vs `vision_base` ~100-140 ms on the shared GPU. A varlen kernel
+would remove it (no flash-attn in the appcorr env); not needed for the campaign.
+
+### Campaign driver (`analysis/experiments/qwen_vllm_accuracy.py`)
+
+`--family qwen25vl|qwen35 --model <id> --dataset <name> --backend vllm|hf --port 5591
+--arms floor streaming ceiling --groups 4 --keep 1.0 --level 2 --degrade-filter box
+--samples 0 --max-tokens 24 --concurrency 1 [--think] --out analysis/results/qwen_vllm_accuracy`.
+Same `degrade()/get_spec()/record()` as `qwen35_accuracy.py`; resumable by `i`; output
+`{dataset}_{model-slug}_{arm}[_g{groups}[_k{keep}]][_c{concurrency}][_hf].jsonl`. Per row:
+`t_prep_ms` (degrade + HF image processor, CPU, two images for the streaming arm),
+`t_vision_ms` (GPU vision pass incl. pushes), and from the server clock
+`ttft_last_chunk_ms`, `ttft_open_ms` (for the streaming arm this already contains the
+vision pass), `total_ms`, `gen_tokens`, `finish_reason`. `--concurrency k` keeps k requests
+in flight (deque of sinks; the engine batches them) -- the throughput measurement. All arms
+decode via vLLM temperature-0 greedy; HF `model.generate` on Qwen2.5-VL is NOT pure greedy
+(generation_config `repetition_penalty=1.05`), which is why the driver never uses it.
+Smoke (8 RealWorldQA samples, 7B, shared GPU0; NOT campaign data): ceiling `t_vision` 144 ms
++ `ttft_open` 32 ms; streaming `t_vision` 327 ms with `ttft_last_chunk` 9.5 ms,
+`ttft_open` 169 ms. The per-sample wall time is dominated by `t_prep` (200-420 ms of CPU
+image processing); a throughput run should precompute pixel tensors or use loader workers,
+otherwise the client, not the engine, is the bottleneck.
+
+### How to run each model (nothing started yet)
+
+| model | server | driver | note |
+|---|---|---|---|
+| Qwen2.5-VL-7B | GPU0 `--gpu-mem 0.3` | GPU0 `--family qwen25vl` | gated end-to-end (above) |
+| Qwen2.5-VL-32B | GPU0 `--gpu-mem 0.45` | GPU0 `--family qwen25vl` | same axis; HF 32B bf16 ~67 GB |
+| Qwen3.5-35B-A3B | GPU0 `--gpu-mem 0.45` | GPU0 `--family qwen35` | axis gated bitwise in-process; socket plumbing check pending (needs ~70 GB HF + engine on one GPU -> after OpenVLA) |
+| Qwen3.5-122B-A10B-FP8 | GPU1 `--gpu-mem 0.9` | GPU0 `--family qwen35 --host 127.0.0.1` | HF side alone fills GPU0; the socket makes the split free |
+
+Bridge/driver code is family-agnostic (the sink only sees `[T, D]` embeds + `[3, T]` mrope +
+delta); the 35B/122B checks are the `vllm_bridge_gate.py --family qwen35` run, same pass rule.

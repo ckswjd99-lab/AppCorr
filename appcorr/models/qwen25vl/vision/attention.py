@@ -167,6 +167,7 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
         position_embeddings_sel,
         cache_feature: Dict[str, Any],
         tag: str,
+        plan=None,
     ):
         """
         Args:
@@ -177,6 +178,13 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
                 whichever this layer uses) for the CURRENT permuted sequence -- used to figure out
                 which cached-K/V segment each query row's attention should be computed against.
             position_embeddings_sel: (cos_sel, sin_sel) already gathered at `token_idx`.
+            plan: optional `(order, inv_order, segs)` from `backbone.correct_plan()` -- the
+                query rows sorted by absolute position and, per segment that has any query, the
+                slice [a, b) of the sorted rows it owns. With it this call issues no GPU->CPU
+                sync at all; without it every window costs a `.any()` + two boolean gathers
+                (~140 us each, 14k of them per 2k-token image: the 2.1 s "vision_correct" the
+                vLLM bridge profile found on 2026-09-07 against 140 ms for the full base pass).
+                Same sdpa on the same rows either way -- outputs are bitwise identical.
         Returns:
             attn_out: [Q, dim] -- attention output for the query positions only (post proj).
         """
@@ -192,15 +200,23 @@ class ApproxCorrectQwen25VLVisionAttention(nn.Module):
         k_full, v_full = kv.unbind(2)  # each [T, H, Dh]
 
         Q = token_idx.shape[0]
-        out = torch.zeros((Q, self.num_heads, self.head_dim), device=x_sel.device, dtype=q_new.dtype)
-        for start, length in segment_ranges:
-            seg_mask = (token_idx >= start) & (token_idx < start + length)
-            if not bool(seg_mask.any()):
-                continue
-            q_seg = q_new[seg_mask]
-            k_seg = k_full[start : start + length]
-            v_seg = v_full[start : start + length]
-            out[seg_mask] = self._sdpa_segment(q_seg, k_seg, v_seg)
+        if plan is not None:
+            order, inv_order, segs = plan
+            q_sorted = q_new[order]
+            outs = [self._sdpa_segment(q_sorted[a:b], k_full[start : start + length],
+                                       v_full[start : start + length])
+                    for start, length, a, b in segs]
+            out = torch.cat(outs, dim=0)[inv_order] if len(outs) > 1 else outs[0][inv_order]
+        else:
+            out = torch.zeros((Q, self.num_heads, self.head_dim), device=x_sel.device, dtype=q_new.dtype)
+            for start, length in segment_ranges:
+                seg_mask = (token_idx >= start) & (token_idx < start + length)
+                if not bool(seg_mask.any()):
+                    continue
+                q_seg = q_new[seg_mask]
+                k_seg = k_full[start : start + length]
+                v_seg = v_full[start : start + length]
+                out[seg_mask] = self._sdpa_segment(q_seg, k_seg, v_seg)
 
         out = out.reshape(Q, -1)
         out = self.proj(out)
