@@ -5,6 +5,9 @@ def get_model_executor(name: str, device: torch.device) -> ModelExecutor:
     if "vggt_omega" in name:
         from .vggt_omega import VGGTOmegaExecutor
         return VGGTOmegaExecutor(device)
+    elif "openvla" in name:
+        from .openvla_vla import OpenVLAExecutor
+        return OpenVLAExecutor(device)
     elif "dinov3_classifier" in name:
         from .dinov3_classifier import DINOv3ClassifierExecutor
         return DINOv3ClassifierExecutor(device)

@@ -21,3 +21,4 @@ from .nyu_appcorr_progressive import (
     NYUAppCorrRawTransmissionPolicy,
     NYUAppCorrFourierLaplacianHybridPolicy,
 )
+from .vla_patch_canvas import VLAPatchCanvasPolicy
