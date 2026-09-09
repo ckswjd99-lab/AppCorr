@@ -33,10 +33,11 @@ from .wire import Frame, FrameParser, error_frame
 
 class _Req:
     __slots__ = ("rid", "conn", "t_open", "t_final", "t_first", "t_done", "n_prompt", "out",
-                 "waiter", "finished", "logprobs")
+                 "waiter", "finished", "logprobs", "max_tokens")
 
-    def __init__(self, rid, conn, logprobs):
+    def __init__(self, rid, conn, logprobs, max_tokens=0):
         self.rid, self.conn, self.logprobs = rid, conn, logprobs
+        self.max_tokens = int(max_tokens)
         self.t_open = time.perf_counter()
         self.t_final = None
         self.t_first = None
@@ -103,6 +104,7 @@ class StreamServer:
             if op == "info":
                 self._reply(c, Frame({"ok": True, "model": self.llm.model_name,
                                       "vllm": self.llm.vllm_version, "pid": os.getpid(),
+                                      "max_model_len": self.llm.max_model_len,
                                       "live_requests": sum(1 for r in self.reqs.values() if not r.finished),
                                       "done_requests": self.n_done}))
             elif op in ("open", "append"):
@@ -136,24 +138,49 @@ class StreamServer:
             if rid in self.reqs:
                 raise KeyError(f"request id {rid!r} already open")
             lp = f.header.get("logprobs")
-            sp = SamplingParams(temperature=0.0, max_tokens=int(f.header["max_tokens"]),
-                                logprobs=lp)
-            r = _Req(rid, c, lp)
+            max_tokens = int(f.header["max_tokens"])
+            self._check_len(rid, chunk.num_tokens, max_tokens)
+            sp = SamplingParams(temperature=0.0, max_tokens=max_tokens, logprobs=lp)
+            r = _Req(rid, c, lp, max_tokens)
             self.reqs[rid] = r
             c.rids.add(rid)
-            self.llm.open(rid, chunk, sp)
+            try:
+                self.llm.open(rid, chunk, sp)
+            except Exception:
+                self.reqs.pop(rid, None)     # a rejected open must not leave a dead entry
+                c.rids.discard(rid)
+                raise
         else:
             r = self.reqs.get(rid)
             if r is None:
                 raise KeyError(f"append to unknown request {rid!r}")
             if r.t_final is not None:
                 raise ValueError(f"{rid}: append after final")
-            self.llm.append(rid, chunk)
+            try:
+                self._check_len(rid, r.n_prompt + chunk.num_tokens, r.max_tokens)
+                self.llm.append(rid, chunk)
+            except Exception:
+                # The engine validates prompt length only at `open`; a request grown past
+                # max_model_len by appends is never scheduled and its `result` would block
+                # forever (the 2026-09-08 hang). Abort it so the error frame is the end of it.
+                self.reqs.pop(rid, None)
+                c.rids.discard(rid)
+                try:
+                    self.llm.engine.abort_request([rid])
+                except Exception as e:  # noqa: BLE001
+                    print(f"[server] abort of over-length {rid} failed: {e}", file=sys.stderr)
+                raise
         r.n_prompt += chunk.num_tokens
         t = time.perf_counter()
         if final:
             r.t_final = t
         self._reply(c, Frame({"ok": True, "t_recv": t, "num_prompt_tokens": r.n_prompt}))
+
+    def _check_len(self, rid: str, n_prompt: int, max_tokens: int) -> None:
+        cap = self.llm.max_model_len
+        if n_prompt + max_tokens > cap:
+            raise ValueError(f"{rid}: prompt {n_prompt} + max_tokens {max_tokens} tokens exceeds "
+                             f"max_model_len {cap}")
 
     def _result(self, c: _Conn, rid: str):
         r = self.reqs.get(rid)
@@ -234,12 +261,19 @@ def main():
     ap.add_argument("--max-model-len", type=int, default=16384)
     ap.add_argument("--enforce-eager", action="store_true")
     ap.add_argument("--max-num-seqs", type=int, default=None)
+    ap.add_argument("--max-num-batched-tokens", type=int, default=None,
+                    help="engine prefill batch cap. vLLM defaults it to max_model_len; at 16384 "
+                         "the 122B-FP8 trtllm MoE workspace for one 15.5k-token prefill exceeded "
+                         "the ~31 GiB left beside a 48.9 GiB KV cache (OOM, 2026-09-08). 8192 "
+                         "keeps the per-step activation at the size the 8192-max-len runs proved")
     a = ap.parse_args()
     os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
     from .client import StreamingLLM
     kw = {"limit_mm_per_prompt": {"image": 1}}
     if a.max_num_seqs:
         kw["max_num_seqs"] = a.max_num_seqs
+    if a.max_num_batched_tokens:
+        kw["max_num_batched_tokens"] = a.max_num_batched_tokens
     llm = StreamingLLM(a.model, gpu_memory_utilization=a.gpu_mem, max_model_len=a.max_model_len,
                        enforce_eager=a.enforce_eager, **kw)
     StreamServer(llm, a.host, a.port).serve_forever()

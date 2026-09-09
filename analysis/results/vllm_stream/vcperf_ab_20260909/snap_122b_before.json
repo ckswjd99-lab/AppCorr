@@ -1,0 +1,4661 @@
+{
+ "args": {
+  "family": "qwen35",
+  "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+  "load": "vision",
+  "dataset": "realworldqa",
+  "samples": 32,
+  "groups": 4,
+  "keeps": [
+   1.0,
+   0.5
+  ],
+  "level": 2,
+  "degrade_filter": "pyr",
+  "positions_mode": null,
+  "out": "/NHNHOME/share/cjpark/AppCorr-vcperf/analysis/results/vllm_stream/snap_122b_before.json",
+  "compare": null
+ },
+ "rows": {
+  "0": {
+   "prompt_tokens": 1363,
+   "ceiling": {
+    "embeds": "5a59e22218f246334dc19cd0",
+    "mrope": "a877b9c704438da01162121b",
+    "delta": -1260,
+    "t_ms": 365.2136102318764
+   },
+   "floor": {
+    "embeds": "33122ec56001a0bb5c9c967b",
+    "mrope": "a877b9c704438da01162121b",
+    "delta": -1260,
+    "t_ms": 31.464222818613052
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "0f53c0f981bf6e0d7ca811fa",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "e69a290b966f030fa6a81c7d",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "5a9490526434d034cae8f0bb",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6fcff1e9eabf1dfd4eca76e6",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 54,
+      "embeds": "4c6c791536a7c2e25d88d393",
+      "mrope": "7b823d61591368dae0f07563",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1363
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 103,
+    "rope_delta": -1260,
+    "t_ms": 121.15983106195927
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "4fd7e71bbace8f02b2af79a2",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "b0709f490663fbc341baed3c",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "5f2df67496597e946042b618",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "e9160f6f502358dff217f034",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 54,
+      "embeds": "4c6c791536a7c2e25d88d393",
+      "mrope": "7b823d61591368dae0f07563",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1363
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 103,
+    "rope_delta": -1260,
+    "t_ms": 267.4291245639324
+   }
+  },
+  "23": {
+   "prompt_tokens": 1359,
+   "ceiling": {
+    "embeds": "18961d45144fe319f1f87863",
+    "mrope": "ba84ecc252d1f18f1b3b4952",
+    "delta": -1260,
+    "t_ms": 31.772196292877197
+   },
+   "floor": {
+    "embeds": "47ddcceac539d9948afae442",
+    "mrope": "ba84ecc252d1f18f1b3b4952",
+    "delta": -1260,
+    "t_ms": 33.76676142215729
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "fbec7cbc46facfc59af4e4b5",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "2fea1501a4da3f8f53dabbb8",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "c149d8445e5dbd1a4bbe0742",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "aa840603d7711d540dd05ca6",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 50,
+      "embeds": "6793339a4f131fcd81676320",
+      "mrope": "a06721169896078f7feb23f2",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1359
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 99,
+    "rope_delta": -1260,
+    "t_ms": 107.85035975277424
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "1f13b374dd81073f2d1a2620",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "f8fdf8c4d4eb31f1266d0182",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "7b3d6203f1c7e37f32a46174",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "7079da1b7b943aafa73dfb8d",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 50,
+      "embeds": "6793339a4f131fcd81676320",
+      "mrope": "a06721169896078f7feb23f2",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1359
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 99,
+    "rope_delta": -1260,
+    "t_ms": 212.77781017124653
+   }
+  },
+  "46": {
+   "prompt_tokens": 1390,
+   "ceiling": {
+    "embeds": "c7caaca4b3073a857afc48e5",
+    "mrope": "383ab84603cbf5ae63062e25",
+    "delta": -1248,
+    "t_ms": 35.83472594618797
+   },
+   "floor": {
+    "embeds": "1938b9f5446f8b588b7fe42f",
+    "mrope": "383ab84603cbf5ae63062e25",
+    "delta": -1248,
+    "t_ms": 33.937377855181694
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 328,
+      "embeds": "9b65909ad3164a6eb17ab548",
+      "mrope": "c628124f1d638c6ae339ab09",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 324,
+      "embeds": "c435283fc2a9dc0efe61caba",
+      "mrope": "308b7d8d04b5c5353183e76a",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 324,
+      "embeds": "f3de4403155a375a948a4ae0",
+      "mrope": "76299e744ccff0735f70d427",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 324,
+      "embeds": "ec21606f559cf93cce7850d8",
+      "mrope": "82f59cfbe5d742792a4a0bde",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 90,
+      "embeds": "23f593cd922a8c277c77b10c",
+      "mrope": "fe7cbd40ac5a1e172a66ea1d",
+      "delta": -1248,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      328
+     ],
+     [
+      328,
+      652
+     ],
+     [
+      652,
+      976
+     ],
+     [
+      976,
+      1300
+     ],
+     [
+      1300,
+      1390
+     ]
+    ],
+    "corrected_groups": 1296,
+    "decode_start_pos": 142,
+    "rope_delta": -1248,
+    "t_ms": 116.1110233515501
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 328,
+      "embeds": "2a5fdfbd95e7550f73976970",
+      "mrope": "c628124f1d638c6ae339ab09",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 324,
+      "embeds": "46b7210cf891e08eb3215807",
+      "mrope": "308b7d8d04b5c5353183e76a",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 324,
+      "embeds": "8ce04acee75d9e79900b1212",
+      "mrope": "76299e744ccff0735f70d427",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 324,
+      "embeds": "bda70681a22e7da4fbf0ba6f",
+      "mrope": "82f59cfbe5d742792a4a0bde",
+      "delta": -1248,
+      "final": false
+     },
+     {
+      "n": 90,
+      "embeds": "23f593cd922a8c277c77b10c",
+      "mrope": "fe7cbd40ac5a1e172a66ea1d",
+      "delta": -1248,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      328
+     ],
+     [
+      328,
+      652
+     ],
+     [
+      652,
+      976
+     ],
+     [
+      976,
+      1300
+     ],
+     [
+      1300,
+      1390
+     ]
+    ],
+    "corrected_groups": 648,
+    "decode_start_pos": 142,
+    "rope_delta": -1248,
+    "t_ms": 201.63949765264988
+   }
+  },
+  "69": {
+   "prompt_tokens": 1356,
+   "ceiling": {
+    "embeds": "2f483ef1c745bca563e926fa",
+    "mrope": "3e3535e4ba29207c2f2c7401",
+    "delta": -1260,
+    "t_ms": 31.822742894291878
+   },
+   "floor": {
+    "embeds": "f6ea09d38b978a1cc9687a2b",
+    "mrope": "3e3535e4ba29207c2f2c7401",
+    "delta": -1260,
+    "t_ms": 31.0025867074728
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "b1acd09bde3d16986d905bd0",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "11a41d6b4f3737c88a79498f",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "6956d1199244157f1c7115e8",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "edf5f856c289fb80e2abd307",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 47,
+      "embeds": "cf1e6496b865b2685c8f9212",
+      "mrope": "7971202d9511ef39a98e2e0d",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1356
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 96,
+    "rope_delta": -1260,
+    "t_ms": 111.26666702330112
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "1b7bc26fba199580ac5c86a3",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "ed2b1301310debbc43c54e20",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "b76411ea905c15068d1481ee",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6550f30dc2a76ba6eeb7017e",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 47,
+      "embeds": "cf1e6496b865b2685c8f9212",
+      "mrope": "7971202d9511ef39a98e2e0d",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1356
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 96,
+    "rope_delta": -1260,
+    "t_ms": 213.7049250304699
+   }
+  },
+  "92": {
+   "prompt_tokens": 1336,
+   "ceiling": {
+    "embeds": "052a07722fe90312a43b6236",
+    "mrope": "0e33c1b7dbcc858424ffafc7",
+    "delta": -1260,
+    "t_ms": 31.684454530477524
+   },
+   "floor": {
+    "embeds": "865032bc32ac6df74a04b716",
+    "mrope": "0e33c1b7dbcc858424ffafc7",
+    "delta": -1260,
+    "t_ms": 31.187675893306732
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "f5f9004fe55747a2e763218a",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "4255c7b983ca4a2cdc4b7d59",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "29392bc4789472d9a0040de8",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "e0f2f0a2212415be774e8092",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 27,
+      "embeds": "febf4db2b16b33e16e39f4b3",
+      "mrope": "9556c8032d91a288ac58c5b5",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1336
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 76,
+    "rope_delta": -1260,
+    "t_ms": 107.48766362667084
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "08c010970679c50ee822b861",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "b01a150e5fdaf9b583fe4e4b",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "8ab2038b836433a244ab2aea",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "52ac35e6a8025ec10017afb7",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 27,
+      "embeds": "febf4db2b16b33e16e39f4b3",
+      "mrope": "9556c8032d91a288ac58c5b5",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1336
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 76,
+    "rope_delta": -1260,
+    "t_ms": 213.776383548975
+   }
+  },
+  "115": {
+   "prompt_tokens": 1794,
+   "ceiling": {
+    "embeds": "b1c553d0f8b5c7adccdfca08",
+    "mrope": "d9e0e5a330a3ba58eedc02d7",
+    "delta": -1680,
+    "t_ms": 49.691472202539444
+   },
+   "floor": {
+    "embeds": "c8de07cf755448eb9cb11b36",
+    "mrope": "d9e0e5a330a3ba58eedc02d7",
+    "delta": -1680,
+    "t_ms": 46.418070793151855
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "3d7d42cc40e213c2511ee750",
+      "mrope": "6dd68916fc97a0ba465f60b9",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "8beb139225b4b7be6868bac2",
+      "mrope": "ffad2af4e7137e3204e8a54d",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "813f114c9be3c22f5df65f7f",
+      "mrope": "29562f9036c7bc3fffd601c1",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "6569717e983a02cfa8119702",
+      "mrope": "f1b49e8b08653ab9ca58bffd",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 62,
+      "embeds": "4d1fed072a60bc9f409d5508",
+      "mrope": "ddbbd46f8a7a42f6de066a0e",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1794
+     ]
+    ],
+    "corrected_groups": 1728,
+    "decode_start_pos": 114,
+    "rope_delta": -1680,
+    "t_ms": 142.47669465839863
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "6c744c8ea828937ccc49c395",
+      "mrope": "6dd68916fc97a0ba465f60b9",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "ef958bf243cf000da8e2c590",
+      "mrope": "ffad2af4e7137e3204e8a54d",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "f8ca78e2d7bc5f6b46112676",
+      "mrope": "29562f9036c7bc3fffd601c1",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "26a74b51314bfb0e86f519e1",
+      "mrope": "f1b49e8b08653ab9ca58bffd",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 62,
+      "embeds": "4d1fed072a60bc9f409d5508",
+      "mrope": "ddbbd46f8a7a42f6de066a0e",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1794
+     ]
+    ],
+    "corrected_groups": 864,
+    "decode_start_pos": 114,
+    "rope_delta": -1680,
+    "t_ms": 288.0274374037981
+   }
+  },
+  "138": {
+   "prompt_tokens": 1342,
+   "ceiling": {
+    "embeds": "bca1a6cc558d0db8ff440807",
+    "mrope": "ebbc30f07c2e288cce45fac2",
+    "delta": -1260,
+    "t_ms": 31.708700582385063
+   },
+   "floor": {
+    "embeds": "0c6cf144fe524fc964f27086",
+    "mrope": "ebbc30f07c2e288cce45fac2",
+    "delta": -1260,
+    "t_ms": 30.899832025170326
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "f0154cac136e97f33157ef9c",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "ccaba32a902d1b9493e203f0",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "342e7ba7fd836eccca289886",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "3f5ea49d5566809df6271186",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 33,
+      "embeds": "6914fd5ca9fe46006944df75",
+      "mrope": "085e16cfcc6ca9bccfdc872e",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1342
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 82,
+    "rope_delta": -1260,
+    "t_ms": 106.10436089336872
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "12d321ad2910a6fdc4b9fdba",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "3cba0f89fb50b994969f5e8d",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "8064302dd64276976ec72fcb",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "8fdac7c388c7fc0a0f130b59",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 33,
+      "embeds": "6914fd5ca9fe46006944df75",
+      "mrope": "085e16cfcc6ca9bccfdc872e",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1342
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 82,
+    "rope_delta": -1260,
+    "t_ms": 212.71540597081184
+   }
+  },
+  "161": {
+   "prompt_tokens": 932,
+   "ceiling": {
+    "embeds": "d08bd348d5191943e376e13d",
+    "mrope": "a1e5c38019adb053ab6d3665",
+    "delta": -825,
+    "t_ms": 22.455673664808273
+   },
+   "floor": {
+    "embeds": "46a6ec289f5e4f34bfc84dd9",
+    "mrope": "a1e5c38019adb053ab6d3665",
+    "delta": -825,
+    "t_ms": 19.124040380120277
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 218,
+      "embeds": "489861d266c97d797c8965fe",
+      "mrope": "3b5ee1d3cc089bdcbc6055c0",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 215,
+      "embeds": "910a006ead2a304215daf646",
+      "mrope": "8222f837efb22093e8ba3431",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 215,
+      "embeds": "e1d72b5069f6bebf74d6b26c",
+      "mrope": "aa0cc84c77982bb2a15aba7f",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 214,
+      "embeds": "7948c325ab82e562dc4779b4",
+      "mrope": "d6504c2a6b7e885b1fc6bae5",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 70,
+      "embeds": "823dcf7daf183219eac9354e",
+      "mrope": "45bd34bd9f5b49e1f7aca3d2",
+      "delta": -825,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      218
+     ],
+     [
+      218,
+      433
+     ],
+     [
+      433,
+      648
+     ],
+     [
+      648,
+      862
+     ],
+     [
+      862,
+      932
+     ]
+    ],
+    "corrected_groups": 858,
+    "decode_start_pos": 107,
+    "rope_delta": -825,
+    "t_ms": 80.58568462729454
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 218,
+      "embeds": "cfca88f41b6c5ec8b39d25b2",
+      "mrope": "3b5ee1d3cc089bdcbc6055c0",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 215,
+      "embeds": "2cbef6181cd2e1897849db67",
+      "mrope": "8222f837efb22093e8ba3431",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 215,
+      "embeds": "f317d73533b1b204d57a99d1",
+      "mrope": "aa0cc84c77982bb2a15aba7f",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 214,
+      "embeds": "8329112f69845738d6ff3694",
+      "mrope": "d6504c2a6b7e885b1fc6bae5",
+      "delta": -825,
+      "final": false
+     },
+     {
+      "n": 70,
+      "embeds": "823dcf7daf183219eac9354e",
+      "mrope": "45bd34bd9f5b49e1f7aca3d2",
+      "delta": -825,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      218
+     ],
+     [
+      218,
+      433
+     ],
+     [
+      433,
+      648
+     ],
+     [
+      648,
+      862
+     ],
+     [
+      862,
+      932
+     ]
+    ],
+    "corrected_groups": 429,
+    "decode_start_pos": 107,
+    "rope_delta": -825,
+    "t_ms": 120.42058818042278
+   }
+  },
+  "184": {
+   "prompt_tokens": 1341,
+   "ceiling": {
+    "embeds": "8f2389340cc0f848bc47f2f2",
+    "mrope": "60d63e13d14831e44e8907a3",
+    "delta": -1260,
+    "t_ms": 31.609952449798584
+   },
+   "floor": {
+    "embeds": "7d69c09fb937f2210fa9dd33",
+    "mrope": "60d63e13d14831e44e8907a3",
+    "delta": -1260,
+    "t_ms": 31.013473868370056
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "d57f8641a0f88469a348b842",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "a1d4f88593b1332366ba12ee",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "e3131e56e76da9831f527d8b",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "c0f024e4a3a10ba4c831f126",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 32,
+      "embeds": "9d4115de13e6bd9a925adf40",
+      "mrope": "cf4da894e7a32d7b34654857",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1341
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 81,
+    "rope_delta": -1260,
+    "t_ms": 106.38847760856152
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "b0d85169e3dcdbef61b10458",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "0c0ce3e1d7f0b00359582651",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "14439f4baf9c511b345e7c7d",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "0b3a578d920a8db773329169",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 32,
+      "embeds": "9d4115de13e6bd9a925adf40",
+      "mrope": "cf4da894e7a32d7b34654857",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1341
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 81,
+    "rope_delta": -1260,
+    "t_ms": 212.8200512379408
+   }
+  },
+  "207": {
+   "prompt_tokens": 1338,
+   "ceiling": {
+    "embeds": "d010350c05fe58ab48c6ad33",
+    "mrope": "ed8e2d5505cb4d8fb3adaa0f",
+    "delta": -1260,
+    "t_ms": 31.664131209254265
+   },
+   "floor": {
+    "embeds": "1dbbca761b5269a2a9685176",
+    "mrope": "ed8e2d5505cb4d8fb3adaa0f",
+    "delta": -1260,
+    "t_ms": 30.82864359021187
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "2f2bac92c1ea2151b62d8311",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "ec97c10c74bb67024f369cb2",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "0da348f519ac9df002536b22",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "5eb372d58c55664b248a28bf",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 29,
+      "embeds": "03aded2a0a4f62148f467494",
+      "mrope": "430409e3f7d64eefed7763c4",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1338
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 78,
+    "rope_delta": -1260,
+    "t_ms": 106.91474191844463
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "d2b48b18b616112a4dca6cb9",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "799e64399d6839f574f4b8f5",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "712bfeca44a99a7edeb19276",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "3f3f430b5ebff7a5da21065a",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 29,
+      "embeds": "03aded2a0a4f62148f467494",
+      "mrope": "430409e3f7d64eefed7763c4",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1338
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 78,
+    "rope_delta": -1260,
+    "t_ms": 213.36436457931995
+   }
+  },
+  "230": {
+   "prompt_tokens": 1351,
+   "ceiling": {
+    "embeds": "bbdfe992031f1b44ce035091",
+    "mrope": "9532182f90510781cc50e56f",
+    "delta": -1260,
+    "t_ms": 31.850002706050873
+   },
+   "floor": {
+    "embeds": "9e6b3070a7d5de235c3cbb36",
+    "mrope": "9532182f90510781cc50e56f",
+    "delta": -1260,
+    "t_ms": 36.52652911841869
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "47a758e9f5f4e580658ed332",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "57189b63526aa48630dc650c",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "feea591f8db8e813548e5bb4",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "3207eda6729fb6138cd9d678",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 42,
+      "embeds": "e64ead32405950df44a8f2e3",
+      "mrope": "be80f01addae0dec69b63993",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1351
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 91,
+    "rope_delta": -1260,
+    "t_ms": 106.877775862813
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "24944b4032e4c14f92fa5a20",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "410d1f54ce49e6c4d3ad908a",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "db424012d84899ac36acecc7",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "9cd785c21822777d5b615dd9",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 42,
+      "embeds": "e64ead32405950df44a8f2e3",
+      "mrope": "be80f01addae0dec69b63993",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1351
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 91,
+    "rope_delta": -1260,
+    "t_ms": 213.068388402462
+   }
+  },
+  "253": {
+   "prompt_tokens": 1339,
+   "ceiling": {
+    "embeds": "1deeeb3269064d728fff50cc",
+    "mrope": "bc160a3e8e3c571a4bcecc52",
+    "delta": -1260,
+    "t_ms": 31.827030703425407
+   },
+   "floor": {
+    "embeds": "63a9bad72d96c769641555ff",
+    "mrope": "bc160a3e8e3c571a4bcecc52",
+    "delta": -1260,
+    "t_ms": 31.102608889341354
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "948bd32ac1d2e83421c39a29",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "75010f190bdf60519f1fe127",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "34041d59c893170e9304e5fd",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "c4ad9075511988764d2c988f",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 30,
+      "embeds": "91a84fbd14f9c1d48364b366",
+      "mrope": "9d110b7a3a6247fa3b271f3e",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1339
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 79,
+    "rope_delta": -1260,
+    "t_ms": 109.37825217843056
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "cdb0837f5cdd2fdbd716ba05",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "889df48829818c04447a39b3",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "6dbfa9400cf0aec1b3250ea4",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "ce4033c5ba476308499b4dfb",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 30,
+      "embeds": "91a84fbd14f9c1d48364b366",
+      "mrope": "9d110b7a3a6247fa3b271f3e",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1339
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 79,
+    "rope_delta": -1260,
+    "t_ms": 214.72854912281036
+   }
+  },
+  "276": {
+   "prompt_tokens": 1377,
+   "ceiling": {
+    "embeds": "4287dd9b16d08670cdb035c1",
+    "mrope": "abf1dae78cbed0bd29a12276",
+    "delta": -1260,
+    "t_ms": 31.782060861587524
+   },
+   "floor": {
+    "embeds": "6098254665f5cc6a3b2efd4f",
+    "mrope": "abf1dae78cbed0bd29a12276",
+    "delta": -1260,
+    "t_ms": 32.65050984919071
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "0199e393c677708a50432334",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "986e063190acd2192f5e4967",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "38c40e5581b336b6b92c23f1",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "7111539c0919de7cb26ff74e",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 68,
+      "embeds": "dc6982a2568faf085451618c",
+      "mrope": "0c5e7c83e182ce352b942fae",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1377
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 117,
+    "rope_delta": -1260,
+    "t_ms": 106.76910169422626
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "e588216355c07f69e4185bb2",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "d81eddc6171a796eb6c78988",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "f1e77dc3d530e5cc22084b03",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "efe4a7abdd98e3a1e619d215",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 68,
+      "embeds": "dc6982a2568faf085451618c",
+      "mrope": "0c5e7c83e182ce352b942fae",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1377
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 117,
+    "rope_delta": -1260,
+    "t_ms": 214.2145335674286
+   }
+  },
+  "299": {
+   "prompt_tokens": 1360,
+   "ceiling": {
+    "embeds": "2ccf467278d0e8d9f8610ebd",
+    "mrope": "440ce7d3e0ace671bf8ca17a",
+    "delta": -1260,
+    "t_ms": 31.751783564686775
+   },
+   "floor": {
+    "embeds": "76e91e46cea4389b766ac724",
+    "mrope": "440ce7d3e0ace671bf8ca17a",
+    "delta": -1260,
+    "t_ms": 30.870499089360237
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "5d38272364ad17fc1f208b7d",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "4c2f5aed98c4689052464bf7",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "0b27ea62ef00aabcb67388d1",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "f33ecb1ec3b803300907411a",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 51,
+      "embeds": "966bd08b604b7a2e3d8a0502",
+      "mrope": "cc5674f554e265eddc1ee932",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1360
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 100,
+    "rope_delta": -1260,
+    "t_ms": 106.8071499466896
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "0f3ee9855c5eb225f6e049f4",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "599c0ff514002b42e978935f",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "4deb0536439ab38ec0051a93",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "74fe9608fa19c809e541d187",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 51,
+      "embeds": "966bd08b604b7a2e3d8a0502",
+      "mrope": "cc5674f554e265eddc1ee932",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1360
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 100,
+    "rope_delta": -1260,
+    "t_ms": 213.2834792137146
+   }
+  },
+  "322": {
+   "prompt_tokens": 1337,
+   "ceiling": {
+    "embeds": "9a405191ef683a3844db2e10",
+    "mrope": "7832686a7a17c79bc3e952db",
+    "delta": -1260,
+    "t_ms": 31.87713399529457
+   },
+   "floor": {
+    "embeds": "fbf68200aedcd17ffdf3cefa",
+    "mrope": "7832686a7a17c79bc3e952db",
+    "delta": -1260,
+    "t_ms": 31.037451699376106
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "d00028525e07b00af2438fda",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "e89e4864e1994fde5e43db7e",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "24040606e2b14fead990bde1",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "89231dfde186654d91f29700",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 28,
+      "embeds": "7dcb26c6f536ac5b72e59245",
+      "mrope": "8803dafa7bf23a9c9b96e6ba",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1337
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 77,
+    "rope_delta": -1260,
+    "t_ms": 107.35258273780346
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "2d55caef2630c43d73ec49c2",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "af7431d482bcdeddaea838be",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "1c0e59b32ec3d21d3152eee1",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "cd03f2873ef3a73a0e3349f2",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 28,
+      "embeds": "7dcb26c6f536ac5b72e59245",
+      "mrope": "8803dafa7bf23a9c9b96e6ba",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1337
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 77,
+    "rope_delta": -1260,
+    "t_ms": 215.263394638896
+   }
+  },
+  "345": {
+   "prompt_tokens": 1340,
+   "ceiling": {
+    "embeds": "2c06b53df9e462bb1efe70d8",
+    "mrope": "e6f73c3827f3f03ea710f979",
+    "delta": -1260,
+    "t_ms": 32.04731084406376
+   },
+   "floor": {
+    "embeds": "48bb68b70ce0452659e0c2b4",
+    "mrope": "e6f73c3827f3f03ea710f979",
+    "delta": -1260,
+    "t_ms": 30.93993104994297
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "e3455f5c7f7453bc6205a0d2",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6e8332bbdf50d950343ac1c7",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "d5586cde9cc74b8664b21ea0",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6844a1f750b5a8a826a76bc2",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 31,
+      "embeds": "99ca64becea85ebc6e4f49ef",
+      "mrope": "f68bcf709949f8884bcd3d47",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1340
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 80,
+    "rope_delta": -1260,
+    "t_ms": 107.15652629733086
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "d7ff3c0fdeb405b0b6ef0149",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "529cb09fcd3ff8818ce2af7b",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "a257178501bbc9fa0bc3d8ce",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "a893b95e712e6eeee7b898df",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 31,
+      "embeds": "99ca64becea85ebc6e4f49ef",
+      "mrope": "f68bcf709949f8884bcd3d47",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1340
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 80,
+    "rope_delta": -1260,
+    "t_ms": 214.7279493510723
+   }
+  },
+  "368": {
+   "prompt_tokens": 457,
+   "ceiling": {
+    "embeds": "3d201ddc82f5cb9ca8c4908c",
+    "mrope": "0e8f2f4de7433c596ae4cc72",
+    "delta": -352,
+    "t_ms": 15.847695991396904
+   },
+   "floor": {
+    "embeds": "1576d0c0d496d5ee6d098b25",
+    "mrope": "0e8f2f4de7433c596ae4cc72",
+    "delta": -352,
+    "t_ms": 10.706780478358269
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 98,
+      "embeds": "13493992374c5626eae47214",
+      "mrope": "f51d996421eafb96ef2be3ed",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 93,
+      "embeds": "f9712b5dc950477c2d132393",
+      "mrope": "32915e306ed11693084ed071",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 93,
+      "embeds": "42e2c8b1b5fb9805e6aaa36a",
+      "mrope": "983303e214afa45698f37fff",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 94,
+      "embeds": "0f6359ba6b48c88d8acddbb9",
+      "mrope": "8cf5bd7859170a1d2db6975e",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 79,
+      "embeds": "990fb723987e36d5c5946c1a",
+      "mrope": "d0f3381f571a5d5be364b669",
+      "delta": -352,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      98
+     ],
+     [
+      98,
+      191
+     ],
+     [
+      191,
+      284
+     ],
+     [
+      284,
+      378
+     ],
+     [
+      378,
+      457
+     ]
+    ],
+    "corrected_groups": 374,
+    "decode_start_pos": 105,
+    "rope_delta": -352,
+    "t_ms": 61.251457780599594
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 98,
+      "embeds": "97b78e8761894502535b4f1e",
+      "mrope": "f51d996421eafb96ef2be3ed",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 93,
+      "embeds": "1908322a2a83ff19ef59c7ad",
+      "mrope": "32915e306ed11693084ed071",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 93,
+      "embeds": "705fc071023f8ace6747e2bf",
+      "mrope": "983303e214afa45698f37fff",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 94,
+      "embeds": "569d6435db774a2eeb763c71",
+      "mrope": "8cf5bd7859170a1d2db6975e",
+      "delta": -352,
+      "final": false
+     },
+     {
+      "n": 79,
+      "embeds": "990fb723987e36d5c5946c1a",
+      "mrope": "d0f3381f571a5d5be364b669",
+      "delta": -352,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      98
+     ],
+     [
+      98,
+      191
+     ],
+     [
+      191,
+      284
+     ],
+     [
+      284,
+      378
+     ],
+     [
+      378,
+      457
+     ]
+    ],
+    "corrected_groups": 187,
+    "decode_start_pos": 105,
+    "rope_delta": -352,
+    "t_ms": 71.89153879880905
+   }
+  },
+  "391": {
+   "prompt_tokens": 1361,
+   "ceiling": {
+    "embeds": "e3df340eba77dcbfef0dd94a",
+    "mrope": "34792b7c2e0f0f0136444a56",
+    "delta": -1260,
+    "t_ms": 31.771443784236908
+   },
+   "floor": {
+    "embeds": "798f59e44e24fb683e72c20a",
+    "mrope": "34792b7c2e0f0f0136444a56",
+    "delta": -1260,
+    "t_ms": 36.27591021358967
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "9ace1e7486ddc05489b7116c",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "a5434ce6e96455b030d1261f",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "1cc705b54ddb201cc1802a84",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "347407177736eed3a3eee100",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 52,
+      "embeds": "7f471d27b7de6541b4d0d59f",
+      "mrope": "b9f96a1f8e9c2fd9e6d01591",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1361
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 101,
+    "rope_delta": -1260,
+    "t_ms": 107.36626200377941
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "66eec926b2f941deb9e4d889",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "904c86665d2bdf880499c8bb",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "411682ad78e6340cd28cdca7",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "7823e7cfb53309d8e782cd95",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 52,
+      "embeds": "7f471d27b7de6541b4d0d59f",
+      "mrope": "b9f96a1f8e9c2fd9e6d01591",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1361
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 101,
+    "rope_delta": -1260,
+    "t_ms": 212.83557638525963
+   }
+  },
+  "414": {
+   "prompt_tokens": 1825,
+   "ceiling": {
+    "embeds": "0f140a3db28f24aaf2abea93",
+    "mrope": "acc7c62c85212f6f7d279945",
+    "delta": -1680,
+    "t_ms": 44.276243075728416
+   },
+   "floor": {
+    "embeds": "b00ffec3b5ae56fbd4a7b384",
+    "mrope": "acc7c62c85212f6f7d279945",
+    "delta": -1680,
+    "t_ms": 43.257419019937515
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "25355afce38bebdc74768017",
+      "mrope": "6dd68916fc97a0ba465f60b9",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "ba4ff53753edc19bc382a31a",
+      "mrope": "ffad2af4e7137e3204e8a54d",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "0d30599513c491f398d9f36a",
+      "mrope": "29562f9036c7bc3fffd601c1",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "dbfbaea06a6f9ffa4abde51e",
+      "mrope": "f1b49e8b08653ab9ca58bffd",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 93,
+      "embeds": "b003dfc37b2407aa2bb2abb9",
+      "mrope": "d8989ea9f9ff2763719fc8a8",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1825
+     ]
+    ],
+    "corrected_groups": 1728,
+    "decode_start_pos": 145,
+    "rope_delta": -1680,
+    "t_ms": 133.2893893122673
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "85eda9770bbaa3230d253e23",
+      "mrope": "6dd68916fc97a0ba465f60b9",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "d493e23ec43c680821034b8a",
+      "mrope": "ffad2af4e7137e3204e8a54d",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "6f709dddf64d5503df7e87d2",
+      "mrope": "29562f9036c7bc3fffd601c1",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "08b04f572e666a87544d1f0c",
+      "mrope": "f1b49e8b08653ab9ca58bffd",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 93,
+      "embeds": "b003dfc37b2407aa2bb2abb9",
+      "mrope": "d8989ea9f9ff2763719fc8a8",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1825
+     ]
+    ],
+    "corrected_groups": 864,
+    "decode_start_pos": 145,
+    "rope_delta": -1680,
+    "t_ms": 283.7474998086691
+   }
+  },
+  "437": {
+   "prompt_tokens": 1355,
+   "ceiling": {
+    "embeds": "94ad41e2227a554fc3eb1310",
+    "mrope": "27d2a067fb4d97bbb8c26a0d",
+    "delta": -1260,
+    "t_ms": 31.966596841812134
+   },
+   "floor": {
+    "embeds": "ee4b72d9161fa5b9d24fb0b5",
+    "mrope": "27d2a067fb4d97bbb8c26a0d",
+    "delta": -1260,
+    "t_ms": 31.27477690577507
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "139b3b8f461326da6214475a",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "48ed9ce2450a462b14facfd8",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "57ce72f44b03ece044a4cba4",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "7034365bd363bb882804da0a",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 46,
+      "embeds": "c6e8a3c3165946cb90eb8a45",
+      "mrope": "60e94f31583d27e6c77d3ea8",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1355
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 95,
+    "rope_delta": -1260,
+    "t_ms": 108.66047255694866
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "c45f54561d826cc06cce53ac",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "09faf565caccf08ce409d37e",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "24df76a566c25314bfd7b78f",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "526bca832f33386a0bd4d258",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 46,
+      "embeds": "c6e8a3c3165946cb90eb8a45",
+      "mrope": "60e94f31583d27e6c77d3ea8",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1355
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 95,
+    "rope_delta": -1260,
+    "t_ms": 216.70560725033283
+   }
+  },
+  "460": {
+   "prompt_tokens": 1370,
+   "ceiling": {
+    "embeds": "61623a71df9091ccecc0763a",
+    "mrope": "463b688ae13dba69fc1ea600",
+    "delta": -1260,
+    "t_ms": 77.27036066353321
+   },
+   "floor": {
+    "embeds": "47f557fd1f9b592b1c762f4a",
+    "mrope": "463b688ae13dba69fc1ea600",
+    "delta": -1260,
+    "t_ms": 33.56332518160343
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "0fcec59340e36f8bb01677e2",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "65b4e1e2fb6734eb68f606ba",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "61d9e7276c00556c30633f5f",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "00965984a6bf17e8d38e4a55",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 61,
+      "embeds": "19a64d2a979311cbe43000b9",
+      "mrope": "884a6f63a9ac3b37d3725719",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1370
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 110,
+    "rope_delta": -1260,
+    "t_ms": 111.81428283452988
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "85d75bcccc91afded7a485e2",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6b5df57a5fd4656abeffff1f",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "d3b6b9e0c699991331eeecde",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "47938cc3acb45cb656045e54",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 61,
+      "embeds": "19a64d2a979311cbe43000b9",
+      "mrope": "884a6f63a9ac3b37d3725719",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1370
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 110,
+    "rope_delta": -1260,
+    "t_ms": 214.0460480004549
+   }
+  },
+  "483": {
+   "prompt_tokens": 1819,
+   "ceiling": {
+    "embeds": "614f008460d61a90c65ca762",
+    "mrope": "5c20ce93e121001f4cfbeba9",
+    "delta": -1680,
+    "t_ms": 43.99802349507809
+   },
+   "floor": {
+    "embeds": "dc18d6a6d2f352b4b73dfd9a",
+    "mrope": "5c20ce93e121001f4cfbeba9",
+    "delta": -1680,
+    "t_ms": 43.34487020969391
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "e2c5f0474e0360558d161917",
+      "mrope": "6dd68916fc97a0ba465f60b9",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "88d456b9951ba09c077a0d6c",
+      "mrope": "ffad2af4e7137e3204e8a54d",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "9934393505878795097cb345",
+      "mrope": "29562f9036c7bc3fffd601c1",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "3c80c8a16007606237d51e45",
+      "mrope": "f1b49e8b08653ab9ca58bffd",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 87,
+      "embeds": "5e605b606a0a634cdeec47ce",
+      "mrope": "2923a4dcb8af108021e6bad5",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1819
+     ]
+    ],
+    "corrected_groups": 1728,
+    "decode_start_pos": 139,
+    "rope_delta": -1680,
+    "t_ms": 134.1292504221201
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "e7a532e555591c962df5b434",
+      "mrope": "6dd68916fc97a0ba465f60b9",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "9c7608bcf0d7e6cff3e6c4fe",
+      "mrope": "ffad2af4e7137e3204e8a54d",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "2fb036031d032325f9417b43",
+      "mrope": "29562f9036c7bc3fffd601c1",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "d4ae44256785c877b5d2663b",
+      "mrope": "f1b49e8b08653ab9ca58bffd",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 87,
+      "embeds": "5e605b606a0a634cdeec47ce",
+      "mrope": "2923a4dcb8af108021e6bad5",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1819
+     ]
+    ],
+    "corrected_groups": 864,
+    "decode_start_pos": 139,
+    "rope_delta": -1680,
+    "t_ms": 282.47589245438576
+   }
+  },
+  "506": {
+   "prompt_tokens": 1804,
+   "ceiling": {
+    "embeds": "37e60cfb29e098363fe8ae6a",
+    "mrope": "504017ee651eb7dece14937c",
+    "delta": -1680,
+    "t_ms": 45.02102546393871
+   },
+   "floor": {
+    "embeds": "18cae2fbfa348371bab9828f",
+    "mrope": "504017ee651eb7dece14937c",
+    "delta": -1680,
+    "t_ms": 45.439524576067924
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "97e838733e0941235caf30de",
+      "mrope": "5eb94f7338be9c21b52409cc",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "6d78b7a5c01313e9c0ae043d",
+      "mrope": "c195b43c8aeb8dad463d4e5e",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "f9ea81217b900b88c2dcfbb1",
+      "mrope": "4cf0cd02f0e1d263139ef35f",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "0ffe7615e749abf826f37c47",
+      "mrope": "033b56b27680f67327b62931",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 72,
+      "embeds": "94ce51a9cab3a8f9101fdf6e",
+      "mrope": "2acef1b2920c7f9119a43d2e",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1804
+     ]
+    ],
+    "corrected_groups": 1728,
+    "decode_start_pos": 124,
+    "rope_delta": -1680,
+    "t_ms": 132.895914837718
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 436,
+      "embeds": "70babcce88961e312d568ebd",
+      "mrope": "5eb94f7338be9c21b52409cc",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "ad46f7a74fd008e1bd75033a",
+      "mrope": "c195b43c8aeb8dad463d4e5e",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "595e9826d041ae2ad40ff6d9",
+      "mrope": "4cf0cd02f0e1d263139ef35f",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 432,
+      "embeds": "61bcc3d07874fb2be96e1ea6",
+      "mrope": "033b56b27680f67327b62931",
+      "delta": -1680,
+      "final": false
+     },
+     {
+      "n": 72,
+      "embeds": "94ce51a9cab3a8f9101fdf6e",
+      "mrope": "2acef1b2920c7f9119a43d2e",
+      "delta": -1680,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      436
+     ],
+     [
+      436,
+      868
+     ],
+     [
+      868,
+      1300
+     ],
+     [
+      1300,
+      1732
+     ],
+     [
+      1732,
+      1804
+     ]
+    ],
+    "corrected_groups": 864,
+    "decode_start_pos": 124,
+    "rope_delta": -1680,
+    "t_ms": 283.12123753130436
+   }
+  },
+  "529": {
+   "prompt_tokens": 1350,
+   "ceiling": {
+    "embeds": "2178078b065d1a402cf5ec4f",
+    "mrope": "d5b7d348aea849ac66d4613e",
+    "delta": -1260,
+    "t_ms": 31.571734696626663
+   },
+   "floor": {
+    "embeds": "828a245f87c31c6696aeadc8",
+    "mrope": "d5b7d348aea849ac66d4613e",
+    "delta": -1260,
+    "t_ms": 34.486036747694016
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "ef54886be99991c74ef0dda3",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "02ed9ac17a5973c9c66f5ed4",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "1919c4eadd145748e49af9cf",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "74e73fe8930f2efd52a99bf5",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 41,
+      "embeds": "af3f71957c25a2540f4c4bf7",
+      "mrope": "5e911b8818e94f501f16cae8",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1350
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 90,
+    "rope_delta": -1260,
+    "t_ms": 106.58111795783043
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "c073120ed3146483dc0f7221",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "2e19788a38e86aee89186213",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "5782d53c2d6c440dde1c5acb",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "694b97e379161412fa4b13f7",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 41,
+      "embeds": "af3f71957c25a2540f4c4bf7",
+      "mrope": "5e911b8818e94f501f16cae8",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1350
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 90,
+    "rope_delta": -1260,
+    "t_ms": 213.6604394763708
+   }
+  },
+  "552": {
+   "prompt_tokens": 1355,
+   "ceiling": {
+    "embeds": "5a609d277ac7d1eb2aecf579",
+    "mrope": "27d2a067fb4d97bbb8c26a0d",
+    "delta": -1260,
+    "t_ms": 32.68559277057648
+   },
+   "floor": {
+    "embeds": "fd56873436a78ab20361fc4f",
+    "mrope": "27d2a067fb4d97bbb8c26a0d",
+    "delta": -1260,
+    "t_ms": 37.417322397232056
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "f8196a2b915e176ac5ff8d6c",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "f9f9220756bd314d7b9e1084",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "10a1ed9a3433b1c61c99dda1",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6ad8fd376f745e523b876b81",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 46,
+      "embeds": "ad1d31c46ee3d101e4b13dc3",
+      "mrope": "60e94f31583d27e6c77d3ea8",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1355
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 95,
+    "rope_delta": -1260,
+    "t_ms": 107.29926265776157
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "eb645923dfe091a8eaaff49b",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "5103158c7cf86ac2750741c9",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "0be26502fd89770d86227f6e",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "026c6aed212cebf5aabb5452",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 46,
+      "embeds": "ad1d31c46ee3d101e4b13dc3",
+      "mrope": "60e94f31583d27e6c77d3ea8",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1355
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 95,
+    "rope_delta": -1260,
+    "t_ms": 215.68485908210278
+   }
+  },
+  "575": {
+   "prompt_tokens": 1341,
+   "ceiling": {
+    "embeds": "e1a13b63fd6b7bd16633c96d",
+    "mrope": "60d63e13d14831e44e8907a3",
+    "delta": -1260,
+    "t_ms": 31.697401776909828
+   },
+   "floor": {
+    "embeds": "bdfd760632b2430c1ddfb385",
+    "mrope": "60d63e13d14831e44e8907a3",
+    "delta": -1260,
+    "t_ms": 30.988233163952827
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "3b91ebe8353619640ded55a9",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "dcab9e3a47af29f51ec278f3",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "dc971a6ba6c398e47fb54c39",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "e01a30d491dbee6766dc6f9d",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 32,
+      "embeds": "dbf0b0998e3640607320188b",
+      "mrope": "cf4da894e7a32d7b34654857",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1341
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 81,
+    "rope_delta": -1260,
+    "t_ms": 106.816865503788
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "d2ef6a51e0e689b4b3483b50",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "499c1636b0c510bc1741881b",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "a83d9a85f2771b6f17a4eabe",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "fba56a13678f998fefb38e19",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 32,
+      "embeds": "dbf0b0998e3640607320188b",
+      "mrope": "cf4da894e7a32d7b34654857",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1341
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 81,
+    "rope_delta": -1260,
+    "t_ms": 215.38753993809223
+   }
+  },
+  "598": {
+   "prompt_tokens": 1339,
+   "ceiling": {
+    "embeds": "f1bd1b8ba104e5844680db07",
+    "mrope": "bc160a3e8e3c571a4bcecc52",
+    "delta": -1260,
+    "t_ms": 31.79800510406494
+   },
+   "floor": {
+    "embeds": "15c6bba29dfde3099c073a06",
+    "mrope": "bc160a3e8e3c571a4bcecc52",
+    "delta": -1260,
+    "t_ms": 31.574200838804245
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "865d288e9ac1b98bb4babe70",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "161e33b936e874f0477d7ff9",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "5e4d5730b6f39f7f09f04129",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "da6cac98a3efea85bd14edfe",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 30,
+      "embeds": "3ddcfb715c5d03e254b5a1ff",
+      "mrope": "9d110b7a3a6247fa3b271f3e",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1339
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 79,
+    "rope_delta": -1260,
+    "t_ms": 107.33064636588097
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "921509602397559b26ee0909",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "ff66ef39703105e733c4cefe",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "423378d866e92bc9fd528d8b",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "b9de126dd271ec34fe7e4930",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 30,
+      "embeds": "3ddcfb715c5d03e254b5a1ff",
+      "mrope": "9d110b7a3a6247fa3b271f3e",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1339
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 79,
+    "rope_delta": -1260,
+    "t_ms": 219.83610093593597
+   }
+  },
+  "621": {
+   "prompt_tokens": 1338,
+   "ceiling": {
+    "embeds": "a1472562eb84c48e2a13c404",
+    "mrope": "ed8e2d5505cb4d8fb3adaa0f",
+    "delta": -1260,
+    "t_ms": 31.78134746849537
+   },
+   "floor": {
+    "embeds": "288b0566b68e68103de982d8",
+    "mrope": "ed8e2d5505cb4d8fb3adaa0f",
+    "delta": -1260,
+    "t_ms": 34.267786890268326
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "4638055f6d13227b81f0a305",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "7e854d54223a449b42a5087d",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "8b3cc40fff00c934a2bec915",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "64de084dff7a7239c86ed727",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 29,
+      "embeds": "0d9791ce5f072d5332515f1e",
+      "mrope": "430409e3f7d64eefed7763c4",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1338
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 78,
+    "rope_delta": -1260,
+    "t_ms": 107.36069269478321
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "473cc266b1e1017a55b604b6",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "3387a975869e7c1990a033c1",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "43ce11766279c167174849a9",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "2d5aaf93f0ad37580fb89182",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 29,
+      "embeds": "0d9791ce5f072d5332515f1e",
+      "mrope": "430409e3f7d64eefed7763c4",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1338
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 78,
+    "rope_delta": -1260,
+    "t_ms": 212.99838088452816
+   }
+  },
+  "644": {
+   "prompt_tokens": 1372,
+   "ceiling": {
+    "embeds": "35145c3979bc1985461748f4",
+    "mrope": "13382a4b8d9425770fd1186a",
+    "delta": -1260,
+    "t_ms": 32.02325291931629
+   },
+   "floor": {
+    "embeds": "624f552fab6d8be4cb652116",
+    "mrope": "13382a4b8d9425770fd1186a",
+    "delta": -1260,
+    "t_ms": 30.975965782999992
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "106c3e085c7dd3d93d982997",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "8e89b34ad961cb89070ed7b4",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "711818aa93638db1d97a571e",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "0a891fd63b511433ffa4cf3c",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 63,
+      "embeds": "e760946d0840dbb4a9d99653",
+      "mrope": "e33d0e2d37b6b9caef125ab3",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1372
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 112,
+    "rope_delta": -1260,
+    "t_ms": 106.8866178393364
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "9a1483e8a4ca8979394b037e",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "3f0de722551ff4696b7a0b6f",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "92b10574eeb7b462e9018ad3",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "4665c5fdfe4cd6748225253c",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 63,
+      "embeds": "e760946d0840dbb4a9d99653",
+      "mrope": "e33d0e2d37b6b9caef125ab3",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1372
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 112,
+    "rope_delta": -1260,
+    "t_ms": 213.14727701246738
+   }
+  },
+  "667": {
+   "prompt_tokens": 1336,
+   "ceiling": {
+    "embeds": "5576f8e41cf930f22c95f196",
+    "mrope": "0e33c1b7dbcc858424ffafc7",
+    "delta": -1260,
+    "t_ms": 31.751826405525208
+   },
+   "floor": {
+    "embeds": "6fb871dfa0aeb89966f4f6ce",
+    "mrope": "0e33c1b7dbcc858424ffafc7",
+    "delta": -1260,
+    "t_ms": 33.658694475889206
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "6072761a35a356a18cae12ec",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "8daabccc29bc6d6265040d0c",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "051c0461388f5c85fbe121c6",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "12e1994dafa226ce54ede5f8",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 27,
+      "embeds": "6c9f7777008cf6b59b9a367c",
+      "mrope": "9556c8032d91a288ac58c5b5",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1336
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 76,
+    "rope_delta": -1260,
+    "t_ms": 106.79678246378899
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "80964c37116ebfabb954310b",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "e081ed96056605d877c8ab43",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "b0142dc9e30d52d4ebbb6bbf",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "a3d3f05a6294b51fdfd870b5",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 27,
+      "embeds": "6c9f7777008cf6b59b9a367c",
+      "mrope": "9556c8032d91a288ac58c5b5",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1336
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 76,
+    "rope_delta": -1260,
+    "t_ms": 214.48883600533009
+   }
+  },
+  "690": {
+   "prompt_tokens": 1338,
+   "ceiling": {
+    "embeds": "cf20b2580d6dabccfb8c0f59",
+    "mrope": "ed8e2d5505cb4d8fb3adaa0f",
+    "delta": -1260,
+    "t_ms": 32.08047151565552
+   },
+   "floor": {
+    "embeds": "bef807160628a18e1590cd83",
+    "mrope": "ed8e2d5505cb4d8fb3adaa0f",
+    "delta": -1260,
+    "t_ms": 31.134694814682007
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "b9e45006ebfad6fbd32e30b4",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "9b8cb2037d094c4c621d25f5",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "c27084ecb6574b1a7bb4c24b",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6a745cf6bd760196c66e5b58",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 29,
+      "embeds": "ecc3a3edfbdbe6aa7666d6b4",
+      "mrope": "430409e3f7d64eefed7763c4",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1338
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 78,
+    "rope_delta": -1260,
+    "t_ms": 107.73433744907379
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "4488729017baa7af9fc82dc8",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "cd0c9bd9efded95ae25cbe61",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "0ea2fff36e19fab60a3232e2",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "6c8aa5f103d1f46ced82cce2",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 29,
+      "embeds": "ecc3a3edfbdbe6aa7666d6b4",
+      "mrope": "430409e3f7d64eefed7763c4",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1338
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 78,
+    "rope_delta": -1260,
+    "t_ms": 213.36336061358452
+   }
+  },
+  "713": {
+   "prompt_tokens": 1341,
+   "ceiling": {
+    "embeds": "3b043f4e35b2a5329638e60b",
+    "mrope": "60d63e13d14831e44e8907a3",
+    "delta": -1260,
+    "t_ms": 31.852928921580315
+   },
+   "floor": {
+    "embeds": "7f78656f9062c8ffc5cb22e4",
+    "mrope": "60d63e13d14831e44e8907a3",
+    "delta": -1260,
+    "t_ms": 31.04454092681408
+   },
+   "streaming_g4_k1.00": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "194b85ceb8941b30f479fc99",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "2bae578340a572484d296769",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "150efa3afe13964273f53ddf",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "7d0c1a850c7cbd952554d372",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 32,
+      "embeds": "bb81f95b01be776a74014306",
+      "mrope": "cf4da894e7a32d7b34654857",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1341
+     ]
+    ],
+    "corrected_groups": 1305,
+    "decode_start_pos": 81,
+    "rope_delta": -1260,
+    "t_ms": 106.57610185444355
+   },
+   "streaming_g4_k0.50": {
+    "chunks": [
+     {
+      "n": 330,
+      "embeds": "8137f32a95ea6af04cadca35",
+      "mrope": "65889ffc4b35c908efc359c4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "ac4811991aeaca6a80263a29",
+      "mrope": "a90cf2e95cdf76a488a425a4",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 327,
+      "embeds": "6c099588f12b47c3639c559e",
+      "mrope": "a93b0091d5d7e56f3a019d87",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 326,
+      "embeds": "d13f2980279ada6ae04f55cd",
+      "mrope": "49891f0ace2f2713786c3cfc",
+      "delta": -1260,
+      "final": false
+     },
+     {
+      "n": 32,
+      "embeds": "bb81f95b01be776a74014306",
+      "mrope": "cf4da894e7a32d7b34654857",
+      "delta": -1260,
+      "final": true
+     }
+    ],
+    "bounds": [
+     [
+      0,
+      330
+     ],
+     [
+      330,
+      656
+     ],
+     [
+      656,
+      983
+     ],
+     [
+      983,
+      1309
+     ],
+     [
+      1309,
+      1341
+     ]
+    ],
+    "corrected_groups": 652,
+    "decode_start_pos": 81,
+    "rope_delta": -1260,
+    "t_ms": 213.89936842024326
+   }
+  }
+ }
+}

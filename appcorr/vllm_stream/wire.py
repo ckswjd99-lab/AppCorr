@@ -65,6 +65,60 @@ def tensor_to_wire(t: torch.Tensor) -> tuple[dict, bytes]:
     return {"shape": list(t.shape), "dtype": name}, arr.tobytes()
 
 
+class DeferredBlob:
+    """A tensor's bytes whose device->host copy is still in flight on a side CUDA stream.
+    `tensor_to_wire_async` returns one instead of bytes for a CUDA tensor; `Frame.encode()`
+    (called on the bridge's sender thread) waits on the copy's event and reads the pinned
+    host buffer. The compute stream never blocks: the caller's next kernels launch while the
+    copy runs -- the 2026-09-08 profile put ~2-4 ms of host stall per chunk on the former
+    synchronous `.cpu()`, x5 chunks per streaming sample."""
+
+    def __init__(self, host: torch.Tensor, event: "torch.cuda.Event"):
+        self.host, self.event = host, event
+
+    def bytes(self) -> bytes:
+        self.event.synchronize()
+        return self.host.numpy().tobytes()
+
+
+_side_streams: dict = {}
+
+
+def _side_stream(device: torch.device) -> "torch.cuda.Stream":
+    s = _side_streams.get(device)
+    if s is None:
+        s = _side_streams[device] = torch.cuda.Stream(device=device)
+    return s
+
+
+def tensor_to_wire_async(t: torch.Tensor) -> tuple[dict, "bytes | DeferredBlob"]:
+    """`tensor_to_wire` for a CUDA tensor without stalling its stream: the copy to a pinned
+    host buffer is enqueued on a side stream ordered after the current stream's work, and the
+    bytes are materialised later (`DeferredBlob.bytes`). CPU tensors take the direct path."""
+    t = t.detach()
+    if t.dtype not in _TORCH_TO_NP:
+        raise TypeError(f"unsupported dtype {t.dtype}")
+    name, npdt = _TORCH_TO_NP[t.dtype]
+    if t.dtype == torch.bfloat16:
+        t = t.view(torch.int16)
+    if not t.is_cuda:
+        arr = t.contiguous().cpu().numpy()
+        assert arr.dtype == npdt, (arr.dtype, npdt)
+        return {"shape": list(t.shape), "dtype": name}, arr.tobytes()
+    t = t.contiguous()                      # on the current stream, before the event
+    ready = torch.cuda.Event()
+    ready.record(torch.cuda.current_stream(t.device))
+    side = _side_stream(t.device)
+    side.wait_event(ready)
+    with torch.cuda.stream(side):
+        host = torch.empty(t.shape, dtype=t.dtype, pin_memory=True)
+        host.copy_(t, non_blocking=True)
+        t.record_stream(side)               # the source may be a temporary: keep it until the copy read it
+        done = torch.cuda.Event()
+        done.record(side)
+    return {"shape": list(t.shape), "dtype": name}, DeferredBlob(host, done)
+
+
 def wire_to_tensor(desc: dict, buf: bytes) -> torch.Tensor:
     name = desc["dtype"]
     shape = tuple(desc["shape"])
@@ -82,11 +136,14 @@ class Frame:
         self.header: dict = dict(header or {})
         self.blobs: list[bytes] = []
 
-    def put_tensor(self, key: str, t: Optional[torch.Tensor]) -> "Frame":
+    def put_tensor(self, key: str, t: Optional[torch.Tensor], async_d2h: bool = False) -> "Frame":
+        """`async_d2h`: for a CUDA tensor, defer the device->host copy to `encode()` (side
+        stream + pinned buffer, see `tensor_to_wire_async`); the frame must then be encoded
+        by whoever sends it, not by the caller's compute thread."""
         if t is None:
             self.header[key] = None
             return self
-        desc, b = tensor_to_wire(t)
+        desc, b = tensor_to_wire_async(t) if async_d2h else tensor_to_wire(t)
         desc["bin"] = len(self.blobs)
         self.blobs.append(b)
         self.header[key] = desc
@@ -99,10 +156,12 @@ class Frame:
         return wire_to_tensor(desc, self.blobs[desc["bin"]])
 
     def encode(self) -> bytes:
+        blobs = [b.bytes() if isinstance(b, DeferredBlob) else b for b in self.blobs]
+        self.blobs = blobs                  # resolved once; a re-encode must not wait again
         h = dict(self.header)
-        h["bin"] = [len(b) for b in self.blobs]
+        h["bin"] = [len(b) for b in blobs]
         hb = json.dumps(h).encode("utf-8")
-        return b"".join([_LEN.pack(len(hb)), hb] + self.blobs)
+        return b"".join([_LEN.pack(len(hb)), hb] + blobs)
 
 
 def send_frame(sock: socket.socket, frame: Frame) -> None:

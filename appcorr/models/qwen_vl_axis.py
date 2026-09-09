@@ -62,6 +62,18 @@ class QwenVLStreamingAxis(nn.Module):
         self.lm = model.model.language_model
         self.cfg = model.config
         self.image_token_id = model.config.image_token_id
+        # Throughput knobs (2026-09-08, docs/memo/qwen_correct_forward_profile.md). All default to
+        # the fast form; every one of them is bitwise on image_embeds + positions (gated by
+        # analysis/experiments/qwen_axis_snapshot.py), the slow forms stay as the in-process
+        # reference. correct_rows_only: carry only the corrected rows through the tower
+        # (`tower.correct_rows`) instead of the full [T, D] stream (`correct_forward`).
+        # positions_mode: "fast" (closed-form single-image M-RoPE, no host sync), "reference"
+        # (transformers' get_rope_index), "check" (both, raise on mismatch).
+        # image_embeds_with_sink: keep the fp32 image-row copy in `stats` even when the chunks
+        # left the process (only the in-process gates read it; 250 MB at 15k tokens).
+        self.correct_rows_only = True
+        self.positions_mode = "fast"
+        self.image_embeds_with_sink = False
 
     # --- per-model hooks (subclasses) ----------------------------------------------------------- #
 
@@ -128,14 +140,16 @@ class QwenVLStreamingAxis(nn.Module):
         edges = [round(k * n_merge_groups / groups) for k in range(groups + 1)]
         return [(a, b) for a, b in zip(edges[:-1], edges[1:])]
 
-    def _positions(self, inputs: Dict[str, Any]) -> Tuple[torch.Tensor, int]:
+    def _positions_reference(self, inputs: Dict[str, Any]) -> Tuple[torch.Tensor, int]:
         """M-RoPE positions (3, 1, T) for the whole request + the rope delta (an int: what the
-        model adds to a plain counter for every generated token). Computed ONCE per request and
-        sliced per chunk. The model's own fallback when `position_ids is None` (and any hand-rolled
-        `arange`) replicates a 1D counter across the axes, silently destroying the image grid -- the
-        M-RoPE trap hit on Qwen2.5-VL, where BOTH arms of an A/B shared the wrong positions and
-        agreed with each other. Shape (3, B, T) is the t/h/w axes only, exactly what stock's own
-        forward hands its text model."""
+        model adds to a plain counter for every generated token), through transformers' own
+        `get_rope_index`. The model's own fallback when `position_ids is None` (and any
+        hand-rolled `arange`) replicates a 1D counter across the axes, silently destroying the
+        image grid -- the M-RoPE trap hit on Qwen2.5-VL, where BOTH arms of an A/B shared the
+        wrong positions and agreed with each other. Shape (3, B, T) is the t/h/w axes only,
+        exactly what stock's own forward hands its text model. Costs a `.tolist()` of the whole
+        prompt, a Python groupby over it and two `.item()`s -- the reference `_positions_fast`
+        is checked against, not the campaign path."""
         ids = inputs["input_ids"]
         mm_ttids = inputs.get("mm_token_type_ids")
         if mm_ttids is None:
@@ -146,6 +160,59 @@ class QwenVLStreamingAxis(nn.Module):
         if pos_3d.shape[0] != 3 or pos_3d.shape[-1] != seq:
             raise ValueError(f"get_rope_index returned {tuple(pos_3d.shape)}, expected (3, 1, {seq})")
         return pos_3d, int(rope_deltas.flatten()[0].item())
+
+    def _positions_fast(self, inputs: Dict[str, Any], image_run: Optional[Tuple[int, int]] = None,
+                        grid_thw: Optional[Tuple[int, int, int]] = None) -> Tuple[torch.Tensor, int]:
+        """Closed form of `get_rope_index` for the one layout this axis serves -- one image, one
+        contiguous run, text on both sides: text before the run counts 0..lo-1 on all three
+        axes; the image rows sit at t = lo, h = lo + row, w = lo + col of the MERGED grid; text
+        after it resumes at lo + max(h_m, w_m). Integer-exact, so bitwise against the reference
+        (checked by `positions_mode="check"`); no host sync when `image_run` and `grid_thw`
+        come in as Python ints (the driver's CPU-side prep has both)."""
+        ids = inputs["input_ids"]
+        grid = inputs["image_grid_thw"]
+        if grid.shape[0] != 1:
+            raise ValueError(f"{grid.shape[0]} images; the streaming axis serves exactly one")
+        seq = int(ids.shape[1])
+        lo, n_tok = image_run if image_run is not None else self._image_token_run(ids)
+        if grid_thw is None:
+            grid_thw = tuple(int(v) for v in grid[0].tolist())
+        t, h, w = (int(v) for v in grid_thw)
+        m = int(self.cfg.vision_config.spatial_merge_size)
+        h_m, w_m = h // m, w // m
+        if t != 1 or h_m * w_m != n_tok:
+            raise ValueError(f"grid {(t, h, w)} / merge {m} does not give {n_tok} image tokens")
+        trailing = seq - lo - n_tok
+        if lo < 0 or trailing < 0:
+            raise ValueError(f"image run [{lo}, {lo + n_tok}) does not fit in {seq} tokens")
+        after = lo + max(h_m, w_m)
+        max_pos = (after + trailing - 1) if trailing > 0 else (lo + max(h_m, w_m) - 1)
+        dev = ids.device
+        pos = torch.empty(3, 1, seq, dtype=ids.dtype, device=dev)
+        ar = torch.arange(seq, dtype=ids.dtype, device=dev)
+        pos[:, 0, :lo] = ar[:lo]
+        img = torch.arange(n_tok, dtype=ids.dtype, device=dev)
+        pos[0, 0, lo:lo + n_tok] = lo
+        pos[1, 0, lo:lo + n_tok] = img // w_m + lo
+        pos[2, 0, lo:lo + n_tok] = img % w_m + lo
+        pos[:, 0, lo + n_tok:] = ar[:trailing] + after
+        return pos, max_pos + 1 - seq
+
+    def _positions(self, inputs: Dict[str, Any], image_run: Optional[Tuple[int, int]] = None,
+                   grid_thw: Optional[Tuple[int, int, int]] = None) -> Tuple[torch.Tensor, int]:
+        """See `positions_mode`: the fast closed form by default, the transformers reference on
+        request, or both with an equality check (the snapshot gate's mode)."""
+        if self.positions_mode == "reference":
+            return self._positions_reference(inputs)
+        pos, delta = self._positions_fast(inputs, image_run, grid_thw)
+        if self.positions_mode == "check":
+            pos_ref, delta_ref = self._positions_reference(inputs)
+            if delta != delta_ref or not torch.equal(pos, pos_ref.to(pos.device)):
+                raise RuntimeError(f"fast M-RoPE positions differ from get_rope_index "
+                                   f"(delta {delta} vs {delta_ref})")
+        elif self.positions_mode != "fast":
+            raise ValueError(f"positions_mode {self.positions_mode!r}")
+        return pos, delta
 
     # --- the reference -------------------------------------------------------------------------- #
 
@@ -164,7 +231,10 @@ class QwenVLStreamingAxis(nn.Module):
     @torch.no_grad()
     def streaming_forward(self, inputs: Dict[str, Any], px_base: torch.Tensor,
                           groups: int, keep: float = 1.0,
-                          sink: Optional[Any] = None) -> Tuple[Optional[torch.Tensor], Any, Dict[str, Any]]:
+                          sink: Optional[Any] = None,
+                          image_run: Optional[Tuple[int, int]] = None,
+                          grid_thw: Optional[Tuple[int, int, int]] = None,
+                          ) -> Tuple[Optional[torch.Tensor], Any, Dict[str, Any]]:
         """Progressive arrival: vision approximates-then-corrects per band, the LLM streams.
 
         Args:
@@ -185,6 +255,9 @@ class QwenVLStreamingAxis(nn.Module):
             sink: optional `StreamSink`. When given, every chunk goes to the vLLM server instead of
                 the in-process HF model and the return is `(None, None, stats)`; read the answer
                 from `sink.result()`.
+            image_run: optional (start, count) of the image-token run, and grid_thw the (t, h, w)
+                patch grid, both as Python ints from the CPU side of the driver's prep; when
+                given, nothing about the prompt layout is read back from the GPU.
 
         Returns (final_position_logits, kv_cache, stats).
         """
@@ -198,17 +271,22 @@ class QwenVLStreamingAxis(nn.Module):
             raise ValueError(f"base/full pixel grids differ: {tuple(px_base.shape)} vs "
                              f"{tuple(px_full.shape)} -- degrade content, never geometry")
 
-        lo, n_tok = self._image_token_run(ids)
+        lo, n_tok = image_run if image_run is not None else self._image_token_run(ids)
         seq = int(ids.shape[1])
         unit = self.tower.spatial_merge_unit
+        dev = px_full.device
+        rows_only = self.correct_rows_only
 
-        # Arrival 0: everything that needs only the base image. Both prepares are grid-shape-exact;
-        # the base approx pass gives every patch row a value and every layer a K/V.
+        # Arrival 0: everything that needs only the base image. The grid-only prep (positions,
+        # rotary tables, segment ranges) is shared by the two embeds -- it is grid-shape-exact,
+        # and the two images share the grid; the base approx pass gives every patch row a value
+        # and every layer a K/V.
         cache: Dict[str, Any] = {}
         with self._arrival(0):
             with self._stage("prepare"):
-                ctx_full = self.tower.prepare_full_tokens(px_full, grid)
-                ctx_base = self.tower.prepare_full_tokens(px_base, grid)
+                gctx = self.tower.prepare_grid(grid, dev)
+                ctx_full = self.tower.prepare_full_tokens(px_full, grid, gctx)
+                ctx_base = self.tower.prepare_full_tokens(px_base, grid, gctx)
             n_rows = ctx_full["seq_len"]
             n_groups_total = n_rows // unit
             if n_tok != n_groups_total:
@@ -220,11 +298,12 @@ class QwenVLStreamingAxis(nn.Module):
         bands = self._bands(groups, n_groups_total)
         stats = {"prefill_tokens": 0, "corrected_groups": 0, "chunks": []}  # decode_start_pos added below
 
-        pos_3d, rope_delta = self._positions(inputs)
+        pos_3d, rope_delta = self._positions(inputs, image_run=(lo, n_tok), grid_thw=grid_thw)
         # Where a decode loop on top of the returned cache must continue from: stock advances all
-        # three axes together for generated (text) tokens.
-        stats_decode_pos = int(pos_3d.max().item()) + 1
-        all_groups = torch.arange(n_groups_total, device=px_full.device)
+        # three axes together for generated (text) tokens. rope_delta = max_pos + 1 - seq by
+        # definition, so this is CPU arithmetic, not a read-back of pos_3d.
+        stats_decode_pos = rope_delta + seq
+        all_groups = torch.arange(n_groups_total, device=dev)
         rows_all = self._rows_of_groups(ctx_full, all_groups)   # group-major row order
 
         if keep < 1.0:
@@ -266,23 +345,33 @@ class QwenVLStreamingAxis(nn.Module):
         # Rows arrived so far -- the residual-stream restart mixes full rows (arrived) with base
         # rows (not yet), which is the in-process equivalent of the executor path's "reconstructed
         # canvas": the stream the correction restarts from is exactly what has been received.
-        arrived_rows = torch.zeros(n_rows, dtype=torch.bool, device=px_full.device)
+        # With `correct_rows_only` the mixed stream is never materialised: band r corrects only
+        # band r's groups (keep<1 selects among them), the bands are disjoint, so every corrected
+        # row is an ARRIVED row and its layer-0 value is `ctx_full["hidden_states"][row]`; the
+        # base rows of the mix were only ever carried, never read (see `block.correct_rows`).
+        if not rows_only:
+            arrived_rows = torch.zeros(n_rows, dtype=torch.bool, device=dev)
         last_arrival = 0
         for r, (g0, g1) in enumerate(bands):
             if g1 <= g0:
                 continue
             last_arrival = r + 1
             with self._arrival(last_arrival):
-                band_groups = torch.arange(g0, g1, device=px_full.device)
+                band_groups = torch.arange(g0, g1, device=dev)
                 band_rows_idx = self._rows_of_groups(ctx_full, band_groups)
-                arrived_rows[band_rows_idx] = True
-                stream = torch.where(arrived_rows.unsqueeze(-1),
-                                     ctx_full["hidden_states"], ctx_base["hidden_states"])
+                if not rows_only:
+                    arrived_rows[band_rows_idx] = True
+                    stream = torch.where(arrived_rows.unsqueeze(-1),
+                                         ctx_full["hidden_states"], ctx_base["hidden_states"])
                 if keep < 1.0:
                     band_mask = torch.zeros(n_groups_total, dtype=torch.bool, device=score.device)
                     band_mask[g0:g1] = True
                     cand = band_mask & ~selected
-                    q = min(quota[r], int(cand.sum()))
+                    # Bands are disjoint and `selected` only ever gains groups of the current
+                    # band, so every group of this band is still a candidate: the count is
+                    # g1 - g0 by construction (the former `int(cand.sum())` was a host sync
+                    # returning exactly that).
+                    q = min(quota[r], g1 - g0)
                     if q > 0:
                         group_idx = score.masked_fill(~cand, float("-inf")).topk(q).indices.sort().values
                         selected[group_idx] = True
@@ -292,9 +381,17 @@ class QwenVLStreamingAxis(nn.Module):
                     group_idx = band_groups
                 if group_idx.numel():
                     with self._stage("vision_correct"):
-                        x_v, cache = self.tower.correct_forward(stream, group_idx, 0,
-                                                                len(self.tower.blocks), ctx_full,
-                                                                cache, "v")
+                        if rows_only:
+                            # keep=1.0: the band IS the contiguous group range [g0, g1), so the
+                            # tower can slice rows instead of gathering them (span, no sync).
+                            unit = self.tower.spatial_merge_unit
+                            x_rows, cache = self.tower.correct_rows(
+                                ctx_full["hidden_states"], group_idx, ctx_full, cache, "v",
+                                span=(g0 * unit, g1 * unit) if keep >= 1.0 else None)
+                        else:
+                            x_v, cache = self.tower.correct_forward(stream, group_idx, 0,
+                                                                    len(self.tower.blocks), ctx_full,
+                                                                    cache, "v")
                 stats["corrected_groups"] += int(group_idx.numel()) if keep < 1.0 else (g1 - g0)
                 # Merge ONLY this band. The merger is per-merge-group (norm -> reshape(unit) ->
                 # MLP), so slicing at group granularity is exact. Under keep<1, UNCORRECTED rows
@@ -303,10 +400,20 @@ class QwenVLStreamingAxis(nn.Module):
                 # stream+increment reconstruction, which mixes refined layer-0 with degraded
                 # increments (the self-inconsistent combination the CLIP memo measured below floor).
                 with self._stage("merge"):
-                    if keep < 1.0:
-                        row_mask = torch.zeros(n_rows, dtype=torch.bool, device=px_full.device)
+                    if rows_only:
+                        if keep < 1.0:
+                            # Gather is a fresh tensor; the corrected rows (group-major in
+                            # group_idx order) overwrite their groups' slots within the band.
+                            band_rows = x_base_out[band_rows_idx]
+                            if group_idx.numel():
+                                band_rows.view(g1 - g0, unit, -1)[group_idx.to(dev) - g0] = \
+                                    x_rows.view(-1, unit, x_rows.shape[-1])
+                        else:
+                            band_rows = x_rows
+                    elif keep < 1.0:
+                        row_mask = torch.zeros(n_rows, dtype=torch.bool, device=dev)
                         if group_idx.numel():
-                            row_mask[self._rows_of_groups(ctx_full, group_idx.to(px_full.device))] = True
+                            row_mask[self._rows_of_groups(ctx_full, group_idx.to(dev))] = True
                         src = torch.where(row_mask.unsqueeze(-1), x_v, x_base_out) \
                             if group_idx.numel() else x_base_out
                         band_rows = src[band_rows_idx]
@@ -327,8 +434,11 @@ class QwenVLStreamingAxis(nn.Module):
         # metrics are not monotone in fidelity (the interleaved contract says this in as many
         # words), and Qwen3.5's first generated token is CoT boilerplate that ignores the image
         # entirely -- measured TV(floor, stock) = 0.0005 at that position, i.e. no logit-level gate
-        # can see the vision mechanism at all. The embeddings can.
-        stats["image_embeds"] = emb_all[:, lo:lo + n_groups_total].float()
+        # can see the vision mechanism at all. The embeddings can. Skipped on the sink path
+        # unless asked for: the chunks already left with these rows, and the fp32 copy is 250 MB
+        # at 15k tokens.
+        if sink is None or self.image_embeds_with_sink:
+            stats["image_embeds"] = emb_all[:, lo:lo + n_groups_total].float()
         return last_logits, kv, stats
 
     # --- the floor ------------------------------------------------------------------------------ #
@@ -347,14 +457,16 @@ class QwenVLStreamingAxis(nn.Module):
 
     @torch.no_grad()
     def oneshot_embeds(self, inputs: Dict[str, Any], pixel_values: torch.Tensor,
-                       stage: str = "full") -> Tuple[torch.Tensor, torch.Tensor, int]:
+                       stage: str = "full", image_run: Optional[Tuple[int, int]] = None,
+                       grid_thw: Optional[Tuple[int, int, int]] = None,
+                       ) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """The stock path's prompt embeddings for ONE image: text rows from `embed_tokens`, image
         rows from the STOCK vision tower on `pixel_values` (the full image for the ceiling, the
         degraded base for the floor), spliced at the image run -- the same `inputs_embeds` stock's
         forward builds internally before its first decoder layer. Returns (embeds [T, D],
         mrope positions [3, T], rope_delta), i.e. one chunk for `StreamSink.push(final=True)`."""
         ids = inputs["input_ids"]
-        lo, n_tok = self._image_token_run(ids)
+        lo, n_tok = image_run if image_run is not None else self._image_token_run(ids)
         with self._arrival(0), self._stage(stage):
             feats = self.model.model.get_image_features(
                 pixel_values.to(self.model.dtype), inputs["image_grid_thw"])
@@ -365,5 +477,5 @@ class QwenVLStreamingAxis(nn.Module):
                 raise ValueError(f"tower produced {feats.shape[0]} rows for {n_tok} image tokens")
             emb = self.lm.embed_tokens(ids)[0]
             emb[lo:lo + n_tok] = feats.to(emb.dtype)
-        pos_3d, rope_delta = self._positions(inputs)
+        pos_3d, rope_delta = self._positions(inputs, image_run=(lo, n_tok), grid_thw=grid_thw)
         return emb, pos_3d[:, 0], rope_delta

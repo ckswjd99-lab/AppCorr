@@ -105,6 +105,7 @@ class StreamingLLM:
                        gpu_memory_utilization=gpu_memory_utilization, max_model_len=max_model_len,
                        enforce_eager=enforce_eager, dtype=dtype, tensor_parallel_size=1, **kw)
         self.engine = self.llm.llm_engine
+        self.max_model_len = int(self.engine.model_config.max_model_len)
         # 0.11.2: `LLMEngine.processor`; 0.28.0: `LLMEngine.input_processor` (+ `supported_tasks`)
         self.processor = getattr(self.engine, "input_processor", None) or self.engine.processor
         core = self.engine.engine_core  # InprocClient

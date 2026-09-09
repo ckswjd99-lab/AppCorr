@@ -30,7 +30,7 @@ are combined nonlinearly by the merger into one LLM token, so a half-corrected m
 meaningful state. `correct_forward` takes merge-group indices and expands them to raw rows.
 """
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -71,13 +71,12 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
                 "Port the window permutation from appcorr/models/qwen25vl/vision/backbone.py."
             )
 
-    def prepare_full_tokens(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor) -> Dict[str, Any]:
-        """patch_embed + interpolated pos_embed -> rotary embeddings -> segment boundaries.
-
-        Always exact: every tensor here depends only on `grid_thw`, never on which patches have
-        arrived. Mirrors stock `Qwen3_5MoeVisionModel.forward` up to the block loop.
-        """
-        device = pixel_values.device
+    def prepare_grid(self, grid_thw: torch.Tensor, device) -> Dict[str, Any]:
+        """Everything `prepare_full_tokens` derives from `grid_thw` alone: interpolated pos_embed,
+        rotary cos/sin, cu_seqlens and the CPU-side segment ranges (the `.tolist()` syncs live
+        here). Computed once per request; `embed()` then turns each pixel tensor (full image,
+        degraded base) into a residual stream against the same grid context -- the streaming
+        axis prepares two images per request and shared none of this before (2026-09-08)."""
         bilinear_indices, bilinear_weights = get_vision_bilinear_indices_and_weights(
             grid_thw, num_grid_per_side=self.num_grid_per_side,
             spatial_merge_size=self.spatial_merge_size,
@@ -85,12 +84,8 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
         position_ids = get_vision_position_ids(grid_thw, self.spatial_merge_size)
         cu_seqlens = get_vision_cu_seqlens(grid_thw).to(device)
 
-        hidden_states = self.patch_embed(pixel_values)
         pos_embeds = (self.pos_embed(bilinear_indices) * bilinear_weights[:, :, None]).sum(0)
-        hidden_states = hidden_states + pos_embeds.to(hidden_states.dtype)
-
-        seq_len = hidden_states.shape[0]
-        hidden_states = hidden_states.reshape(seq_len, -1)
+        seq_len = pos_embeds.shape[0]
         rotary_pos_emb = self.rotary_pos_emb(position_ids).reshape(seq_len, -1)
         emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
         position_embeddings = (emb.cos(), emb.sin())
@@ -99,12 +94,32 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
         segment_ranges = ApproxCorrectQwen35VisionAttention.segment_ranges_from_cu_seqlens(cu_seqlens)
 
         return {
-            "hidden_states": hidden_states,
+            "pos_embeds": pos_embeds,
             "position_embeddings": position_embeddings,
             "cu_seqlens": cu_seqlens,
             "segment_ranges": segment_ranges,
             "seq_len": seq_len,
         }
+
+    def embed(self, pixel_values: torch.Tensor, gctx: Dict[str, Any]) -> torch.Tensor:
+        """patch_embed + the grid's interpolated pos_embed -> [seq_len, dim] layer-0 stream."""
+        hidden_states = self.patch_embed(pixel_values)
+        hidden_states = hidden_states + gctx["pos_embeds"].to(hidden_states.dtype)
+        if hidden_states.shape[0] != gctx["seq_len"]:
+            raise ValueError(f"{hidden_states.shape[0]} patch rows for a grid of {gctx['seq_len']}")
+        return hidden_states.reshape(gctx["seq_len"], -1)
+
+    def prepare_full_tokens(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor,
+                            gctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """patch_embed + interpolated pos_embed -> rotary embeddings -> segment boundaries.
+
+        Always exact: every tensor here depends only on `grid_thw`, never on which patches have
+        arrived. Mirrors stock `Qwen3_5MoeVisionModel.forward` up to the block loop. Pass a
+        `prepare_grid` result as `gctx` to reuse it across images of the same grid.
+        """
+        if gctx is None:
+            gctx = self.prepare_grid(grid_thw, pixel_values.device)
+        return {"hidden_states": self.embed(pixel_values, gctx), **gctx}
 
     def approx_forward(self, x_feature: torch.Tensor, start_l: int, end_l: int, ctx: Dict[str, Any],
                        cache_feature: Dict[str, Any], tag_prefix: str,
@@ -117,6 +132,31 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
             )
         return x_feature, cache_feature
 
+    def _token_idx(self, group_idx: torch.Tensor, device) -> torch.Tensor:
+        unit = self.spatial_merge_unit
+        group_idx = group_idx.to(device)
+        return (group_idx.unsqueeze(1) * unit + torch.arange(unit, device=device)).flatten()
+
+    def correct_plan(self, token_idx: torch.Tensor, ctx: Dict[str, Any]):
+        """Per round, the segment split of the query rows for `attention.correct(plan=)`:
+        `"single"` for a one-segment request (no sync at all), else the Qwen2.5-VL shape
+        `(order, inv_order, [(start, length, a, b), ...])` from ONE `.tolist()`."""
+        segs = ctx["segment_ranges"]
+        if len(segs) == 1:
+            return "single"
+        import bisect
+        order = torch.argsort(token_idx)
+        inv_order = torch.empty_like(order)
+        inv_order[order] = torch.arange(order.numel(), device=order.device)
+        pos = token_idx[order].tolist()
+        owned = []
+        for start, length in segs:
+            a = bisect.bisect_left(pos, start)
+            b = bisect.bisect_left(pos, start + length)
+            if b > a:
+                owned.append((start, length, a, b))
+        return order, inv_order, owned
+
     def correct_forward(self, x_feature: torch.Tensor, group_idx: torch.Tensor, start_l: int, end_l: int,
                         ctx: Dict[str, Any], cache_feature: Dict[str, Any],
                         tag_prefix: str) -> Tuple[torch.Tensor, Dict[str, Any]]:
@@ -128,20 +168,49 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
                 into the `seq_len // spatial_merge_unit` groups. In NATURAL order: unlike the 2.5
                 fork there is no permutation between a group's index and its rows.
         """
-        unit = self.spatial_merge_unit
-        group_idx = group_idx.to(x_feature.device)
-        token_idx = (group_idx.unsqueeze(1) * unit
-                     + torch.arange(unit, device=group_idx.device)).flatten()
-
+        token_idx = self._token_idx(group_idx, x_feature.device)
         cos_full, sin_full = ctx["position_embeddings"]
         position_embeddings_sel = (cos_full[token_idx], sin_full[token_idx])
+        plan = self.correct_plan(token_idx, ctx)
 
         for i in range(start_l, end_l):
             x_feature, cache_feature = self.blocks[i].correct(
                 x_feature, token_idx, ctx["segment_ranges"], position_embeddings_sel,
-                cache_feature, tag=f"{tag_prefix}_layer{i}",
+                cache_feature, tag=f"{tag_prefix}_layer{i}", plan=plan,
             )
         return x_feature, cache_feature
+
+    def correct_rows(self, x0_full: torch.Tensor, group_idx: torch.Tensor, ctx: Dict[str, Any],
+                     cache_feature: Dict[str, Any], tag_prefix: str,
+                     span=None) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Full-depth correction of `group_idx`'s rows only: gathers their layer-0 rows from
+        `x0_full` (the [T, dim] layer-0 stream; only these rows are read) and returns the
+        corrected last-layer rows [G * unit, dim] in group-major order, i.e. exactly
+        `correct_forward(x0_full, group_idx, 0, depth, ...)[0][token_idx]` -- bitwise -- without
+        materialising the other T - Q rows at any layer. See `block.correct_rows` for the
+        contract (each group corrected once, non-corrected rows never read) that makes the
+        omission sound; the streaming axis is the caller that satisfies it.
+        """
+        token_idx = self._token_idx(group_idx, x0_full.device)
+        cos_full, sin_full = ctx["position_embeddings"]
+        plan = self.correct_plan(token_idx, ctx)
+        if span is not None:
+            # `span=(lo, hi)`: the caller knows `group_idx` is the contiguous group range
+            # [lo/unit, hi/unit) (a keep=1.0 streaming band), so every row gather here and every
+            # K/V scatter in the layers is a plain slice instead of an index kernel. Same rows,
+            # same values -- bitwise with the index path.
+            lo, hi = span
+            position_embeddings_sel = (cos_full[lo:hi], sin_full[lo:hi])
+            x_rows = x0_full[lo:hi]
+        else:
+            position_embeddings_sel = (cos_full[token_idx], sin_full[token_idx])
+            x_rows = x0_full[token_idx]
+        for i, blk in enumerate(self.blocks):
+            x_rows, cache_feature = blk.correct_rows(
+                x_rows, token_idx, ctx["segment_ranges"], position_embeddings_sel,
+                cache_feature, tag=f"{tag_prefix}_layer{i}", plan=plan, span=span,
+            )
+        return x_rows, cache_feature
 
     def finalize_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str,
                                 n_layers: int) -> Dict[str, Any]:
