@@ -352,6 +352,7 @@ class QwenVLStreamingAxis(nn.Module):
         if not rows_only:
             arrived_rows = torch.zeros(n_rows, dtype=torch.bool, device=dev)
         last_arrival = 0
+        last_band = max(r for r, (g0, g1) in enumerate(bands) if g1 > g0)
         for r, (g0, g1) in enumerate(bands):
             if g1 <= g0:
                 continue
@@ -422,12 +423,13 @@ class QwenVLStreamingAxis(nn.Module):
                     merged = self.tower.merger(band_rows)
                 emb_all[:, lo + g0:lo + g1] = merged.unsqueeze(0).to(emb_all.dtype)
                 with self._stage("llm_prefill"):
-                    prefill(lo + g1)      # on r=0 this also carries the leading text
-
-        # Trailing text (question + generation prompt) waits on the last band -- same arrival,
-        # charging it later would invent an arrival the transmission never had.
-        with self._arrival(last_arrival), self._stage("llm_prefill"):
-            prefill(seq)
+                    # r=0 also carries the leading text; the last band carries the trailing text
+                    # (question + generation prompt) in the SAME chunk: it waits on the last band
+                    # anyway (same arrival -- charging it later would invent an arrival the
+                    # transmission never had), and one prefill of image tail + text is one
+                    # engine step instead of two (2026-09-09, was a separate trailing push).
+                    prefill(seq if r == last_band else lo + g1)
+        assert pos_done == seq, (pos_done, seq)
         stats["decode_start_pos"] = stats_decode_pos
         stats["rope_delta"] = rope_delta
         # The image-row embeddings the LLM actually consumed, for feature-space gating. Task

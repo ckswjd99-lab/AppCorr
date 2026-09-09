@@ -486,3 +486,34 @@ time, critical = from the first entry into the highest arrival index) through ea
 script's `--latency` flag (ov2, gemma3, gemma4, museglimmer, qwen25vl_arms, mistral3_oracle
 --flops), so a latency cell times exactly the arm its Comp. cell counts. Chain:
 `scripts/latency_fill_hf_20260909.sh`.
+
+### Trailing text rides the last band's chunk (2026-09-09)
+
+`QwenVLStreamingAxis.streaming_forward` used to push the last band's image rows and then the
+trailing text (question + generation prompt) as a separate chunk -- two engine prefill steps for
+one arrival. Now the last band's chunk carries its image rows AND the trailing text (`prefill(seq)`
+on the last non-empty band; `groups` pushes per request instead of `groups + 1`; the same holds
+on the in-process HF path). Accounting is unchanged: the trailing text was already charged to the
+last arrival. What moves:
+- `t_pushes_ms` has `groups` entries; `ttft_last_chunk_ms` (the v1 Crit. Lat.) now spans image
+  tail + text + first token, so it is no longer comparable with the entries measured before
+  this change (the v2 `ttft_start - t_pushes[groups-2]` is unaffected).
+- CPU gate (`qwen_axis_cpu_unittest.py` vs a pre-change copy): image_embeds, decode_start_pos,
+  corrected_groups bitwise; logits differ by <=4e-7 fp32 (chunked-vs-merged prefill reduction
+  order); the FLOPs counter's `llm_prefill` grows by 0.1-1.4% on the toy models because it counts
+  each chunk's attention dense (q x all keys of the chunk) -- the same convention the one-chunk
+  ceiling has always been counted under, so the served rows' Comp. cells would shift by well under
+  1% if re-run. No GPU gate yet: the served preds (`vllm_vs_hf_preds.py`) and the table's
+  latency entries for Qwen3.5 were all measured with the separate trailing push.
+- Served A/B (Qwen3.5-35B-A3B bf16, port 5591, concurrency 1, RWQA 192 evenly spaced, old push
+  structure vs merged; rows in `analysis/results/vllm_stream/tail_merge_ab_20260909/{old,new,new_rep}`):
+  preds are NOT bitwise on the served path either, but the old-vs-new disagreement is the same size
+  as a same-code repeat -- k1.0: old==new 187/192, new==new_rep 189/192, acc 78.65 in all three runs;
+  k0.5: old==new 184/192, new==new_rep 189/192, acc 80.73 -> 78.65 / 79.17 (three answer flips that
+  reproduce across the two new runs, all three against the merge, 3-0 paired, p=0.125 -- noise-level
+  on 192, not claimed either way; the merged runs agree MORE with the ceiling preds, 145 -> 150/149).
+  The same-code 3/192 spread is the chunk-coalescing nondeterminism already seen on 122B, at 35B scale.
+  Latency probe (chartqa / realworldqa / visdrone_det, n=36, v2 Crit.): k1.0 53.2->52.2 / 93.6->89.9 /
+  79.8->71.6 ms (one engine step saved, ~2.5 ms on the RWQA TTFT median); k0.5 and k0.25 move
+  both ways within the probe's own +-20 ms run-to-run spread. The table's served entries were kept
+  (old structure; the difference is inside probe noise).

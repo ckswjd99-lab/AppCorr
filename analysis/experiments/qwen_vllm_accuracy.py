@@ -462,8 +462,9 @@ def main():
                               "t_open_ms": t_open_ms,
                               "t_last_push_ms": (res["pushes"][-1]["t_send"] - t_start) * 1e3,
                               # every push's send time: push r is band r (band 0 with the leading
-                              # text), the last one the trailing text; band r's correction starts
-                              # right after push r-1 (push() syncs the GPU for its D2H copy)
+                              # text, the last band with the trailing text -- `groups` pushes in
+                              # all); band r's correction starts right after push r-1 (push()
+                              # syncs the GPU for its D2H copy)
                               "t_pushes_ms": [round((q["t_send"] - t_start) * 1e3, 2)
                                               for q in res["pushes"]],
                               "ttft_start_ms": t_open_ms + t["ttft_from_open_ms"],
