@@ -21,6 +21,7 @@ import copy
 import json
 import math
 import multiprocessing
+import os
 import queue as queue_mod
 import sys
 import time
@@ -152,17 +153,37 @@ def request_action(encoder, config, frame_np, text, sched_q, result_q, timeout):
     return action, result.server_events
 
 
+def make_libero_env(task, resolution=256):
+    """`experiments.robot.libero.libero_utils.get_libero_env` with ONE rendered camera.
+
+    The upstream helper keeps LIBERO's default camera list (agentview + robot0_eye_in_hand) but
+    OpenVLA only ever reads `obs["agentview_image"]`. Rendering here is Mesa llvmpipe on the CPU
+    (no NVIDIA EGL on this box), ~60 ms per 256x256 frame, so the unused wrist camera cost ~22%
+    of every control step (step profile 2026-09-07: sim 122 ms of 309 ms, physics only 4 ms).
+    Dropping it leaves the agentview pixels bit-identical (checked over 40 steps, same init
+    state and actions); everything else -- seed, resolution, bddl -- matches the upstream helper.
+    """
+    from libero.libero import get_libero_path
+    from libero.libero.envs import OffScreenRenderEnv
+
+    bddl = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
+    env = OffScreenRenderEnv(bddl_file_name=bddl, camera_heights=resolution, camera_widths=resolution,
+                             camera_names=["agentview"])
+    env.seed(0)  # upstream: seed affects object positions even with a fixed initial state
+    return env, task.language
+
+
 def run_episode(task_suite_name, task_id, args, encoder, config, sched_q, result_q, op_times, correction_stats,
                  correct_by_group=None, init_state_idx=0):
     from libero.libero import benchmark
 
-    from experiments.robot.libero.libero_utils import get_libero_dummy_action, get_libero_env, get_libero_image
+    from experiments.robot.libero.libero_utils import get_libero_dummy_action, get_libero_image
     from experiments.robot.robot_utils import invert_gripper_action, normalize_gripper_action
 
     task_suite = benchmark.get_benchmark_dict()[task_suite_name]()
     task = task_suite.get_task(task_id)
     initial_states = task_suite.get_task_init_states(task_id)
-    env, task_description = get_libero_env(task, "openvla", resolution=256)
+    env, task_description = make_libero_env(task, resolution=256)
     env.reset()
     # Each trial uses a DISTINCT LIBERO initial state so trials are independent samples
     # (a greedy policy replays an identical episode from the same init state, so reusing

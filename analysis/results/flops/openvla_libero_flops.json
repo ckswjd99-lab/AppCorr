@@ -12,7 +12,9 @@
    "k1.00": 1691.2,
    "total_k1.00": 5314.8,
    "interleaved_k1.00": 1691.2,
-   "interleaved_total_k1.00": 10402.1
+   "interleaved_total_k1.00": 10402.1,
+   "newonly_k1.00": 1406.3,
+   "newonly_total_k1.00": 4745.1
   },
   "libero_object": {
    "full": 4132.0,
@@ -20,7 +22,9 @@
    "k1.00": 1616.7,
    "total_k1.00": 5240.3,
    "interleaved_k1.00": 1616.7,
-   "interleaved_total_k1.00": 10028.9
+   "interleaved_total_k1.00": 10028.9,
+   "newonly_k1.00": 1331.8,
+   "newonly_total_k1.00": 4670.6
   },
   "libero_goal": {
    "full": 4083.4,
@@ -28,7 +32,9 @@
    "k1.00": 1568.5,
    "total_k1.00": 5192.1,
    "interleaved_k1.00": 1568.5,
-   "interleaved_total_k1.00": 9787.6
+   "interleaved_total_k1.00": 9787.6,
+   "newonly_k1.00": 1283.6,
+   "newonly_total_k1.00": 4622.4
   },
   "libero_10": {
    "full": 4158.5,
@@ -36,7 +42,9 @@
    "k1.00": 1643.0,
    "total_k1.00": 5266.6,
    "interleaved_k1.00": 1643.0,
-   "interleaved_total_k1.00": 10160.6
+   "interleaved_total_k1.00": 10160.6,
+   "newonly_k1.00": 1358.1,
+   "newonly_total_k1.00": 4696.9
   }
  }
 }
