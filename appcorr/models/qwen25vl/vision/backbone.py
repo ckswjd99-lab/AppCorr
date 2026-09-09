@@ -28,7 +28,7 @@ passes built from `ApproxCorrectQwen25VLVisionBlock`. Mirrors
     `cu_window_seqlens` (per-window boundaries) -- both threaded per-layer into approx()/correct().
 """
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -52,25 +52,20 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
         self.fullatt_block_indexes = set(vision_tower.fullatt_block_indexes)
         self.blocks = nn.ModuleList([ApproxCorrectQwen25VLVisionBlock.from_stock(b) for b in vision_tower.blocks])
 
-    def prepare_full_tokens(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor) -> Dict[str, Any]:
-        """patch_embed -> window-index permutation of tokens + rotary embeddings -> segment
-        boundaries. Always exact -- tokenization/windowing depend only on grid_thw, never on
-        which patches have "arrived" yet, matching every prior fork's "cheap non-block ops are
-        always exact" philosophy. Returns a dict bundling everything correct_forward/approx_forward
-        need, since (unlike prior forks) there are several grid-shape-derived tensors to thread
-        through together."""
-        device = pixel_values.device
+    def prepare_grid(self, grid_thw: torch.Tensor, device) -> Dict[str, Any]:
+        """Everything `prepare_full_tokens` derives from `grid_thw` alone: window permutation,
+        rotary cos/sin (already permuted), cu_seqlens and the CPU-side segment-range lists (the
+        `.tolist()` syncs live here). Computed once per request; `embed()` then turns each pixel
+        tensor (full image, degraded base) into a residual stream against the same grid context
+        -- the streaming axis prepares two images per request and shared none of this before
+        (2026-09-08)."""
         position_ids = get_vision_position_ids(grid_thw, self.spatial_merge_size)
         cu_seqlens = get_vision_cu_seqlens(grid_thw)
         window_index, cu_window_seqlens = get_vision_window_index(
             grid_thw, self.spatial_merge_size, self.window_size, self.patch_size
         )
         inv_window_index = torch.argsort(window_index)
-
-        hidden_states = self.patch_embed(pixel_values)
-        seq_len = hidden_states.shape[0]
-        hidden_states = hidden_states.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
-        hidden_states = hidden_states[window_index, :, :].reshape(seq_len, -1)
+        seq_len = int(position_ids.shape[0])
 
         rotary_pos_emb = self.rotary_pos_emb(position_ids)
         rotary_pos_emb = rotary_pos_emb.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
@@ -88,7 +83,6 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
         cu_window_seqlens_ranges = ApproxCorrectQwen25VLVisionAttention._segment_ranges(cu_window_seqlens)
 
         return {
-            "hidden_states": hidden_states,
             "position_embeddings": position_embeddings,
             "cu_seqlens": cu_seqlens,
             "cu_window_seqlens": cu_window_seqlens,
@@ -98,6 +92,29 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
             "inv_window_index": inv_window_index.to(device),
             "seq_len": seq_len,
         }
+
+    def embed(self, pixel_values: torch.Tensor, gctx: Dict[str, Any]) -> torch.Tensor:
+        """patch_embed -> window-index permutation -> [seq_len, dim] layer-0 stream (permuted
+        order, as the block loop expects)."""
+        hidden_states = self.patch_embed(pixel_values)
+        seq_len = hidden_states.shape[0]
+        if seq_len != gctx["seq_len"]:
+            raise ValueError(f"{seq_len} patch rows for a grid of {gctx['seq_len']}")
+        hidden_states = hidden_states.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
+        return hidden_states[gctx["window_index"], :, :].reshape(seq_len, -1)
+
+    def prepare_full_tokens(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor,
+                            gctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """patch_embed -> window-index permutation of tokens + rotary embeddings -> segment
+        boundaries. Always exact -- tokenization/windowing depend only on grid_thw, never on
+        which patches have "arrived" yet, matching every prior fork's "cheap non-block ops are
+        always exact" philosophy. Returns a dict bundling everything correct_forward/approx_forward
+        need, since (unlike prior forks) there are several grid-shape-derived tensors to thread
+        through together. Pass a `prepare_grid` result as `gctx` to reuse it across images of
+        the same grid."""
+        if gctx is None:
+            gctx = self.prepare_grid(grid_thw, pixel_values.device)
+        return {"hidden_states": self.embed(pixel_values, gctx), **gctx}
 
     def _segments_for_layer(self, layer_idx: int, ctx: Dict[str, Any]):
         return ctx["cu_seqlens_ranges"] if layer_idx in self.fullatt_block_indexes else ctx["cu_window_seqlens_ranges"]
@@ -183,6 +200,34 @@ class ApproxCorrectQwen25VLVisionTower(nn.Module):
                 plan=plans[id(segs_now)],
             )
         return x_feature, cache_feature
+
+    def correct_rows(self, x0_full: torch.Tensor, group_idx: torch.Tensor, ctx: Dict[str, Any],
+                     cache_feature: Dict[str, Any], tag_prefix: str,
+                     span=None) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Full-depth correction of `group_idx`'s rows only (`span` is accepted for the shared
+        axis call site and ignored: this tower's rows are window-permuted, so a contiguous group
+        range is not a contiguous row range): gathers their layer-0 rows from
+        `x0_full` (the permuted [T, dim] layer-0 stream; only these rows are read) and returns
+        the corrected last-layer rows [G * unit, dim] in group-major order of `group_idx` (i.e.
+        the `token_idx` order), bitwise `correct_forward(x0_full, group_idx, 0, depth, ...)[0]
+        [token_idx]`, without materialising the other rows at any layer. See the Qwen3.5 fork's
+        `block.correct_rows` for the contract (each group corrected once, non-corrected rows
+        never read); the streaming axis is the caller that satisfies it."""
+        inv_window_index = ctx["inv_window_index"]
+        dest_slots = inv_window_index[group_idx.to(inv_window_index.device)]
+        unit = self.spatial_merge_unit
+        token_idx = (dest_slots.unsqueeze(1) * unit + torch.arange(unit, device=dest_slots.device)).flatten()
+        cos_full, sin_full = ctx["position_embeddings"]
+        position_embeddings_sel = (cos_full[token_idx], sin_full[token_idx])
+        plans = self.correct_plan(token_idx, ctx)
+        x_rows = x0_full[token_idx]
+        for i, blk in enumerate(self.blocks):
+            segs_now = self._segments_for_layer(i, ctx)
+            x_rows, cache_feature = blk.correct_rows(
+                x_rows, token_idx, segs_now, position_embeddings_sel, cache_feature,
+                tag=f"{tag_prefix}_layer{i}", plan=plans[id(segs_now)],
+            )
+        return x_rows, cache_feature
 
     def correct_plan(self, token_idx: torch.Tensor, ctx: Dict[str, Any]):
         """Per segment-list (full-image and window), the query rows each segment owns:

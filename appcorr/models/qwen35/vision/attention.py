@@ -31,11 +31,24 @@ than `F.scaled_dot_product_attention` precisely because SDPA fuses the softmax a
 materialises the weights.
 """
 
+import os
 from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# L4a switch (see docs/memo/qwen_correct_forward_profile.md); False restores the pre-2026-09-08 form.
+RECV_ATTN_FUSED_SUM = True
+# "torch" = the chunked softmax reference (L4a fused reduce); "triton" = the two-pass column-sum
+# kernel in recv_attn_triton.py (L4b); "auto" (default) = triton below RECV_ATTN_TRITON_MAX_T
+# patch tokens, torch above. Selection identity of the kernel vs the reference gated PASS
+# 192/192 RealWorldQA + 256/256 VisDrone Det (2026-09-08, default tile config); the tile sweep
+# (2026-09-09, qwen_recv_attn_triton_test.py --sweep) found no config faster than the default and
+# the kernel loses to torch past ~15k tokens (8436: 4.5 vs 7.4 ms; 19264: 21.1 vs 18.2), so the
+# switch is by size. Read once at import so a gate run can pick the path from the environment.
+RECV_ATTN_IMPL = os.environ.get("APPCORR_RECV_ATTN", "auto")
+RECV_ATTN_TRITON_MAX_T = int(os.environ.get("APPCORR_RECV_ATTN_TRITON_MAX_T", "12000"))
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -103,6 +116,12 @@ class ApproxCorrectQwen35VisionAttention(nn.Module):
         how many patches it has -- without that, a large image's tokens would score systematically
         lower purely because its attention mass is spread over more rows.
         """
+        use_triton = RECV_ATTN_IMPL == "triton" or (
+            RECV_ATTN_IMPL == "auto" and q.shape[0] <= RECV_ATTN_TRITON_MAX_T)
+        if use_triton and q.is_cuda and q.dtype == torch.bfloat16:
+            from .recv_attn_triton import available, received_attention
+            if available():
+                return received_attention(q, k, self.scaling, segment_ranges)
         T = q.shape[0]
         col = torch.zeros(T, device=q.device, dtype=torch.float32)
         chunk = 1024
@@ -113,7 +132,15 @@ class ApproxCorrectQwen35VisionAttention(nn.Module):
                 e0 = min(s0 + chunk, end)
                 q_c = q[s0:e0].transpose(0, 1)                # [H, C, Dh]
                 w = torch.softmax((q_c @ k_seg.transpose(-1, -2)) * self.scaling, dim=-1)
-                col[start:end] += w.float().sum(dim=1).mean(dim=0)
+                if RECV_ATTN_FUSED_SUM:
+                    # Upcast inside the reduction instead of materialising an fp32 copy of the
+                    # [H, C, L] weights first: the copy alone was 82 ms of the 288 ms this
+                    # method costs per pass at 2109 image tokens (profile memo, L4a). Same
+                    # bf16-rounded weights, fp32 accumulation; only the reduce kernel's
+                    # summation order can differ from `.float().sum(dim=1)`.
+                    col[start:end] += w.sum(dim=1, dtype=torch.float32).mean(dim=0)
+                else:
+                    col[start:end] += w.float().sum(dim=1).mean(dim=0)
             col[start:end] /= length
         return col
 
@@ -143,13 +170,25 @@ class ApproxCorrectQwen35VisionAttention(nn.Module):
         return out, cache_feature
 
     def correct(self, x_sel: torch.Tensor, token_idx: torch.Tensor, segment_ranges,
-                position_embeddings_sel, cache_feature: Dict[str, Any], tag: str):
+                position_embeddings_sel, cache_feature: Dict[str, Any], tag: str, plan=None,
+                span=None):
         """
         Args:
             x_sel: [Q, dim] -- norm1(x) already sliced to the corrected rows.
             token_idx: [Q] long -- absolute row indices. Unlike the Qwen2.5-VL fork these index the
                 NATURAL sequence: there is no window permutation to undo.
             position_embeddings_sel: (cos, sin) already gathered at `token_idx`.
+            span: optional `(lo, hi)`: `token_idx == arange(lo, hi)` (a keep=1.0 streaming band),
+                so the K/V scatter is a slice copy. Values identical to the index path.
+            plan: optional, from `backbone.correct_plan()`: `"single"` when the request has one
+                segment (every single-image request -- every query row attends to the whole
+                cache, so there is nothing to split), else `(order, inv_order, segs)` in the
+                Qwen2.5-VL fork's shape (query rows sorted by position and, per segment owning
+                any, its slice [a, b) of the sorted rows). With a plan this call issues no
+                GPU->CPU sync; without one every segment costs a `.any()` sync plus two boolean
+                gathers -- 27 layers x 4 rounds = 108 syncs per request on the streaming axis,
+                the largest single item of its launch/sync-bound profile (2026-09-08). Same SDPA
+                on the same rows either way: outputs are bitwise identical.
         """
         kv = cache_feature[f"{tag}_kv"]  # [T, H, 2, Dh]
         q_new, k_new, v_new = self._qkv_heads(x_sel)
@@ -157,21 +196,38 @@ class ApproxCorrectQwen35VisionAttention(nn.Module):
         q_new, k_new = apply_rotary_pos_emb_vision(q_new, k_new, cos, sin)
 
         token_idx = token_idx.to(kv.device)
-        kv[token_idx, :, 0] = k_new.to(dtype=kv.dtype)
-        kv[token_idx, :, 1] = v_new.to(dtype=kv.dtype)
+        if span is not None:
+            # contiguous rows [lo, hi) == token_idx (caller's guarantee): strided copy, no index_put
+            lo, hi = span
+            kv[lo:hi, :, 0].copy_(k_new.to(dtype=kv.dtype))
+            kv[lo:hi, :, 1].copy_(v_new.to(dtype=kv.dtype))
+        else:
+            kv[token_idx, :, 0] = k_new.to(dtype=kv.dtype)
+            kv[token_idx, :, 1] = v_new.to(dtype=kv.dtype)
         cache_feature[f"{tag}_kv"] = kv
         k_full, v_full = kv.unbind(2)
 
         Q = token_idx.shape[0]
-        out = torch.zeros((Q, self.num_heads, self.head_dim), device=x_sel.device, dtype=q_new.dtype)
-        for start, length in segment_ranges:
-            seg_mask = (token_idx >= start) & (token_idx < start + length)
-            if not bool(seg_mask.any()):
-                # An image contributing no corrected token this round is expected: groups are
-                # assigned per request, and a multi-image request corrects them at different rounds.
-                continue
-            out[seg_mask] = self._sdpa_segment(
-                q_new[seg_mask], k_full[start:start + length], v_full[start:start + length]
-            )
+        if plan == "single":
+            out = self._sdpa_segment(q_new, k_full, v_full)
+        elif plan is not None:
+            order, inv_order, segs = plan
+            q_sorted = q_new[order]
+            outs = [self._sdpa_segment(q_sorted[a:b], k_full[start:start + length],
+                                       v_full[start:start + length])
+                    for start, length, a, b in segs]
+            out = (torch.cat(outs, dim=0) if len(outs) > 1 else outs[0])[inv_order]
+        else:
+            out = torch.zeros((Q, self.num_heads, self.head_dim), device=x_sel.device, dtype=q_new.dtype)
+            for start, length in segment_ranges:
+                seg_mask = (token_idx >= start) & (token_idx < start + length)
+                if not bool(seg_mask.any()):
+                    # An image contributing no corrected token this round is expected: groups are
+                    # assigned per request, and a multi-image request corrects them at different
+                    # rounds.
+                    continue
+                out[seg_mask] = self._sdpa_segment(
+                    q_new[seg_mask], k_full[start:start + length], v_full[start:start + length]
+                )
 
         return self.proj(out.reshape(Q, -1)), cache_feature

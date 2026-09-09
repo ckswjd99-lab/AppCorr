@@ -65,12 +65,13 @@ class ApproxCorrectQwen35VisionBlock(nn.Module):
         return x_mid + mlp_out, cache_feature
 
     def correct(self, x: torch.Tensor, token_idx: torch.Tensor, segment_ranges,
-                position_embeddings_sel, cache_feature: Dict[str, Any], tag: str):
+                position_embeddings_sel, cache_feature: Dict[str, Any], tag: str, plan=None):
         token_idx = token_idx.to(x.device)
         x_active = x[token_idx]  # [Q, dim]
 
         x_attn_sel, cache_feature = self.attn.correct(
-            self.norm1(x_active), token_idx, segment_ranges, position_embeddings_sel, cache_feature, tag
+            self.norm1(x_active), token_idx, segment_ranges, position_embeddings_sel, cache_feature, tag,
+            plan=plan,
         )
         x_attn_active = x_active + x_attn_sel
         mlp_out_new = self.mlp(self.norm2(x_attn_active))
@@ -91,3 +92,26 @@ class ApproxCorrectQwen35VisionBlock(nn.Module):
         cache_feature[f"{tag}_blocks_out_sum"] = new_sum
 
         return x_out, cache_feature
+
+    def correct_rows(self, x_rows: torch.Tensor, token_idx: torch.Tensor, segment_ranges,
+                     position_embeddings_sel, cache_feature: Dict[str, Any], tag: str, plan=None,
+                     span=None):
+        """`correct` restricted to the corrected rows: takes and returns [Q, dim], never touching
+        the full residual stream. Row-for-row the same arithmetic as `correct` (norm1 / qkv /
+        RoPE / K-V scatter / SDPA / proj / residual / norm2 / mlp all act on the same Q rows at
+        the same M), so the returned rows are bitwise `correct(...)[0][token_idx]`.
+
+        What it drops is everything `correct` computes for the OTHER rows: `x + blocks_out_sum`
+        over [T, dim], the scatter of the new rows into it, the `blocks_out_sum.clone()` and the
+        rule-3 write-back. That is only valid for a caller which will never read a non-corrected
+        row of this layer's output and never corrects a row twice -- the streaming axis
+        (`qwen_vl_axis.streaming_forward`: each merge group is corrected in exactly one band and
+        only the corrected rows reach the merger). The executor / interleaved paths keep
+        `correct`: their later rounds rebuild the stream from `blocks_out_sum` and rely on rule 3.
+        """
+        x_attn_sel, cache_feature = self.attn.correct(
+            self.norm1(x_rows), token_idx, segment_ranges, position_embeddings_sel, cache_feature, tag,
+            plan=plan, span=span,
+        )
+        x_attn_active = x_rows + x_attn_sel
+        return x_attn_active + self.mlp(self.norm2(x_attn_active)), cache_feature

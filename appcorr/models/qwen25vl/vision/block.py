@@ -102,3 +102,17 @@ class ApproxCorrectQwen25VLVisionBlock(nn.Module):
         cache_feature[f"{tag}_blocks_out_sum"] = new_sum
 
         return x_out, cache_feature
+
+    def correct_rows(self, x_rows: torch.Tensor, token_idx: torch.Tensor, segment_ranges,
+                     position_embeddings_sel, cache_feature: Dict[str, Any], tag: str, plan=None):
+        """`correct` restricted to the corrected rows: [Q, dim] in, [Q, dim] out, bitwise
+        `correct(...)[0][token_idx]` (every op here acts on the same Q rows at the same M), minus
+        the full-stream reconstruction, scatter and rule-3 write-back that only a later round
+        reading non-corrected rows would need. Streaming-axis use only; see the Qwen3.5 fork's
+        `block.correct_rows` for the contract."""
+        x_attn_sel, cache_feature = self.attn.correct(
+            self.norm1(x_rows), token_idx, segment_ranges, position_embeddings_sel, cache_feature, tag,
+            plan=plan,
+        )
+        x_attn_active = x_rows + x_attn_sel
+        return x_attn_active + self.mlp(self.norm2(x_attn_active)), cache_feature
