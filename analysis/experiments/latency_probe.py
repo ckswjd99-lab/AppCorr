@@ -38,6 +38,10 @@ README = [
     "of the LAST band's vision correction (= the push of band g-2, which syncs the GPU): last-band",
     "correction + push + prefill + trailing text + first decode -- what waits on the final byte",
     "(analogue of Crit. Comp.). 'detail' keeps ttft_last_chunk_ms (from the last push alone) too.",
+    "From 2026-09-09 'k*' is measured with the bands spaced 150 ms apart (APPCORR_PUSH_DELAY_MS,",
+    "'k*_push_delay_ms'), anchored at the last band's pixel arrival (push g-2 issue + delay); the",
+    "fast-producer value (chunks queue behind the previous step, tower overlaps the engine) lives",
+    "in detail.streaming_k*.ttft_last_band_ms. 'full' and 'total_k*' are fast-producer numbers.",
     "t0 = driver inputs on the",
     "GPU before the vision pass; first token = engine timestamp via the bridge. Decode excluded.",
     "Each entry's 'detail' keeps the per-arm medians of the driver's timing fields.",
@@ -47,14 +51,27 @@ FIELDS = ["t_vision_ms", "t_open_ms", "t_last_push_ms", "ttft_open_ms", "ttft_la
           "ttft_last_band_ms", "ttft_start_ms", "t_client_done_ms", "prompt_tokens", "gen_tokens"]
 
 
-def rows_of(path, warmup, groups):
+def rows_of(path, warmup, groups, delay_ms=0.0):
     rows = [json.loads(l) for l in open(path) if l.strip()]
     rows = [r for r in rows if "skip" not in r and r.get("ttft_start_ms") is not None]
     for r in rows:
-        tp = r.get("t_pushes_ms")
-        if tp and len(tp) >= groups:
-            # first token (driver clock) minus the push of band g-2 = the start of band g-1's
-            # correction; a one-chunk arm (ceiling) has no band structure -> from t0
+        if delay_ms > 0 and r.get("t_pushes_ms") and len(r["t_pushes_ms"]) >= groups:
+            # spaced-arrival arm (APPCORR_PUSH_DELAY_MS): band g-1's correction starts when the
+            # sleep after push g-2 ends = its pixels' arrival; the last chunk's transfer wait
+            # and the last band's correction are kept separately for the decomposition
+            tp, ts, tr = r["t_pushes_ms"], r["t_sent_ms"], r["t_recv_ms"]
+            r["ttft_last_band_ms"] = r["ttft_start_ms"] - tp[groups - 2] - delay_ms
+            r["last_band_correct_ms"] = ts[groups - 1] - tp[groups - 2] - delay_ms
+            r["last_chunk_wait_ms"] = tr[groups - 1] - ts[groups - 1]
+            r["last_chunk_to_ft_ms"] = r["ttft_start_ms"] - tr[groups - 1]
+            r["max_chunk_wait_ms"] = max(b - a for a, b in zip(ts, tr))
+            continue
+        # first token (driver clock) minus the departure of band g-2's chunk = the moment the
+        # GPU finished band g-2, i.e. the start of band g-1's correction (t_sent_ms; rows from
+        # before 2026-09-09 only have the CPU issue time t_pushes_ms, which runs ahead of the
+        # GPU); a one-chunk arm (ceiling) has no band structure -> from t0
+        tp = r.get("t_sent_ms") or r.get("t_pushes_ms")
+        if tp and len(tp) >= groups and tp[groups - 2] is not None:
             r["ttft_last_band_ms"] = r["ttft_start_ms"] - tp[groups - 2]
         else:
             r["ttft_last_band_ms"] = r["ttft_start_ms"]
@@ -83,6 +100,14 @@ def main():
     ap.add_argument("--out", default=None, help="driver output dir (default results/latency/probe_<key>)")
     ap.add_argument("--timeout", type=int, default=1200)
     ap.add_argument("--aggregate-only", action="store_true")
+    ap.add_argument("--pscore", choices=["deferred", "eager"], default="deferred",
+                    help="forwarded to the driver (keep<1 arms)")
+    ap.add_argument("--push-delay-ms", type=float, default=0.0,
+                    help="APPCORR_PUSH_DELAY_MS for the streaming arms: space the bands like a slow "
+                         "link so chunk queueing / tower-engine overlap do not enter the critical "
+                         "window (2026-09-09 rule: 150). Writes k{keep} from the pixel-arrival "
+                         "anchor and detail streaming_k*_d<ms>; leaves 'full'/'total_k*' alone")
+    ap.add_argument("--skip-ceiling", action="store_true", help="streaming arms only")
     a = ap.parse_args()
     out = a.out or os.path.join(ROOT, "analysis", "results", "latency", f"probe_{a.key}")
     os.makedirs(out, exist_ok=True)
@@ -91,7 +116,7 @@ def main():
     drv = [a.python, os.path.join(ROOT, "analysis", "experiments", "qwen_vllm_accuracy.py"),
            "--family", a.family, "--model", a.model, "--port", str(a.port), "--groups", str(a.groups),
            "--level", str(a.level), "--workers", str(a.workers), "--load", "vision",
-           "--samples", str(a.samples), "--concurrency", "1", "--out", out]
+           "--samples", str(a.samples), "--concurrency", "1", "--out", out, "--pscore", a.pscore]
 
     def arm_path(ds, arm, keep=None):
         suf = "" if arm != "streaming" else f"_g{a.groups}" + (f"_k{keep:.2f}" if keep < 1.0 else "")
@@ -103,16 +128,20 @@ def main():
             os.remove(p)          # the driver resumes from existing rows; a probe must be fresh
         cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm, "--keep", f"{keep}"]
         log = os.path.join(out, f"log_{ds}_{arm}_k{keep:.2f}.log")
+        e = dict(env)
+        if arm == "streaming" and a.push_delay_ms > 0:
+            e["APPCORR_PUSH_DELAY_MS"] = f"{a.push_delay_ms:g}"
         t0 = time.time()
         with open(log, "w") as lf:
-            rc = subprocess.call(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, cwd=ROOT,
+            rc = subprocess.call(cmd, stdout=lf, stderr=subprocess.STDOUT, env=e, cwd=ROOT,
                                  timeout=a.timeout)
         print(f"  {ds:15s} {arm:10s} k={keep:.2f} rc={rc} {time.time() - t0:5.0f}s", flush=True)
 
     specs = [(d.split(":")[0], d.split(":")[1] if ":" in d else "box") for d in a.datasets]
     if not a.aggregate_only:
         for ds, filt in specs:
-            run(ds, filt, "ceiling")
+            if not a.skip_ceiling:
+                run(ds, filt, "ceiling")
             for k in a.keeps:
                 run(ds, filt, "streaming", k)
 
@@ -123,9 +152,12 @@ def main():
                   f"evenly spaced, --warmup {a.warmup} dropped, concurrency 1, groups {a.groups}, "
                   f"L{a.level}; per-dataset degrade filter as listed in each entry. "
                   f"Measured {time.strftime('%Y-%m-%d')}.")
+    D = a.push_delay_ms
+    dsuf = f"_d{D:g}" if D > 0 else ""
     for ds, filt in specs:
         e = M.setdefault(ds, {})
-        e["filter"], e["detail"] = filt, {}
+        e["filter"] = filt
+        e.setdefault("detail", {})
         p = arm_path(ds, "ceiling")
         if os.path.exists(p):
             r = rows_of(p, a.warmup, a.groups)
@@ -135,10 +167,18 @@ def main():
             p = arm_path(ds, "streaming", k)
             if not os.path.exists(p):
                 continue
-            r = rows_of(p, a.warmup, a.groups)
+            r = rows_of(p, a.warmup, a.groups, D)
             e[f"k{k:.2f}"] = med(r, "ttft_last_band_ms")
-            e[f"total_k{k:.2f}"] = med(r, "ttft_start_ms")
-            e["detail"][f"streaming_k{k:.2f}"] = {kk: med(r, kk) for kk in FIELDS}
+            if D > 0:
+                # spaced arrival: TTFT-from-t0 contains the injected spacing, so 'total_k*'
+                # (the everything-serialized Lat.) keeps its fast-producer value
+                e[f"k{k:.2f}_push_delay_ms"] = D
+                e["detail"][f"streaming_k{k:.2f}{dsuf}"] = {kk: med(r, kk) for kk in FIELDS + [
+                    "last_band_correct_ms", "last_chunk_wait_ms", "last_chunk_to_ft_ms",
+                    "max_chunk_wait_ms"]}
+            else:
+                e[f"total_k{k:.2f}"] = med(r, "ttft_start_ms")
+                e["detail"][f"streaming_k{k:.2f}"] = {kk: med(r, kk) for kk in FIELDS}
         full = e.get("full")
         print(f"{ds:15s} full {full} ms | " + " | ".join(
             f"k{k:.2f}: total {e.get(f'total_k{k:.2f}')} crit {e.get(f'k{k:.2f}')}" for k in a.keeps)
