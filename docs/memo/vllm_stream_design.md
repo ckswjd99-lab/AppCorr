@@ -328,7 +328,161 @@ run-to-run jitter of a few samples per thousand; the one-shot arms are determini
 | Qwen2.5-VL-7B | GPU0 `--gpu-mem 0.3` | GPU0 `--family qwen25vl` | gated end-to-end (above) |
 | Qwen2.5-VL-32B | GPU0 `--gpu-mem 0.42` | GPU0 `--family qwen25vl` | gated end-to-end: 12/12 arms exact, 16/16 tokens (`bridge_gate_qwen2.5-vl-32b-instruct.json`); stream `ttft_from_last_chunk` 19-34 ms on the shared GPU; HF 32B bf16 ~67 GB |
 | Qwen3.5-35B-A3B | GPU0 `--gpu-mem 0.44 --max-num-seqs 64` | GPU0 `--family qwen35` | gated end-to-end: stream 4/4 exact (16/16 tokens), floor/ceiling near-ties at margin 0-0.375 (`bridge_gate_qwen3.5-35b-a3b.json`); stream `ttft_from_last_chunk` 13-19 ms. `--max-num-seqs` must be <= the mamba cache blocks (431 at 0.45) or the server refuses to start; the HF twin needs no_grad (an autograd graph on the 1.8k-token prefill pushed it to 82 GB and OOMed the shared GPU) |
-| Qwen3.5-122B-A10B-FP8 | GPU1 `--gpu-mem 0.9` | GPU0 `--family qwen35 --host 127.0.0.1` | HF side alone fills GPU0; the socket makes the split free |
+| Qwen3.5-122B-A10B-FP8 | GPU0 `--gpu-mem 0.85 --max-model-len 4096 --max-num-seqs 32` | GPU0 `--family qwen35 --workers 6 --concurrency 4` (vision-only HF side) | single-GPU form (GPU1 off limits from 2026-09-08): the driver loads only the tower + embed_tokens, so the engine and the AppCorr side share GPU0; gate = `vllm_vs_hf_preds.py` against the HF-chain rows (below) |
+
+### Single-GPU form (2026-09-08)
+
+With GPU1 off limits the two-process split no longer buys a second GPU, but it still buys the
+engine: the HF side of the driver needs only `model.model.visual`, `embed_tokens`, the config-only
+`get_rope_index`/`get_vision_position_ids` and `get_image_features`, never a decoder layer, so
+`appcorr/models/vision_only.py::load_vision_only` builds just those two submodules and streams
+their tensors out of the safetensors shards (7B: 1.8 s / 2.3 GiB; 122B: ~3 GB). Checked bitwise
+against the full model's tower on 7B (max|diff| 0.0) after one fix: the tower must be built in
+fp32 and its PARAMETERS cast afterwards -- initialising under a bf16 default dtype computes the
+non-persistent rotary `inv_freq` buffer in bf16 (features off by 3.8% rel-L2), whereas
+`from_pretrained` keeps such buffers at their fp32 init. `--load vision` is the vllm-backend
+default (`full` forced for `--backend hf`); output naming is unchanged because the arm is the same.
+
+CPU prep moves off the main thread with `--workers N` (a forked `DataLoader` over the sample
+indices; each worker runs degrade + the HF image processor, the main process does the GPU vision
+pass and the socket) -- unlike `--prefetch` the workers do not share the GIL with the
+launch-bound correct loop. 7B smoke on a shared GPU: ceiling 2.86, floor 3.21, streaming 1.95
+samples/s (t_prep 14-139 ms in-worker vs 200-420 ms inline).
+
+The 122B-FP8 twin cannot sit beside the engine for an in-process embeds gate, so the single-GPU
+gate compares predictions instead: `analysis/experiments/vllm_vs_hf_preds.py` joins the driver's
+rows with the HF campaign rows (`qwen35_accuracy.py`, explicit greedy loop = the engine's
+temperature-0 rule) on `i`, and passes when the streaming arm's disagreement rate is within the
+ceiling arm's + 1% -- the ceiling's disagreement IS the engine's numerical band (kernels, reduction
+order, and the CPU-torchvision vs. GPU-torchvision image processor: the HF chain's
+`--fast-processor` routes `apply_chat_template` through cuda, the forked workers cannot), and it
+enters both arms equally, so the rule isolates chunked prefill. Chain:
+`scratchpad/chain_gpu0_122b_vllm.sh` (server -> 64-sample RWQA gate -> full RWQA + VisDrone
+Count re-measurement, `--workers 6 --concurrency 4`, outputs `qwen_vllm_accuracy[_pyr]/`).
 
 Bridge/driver code is family-agnostic (the sink only sees `[T, D]` embeds + `[3, T]` mrope +
 delta); the 35B/122B checks are the `vllm_bridge_gate.py --family qwen35` run, same pass rule.
+
+### Driver throughput work (2026-09-08/09, branch `develop/vision-correct-perf`)
+
+The vision-side levers (L1-L5 + the keep=1.0 span slice; docs/memo/qwen_correct_forward_profile.md)
+took the streaming pass on 122B VisDrone Det from 200/281 ms (c1/c4) to 73/99 -- the one-shot
+tower is 74 -- and throughput at `--concurrency 4` from 2.69 to 4.46 samples/s. c8 gave the same
+4.38/s, two shards x c2 gave 5.71/s: the engine was not the bound. Main-loop accounting fields
+(`t_loop_prep_ms` blocked on the prep workers, `t_loop_push_ms` bridge encode+queue,
+`t_loop_wait_ms` blocked in `result()`) put it in the bridge protocol:
+
+| arm (150 samples) | t_vision | t_loop_wait | t_loop_prep | t_loop_push |
+|---|---:|---:|---:|---:|
+| streaming c1 | 72 | 210 | 3 | 0.8 |
+| streaming c4 | 95 | 101 | 3 | 0.8 |
+| ceiling c4 | 65 | 70 | 1 | 0.2 |
+
+`result()` first drained every ack on the one socket, including the five of the sample pushed
+just before it; the server (one thread: select -> handle frames -> engine step, 13-19 ms) answers
+a chunk only between steps, so the loop paid ~one step per newest-sample chunk, ~100 ms per
+iteration, while the engine idled. Fix (bridge only, no server change): a reader thread consumes
+acks FIFO (errors land on the push's own sink), `result` goes over a second socket and a sink
+waits only for its OWN final ack before asking. Two follow-ups the new accounting fields exposed
+(`t_loop_iter_ms` = whole previous iteration, `t_loop_h2d_ms` = the pageable H2D copies of the
+inputs): `result()` still joined the sender queue (`_flush`) -- the newest sample's chunks leaving,
+again one engine step each -- removed; and the remaining wait was the `result` round trip itself
+(the server answers only between steps, ~one step of latency), so a result thread now asks the
+server the moment a sink's final ack lands and the main loop collects a parked reply.
+
+VisDrone Det 448, keep 1.0, medians (means in brackets where the distribution is bimodal):
+
+| bridge | conc | samples/s | t_vision | t_loop_wait | t_loop_iter | server total_ms |
+|---|---|---:|---:|---:|---:|---:|
+| ack-draining `result()` (ab_new) | 4 | 4.46 | 99 | 101 | - | 529 |
+| reader thread + result socket (ab_rx) | 4 | 5.00 | 104 | 59 | - | 560 |
+| | 8 | 5.88 | 109 | 37 (52) | 154 (170) | 954 |
+| + no `_flush` in `result()` (ab_rx2) | 4 | 5.16 | 105 | 41 | 154 | 542 |
+| + result thread (ab_rx3) | 4 | **5.44** | 103 | **0 (69)** | 128 (183) | 506 |
+| | 8 | **6.28** | 110 | 0 (41) | 127 (159) | 861 |
+| ceiling arm, for scale (ab_loop2) | 4 | 7.07 | 76 | 17 | - | 384 |
+
+The protocol wait is gone (median 0; an iteration is prep 3 + H2D 11 + vision 103 + push 1). What
+is left is bimodal: p90 wait 247 ms at c4 = the oldest request really is not finished, i.e. the
+engine is now the co-bottleneck. Server total_ms / concurrency is ~110-127 ms of engine occupancy
+per streaming sample at c4/c8 (5 chunk prefills + 21 decode steps; the ceiling's single prefill
+costs 96), and the driver's vision pass is ~100 ms on the SAME GPU: two processes time-slice, so
+the two do not fully overlap and the rate lands at 5.4-6.3/s rather than min(8, 10)/s. Levers
+past this point are GPU-side (fewer / larger chunks on the engine, MPS, or a second GPU for the
+vision pass), not driver code; the driver-side plan (L1-L6 + bridge) is closed at 2.69 -> 6.28/s.
+
+**Chunked prefill is not run-to-run deterministic at the pred level** (122B-FP8, 448 VisDrone Det
+boxes, c1): ceiling old/new/re-run 448/448 identical (single chunk: the engine and the whole wire
+path are exact), streaming old vs its own re-run 316/448, old vs the fast driver 166/448, and old
+vs the fast driver with a 40 ms sleep after every push (`APPCORR_PUSH_DELAY_MS`, diagnostic knob)
+287/448 -- back at the self-rate. Chunk arrival spacing decides which chunks the scheduler
+prefills in one step, which changes the FP8/MoE GEMM shapes; the disagreements are 1-px box
+shifts and accuracy moved within +-1 pp. Consequence: driver identity is gated on the pushed bytes
+(`qwen_axis_snapshot.py`), never on streaming preds; streaming rows compare at the accuracy level.
+
+### Latency view, concurrency 1 (2026-09-09, live tree after the port, server on the new code)
+
+VisDrone Det 448, medians, driver clock from "inputs on the GPU" (t=0). Ceiling = one-shot tower
+then one prefill; streaming = base pass, 4 correction rounds, 5 chunks (`latency_c1_20260909/`).
+
+| arm | t_open | t_last_push | TTFT from t=0 | TTFT after last chunk | end-to-end |
+|---|---:|---:|---:|---:|---:|
+| ceiling | 26 | 26 | **95** | 95 (= tower 23 + prefill 68) | 211 |
+| streaming k1.0 | 21 | 54 | 178 | **48** | 295 |
+| streaming k0.25 | 62 | 86 | 211 | 46 | 307 |
+
+Reading: with the whole image on the box at t=0 there is nothing to hide, and chunking costs --
+five scheduler steps in series instead of one prefill (open -> first token 156 vs 68 ms), so
+streaming is +83 ms to first token and +84 ms end-to-end. What streaming buys is the part after
+the FULL-resolution data lands: 48 ms to first token vs the ceiling's 95 (tower + full prefill),
+-50%. Break-even: the full image must arrive >= ~83 ms after the base (178 - 95); beyond that the
+saving approaches 47 ms per request. keep 0.25 pays +41 ms before the first chunk (the received-
+attention pass runs inside the base tower pass) and gains nothing on the last chunk (46 vs 48).
+
+### Lat. / Crit. Lat. table columns (2026-09-09)
+
+`analysis/experiments/latency_probe.py` is the FLOPs-style quick probe behind the eval table's
+two new latency columns: per dataset, ceiling + streaming keep {1.0, 0.50, 0.25} at concurrency 1,
+40 evenly spaced images (first 4 dropped as warm-up), medians pinned into
+`analysis/results/latency/inprocess_latency.json` with the FLOPs file's key names (`full`,
+`total_k*` = Lat., `k*` = Crit. Lat.). The whole 122B sweep (7 datasets x 4 arms) takes ~10 min on
+the live server.
+
+Definitions (all are TTFT = the engine's first token; decode excluded):
+* **Lat.** = first token - driver t0 (inputs on cuda:0, before the vision pass): vision and prefill
+  serialized, no transmission credit. The ceiling's Lat. is the Full-res TTFT.
+* **Crit. Lat.** = first token - the moment the LAST band's vision correction starts
+  (`ttft_start_ms - t_pushes_ms[groups-2]`, the previous band's push having synced the GPU). It
+  contains the last band's correction, its push, the last image chunk's prefill, the trailing
+  text and the first token -- the same accounting as Crit. Comp. (the last arrival's work). The
+  first version of this column measured from the LAST push (`ttft_last_chunk_ms`: only the
+  trailing-text chunk + first token, ~47 ms flat); it is kept in `detail.*.ttft_last_chunk_ms`.
+
+122B-FP8 result (ms; ratio to the ceiling TTFT):
+
+| dataset | Full TTFT | Stream k1.0 Lat. / Crit. | k0.50 Lat. / Crit. | k0.25 Lat. / Crit. | v1 Crit. (from last push) |
+|---|--:|--:|--:|--:|--:|
+| ChartQA | 60 | 116 (193%) / 86 (144%) | 125 / 83 | 128 / 85 | 47 |
+| RealWorldQA | 115 | 213 (185%) / 153 (133%) | 262 / 150 | 254 / 147 | 50 |
+| RefCOCO | 61 | 116 (191%) / 88 (145%) | 123 / 88 | 121 / 86 | 47 |
+| TextVQA | 77 | 132 (170%) / 96 (124%) | 161 / 99 | 154 / 93 | 49 |
+| VisDrone Count | 78 | 178 (227%) / 135 (172%) | 216 / 138 | 213 / 134 | 48 |
+| VisDrone Det | 96 | 177 (184%) / 135 (140%) | 214 / 134 | 216 / 137 | 46 |
+| V*Bench | 293 | 456 (156%) / 254 (87%) | 736 / 272 | 699 / 265 | 62 |
+
+Reading: on the single-GPU served form the last band's window is 85-150 ms, i.e. 120-175% of the
+Full-res TTFT everywhere except V* (87%), although its FLOPs share is 20-34%. Hypothesis (not
+isolated yet): GPU sharing -- band r's vision correction runs on the same GPU as the engine's
+prefill of chunk r-1, and the last chunk's prefill queues behind whatever of chunk 2's prefill is
+still running, so the wall window is closer to (engine occupancy + tower) serialized than to the
+FLOPs share. A per-push timeline (t_pushes_ms vs the engine's per-chunk done times) would settle
+it; a second GPU / MPS for the tower is the lever if so. The engine's own floor (v1 column, trailing-text chunk + first token) is ~47 ms flat. The
+keep<1 arms are slower on Lat. by the received-attention pass (+30-50 ms; V* +250 ms) and
+identical on Crit. -- exactly the Comp.-vs-Crit. asymmetry the FLOPs columns show. A second GPU
+(or MPS) for the tower is the lever; it is a deployment choice, not driver code.
+
+The HF in-process VLMs use `appcorr/latency.py` (`LatencyCounter`: FlopCounter's scopes, wall
+time, critical = from the first entry into the highest arrival index) through each FLOPs report
+script's `--latency` flag (ov2, gemma3, gemma4, museglimmer, qwen25vl_arms, mistral3_oracle
+--flops), so a latency cell times exactly the arm its Comp. cell counts. Chain:
+`scripts/latency_fill_hf_20260909.sh`.

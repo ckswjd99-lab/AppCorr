@@ -40,7 +40,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from appcorr import flops
+from appcorr import flops, latency
 from qwen_vl_prefill.datasets_eval import get_spec
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -103,6 +103,11 @@ def main():
                     help="appcorr_kwargs.llm_schedule for the arm runs; use 'streaming' with "
                          "--keeps 1.0 to measure the table's Streaming(k=1.0) column "
                          "(json keys k1.00/total_k1.00).")
+    ap.add_argument("--latency", action="store_true",
+                    help="time the same arms with appcorr.latency (TTFT ms, no hooks) and write "
+                         "--lat-json['qwen25vl_32b'][dataset] (k = critical, total_k = whole)")
+    ap.add_argument("--lat-json", default="analysis/results/latency/inprocess_latency.json")
+    ap.add_argument("--warmup", type=int, default=2, help="latency: requests dropped per arm")
     ap.add_argument("--write-json", action="store_true",
                     help="Merge results into analysis/results/flops/inprocess_flops.json")
     a = ap.parse_args()
@@ -137,8 +142,17 @@ def main():
         row = {}
 
         # ---- ceiling: stock forward, no arrivals -> 100% critical ------------------------------ #
-        with flops.session(executor.model.model.visual, executor.model.model.language_model,
-                           enabled=True) as fl:
+        def session():
+            return (latency.session(warmup=a.warmup) if a.latency else
+                    flops.session(executor.model.model.visual,
+                                  executor.model.model.language_model, enabled=True))
+
+        def med(vals):
+            import statistics
+            vals = list(vals)[a.warmup:] if len(vals) > a.warmup else list(vals)
+            return statistics.median(vals)
+
+        with session() as fl:
             for i in idxs:
                 img, prompt, _ = spec.prepare(ds[i], smart_resize, factor, min_px, max_px)
                 msgs = [{"role": "user", "content": [{"type": "image", "image": img},
@@ -153,13 +167,18 @@ def main():
                     with fl.stage("full"):
                         executor.model(**enc, use_cache=False)
         n = len(fl.requests)
-        row["full"] = round(sum(r.critical for r in fl.requests) / n / GFLOP, 1)
-        print(f"[{ds_name}] full (ceiling): {row['full']} GFLOPs/instr (n={n})", flush=True)
+        if a.latency:
+            row["full"] = round(med(r.total for r in fl.requests), 1)
+            ceil_agg = fl.aggregate()
+            lat_arms = []
+        else:
+            row["full"] = round(sum(r.critical for r in fl.requests) / n / GFLOP, 1)
+        print(f"[{ds_name}] full (ceiling): {row['full']} {'ms' if a.latency else 'GFLOPs/instr'} "
+              f"(n={n})", flush=True)
 
         # ---- arms: real mechanism, PSCORE excluded via a driver-local method wrap -------------- #
         for keep in a.keeps:
-            with flops.session(executor.model.model.visual, executor.model.model.language_model,
-                               enabled=True) as fl:
+            with session() as fl:
                 orig_ia = ApproxCorrectQwen25VLVisionAttention.incoming_attention
                 orig_pft = executor.vision_tower.prepare_full_tokens
 
@@ -190,6 +209,16 @@ def main():
                     executor.vision_tower.prepare_full_tokens = orig_pft
                 torch.cuda.empty_cache()
 
+            if a.latency:
+                done = [r for r in fl.requests if r.t_end > 0]
+                n = len(done) - a.warmup
+                crit, tot = med(r.critical for r in done), med(r.total for r in done)
+                lat_arms.append((keep, crit, tot, fl.aggregate()))
+                key = f"k{keep:.2f}"
+                row[key], row[f"total_{key}"] = round(crit, 1), round(tot, 1)
+                print(f"[{ds_name}] keep={keep}: critical={crit:.1f} total={tot:.1f} ms "
+                      f"(n={n}, schedule={a.llm_schedule or 'interleaved'})", flush=True)
+                continue
             done = [r for r in fl.requests if r.buckets]
             n = len(done)
             crit = sum(r.critical for r in done) / n / GFLOP
@@ -206,11 +235,18 @@ def main():
                   f"(n={n}) by_stage={stg}", flush=True)
 
         results[ds_name] = row
+        if a.latency:
+            latency.save_entry(
+                a.lat_json, "qwen25vl_32b", ds_name, row["full"], lat_arms,
+                len(idxs) - a.warmup, 4,
+                "HF eager in-process (Qwen25VLExecutor, batch 1), B200, prefill only; medians; "
+                "critical = from the last group's arrival; k0.25/k0.50 interleaved g=4 "
+                "(text-split schedule), k1.00 streaming schedule", full_detail=ceil_agg)
 
     print("\n== summary ==")
     print(json.dumps(results, indent=2))
 
-    if a.write_json:
+    if a.write_json and not a.latency:
         with open(OUT_JSON) as f:
             db = json.load(f)
         entry = db.setdefault("qwen25vl_32b", {})

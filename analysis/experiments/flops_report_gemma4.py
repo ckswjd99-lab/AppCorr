@@ -21,6 +21,10 @@ hooks see exactly the modules the accuracy oracle exercises.
 
 Run: CUDA_VISIBLE_DEVICES=0 python analysis/experiments/flops_report_gemma4.py \
     --datasets mmvp cvbench --keeps 0.25 0.50 --samples 12
+
+`--latency` times the same arms with `appcorr.latency.LatencyCounter` (identical scopes, no hooks)
+and writes TTFT medians (ms) to analysis/results/latency/inprocess_latency.json under "gemma4"
+with the table's key shape (k0.25 = critical, total_k0.25 = the arm's whole TTFT).
 """
 import argparse
 import json
@@ -34,6 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "qwen_vl_prefill"))
 from appcorr.flops.counter import FlopCounter                     # noqa: E402
 from appcorr.flops import hooks                                    # noqa: E402
+from appcorr import latency                                        # noqa: E402
 from appcorr.models.gemma4.unified import Gemma4Axis, MODEL_ID_31B  # noqa: E402
 from appcorr.models.gemma4.vision_fork import Gemma4VisionFork      # noqa: E402
 from gemma4_axis_gate import l2_degrade                             # noqa: E402
@@ -51,7 +56,13 @@ def main():
                     choices=["corrected", "interleaved"],
                     help="which ours-structure arms to account (bounds always run)")
     ap.add_argument("--out-json", default="analysis/results/flops/gemma4_flops.json")
+    ap.add_argument("--latency", action="store_true",
+                    help="measure wall-clock TTFT (ms) instead of FLOPs; writes --lat-json")
+    ap.add_argument("--lat-json", default="analysis/results/latency/inprocess_latency.json")
+    ap.add_argument("--warmup", type=int, default=2, help="latency: requests dropped per arm")
     a = ap.parse_args()
+    K_TOT, K_CRIT = (("median_total_ms", "median_critical_ms") if a.latency
+                     else ("mean_total_gflops", "mean_critical_gflops"))
 
     from datasets import load_dataset
     from transformers import AutoProcessor, Gemma4ForConditionalGeneration
@@ -93,7 +104,8 @@ def main():
             arms += [f"corrected_k{k:.2f}" for k in a.keeps]
         if "interleaved" in a.arms:
             arms += [f"interleaved_g{a.groups}_k{k:.2f}" for k in a.keeps]
-        counters = {arm: FlopCounter() for arm in arms}
+        counters = {arm: (latency.LatencyCounter(warmup=a.warmup) if a.latency else FlopCounter())
+                    for arm in arms}
         for si, idx in enumerate(idxs):
             img, prompt, _ = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
             enc = axis.build_inputs(img, prompt).to("cuda:0")
@@ -111,11 +123,13 @@ def main():
             with torch.no_grad():
                 for arm in arms:
                     c = counters[arm]
-                    handles = hooks.install(c, roots)
+                    handles = [] if a.latency else hooks.install(c, roots)
                     # patch_attention is NOT optional: install() alone counts only Linear/Conv,
                     # silently dropping the SDPA quadratic term (caught 2026-08-31 -- every
                     # gemma4/mistral/qwen35 cell measured without it).
-                    with hooks.patch_attention(c), c.request(f"{ds_name}/{si}"):
+                    from contextlib import nullcontext
+                    with (nullcontext() if a.latency else hooks.patch_attention(c)), \
+                            c.request(f"{ds_name}/{si}"):
                         if arm in ("ceiling", "floor"):
                             with c.arrival(0):
                                 feats = axis.vision_features(
@@ -146,13 +160,15 @@ def main():
                                 llm_prefill(enc, feats)
                     hooks.remove(handles)
         agg = {arm: counters[arm].aggregate() for arm in arms}
-        full = agg["ceiling"]["mean_total_gflops"]
-        row = {"full": round(full, 1), "floor": round(agg["floor"]["mean_total_gflops"], 1)}
+        full = agg["ceiling"][K_TOT]
+        row = {"full": round(full, 1), "floor": round(agg["floor"][K_TOT], 1)}
+        lat_arms = []
         for arm in arms:
             if arm in ("ceiling", "floor"):
                 continue
             g = agg[arm]
-            crit, tot = g["mean_critical_gflops"], g["mean_total_gflops"]
+            crit, tot = g[K_CRIT], g[K_TOT]
+            lat_arms.append((float(arm.split("_k")[1]), crit, tot, g))
             if arm.startswith("corrected"):
                 # legacy key shape ("k0.50"/"total_k0.50"), kept for the existing merge tooling
                 kk = arm.split("_k")[1]
@@ -163,6 +179,15 @@ def main():
                   f"total {tot:9.1f}  crit/full = {crit / full * 100:5.1f}%  "
                   f"total/full = {tot / full * 100:5.1f}%", flush=True)
         result[ds_name] = row
+        if a.latency:
+            latency.save_entry(
+                a.lat_json, "gemma4", ds_name, full, lat_arms, len(idxs) - a.warmup, a.groups,
+                "HF eager in-process (appcorr fork), B200, batch 1, prefill only; medians; "
+                "critical = from the last chunk's arrival (correction+merge+remaining prefill); "
+                f"arms: {' '.join(a.arms)}", full_detail=agg["ceiling"])
+    if a.latency:
+        print("latency mode: wrote", a.lat_json)
+        return
 
     os.makedirs(os.path.dirname(a.out_json), exist_ok=True)
     json.dump(result, open(a.out_json, "w"), indent=1)
