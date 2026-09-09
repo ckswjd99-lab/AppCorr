@@ -20,7 +20,13 @@ ap.add_argument("--level", type=int, default=2)
 ap.add_argument("--datasets", nargs="+", default=["refcoco", "textvqa"])
 ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50, 1.0])
 ap.add_argument("--out-json", default="analysis/results/flops/museglimmer_arms_flops.json")
+ap.add_argument("--latency", action="store_true",
+                help="measure wall-clock TTFT (ms) with appcorr.latency instead of FLOPs")
+ap.add_argument("--lat-json", default="analysis/results/latency/inprocess_latency.json")
+ap.add_argument("--warmup", type=int, default=2, help="latency: requests dropped per arm")
 args = ap.parse_args()
+K_TOT, K_CRIT = (("median_total_ms", "median_critical_ms") if args.latency
+                 else ("mean_total_gflops", "mean_critical_gflops"))
 
 sys.path.insert(0, args.transformers_path)
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,7 +38,7 @@ from PIL import Image  # noqa: E402
 from datasets import load_dataset  # noqa: E402
 from transformers import AutoProcessor, AutoModelForImageTextToText  # noqa: E402
 from qwen_vl_prefill.datasets_eval import get_spec  # noqa: E402
-from appcorr import flops  # noqa: E402
+from appcorr import flops, latency  # noqa: E402
 from appcorr.models.museglimmer.unified import MuseGlimmerAxis  # noqa: E402
 
 MG_MAX_PX = 3_147_760  # measured 2026-08-31: grid saturates at ~1540x2044
@@ -71,7 +77,9 @@ def main():
         arms = ["ceiling", "floor"] + [f"streaming_k{k:.2f}" for k in args.keeps]
         aggs = {}
         for arm in arms:
-            with flops.session(*roots, enabled=True) as fl:
+            sess = (latency.session(warmup=args.warmup) if args.latency
+                    else flops.session(*roots, enabled=True))
+            with sess as fl:
                 axis = MuseGlimmerAxis(model, proc, flop_counter=fl)
                 for si, i in enumerate(idxs):
                     img, q, _ = spec.prepare(ds[int(i)], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
@@ -87,20 +95,32 @@ def main():
                             axis.streaming_forward(inputs, base_px, args.groups,
                                                    keep=float(arm.split("_k")[1]))
             aggs[arm] = fl.aggregate()
-        full = aggs["ceiling"]["mean_total_gflops"]
-        row = {"full": round(full, 1), "floor": round(aggs["floor"]["mean_total_gflops"], 1)}
+        full = aggs["ceiling"][K_TOT]
+        row = {"full": round(full, 1), "floor": round(aggs["floor"][K_TOT], 1)}
+        lat_arms = []
         for k in args.keeps:
             st = aggs[f"streaming_k{k:.2f}"]
             suffix = f"_g{args.groups}" if k == 1.0 else f"_g{args.groups}_k{k:.2f}"
-            row[f"crit{suffix}"] = round(st["mean_critical_gflops"], 1)
-            row[f"total{suffix}"] = round(st["mean_total_gflops"], 1)
+            row[f"crit{suffix}"] = round(st[K_CRIT], 1)
+            row[f"total{suffix}"] = round(st[K_TOT], 1)
+            lat_arms.append((k, st[K_CRIT], st[K_TOT], st))
             print(f"{ds_name:<14} k={k:.2f} full {full:9.1f}  "
-                  f"streaming crit {st['mean_critical_gflops']:8.1f} "
-                  f"total {st['mean_total_gflops']:9.1f}  crit/full = "
-                  f"{st['mean_critical_gflops'] / full * 100:5.1f}%  total/full = "
-                  f"{st['mean_total_gflops'] / full * 100:5.1f}%", flush=True)
+                  f"streaming crit {st[K_CRIT]:8.1f} "
+                  f"total {st[K_TOT]:9.1f}  crit/full = "
+                  f"{st[K_CRIT] / full * 100:5.1f}%  total/full = "
+                  f"{st[K_TOT] / full * 100:5.1f}%", flush=True)
         result[ds_name] = row
+        if args.latency:
+            latency.save_entry(
+                args.lat_json, "museglimmer30b", ds_name, full, lat_arms,
+                len(idxs) - args.warmup, args.groups,
+                "HF eager in-process (appcorr fork, tf515), B200, batch 1, prefill only; medians; "
+                "critical = from the last chunk's arrival (correction+merge+remaining prefill); "
+                "streaming arms at each keep", full_detail=aggs["ceiling"])
 
+    if args.latency:
+        print("latency mode: wrote", args.lat_json, flush=True)
+        return
     os.makedirs(os.path.dirname(args.out_json), exist_ok=True)
     json.dump(result, open(args.out_json, "w"), indent=1)
     print(f"wrote {args.out_json}", flush=True)

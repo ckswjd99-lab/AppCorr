@@ -259,6 +259,13 @@ def main():
                     help="12-sample FLOPs pass instead of accuracy: ceiling + the four ours "
                          "arms with the arrival split (approx/qsel prefill at arrival 0 = "
                          "overlappable; correction + final prefill = critical)")
+    ap.add_argument("--latency", action="store_true",
+                    help="with --flops: time the ceiling + streaming arms (TTFT ms, "
+                         "appcorr.latency, same scopes, no hooks) at every --lat-keeps and "
+                         "write inprocess_latency.json['mistral24b'][dataset]")
+    ap.add_argument("--lat-keeps", type=float, nargs="+", default=[0.25, 0.50, 1.0])
+    ap.add_argument("--lat-json", default="analysis/results/latency/inprocess_latency.json")
+    ap.add_argument("--warmup", type=int, default=2, help="latency: requests dropped per arm")
     a = ap.parse_args()
 
     from datasets import load_dataset
@@ -282,10 +289,18 @@ def main():
         from appcorr.flops import hooks as fhooks
         roots = [model.model.vision_tower, model.model.multi_modal_projector,
                  model.model.language_model]
-        arms = ["ceiling", f"corrected_k{a.keep:.2f}", f"corrected_qsel_k{a.keep:.2f}",
-                f"streaming_k{a.keep:.2f}", f"streaming_qsel_k{a.keep:.2f}"]
-        counters = {arm: FlopCounter() for arm in arms}
-        idxs = list(range(0, len(ds), max(1, len(ds) // 12)))[:12]
+        from contextlib import nullcontext
+        from appcorr import latency
+        if a.latency:
+            # The table's Ours/Streaming keys come from the streaming arm; only that one is timed.
+            arms = ["ceiling"] + [f"streaming_k{k:.2f}" for k in a.lat_keeps]
+            counters = {arm: latency.LatencyCounter(warmup=a.warmup) for arm in arms}
+        else:
+            arms = ["ceiling", f"corrected_k{a.keep:.2f}", f"corrected_qsel_k{a.keep:.2f}",
+                    f"streaming_k{a.keep:.2f}", f"streaming_qsel_k{a.keep:.2f}"]
+            counters = {arm: FlopCounter() for arm in arms}
+        n_s = a.num_samples if a.latency else 12
+        idxs = list(range(0, len(ds), max(1, len(ds) // n_s)))[:n_s]
         for idx in idxs:
             img, prompt, _ = spec.prepare(ds[idx], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
             enc = axis.build_inputs(img, prompt).to("cuda:0")
@@ -295,9 +310,11 @@ def main():
             with torch.no_grad():
                 for arm in arms:
                     c = counters[arm]
-                    handles = fhooks.install(c, roots)
+                    handles = [] if a.latency else fhooks.install(c, roots)
+                    keep = float(arm.split("_k")[1]) if "_k" in arm else a.keep
                     # patch_attention required -- install() alone drops the SDPA term (2026-08-31).
-                    with fhooks.patch_attention(c), c.request(f"{a.dataset}/{idx}"):
+                    with (nullcontext() if a.latency else fhooks.patch_attention(c)), \
+                            c.request(f"{a.dataset}/{idx}"):
                         if arm == "ceiling":
                             with c.arrival(0):
                                 feats = axis.vision_features(enc["pixel_values"],
@@ -308,7 +325,7 @@ def main():
                         else:
                             qsel = "qsel" in arm
                             if arm.startswith("corrected"):
-                                feats = corrected_feats(axis, fork, enc, enc2, a.keep,
+                                feats = corrected_feats(axis, fork, enc, enc2, keep,
                                                         qsel=qsel, counter=c)
                                 final_arr = 1
                                 with c.arrival(final_arr):
@@ -317,7 +334,7 @@ def main():
                                     axis.llm(inputs_embeds=embeds, use_cache=False)
                             else:
                                 feats = streaming_feats_and_prefill(
-                                    axis, fork, enc, enc2, a.keep, a.groups, model,
+                                    axis, fork, enc, enc2, keep, a.groups, model,
                                     qsel=qsel, counter=c)
                                 # TRUE chunked prefill (2026-08-29): chunk r rides arrival r
                                 # alongside its vision band, so only the FINAL chunk (trailing
@@ -335,6 +352,26 @@ def main():
                                                        ranges, counter=c, arrival_offset=1)
                     fhooks.remove(handles)
         agg = {arm: counters[arm].aggregate() for arm in arms}
+        if a.latency:
+            full = agg["ceiling"]["median_total_ms"]
+            lat_arms = []
+            for arm in arms[1:]:
+                g = agg[arm]
+                k = float(arm.split("_k")[1])
+                lat_arms.append((k, g["median_critical_ms"], g["median_total_ms"], g))
+                print(f"{arm:<24} crit {g['median_critical_ms']:8.1f} ms "
+                      f"({g['median_critical_ms'] / full * 100:5.1f}%)  total "
+                      f"{g['median_total_ms']:8.1f} ms ({g['median_total_ms'] / full * 100:5.1f}%)"
+                      f"   full {full:8.1f} ms", flush=True)
+            latency.save_entry(
+                a.lat_json, "mistral24b", a.dataset, full, lat_arms, len(idxs) - a.warmup,
+                a.groups,
+                "HF eager in-process (appcorr fork), B200, batch 1, prefill only; medians; "
+                "critical = from the last chunk's arrival (correction+merge+remaining prefill); "
+                "streaming arm (arrival-ordered chunked prefill) at each keep",
+                full_detail=agg["ceiling"])
+            print("MISTRAL3_LATENCY_DONE", flush=True)
+            return
         full = agg["ceiling"]["mean_total_gflops"]
         out = {"_model": a.model, "_level": a.level, "_samples": len(idxs),
                a.dataset: {"full": round(full, 1)}}

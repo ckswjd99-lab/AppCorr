@@ -24,7 +24,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from appcorr import flops
+from appcorr import flops, latency
 from appcorr.models.gemma3.unified import Gemma3UnifiedAxis
 from experiments.gemma3_oracle import l2_from_native, patch_energy
 from qwen_vl_prefill.datasets_eval import get_spec
@@ -73,7 +73,13 @@ def main():
     ap.add_argument("--arm", choices=["interleaved", "vfm"], default="interleaved")
     ap.add_argument("--out-json",
                     default="analysis/results/flops/inprocess_flops.json")
+    ap.add_argument("--latency", action="store_true",
+                    help="measure wall-clock TTFT (ms) instead of FLOPs; writes --lat-json")
+    ap.add_argument("--lat-json", default="analysis/results/latency/inprocess_latency.json")
+    ap.add_argument("--warmup", type=int, default=2, help="latency: requests dropped per arm")
     a = ap.parse_args()
+    K_TOT, K_CRIT, UNIT = (("median_total_ms", "median_critical_ms", "ms") if a.latency
+                           else ("mean_total_gflops", "mean_critical_gflops", "GFLOPs"))
     model_key = "gemma3" if a.arm == "interleaved" else "gemma3_vfm"
 
     from datasets import load_dataset
@@ -98,8 +104,10 @@ def main():
             axis = Gemma3UnifiedAxis(model.model).eval()
             # Backbone = vision tower + language model. `lm_head` and the multimodal projector's
             # consumers outside these two are not counted.
-            with flops.session(model.model.vision_tower, model.model.language_model,
-                               enabled=True) as fl:
+            sess = (latency.session(warmup=a.warmup) if a.latency else
+                    flops.session(model.model.vision_tower, model.model.language_model,
+                                  enabled=True))
+            with sess as fl:
                 axis.flops = fl
                 for i in idxs:
                     img, prompt, _ = spec.prepare(ds[i], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
@@ -122,9 +130,11 @@ def main():
         def ceiling(axis, fl, ids, tti, px, px2):
             axis.full_forward(px, ids, tti)
 
-        full_g = run(ceiling)["mean_total_gflops"]
+        ceil_agg = run(ceiling)
+        full_g = ceil_agg[K_TOT]
+        details = {}
         print(f"\n══ {ds_name}  (n={len(idxs)}) ══")
-        print(f"  full inference (ceiling prefill)   {full_g:10.1f} GFLOPs/instruction")
+        print(f"  full inference (ceiling prefill)   {full_g:10.1f} {UNIT}/instruction")
 
         for keep in a.keeps:
             def interleaved(axis, fl, ids, tti, px, px2, keep=keep):
@@ -174,14 +184,24 @@ def main():
 
             arm_fn = interleaved if a.arm == "interleaved" else vfm
             agg = run(arm_fn)
-            crit, tot = agg["mean_critical_gflops"], agg["mean_total_gflops"]
+            crit, tot = agg[K_CRIT], agg[K_TOT]
+            details[keep] = agg
             rows.append((ds_name, keep, crit, tot, full_g))
             print(f"  {a.arm} g={a.groups} keep={keep:.0%}  "
-                  f"critical {crit:9.1f}  total {tot:9.1f} GFLOPs   "
+                  f"critical {crit:9.1f}  total {tot:9.1f} {UNIT}   "
                   f"critical/full = {100*crit/full_g:5.1f}%")
-        _save(a.out_json, model_key, ds_name, full_g,
-              [(k, c, t) for d, k, c, t, _ in rows if d == ds_name],
-              len(idxs), a.groups)
+        if a.latency:
+            latency.save_entry(
+                a.lat_json, model_key, ds_name, full_g,
+                [(k, c, t, details[k]) for d, k, c, t, _ in rows if d == ds_name],
+                len(idxs) - a.warmup, a.groups,
+                "HF eager in-process (appcorr fork), B200, batch 1, prefill only; medians; "
+                "critical = from the last chunk's arrival (correction+merge+remaining prefill)",
+                full_detail=ceil_agg)
+        else:
+            _save(a.out_json, model_key, ds_name, full_g,
+                  [(k, c, t) for d, k, c, t, _ in rows if d == ds_name],
+                  len(idxs), a.groups)
 
 
     print(f"\n\n═══ Gemma 3 4B-IT  ·  {a.arm} g={a.groups}  ·  critical vs full inference ═══")

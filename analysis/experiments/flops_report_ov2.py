@@ -11,6 +11,10 @@ deterministic given that. Decode is excluded throughout -- it always follows the
 counting it would raise every arm's critical share by an amount unrelated to the approximation.
 
     python analysis/experiments/flops_report_ov2.py [--samples 40] [--groups 4]
+
+`--latency` swaps the FLOP counter for `appcorr.latency` (same scopes, no hooks) and writes
+single-request TTFT medians (ms) to analysis/results/latency/inprocess_latency.json under the same
+key convention -- the table's Lat. / Crit. Lat. twins of Comp. / Crit. Comp.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from appcorr import flops
+from appcorr import flops, latency
 from appcorr.models.ov2.unified import OV2UnifiedAxis
 from experiments.ov2_degradation import hw_from_grid, l2_from_native
 from experiments.ov2_oracle import encode, load, patch_energy
@@ -90,7 +94,13 @@ def main():
     ap.add_argument("--datasets", nargs="+", default=list(DATASETS))
     ap.add_argument("--out-json",
                     default="analysis/results/flops/inprocess_flops.json")
+    ap.add_argument("--latency", action="store_true",
+                    help="measure wall-clock TTFT (ms) instead of FLOPs; writes --lat-json")
+    ap.add_argument("--lat-json", default="analysis/results/latency/inprocess_latency.json")
+    ap.add_argument("--warmup", type=int, default=2, help="latency: requests dropped per arm")
     a = ap.parse_args()
+    K_TOT, K_CRIT, UNIT = (("median_total_ms", "median_critical_ms", "ms") if a.latency
+                           else ("mean_total_gflops", "mean_critical_gflops", "GFLOPs"))
 
     from datasets import load_dataset
 
@@ -108,8 +118,9 @@ def main():
         # task head sit outside it and are therefore never counted.
         def run(fn):
             axis = OV2UnifiedAxis(model.model).eval()
-            with flops.session(model.model.visual, model.model.language_model,
-                               enabled=True) as fl:
+            sess = (latency.session(warmup=a.warmup) if a.latency else
+                    flops.session(model.model.visual, model.model.language_model, enabled=True))
+            with sess as fl:
                 axis.flops = fl
                 for i in idxs:
                     img, prompt, _ = spec.prepare(ds[i], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
@@ -128,31 +139,33 @@ def main():
             axis.full_forward(px, pp, ids)
 
         ceil_agg, fl_ceiling = run(ceiling)
-        full_g = ceil_agg["mean_total_gflops"]
+        full_g = ceil_agg[K_TOT]
+        details = {}
         print(f"\n══ {ds_name}  (n={len(idxs)}) ══")
-        print(f"  full inference (ceiling prefill)   {full_g:10.1f} GFLOPs/instruction")
+        print(f"  full inference (ceiling prefill)   {full_g:10.1f} {UNIT}/instruction")
 
         # --- did the hooks see everything? ------------------------------------------------------ #
         # A path that reaches attention through a fused or varlen kernel never calls
         # `scaled_dot_product_attention`, and the counter then loses the entire quadratic term while
         # every other number still looks plausible. Cross-check the ceiling against a closed form
         # built from the config and the measured token counts, and say so out loud when it drifts.
-        vc, tc = model.config.vision_config, model.config.text_config
-        n_patch = sum(int(r.meta.get("n_patch", 0)) for r in fl_ceiling.requests) / len(idxs)
-        seq = sum(int(r.meta.get("seq", 0)) for r in fl_ceiling.requests) / len(idxs)
-        n_tok = n_patch / 4
-        vh, th = vc.hidden_size, tc.hidden_size
-        vheads = vc.num_attention_heads
-        v_layer = (2 * n_patch * vh * (3 * vh + vh) + 2 * 2 * n_patch * n_patch * vh
-                   + 2 * 2 * n_patch * vh * vc.intermediate_size)
-        kv_dim = tc.num_key_value_heads * (th // tc.num_attention_heads)
-        l_layer = (2 * seq * th * (th + 2 * kv_dim + th) + 2 * 2 * seq * seq * th
-                   + 3 * 2 * seq * th * tc.intermediate_size)
-        analytic = (vc.num_hidden_layers * v_layer + tc.num_hidden_layers * l_layer) / 1e9
-        ratio = full_g / analytic if analytic else 0.0
-        flag = "OK" if 0.9 <= ratio <= 1.15 else "!! CHECK -- hooks may be missing a path"
-        print(f"  independent analytic estimate      {analytic:10.1f} GFLOPs   "
-              f"measured/analytic = {ratio:4.2f}  {flag}")
+        if not a.latency:
+            vc, tc = model.config.vision_config, model.config.text_config
+            n_patch = sum(int(r.meta.get("n_patch", 0)) for r in fl_ceiling.requests) / len(idxs)
+            seq = sum(int(r.meta.get("seq", 0)) for r in fl_ceiling.requests) / len(idxs)
+            n_tok = n_patch / 4
+            vh, th = vc.hidden_size, tc.hidden_size
+            vheads = vc.num_attention_heads
+            v_layer = (2 * n_patch * vh * (3 * vh + vh) + 2 * 2 * n_patch * n_patch * vh
+                       + 2 * 2 * n_patch * vh * vc.intermediate_size)
+            kv_dim = tc.num_key_value_heads * (th // tc.num_attention_heads)
+            l_layer = (2 * seq * th * (th + 2 * kv_dim + th) + 2 * 2 * seq * seq * th
+                       + 3 * 2 * seq * th * tc.intermediate_size)
+            analytic = (vc.num_hidden_layers * v_layer + tc.num_hidden_layers * l_layer) / 1e9
+            ratio = full_g / analytic if analytic else 0.0
+            flag = "OK" if 0.9 <= ratio <= 1.15 else "!! CHECK -- hooks may be missing a path"
+            print(f"  independent analytic estimate      {analytic:10.1f} GFLOPs   "
+                  f"measured/analytic = {ratio:4.2f}  {flag}")
 
         for keep in ([] if a.skip_interleaved else a.keeps):
             def interleaved(axis, fl, ids, pp, px, px2, keep=keep):
@@ -164,11 +177,12 @@ def main():
                 axis.interleaved_forward_progressive(px, px2, pp, ids, energy, keep, a.groups)
 
             agg, _ = run(interleaved)
-            crit = agg["mean_critical_gflops"]
-            tot = agg["mean_total_gflops"]
+            crit = agg[K_CRIT]
+            tot = agg[K_TOT]
+            details[keep] = agg
             rows.append((ds_name, keep, crit, tot, full_g))
             print(f"  interleaved g={a.groups} keep={keep:.0%}  "
-                  f"critical {crit:9.1f}  total {tot:9.1f} GFLOPs   "
+                  f"critical {crit:9.1f}  total {tot:9.1f} {UNIT}   "
                   f"critical/full = {100*crit/full_g:5.1f}%   "
                   f"(critical/own total {100*crit/tot:4.1f}%)")
         if a.streaming:
@@ -179,15 +193,25 @@ def main():
                 axis.streaming_forward(px2, px, pp, ids, a.groups)
 
             agg_s, _ = run(streaming)
-            crit_s = agg_s["mean_critical_gflops"]
-            tot_s = agg_s["mean_total_gflops"]
+            crit_s = agg_s[K_CRIT]
+            tot_s = agg_s[K_TOT]
+            details[1.0] = agg_s
             rows.append((ds_name, 1.0, crit_s, tot_s, full_g))
             print(f"  streaming g={a.groups} k=1.00     "
-                  f"critical {crit_s:9.1f}  total {tot_s:9.1f} GFLOPs   "
+                  f"critical {crit_s:9.1f}  total {tot_s:9.1f} {UNIT}   "
                   f"critical/full = {100*crit_s/full_g:5.1f}%")
-        _save(a.out_json, "ov2", ds_name, full_g,
-              [(k, c, t) for d, k, c, t, _ in rows if d == ds_name],
-              len(idxs), a.groups)
+        if a.latency:
+            latency.save_entry(
+                a.lat_json, "ov2", ds_name, full_g,
+                [(k, c, t, details[k]) for d, k, c, t, _ in rows if d == ds_name],
+                len(idxs) - a.warmup, a.groups,
+                "HF eager in-process (appcorr fork), B200, batch 1, prefill only; medians; "
+                "critical = from the last chunk's arrival (correction+merge+remaining prefill)",
+                full_detail=ceil_agg)
+        else:
+            _save(a.out_json, "ov2", ds_name, full_g,
+                  [(k, c, t) for d, k, c, t, _ in rows if d == ds_name],
+                  len(idxs), a.groups)
 
 
     print("\n\n═══ LLaVA-OneVision-2-8B  ·  interleaved g=%d  ·  critical vs full inference ═══"
