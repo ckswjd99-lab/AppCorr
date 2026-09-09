@@ -154,20 +154,42 @@ class ApproxCorrectQwen35VisionAttention(nn.Module):
         return self.proj(torch.cat(outs, dim=0).reshape(seq_length, -1))
 
     def approx(self, x: torch.Tensor, segment_ranges, position_embeddings,
-               cache_feature: Dict[str, Any], tag: str, collect_attn_mean: bool = False):
-        """Full attention over all T tokens, caching post-RoPE K/V as `{tag}_kv` [T, H, 2, Dh]."""
+               cache_feature: Dict[str, Any], tag: str, collect_attn_mean=False):
+        """Full attention over all T tokens, caching post-RoPE K/V as `{tag}_kv` [T, H, 2, Dh].
+        `collect_attn_mean`: False | True (received attention now, `{tag}_attn_mean`) | "defer"
+        (stash the queries as `{tag}_q`; see `received_attention_from_cache`)."""
         seq_length = x.shape[0]
         q, k, v = self._qkv_heads(x)
         cos, sin = position_embeddings
         q, k = apply_rotary_pos_emb_vision(q, k, cos, sin)
 
         cache_feature[f"{tag}_kv"] = torch.stack([k, v], dim=2)  # [T, H, 2, Dh]
-        if collect_attn_mean:
+        if collect_attn_mean == "defer":
+            # Keep the post-RoPE queries AND the base keys so `received_attention_from_cache`
+            # can run the SAME computation later, off the first band's critical path
+            # (2026-09-09: the column sum was 60 ms of the keep<1 arms' first-push latency on
+            # the 35B RWQA probe). The keys must be stashed too: `correct` overwrites the
+            # cached kv rows in place, so by the time the deferred pass runs (after band 0's
+            # push) `{tag}_kv` already holds band 0's corrected keys -- reading k from there
+            # gave a different score and flipped selections in later bands (gate 2026-09-09).
+            # `k` is not a view of the stacked kv (torch.stack copies), so this is a reference.
+            cache_feature[f"{tag}_q"] = q
+            cache_feature[f"{tag}_k0"] = k
+        elif collect_attn_mean:
             cache_feature[f"{tag}_attn_mean"] = self._received_attention(q, k, segment_ranges)
 
         outs = [self._sdpa_segment(q[s:s + l], k[s:s + l], v[s:s + l]) for s, l in segment_ranges]
         out = self.proj(torch.cat(outs, dim=0).reshape(seq_length, -1))
         return out, cache_feature
+
+    def received_attention_from_cache(self, cache_feature: Dict[str, Any], tag: str,
+                                      segment_ranges) -> torch.Tensor:
+        """The deferred form of `approx(..., collect_attn_mean=True)`: the received-attention
+        column sum from the stashed queries and BASE keys. Same q, same k, same kernel as the
+        eager path -> identical values (both stashes are dropped from the cache here)."""
+        q = cache_feature.pop(f"{tag}_q")
+        k = cache_feature.pop(f"{tag}_k0")
+        return self._received_attention(q, k, segment_ranges)
 
     def correct(self, x_sel: torch.Tensor, token_idx: torch.Tensor, segment_ranges,
                 position_embeddings_sel, cache_feature: Dict[str, Any], tag: str, plan=None,

@@ -66,16 +66,22 @@ class Qwen35Axis(QwenVLStreamingAxis):
         # the block.
         return {"enable_thinking": think}
 
+    supports_deferred_pscore = True
+
     def _approx_base(self, ctx_base: Dict[str, Any], cache: Dict[str, Any],
-                     collect_attn: bool) -> Tuple[torch.Tensor, Dict[str, Any]]:
+                     collect_attn) -> Tuple[torch.Tensor, Dict[str, Any]]:
         x, cache = self.tower.approx_forward(
             ctx_base["hidden_states"], 0, len(self.tower.blocks), ctx_base, cache, "v",
             collect_attn_mean=collect_attn)
-        if collect_attn:
+        if collect_attn is True:
             cache = self.tower.finalize_attn_layermean(cache, "v", len(self.tower.blocks))
         return x, cache
 
     def _attn_layermean(self, cache: Dict[str, Any]) -> torch.Tensor:
+        return cache["v_attn_layermean"]
+
+    def _attn_layermean_deferred(self, cache: Dict[str, Any], ctx_base: Dict[str, Any]) -> torch.Tensor:
+        cache = self.tower.deferred_attn_layermean(cache, "v", len(self.tower.blocks), ctx_base)
         return cache["v_attn_layermean"]
 
     # _rows_of_groups: base-class identity (no window permutation in this tower).

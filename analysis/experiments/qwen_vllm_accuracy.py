@@ -154,6 +154,12 @@ def main():
     ap.add_argument("--concurrency", type=int, default=1,
                     help="requests kept in flight on the server (vllm backend only)")
     ap.add_argument("--think", action="store_true", help="qwen35: enable_thinking in the template")
+    ap.add_argument("--pscore", choices=["deferred", "eager"], default="deferred",
+                    help="keep<1 selection score: 'deferred' computes the received-attention term "
+                         "after the first band's push (band 0 ranks on energy alone; default since "
+                         "2026-09-09), 'eager' is the pre-2026-09-09 arm (attention before band 0, "
+                         "+60 ms on the first push at RWQA size). Towers without deferred support "
+                         "run eager either way; rows record which one ran under `pscore`")
     ap.add_argument("--prefetch", type=int, default=0,
                     help="samples to preprocess ahead on a CPU thread (0 = inline); use for "
                          "throughput runs so the HF image processor is not the bottleneck")
@@ -230,6 +236,7 @@ def main():
     print(f"model ({args.load}) loaded in {time.perf_counter() - t_load:.1f}s, "
           f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB", flush=True)
     axis = make_axis(args.family, model, proc)
+    axis.pscore_defer = args.pscore == "deferred"
     tmpl_kw = {"think": True} if (args.think and args.family == "qwen35") else {}
     spec = get_spec(args.dataset)
     ds = spec.load(load_dataset)
@@ -392,6 +399,8 @@ def main():
                                                     sink=sink, **layout)
                 extra = {"corrected_groups": int(st["corrected_groups"]),
                          "chunks": len(st["chunks"])}
+                if "pscore" in st:
+                    extra["pscore"] = st["pscore"]
                 if sink is None:
                     hf = (lg, kv, st["decode_start_pos"])
             else:
@@ -467,7 +476,34 @@ def main():
                               # syncs the GPU for its D2H copy)
                               "t_pushes_ms": [round((q["t_send"] - t_start) * 1e3, 2)
                                               for q in res["pushes"]],
-                              "ttft_start_ms": t_open_ms + t["ttft_from_open_ms"],
+                              # server-side handling time of each push (server perf_counter,
+                              # same host clock) and the driver's ack receipt: the gap
+                              # t_recv - t_send is transport + the server's in-flight step
+                              "t_recv_ms": [None if q["t_recv_server"] is None else
+                                            round((q["t_recv_server"] - t_start) * 1e3, 2)
+                                            for q in res["pushes"]],
+                              "t_ack_ms": [None if q["t_ack"] is None else
+                                           round((q["t_ack"] - t_start) * 1e3, 2)
+                                           for q in res["pushes"]],
+                              # when each push actually LEFT (sender thread, after its D2H
+                              # copy completed = the GPU finished that band's correction):
+                              # the honest start of the next band's window. t_send is only
+                              # the CPU issue time -- the sync-free tower runs 20+ ms ahead
+                              # of the GPU, so t_pushes_ms is not a GPU timeline.
+                              "t_sent_ms": [None if q.get("t_sent") is None else
+                                            round((q["t_sent"] - t_start) * 1e3, 2)
+                                            for q in res["pushes"]],
+                              # first token on the driver clock: the server's open time
+                              # (same host clock) + its ttft_from_open. The former
+                              # t_open + ttft_from_open started the server-side span at the
+                              # CPU issue time of push 0, i.e. before the chunk had left (GPU
+                              # backlog + transport, 6 ms one-shot / ~20 ms streaming, was
+                              # dropped); that value is kept as ttft_start_issue_ms.
+                              "ttft_start_ms": (t_open_ms + t["ttft_from_open_ms"]
+                                                if res["pushes"][0]["t_recv_server"] is None else
+                                                (res["pushes"][0]["t_recv_server"] - t_start) * 1e3
+                                                + t["ttft_from_open_ms"]),
+                              "ttft_start_issue_ms": t_open_ms + t["ttft_from_open_ms"],
                               "gen_tokens": len(res["token_ids"]),
                               "finish_reason": res["finish_reason"],
                               "t_client_done_ms": (time.perf_counter() - t_start) * 1e3})

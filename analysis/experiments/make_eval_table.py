@@ -8,6 +8,9 @@ put a wrong MMMU row into one progress report.
     python analysis/experiments/make_eval_table.py --keeps 0.30 0.50
     python analysis/experiments/make_eval_table.py --format md      # readable while working
     python analysis/experiments/make_eval_table.py --status         # what is still missing
+    python analysis/experiments/make_eval_table.py --table latency  # the latency table (2026-09-09
+                                                                    # split; --with-latency keeps
+                                                                    # the old combined eval form)
 
 Where the numbers come from:
 
@@ -18,8 +21,11 @@ Where the numbers come from:
   latency    analysis/results/latency/inprocess_latency.json (analysis/experiments/latency_probe.py):
              single-request TTFT medians, ms. Same key names as the FLOPs file -- `full` = ceiling
              TTFT from t0, `total_k*` = streaming TTFT from t0 (Lat., the Comp. analogue),
-             `k*` = streaming TTFT from the last chunk push (Crit. Lat., the Crit. Comp. analogue).
-             Models without a measured serving path show "--".
+             `k*` = streaming TTFT from the previous band's chunk departure, i.e. its GPU
+             completion (Crit. Lat., the Crit. Comp. analogue).
+             Models without a measured serving path show "--". Rendered by `--table latency`
+             (its own table, with the `detail` medians and the concurrency sweep from
+             conc_sweep_20260909.json); the eval table itself carries accuracy + compute only.
 
 Two conventions the table depends on, both enforced here rather than left to the reader:
 
@@ -730,7 +736,10 @@ def fmt_tf(gf: Optional[float], full: Optional[float]) -> str:
     return f"{body}\\,TF"
 
 
-def build_rows(keeps, groups: int):
+def build_rows(keeps, groups: int, latency: bool = False):
+    """Rows of the evaluation table. latency=True appends the Lat. / Crit. Lat. cells to
+    every block (the combined form used until 2026-09-09); the default is the accuracy +
+    compute layout, latency having moved to its own table (emit_latency_latex)."""
     out = []
     for model, rows in SPEC:
         # Footnote marks ($^\dagger$ etc.) are display-only; every lookup table is keyed by the
@@ -862,10 +871,14 @@ def build_rows(keeps, groups: int):
                 cells.append(fmt_tf(get_total(fl_key, f"k{k:.2f}"), full_gf))
                 cells.append(fmt_tf(get_flops(fl_key, f"k{k:.2f}"), full_gf))
                 # Lat. / Crit. Lat. are the measured twins: TTFT from t0 (inputs on the GPU, the
-                # whole schedule serialized) vs TTFT from the start of the last chunk's work (its
-                # vision correction, merge and remaining prefill -- Crit. Comp.'s accounting).
-                cells.append(fmt_ms(get_latency(fl_key, f"total_k{k:.2f}"), full_ms))
-                cells.append(fmt_ms(get_latency(fl_key, f"k{k:.2f}"), full_ms))
+                # whole schedule serialized; served path: the server's receipt of the open) vs
+                # TTFT from the GPU completion of band g-2's vision work (= chunk g-2's departure;
+                # the last band's correction, transfer, merge and remaining prefill -- Crit.
+                # Comp.'s accounting). Anchors fixed 2026-09-09; keep<1 cells print "--" until
+                # re-measured (the probe stashes the old CPU-issue-anchored values).
+                if latency:
+                    cells.append(fmt_ms(get_latency(fl_key, f"total_k{k:.2f}"), full_ms))
+                    cells.append(fmt_ms(get_latency(fl_key, f"k{k:.2f}"), full_ms))
             # Streaming (keep=1.0) block: the causal-LLM category (LLM prefills exactly once,
             # vision corrects everything progressively). Accuracy comes from a "stream" literal
             # (Qwen3.5's jsonl-driven runs) or a streaming_g4.json beside the row's other arms
@@ -891,14 +904,16 @@ def build_rows(keeps, groups: int):
                 cells.append(out_s)
             cells.append(fmt_tf(get_total(fl_key, "k1.00"), full_gf))
             cells.append(fmt_tf(get_flops(fl_key, "k1.00"), full_gf))
-            cells.append(fmt_ms(get_latency(fl_key, "total_k1.00"), full_ms))
-            cells.append(fmt_ms(get_latency(fl_key, "k1.00"), full_ms))
+            if latency:
+                cells.append(fmt_ms(get_latency(fl_key, "total_k1.00"), full_ms))
+                cells.append(fmt_ms(get_latency(fl_key, "k1.00"), full_ms))
             if ceiling_v is None:
                 cells.append("--")
             else:
                 cells.append(f"({f.format(ceiling_v)})" if lit.get("probe") else f.format(ceiling_v))
             cells.append(fmt_tf(full_gf, None))
-            cells.append(fmt_ms(full_ms, None))
+            if latency:
+                cells.append(fmt_ms(full_ms, None))
             if (base_model, label) in CAPABILITY_LIMIT:
                 label = label + r"\,$\diamond$"
             block.append((label, cells))
@@ -906,22 +921,38 @@ def build_rows(keeps, groups: int):
     return out
 
 
-def emit_latex(table, keeps) -> str:
-    # Each Ours / Streaming block: Acc., Comp., Crit. Comp., Lat., Crit. Lat.; Full-res.: Acc.,
-    # Comp., Lat.
-    heads = " & ".join(f"\\multicolumn{{5}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
-    heads += " & \\multicolumn{5}{c}{Streaming (k$=$1.0)}"
+def emit_latex(table, keeps, latency: bool = False) -> str:
+    # Each Ours / Streaming block: Acc., Comp., Crit. Comp. (+ Lat., Crit. Lat. in the combined
+    # form); Full-res.: Acc., Comp. (+ Lat.).
+    W, F = (5, 3) if latency else (3, 2)
+    heads = " & ".join(f"\\multicolumn{{{W}}}{{c}}{{Ours ({int(k*100)}\\%)}}" for k in keeps)
+    heads += f" & \\multicolumn{{{W}}}{{c}}{{Streaming (k$=$1.0)}}"
     cmids, col = [], 4
     for _ in keeps:
-        cmids.append(f"\\cmidrule(lr){{{col}-{col+4}}}")
-        col += 5
-    cmids.append(f"\\cmidrule(lr){{{col}-{col+4}}}")     # streaming block
-    col += 5
-    cmids.append(f"\\cmidrule(lr){{{col}-{col+2}}}")
-    sub = " & ".join(["Acc. (\\%) & Comp. & Crit. Comp. & Lat. & Crit. Lat."] * (len(keeps) + 1)
-                     + ["Acc. (\\%) & Comp. & Lat."])
-    # 2 labels + Low-res. + five per Ours block + five for Streaming + three for Full-res.
-    ncol = 2 + 1 + 5 * len(keeps) + 5 + 3
+        cmids.append(f"\\cmidrule(lr){{{col}-{col+W-1}}}")
+        col += W
+    cmids.append(f"\\cmidrule(lr){{{col}-{col+W-1}}}")     # streaming block
+    col += W
+    cmids.append(f"\\cmidrule(lr){{{col}-{col+F-1}}}")
+    blk = "Acc. (\\%) & Comp. & Crit. Comp." + (" & Lat. & Crit. Lat." if latency else "")
+    sub = " & ".join([blk] * (len(keeps) + 1)
+                     + ["Acc. (\\%) & Comp." + (" & Lat." if latency else "")])
+    # 2 labels + Low-res. + W per Ours block + W for Streaming + F for Full-res.
+    ncol = 2 + 1 + W * len(keeps) + W + F
+    lat_sent = (
+             r"Lat.\ and Crit.\ Lat.\ are their measured twins, single-request "
+             r"time-to-first-token medians (ms, B200, concurrency 1, 36 evenly spaced images): "
+             r"Lat.\ with the whole image on the GPU at $t{=}0$ (vision and prefill serialized, no "
+             r"transmission credit; clock starts at the server's receipt of the request), Crit.\ "
+             r"Lat.\ from the moment the previous band's vision work completes on the GPU (the "
+             r"departure of the second-to-last chunk), i.e.\ the last band's vision correction, "
+             r"its transfer, merge and remaining prefill, the same accounting as Crit.\ Comp.; "
+             r"parentheses are the ratio to the Full-res.\ TTFT. Both Qwen3.5 models are timed on "
+             r"their served path (vLLM 0.28 engine, FP8 for 122B, fed by the in-process vision "
+             r"tower, one GPU shared by both; keep$<$1 latency cells await re-measurement under "
+             r"these anchors and show --); the other VLMs on the in-process HF eager path. "
+             ) if latency else (
+             r"Measured latency is reported separately in Table~\ref{tab:latency_results}. ")
     L = []
     L.append(r"% requires \usepackage[table]{xcolor} in the preamble (for \cellcolor)")
     L.append(r"\begin{table*}[t]")
@@ -930,14 +961,7 @@ def emit_latex(table, keeps) -> str:
              r"backbone prefill FLOPs per instruction that can only begin once the whole image has "
              r"arrived (decode excluded); Comp.\ is the arm's total backbone compute including "
              r"work overlapped with transmission. Parentheses give the ratio to the Full-res.\ "
-             r"computation. Lat.\ and Crit.\ Lat.\ are their measured twins, single-request "
-             r"time-to-first-token medians (ms, B200, concurrency 1, 36 evenly spaced images): "
-             r"Lat.\ with the whole image on the GPU at $t{=}0$ (vision and prefill serialized, no "
-             r"transmission credit), Crit.\ Lat.\ from the arrival of the last image chunk, i.e.\ "
-             r"its vision correction, merge and remaining prefill, the same accounting as Crit.\ "
-             r"Comp.; parentheses are the ratio to the Full-res.\ TTFT. Qwen3.5-122B is timed on "
-             r"its served path (vLLM 0.28 FP8 engine fed by the in-process vision tower, one GPU "
-             r"shared by both); the other VLMs on the in-process HF eager path. "
+             r"computation. " + lat_sent +
              r"Ours uses interleaved $g{=}4$; shaded Ours and Streaming accuracy "
              r"cells retain $\geq$98\% of the Full-res.\ accuracy. "
              r"The Streaming (k$=$1.0) block is the causal-LLM category: the LLM prefills exactly "
@@ -974,7 +998,7 @@ def emit_latex(table, keeps) -> str:
     L.append(r"\toprule")
     L.append(r"\multirow{2}{*}{Model} & \multirow{2}{*}{Dataset (Metric)} & "
              r"\multicolumn{1}{c}{Low-res.} & " + heads +
-             r" & \multicolumn{3}{c}{Full-res.} \\")
+             f" & \\multicolumn{{{F}}}{{c}}{{Full-res.}} \\\\")
     L.append(r"\cmidrule(lr){3-3} " + " ".join(cmids))
     L.append(r"& & Acc. (\%) & " + sub + r" \\")
     L.append(r"\midrule")
@@ -1000,13 +1024,13 @@ def emit_latex(table, keeps) -> str:
     return "\n".join(L)
 
 
-def emit_md(table, keeps) -> str:
+def emit_md(table, keeps, latency: bool = False) -> str:
+    lat = ["lat", "crit-lat"] if latency else []
     hdr = ["model", "dataset", "low-res"]
     for k in keeps:
-        hdr += [f"ours{int(k*100)} acc", f"ours{int(k*100)} comp", f"ours{int(k*100)} crit",
-                f"ours{int(k*100)} lat", f"ours{int(k*100)} crit-lat"]
-    hdr += ["stream acc", "stream comp", "stream crit", "stream lat", "stream crit-lat",
-            "full acc", "full comp", "full lat"]
+        hdr += [f"ours{int(k*100)} {c}" for c in ["acc", "comp", "crit"] + lat]
+    hdr += [f"stream {c}" for c in ["acc", "comp", "crit"] + lat]
+    hdr += ["full acc", "full comp"] + (["full lat"] if latency else [])
     L = ["| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
     for model, rows in table:
         for label, cells in rows:
@@ -1014,6 +1038,174 @@ def emit_md(table, keeps) -> str:
                                        [c.replace(SHADE_MACRO, "").replace("\\,", " ")
                                          .replace("\\%", "%")
                                         for c in cells]) + " |")
+    return "\n".join(L)
+
+
+# ----------------------------------------------------------------------------------------------
+# Latency table (split out of the evaluation table 2026-09-09): the served Qwen3.5 rows only.
+# Part (a) is the single-request breakdown behind the former Lat. / Crit. Lat. cells, straight
+# from inprocess_latency.json's `detail` block (per-column medians over the probe's 36 images --
+# the columns of one row therefore do not sum); part (b) the concurrency sweeps
+# (conc_sweep_20260909.json, folded by vllm_stream/conc_sweep_20260909/conc_table_json.py).
+LAT_MODELS = [("qwen35_moe", "Qwen3.5-MoE (35B-A3B)"),
+              ("qwen35_122b", "Qwen3.5-MoE (122B-A10B FP8)")]
+LAT_DATASETS = [("chartqa", "ChartQA"), ("realworldqa", "RealWorldQA"), ("vsr", "VSR"),
+                ("mmvp", "MMVP"), ("cvbench", "CV-Bench"), ("refcoco", "RefCOCO val"),
+                ("textvqa", "TextVQA"), ("visdrone_count", "VisDrone Count"),
+                ("visdrone_det", "VisDrone Det"), ("vstar", "V*Bench")]
+CONC_DATASETS = [("realworldqa", "RealWorldQA"), ("visdrone_det", "VisDrone Det")]
+
+
+def _lat_entry(model: str, dataset: str) -> dict:
+    inproc_latency(model, dataset, "full")          # loads _INLAT
+    return (_INLAT.get(model, {}) or {}).get(dataset) or {}
+
+
+def _ms(v: Optional[float], full: Optional[float] = None, ratio: bool = False) -> str:
+    if v is None:
+        return "--"
+    if ratio and full:
+        return f"{v:.0f} ({100 * v / full:.0f}\\%)"
+    return f"{v:.0f}"
+
+
+def emit_latency_latex(keeps) -> str:
+    L = []
+    L.append(r"\begin{table*}[t]")
+    L.append(r"\vspace{-0.1in}")
+    L.append(r"\caption{Measured latency of the served Qwen3.5 models (vLLM 0.28 engine on one "
+             r"B200, FP8 for 122B, fed by the in-process vision tower). A \emph{band} is one of "
+             r"$g{=}4$ contiguous raster-order strips of the image's vision tokens (the unit that "
+             r"arrives, is corrected and is pushed to the engine as one \emph{chunk}); the prompt "
+             r"is [leading text][vision tokens][trailing text], so chunk 0 carries the leading text "
+             r"with band 0 and chunk $g{-}1$ the trailing text with band $g{-}1$. "
+             r"\textbf{(a)} Single-request time-to-first-token (TTFT) breakdown, medians over 36 "
+             r"evenly spaced images per dataset, concurrency 1; every column is its own median, so "
+             r"the columns of a row do not sum. Tokens: prompt length. Full-res.: Vision is the "
+             r"one-shot tower, TTFT the clock from inputs-on-GPU (the server's receipt of the "
+             r"request) to the first token, i.e.\ Lat.\ with the whole image at $t{=}0$ and no "
+             r"transmission credit. Streaming (k$=$1.0): Vision is the approximate pass plus all "
+             r"four correction rounds and chunk pushes (the approximate pass itself is never sent "
+             r"to the engine); First / Last: when chunk 0 (band 0 after its correction, with the "
+             r"leading text) and the last chunk left the driver; First$\to$FT / "
+             r"Last$\to$FT: the engine's own span from receiving the first / the last chunk to "
+             r"the first token; Lat.: TTFT from $t{=}0$ with the bands back-to-back (every pass "
+             r"serialized, the analogue of Comp.); Crit.\ Lat.: TTFT from the arrival of the last "
+             r"band's pixels, measured with the bands spaced 150\,ms apart as on a slow link (so "
+             r"no chunk queues behind the previous chunk's prefill step and the tower does not "
+             r"overlap an engine step), i.e.\ the last band's correction, its transfer and its "
+             r"prefill step plus the first decode -- the accounting of Crit.\ Comp.\ in "
+             r"Table~\ref{tab:evaluation_results}; the other streaming columns come from the "
+             r"back-to-back run. Both Full-res.\ TTFT and Crit.\ Lat.\ are clocks that start at the "
+             r"last byte of the image, so on a link with transfer time $T_{tx}$ the user-visible TTFT "
+             r"is $T_{tx}$ plus either column for either path: the absolute saving is independent of "
+             r"the link, the relative one shrinks as the link slows, and Lat.\ is the infinite-bandwidth "
+             r"limit ($T_{tx}{=}0$) where the serialized streaming passes lose. Parentheses "
+             r"give the ratio to the Full-res.\ TTFT. Ours (keep-limited streaming) columns are the "
+             r"same two clocks for the keep 0.50 / 0.25 arms under the deferred patch score (band 0 "
+             r"ranked on energy alone, the received-attention term computed right after chunk 0 is "
+             r"pushed): that score pass sits on the serialized path, so their Lat.\ exceeds "
+             r"k$=$1.0's, while their Crit.\ Lat.\ matches it (band $g{-}1$ corrects fewer rows "
+             r"but its prefill step is the same). "
+             r"\textbf{(b)} Closed-loop concurrency sweep on the 35B model (RealWorldQA 765 / "
+             r"VisDrone Det 448 splits, 160 or 400 evenly spaced images per cell): $N$ driver "
+             r"processes (one vision tower each, same GPU) $\times$ $c$ requests in flight per "
+             r"driver against one engine. Med./p90 in ms; req/s and engine busy (share of wall "
+             r"time inside an engine step) over the active phase of each run. Ratio is streaming "
+             r"Crit.\ Lat.\ over the Full-res.\ TTFT of the same configuration. Streaming's "
+             r"capacity is about half the Full-res.\ path's because each request costs the engine "
+             r"four chunk-sized prefill steps near the MoE step floor plus four vision passes that "
+             r"share the GPU; at equal throughput the Full-res.\ path is the lower-latency one.}")
+    L.append(r"\label{tab:latency_results}")
+    L.append(r"\begin{center}\begin{small}\begin{sc}")
+    # ---- (a) single-request breakdown ----
+    ours = [(k, f"Ours ({int(k*100)}\\%)") for k in sorted(keeps, reverse=True)]
+    ncol = 2 + 1 + 2 + 7 + 2 * len(ours)
+    L.append(r"\textbf{(a) Single-request TTFT breakdown (ms)}\\[2pt]")
+    L.append(r"\resizebox{\textwidth}{!}{%")
+    L.append(r"\begin{tabular}{ll" + "r" * (ncol - 2) + "}")
+    L.append(r"\toprule")
+    hdr = (r"\multirow{2}{*}{Model} & \multirow{2}{*}{Dataset} & \multirow{2}{*}{Tokens} & "
+           r"\multicolumn{2}{c}{Full-res.} & \multicolumn{7}{c}{Streaming (k$=$1.0)}")
+    for _, name in ours:
+        hdr += f" & \\multicolumn{{2}}{{c}}{{{name}}}"
+    L.append(hdr + r" \\")
+    cm = [r"\cmidrule(lr){4-5}", r"\cmidrule(lr){6-12}"]
+    col = 13
+    for _ in ours:
+        cm.append(f"\\cmidrule(lr){{{col}-{col+1}}}")
+        col += 2
+    L.append(" ".join(cm))
+    L.append(r"& & & Vision & TTFT & Vision & First & Last & First$\to$FT & Last$\to$FT & Lat. & "
+             r"Crit. Lat." + " & Lat. & Crit. Lat." * len(ours) + r" \\")
+    L.append(r"\midrule")
+    for mi, (mkey, mname) in enumerate(LAT_MODELS):
+        rows = [(d, dn) for d, dn in LAT_DATASETS if _lat_entry(mkey, d).get("full") is not None]
+        if not rows:
+            continue
+        if mi:
+            L.append(r"\midrule")
+        m = re.match(r"^(.*?) (\(.*)$", mname)
+        cell = f"\\shortstack[l]{{{m.group(1)}\\\\{m.group(2)}}}" if m else mname
+        L.append(f"\\multirow{{{len(rows)}}}{{*}}{{{cell}}}")
+        for d, dn in rows:
+            e = _lat_entry(mkey, d)
+            full = e.get("full")
+            dc = (e.get("detail") or {}).get("ceiling") or {}
+            ds = (e.get("detail") or {}).get("streaming_k1.00") or {}
+            c = [f"{dc['prompt_tokens']:.0f}" if dc.get("prompt_tokens") else "--",
+                 _ms(dc.get("t_vision_ms")), _ms(full),
+                 _ms(ds.get("t_vision_ms")), _ms(ds.get("t_open_ms")), _ms(ds.get("t_last_push_ms")),
+                 _ms(ds.get("ttft_open_ms")), _ms(ds.get("ttft_last_chunk_ms")),
+                 _ms(e.get("total_k1.00"), full, True), _ms(e.get("k1.00"), full, True)]
+            for k, _ in ours:
+                c += [_ms(e.get(f"total_k{k:.2f}"), full, True), _ms(e.get(f"k{k:.2f}"), full, True)]
+            L.append(f"& {dn} & " + " & ".join(c) + r" \\")
+    L.append(r"\bottomrule")
+    L.append(r"\end{tabular}}")
+    # ---- (b) concurrency sweep ----
+    p = os.path.join(LAT_DIR, "conc_sweep_20260909.json")
+    conc = json.load(open(p))["rows"] if os.path.exists(p) else []
+    if conc:
+        L.append(r"\\[6pt]")
+        L.append(r"\textbf{(b) Concurrency sweep, Qwen3.5-MoE (35B-A3B), keep$=$1.0}\\[2pt]")
+        L.append(r"\resizebox{\textwidth}{!}{%")
+        L.append(r"\begin{tabular}{llrrrrrrrrrrrr}")
+        L.append(r"\toprule")
+        L.append(r"\multirow{2}{*}{Dataset} & \multirow{2}{*}{Config} & \multicolumn{4}{c}{Full-res.} "
+                 r"& \multicolumn{6}{c}{Streaming (k$=$1.0)} & \multirow{2}{*}{Ratio} \\")
+        L.append(r"\cmidrule(lr){3-6} \cmidrule(lr){7-12}")
+        L.append(r"& & TTFT & p90 & req/s & busy & Lat. & p90 & Crit. Lat. & p90 & req/s & busy & \\")
+        L.append(r"\midrule")
+        first = True
+        for d, dn in CONC_DATASETS:
+            rs = [r for r in conc if r["ds"] == d]
+            cfgs = sorted({(r["N"], r["c"]) for r in rs})
+            if not cfgs:
+                continue
+            if not first:
+                L.append(r"\midrule")
+            first = False
+            L.append(f"\\multirow{{{len(cfgs)}}}{{*}}{{{dn}}}")
+            for N, cc in cfgs:
+                ce = next((r for r in rs if r["N"] == N and r["c"] == cc and r["arm"] == "ceiling"), None)
+                st = next((r for r in rs if r["N"] == N and r["c"] == cc and r["arm"] == "streaming"), None)
+                if ce is None or st is None:
+                    continue
+                cfg = f"$N{{=}}{N}$, $c{{=}}{cc}$" if N > 1 else f"1 driver, $c{{=}}{cc}$"
+                ratio = st["crit_med"] / ce["tot_med"] if ce.get("tot_med") else None
+                cells = [_ms(ce.get("tot_med")), _ms(ce.get("tot_p90")), f"{ce['req_s']:.1f}",
+                         f"{ce['busy']:.0f}\\%",
+                         _ms(st.get("tot_med")), _ms(st.get("tot_p90")),
+                         _ms(st.get("crit_med")), _ms(st.get("crit_p90")), f"{st['req_s']:.1f}",
+                         f"{st['busy']:.0f}\\%",
+                         "--" if ratio is None else f"{ratio:.2f}"]
+                L.append(f"& {cfg} & " + " & ".join(cells) + r" \\")
+        L.append(r"\bottomrule")
+        L.append(r"\end{tabular}}")
+    L.append(r"\end{sc}\end{small}\end{center}")
+    L.append(r"\vspace{-0.22in}")
+    L.append(r"\end{table*}")
     return "\n".join(L)
 
 
@@ -1054,6 +1246,11 @@ def main():
     ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--format", choices=["latex", "md"], default="latex")
+    ap.add_argument("--table", choices=["eval", "latency"], default="eval",
+                    help="eval: accuracy + compute (eval_table_*.tex); latency: the served-path "
+                         "latency table (latency_table_*.tex)")
+    ap.add_argument("--with-latency", action="store_true",
+                    help="eval table in the combined form (Lat. / Crit. Lat. columns inline)")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--overhead", action="store_true",
                     help="report TOTAL compute (approx + all corrections) against the ceiling, "
@@ -1065,8 +1262,12 @@ def main():
     if a.overhead:
         print(emit_overhead(a.keeps))
         return
-    table = build_rows(a.keeps, a.groups)
-    print(emit_latex(table, a.keeps) if a.format == "latex" else emit_md(table, a.keeps))
+    if a.table == "latency":
+        print(emit_latency_latex(a.keeps))
+        return
+    table = build_rows(a.keeps, a.groups, latency=a.with_latency)
+    print(emit_latex(table, a.keeps, a.with_latency) if a.format == "latex"
+          else emit_md(table, a.keeps, a.with_latency))
 
 
 if __name__ == "__main__":

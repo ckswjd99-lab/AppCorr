@@ -517,3 +517,375 @@ last arrival. What moves:
   79.8->71.6 ms (one engine step saved, ~2.5 ms on the RWQA TTFT median); k0.5 and k0.25 move
   both ways within the probe's own +-20 ms run-to-run spread. The table's served entries were kept
   (old structure; the difference is inside probe noise).
+
+### Why the streaming Crit. Lat. exceeds the one-shot prefill (2026-09-09, measured)
+
+Question: streaming's total TTFT being above the one-shot ceiling is expected (it adds work), but
+its critical window -- the last band's correction + last chunk's prefill -- came out at 91 ms on
+35B RWQA, above the ceiling's whole prefill (~40 ms). Server-side trace (`APPCORR_SERVER_TRACE`:
+every chunk arrival, every `_step` with its per-request computed-token delta) + per-step
+`torch.profiler` (`APPCORR_STEP_PROFILE`) on Qwen3.5-35B-A3B bf16, RWQA 24 samples, port 5591,
+concurrency 1. Rows + traces: `analysis/results/vllm_stream/critlat_20260909/{,triton/}`.
+
+**1. The engine's prefill step is flat in tokens.** Unprofiled step wall (ms, median): 329 tok
+43 / 326 tok 34-39 / 655-690 tok 39-41 / 1343 tok ~40 (ceiling's single step). Profiled CUDA sum:
+133 tok 26, 329 tok 35, 456 tok 32, 1000 tok 39. Per step: `vllm::moe_forward_shared` 9.5-13.5 ms
+(40 layers; 128 experts x top-8 -> every expert is hit from a few dozen tokens on, so each step
+reads the whole expert weight set: ~66 GB bf16 / 8 TB/s = ~8 ms -- a bandwidth floor, hypothesis
+consistent with the measured 9.5-11 ms at 329 tokens, not isolated further), `aten::mm` 2-3 ms,
+GDN 2-4 ms, and ~2,470 kernel launches per step whose CPU side alone is 13-17 ms (wall - CUDA).
+`--moe-backend triton` does not change this (fused_moe_kernel 9.6 ms at 329 tok, 13.5 at 1000;
+steps 43-47 ms, i.e. slightly slower than the TRTLLM default; first-shape autotune costs 460 ms
+once). So on this model, below ~1.5k prompt tokens, a chunk's prefill costs the same as the whole
+prompt's: chunking the prompt cannot shorten the last prefill, it only multiplies the floor.
+
+**2. The single-threaded server cannot read a chunk during a step.** Pushes leave the driver every
+12-20 ms (band corrections are launch-bound, ~20 ms each), steps take ~40: chunk 1 waits for
+step 0, chunks 2 and 3 coalesce behind step 1 (3 steps for 4 pushes is the norm), and the LAST
+chunk sits in the socket buffer ~30 ms before its step starts. Timeline of streaming-62 (driver
+clock, ms; t_recv = server arrival on the same host clock): base pass done + chunk 0 arrives 51 |
+step(329) 51-94 | chunk 1 arrives 96 (queued) | step(326) 96-130 | chunks 2+3 arrive 131-132 (both
+queued; the GPU had finished band 3 at ~98) | step(688) 132-173 | decode step -> first token 177.
+Reading the socket during the step (a reader thread) would only remove the ~1 ms handle latency:
+the step itself is the queue.
+
+**3. Accounting bug in the driver's latency view (fixed in the same change).** `ttft_start_ms` was
+`t_open + ttft_from_open`, with `t_open` the CPU issue time of push 0 -- but the tower is sync-free
+and the CPU runs 20+ ms ahead of the GPU, so the server-side span was anchored before the chunk
+had left: the streaming TTFT was under-reported by ~20-23 ms and the ceiling's by ~6 ms (its
+one 5.5 MB chunk's D2H + transport). Crit. Lat. started from `t_pushes[g-2]`, the CPU issue of
+push g-2, which is ~20 ms before the GPU actually reached band g-1 -- the two errors roughly
+cancelled (93.6 reported vs ~99 true for streaming-62). Now: `ttft_start_ms = t_recv_ms[0] +
+ttft_open_ms` (server arrival, same monotonic host clock; the old value is kept as
+`ttft_start_issue_ms`), rows carry `t_sent_ms` (sender thread, after the D2H that waits on the
+band's GPU work = when the band's correction really finished), and `latency_probe.py` starts the
+critical window at `t_sent_ms[g-2]`. Every served latency entry in the table (122B and 35B) was
+measured with the old anchors and needs a re-measure: the ceiling TTFTs move up ~6 ms, the
+streaming ones ~20 ms, so the streaming/ceiling ratios grow.
+
+Decomposition (35B RWQA, true anchors): Crit ~ 20 (last band correction, launch-bound) + ~30
+(socket wait behind the previous chunk's step) + ~41 (last chunk's step, flat floor) + 4 (first
+decode step) + transport ~= 99 ms vs one-shot 31 (tower) + 6 (chunk) + 40 (step) + 4 ~= 86 ms.
+The window is not "too long" for what it contains; the premise that the last chunk's prefill is
+cheap is what fails at this scale. Where the step does scale with tokens (V* ~5k-token prompts:
+Crit 87% of Full TTFT in the 122B table; dense LLMs), the window drops below the ceiling.
+
+Levers, honest: (a) fewer chunks (g=2) removes one queue stage, floor stays: Crit >= 20 + 41 + 4;
+(b) the flat floor is vLLM's eager prefill path (2.5k launches) + the MoE weight read -- CUDA-graph
+capture of prefill shapes would cut the launch half for the ceiling and streaming alike, the weight
+read only shrinks when a chunk is small enough to leave experts untouched (<~16 tokens), which no
+band is; (c) a second GPU / MPS for the tower removes the GPU-sharing part of the 30 ms wait but not
+the step serialization. None of these make the last chunk's prefill scale with its size on an MoE
+model at these prompt lengths.
+
+### Deferred patch score for keep<1 (2026-09-09; `pscore_defer`, gated, not yet in any table row)
+
+The keep<1 arms' first push was ~44 ms later than keep=1.0's in-process (87 vs 43 ms, 35B RWQA
+vision-only gate) because `score = energy x received attention` needs the O(T^2) column-sum pass
+over all 27 base-pass layers before band 0 can be selected. User's call: take the score off the
+first band's critical path. Literal "band 0 fully corrected, score the rest" degenerates at
+keep=0.25 (band 0 IS a quarter of the groups, so the whole budget would go to the spatially
+top quarter); the shipped form keeps the budget split and ranks band 0 on energy alone, then
+computes the attention term right after push 0 (`PSCORE` stage, excluded from FLOPs as before)
+from the base pass's stashed post-RoPE q AND base k (`{tag}_q`, `{tag}_k0`; the k must be
+stashed because `correct` overwrites the cached kv rows in place -- reading k from the cache
+after band 0's correction gave a different score and flipped later bands' selections in the
+first gate). Bands 1..g-1 then rank on the identical score. `--pscore eager` keeps the old path.
+Gate (`analysis/experiments/qwen_pscore_defer_gate.py`, 35B tower, RWQA 8-16 images, keep
+1.0/0.5/0.25, `analysis/results/vllm_stream/pscore_defer_gate_20260909/`): eager image_embeds
+sha256 == pre-change code on all 24 cases; deferred attention vectors bitwise == eager; bands
+1..3 select identical groups; band 0 overlaps eager's 67-96% (energy-only ranking, by design);
+first push 87 -> 39 ms (keep 0.5) / 86 -> 37 ms (keep 0.25), below keep=1.0's 43 (band 0
+corrects fewer rows); total vision wall unchanged (the pass moved, it did not shrink). Accuracy
+of the keep<1 arms under the deferred score is NOT measured yet (band 0's selection changed):
+the served keep<1 rows in the table are eager.
+
+### keep=1.0 latency re-measured under the fixed anchors (2026-09-09, n=36 each, table cells)
+
+Same probe settings as before (40 evenly spaced images, 4 warmup dropped, concurrency 1, g=4, L2).
+Old = CPU-issue anchors (biased low: ceiling −6 ms, streaming crit ≈ −20 ms); new = server open
+receipt for TTFT, chunk g−2 departure (= its GPU completion) for the critical window. The keep<1
+entries were NOT re-measured (they also predate the deferred pscore) and are stashed under
+`stale_issue_anchor` in `inprocess_latency.json`; their table cells print `--` until re-run.
+
+| dataset | 35B full old→new | 35B k1 total old→new | 35B k1 crit old→new | 122B full old→new | 122B k1 total old→new | 122B k1 crit old→new |
+|---|---|---|---|---|---|---|
+| VisDrone Det | 65.1→67.8 | 117.2→121.5 | 76.4→63.5 | 96→101.0 | 177→192.2 | 135→128.3 |
+| VisDrone Count | 66.4→69.3 | 116.4→125.4 | 76.4→68.9 | 78→80.2 | 178→192.6 | 135→125.7 |
+| V*Bench | 174.0→186.5 | 315.0→388.9 | 113.3→101.0 | 293→304.9 | 456→531.9 | 254→215.9 |
+| TextVQA | 60.8→62.7 | 104.7→113.8 | 68.2→64.9 | 77→78.9 | 132→135.0 | 96→84.4 |
+| RefCOCO | 47.6→47.8 | 79.8→81.1 | 53.2→48.3 | 61→61.7 | 116→119.0 | 88→87.3 |
+| RealWorldQA | 75.3→79.3 | 149.2→173.0 | 91.3→83.3 | 115→121.7 | 213→233.3 | 153→144.0 |
+| ChartQA | 50.4→52.0 | 83.8→89.5 | 52.7→53.7 | 60→64.9 | 116→120.5 | 86→82.5 |
+| MMVP | 22.9→24.9 | 59.9→61.1 | 36.1→31.7 | – | – | – |
+| CV-Bench | 56.3→59.5 | 102.7→91.7 | 61.0→52.2 | – | – | – |
+| VSR | (rc=1) →50.3 | →80.9 | →48.8 | – | – | – |
+
+Reading: with the window anchored at the true GPU completion of band g−2, streaming Crit. Lat.
+sits at 0.9–1.2× the one-shot TTFT on 35B (V*: 0.54×, CV-Bench 0.88×) and 1.1–1.6× on 122B
+(V*: 0.71×). The residual over 1× is the three-cause stack from the previous section (last-band
+correction + socket wait behind the in-flight step + the flat ~40 ms MoE step floor); the totals
+moved up 2–24% because the old total anchor also started too early. Note the two runs are not
+paired (fresh server, different GPU thermal state), so the old→new deltas mix the anchor fix with
+run-to-run noise of a few ms; the anchor fix alone is the −6/−20 ms figure from the traced sample.
+
+### Does concurrency make streaming's latency advantage show? (2026-09-09, 35B, measured: no)
+
+Question: the single-request Crit. Lat. of streaming is >= the one-shot TTFT because the MoE
+prefill step is flat in tokens (~40 ms floor for <=1.5k tokens), so the last chunk's step costs as
+much as a whole prompt's. Batching should amortize that floor across requests and let streaming's
+1/g critical work show up as latency. Two sweeps on GPU0 (Qwen3.5-35B-A3B, port 5591, g=4, keep=1.0,
+RealWorldQA + VisDrone Det, `APPCORR_SERVER_TRACE` on):
+- `conc_sweep_20260909/`: one driver, `--concurrency` 1/4/8/16, 160 evenly spaced images (8 warmup dropped).
+- `conc_sweep_20260909/shard/`: N driver processes (`--shard k/N`, each its own vision tower on the
+  same GPU) x c in flight each, 400 images. N=16 OOM'd (16 towers x 4.4 GB + server 107 GB > 178 GB):
+  those cells are partial (RWQA streaming 12/16 drivers; VisDrone ceiling 3/16) and are not used.
+Scripts + `summary.json` are in the result dirs.
+
+**Single driver saturates the driver, not the engine.** Streaming throughput 5.4 -> 6.5/s (RWQA)
+from c=1 to c=4 and flat after; ceiling 10.5 -> 13.5/s. Prefill-carrying steps still hold one
+prompt (tok/step = one prompt, prefills/step median 1) at every c: the serial vision pass never
+lets two prefills queue. This sweep cannot test the batching hypothesis.
+
+**Sharded drivers saturate the engine (86-95% step-busy over the active phase).** Medians, ms
+(TTFT for the ceiling; total / crit for streaming), and achieved throughput:
+
+| ds | cfg | ceiling TTFT | ceil req/s | stream total | stream crit | stream req/s | crit / ceil TTFT (same cfg) |
+|---|---|--:|--:|--:|--:|--:|--:|
+| RWQA | 1 driver c=1 | 80 | 11.0 | 174 | 83 | 5.5 | 1.04 |
+| RWQA | N=4 c=1 | 208 | 15.6 | 404 | 154 | 8.1 | 0.74 |
+| RWQA | N=8 c=1 | 287 | 16.5 | 632 | 262 | 9.0 | 0.91 |
+| RWQA | N=8 c=2 | 433 | 18.9 | 938 | 537 | 9.6 | 1.24 |
+| VisDrone | 1 driver c=1 | 69 | 7.7 | 120 | 63 | 5.3 | 0.92 |
+| VisDrone | N=4 c=1 | 172 | 14.1 | 327 | 110 | 9.6 | 0.64 |
+| VisDrone | N=8 c=1 | 268 | 16.7 | 550 | 172 | 10.8 | 0.64 |
+| VisDrone | N=8 c=2 | 382 | 21.5 | 675 | 307 | 12.0 | 0.80 |
+
+Engine step cost by tokens per step (sharded trace, prefill-carrying steps pooled): <512 tok
+67 ms (226 ms/ktok), 512-1k 58 (82), 1-2k 54 (40), 2-4k 74 (26), 4-8k 126 (24), 8-16k 74 (8.7).
+So the floor IS amortizable -- ms/ktok falls ~10x from chunk-sized to 4k+ steps -- but streaming's
+own steps never got there: its prefill steps carried a median 1-3 chunks (~0.7-1.3k tokens) at
+83-95 ms/ktok in every configuration, vs 35-38 ms/ktok for the ceiling's whole-prompt steps.
+Chunks arrive one at a time, gated by each stream's vision correction, and the scheduler takes
+whatever is waiting at each step boundary; nothing accumulates a batch of chunks.
+
+Reading:
+1. At the SAME in-flight count the crit/ceiling ratio does move in streaming's favour (1.0 ->
+   0.64-0.74 at N=4-8, c=1), but that comparison is at unequal load: streaming's capacity is about
+   half the ceiling's (RWQA ~10 vs ~19 req/s, VisDrone ~12 vs ~22), so the ceiling cell is the
+   more saturated one. At EQUAL throughput the picture reverses: the ceiling serves 11 req/s at
+   80 ms TTFT unsaturated, while streaming at 8-9 req/s is at 154-262 ms crit / 404-632 ms total.
+2. Why capacity is half, not the 1/1.5 the FLOPs column suggests: each request costs the engine
+   4 chunk steps near the flat floor (4 x ~40-55 ms of step time vs 1 x ~40) plus 4 vision passes
+   that share the GPU with the engine (prefill steps slow from 38 to 54-107 ms as N grows). FLOPs
+   undercount small MoE steps by ~2.5x (88 vs 35 ms/ktok).
+3. p90s widen faster for streaming (RWQA N=8 c=2: 1250 total / 789 crit vs 593 ceiling).
+
+Verdict: in this serving form (vision tower in the driver, single-threaded server, one GPU),
+concurrency does not make streaming's advantage more prominent; it exposes the throughput cost.
+What would change it (not measured): batching chunks across streams inside the server before
+stepping (trades the batching delay against the floor), or moving the correction into the engine
+process so its steps and the tower stop contending -- both design changes, not knobs. Caveats:
+closed-loop arrivals; towers and engine on one GPU (a separate vision GPU would slow the engine
+less); N=16 unusable.
+
+### Spaced band arrival: does the queueing -- and the tower/engine contention -- go away? (2026-09-09, 35B, measured)
+
+Setup: one 35B server on GPU0 (`--gpu-mem 0.60`, `APPCORR_SERVER_TRACE` on), streaming keep=1.0
+g=4, concurrency 1, 36 images per cell (4 warm-up dropped), the driver launched with
+`APPCORR_PUSH_DELAY_MS` = 0 / 60 / 150 (a sleep inside `StreamSink.push` after each push, i.e.
+band r+1's correction starts d ms after band r's chunk was issued -- a producer whose bands
+arrive d ms apart). The 0 ms arm is the in-session control and reproduces the table
+(RWQA crit 84 / VisDrone Det 65 / V* 101). Files: `analysis/results/latency/probe_qwen35_moe_delay/d{0,60,150}/`,
+`run.sh`, `analyze.py`.
+
+Anchors. `L_r` = band r's correction from its start (push r-1 issued + sleep) to the GPU
+completion of its D2H (`t_sent[r]`); `q_r` = server receipt minus send of chunk r (the wait
+behind an engine step); `last` = last chunk received -> first token (the final prefill step +
+first decode); `crit` = first token minus the START of band g-1's correction (= the moment its
+pixels arrived), i.e. L_3 + q_3 + last. Medians, ms.
+
+| d | dataset | tok | L_1 L_2 L_3 | q_0 q_1 q_2 q_3 | last | crit (x full-res TTFT) | engine prefill step |
+|--:|---|--:|---|---|--:|--:|--:|
+| 0 | RWQA | 1351 | 37 43 49 (GPU backlog included) | 1 31 13 31 | 37 | 84 (1.06x of 79) | 36 |
+| 0 | VisDrone Det | 1066 | 24 27 33 | 1 34 21 20 | 37 | 65 (0.96x of 68) | -- (decode-dominated trace) |
+| 0 | V* | 3341 | 133 129 148 | 3 3 3 3 | 40 | 101 (0.54x of 187) | 52 |
+| 60 | RWQA | | 12 12 12 | 1 1 1 1 | 36 | 49 (0.62x) | 34 |
+| 60 | VisDrone Det | | 8.5 8.2 8.3 | 1 1 1 1 | 37 | 46 (0.68x) | -- |
+| 60 | V* | | 74 65 59 | 3 3 3 3 | 40 | 101 (0.54x) | 48 |
+| 150 | RWQA | | 12 12 12 | 1 1 1 1 | 38 | 52 (0.65x) | 36 |
+| 150 | VisDrone Det | | 8.6 8.4 8.5 | 1 1 1 1 | 37 | 47 (0.69x) | -- |
+| 150 | V* | | 34 34 34 | 3 2 2 3 | 41 | 78 (0.42x) | 38 |
+
+(The d=0 crit uses the table's anchor, the departure of chunk g-2; for d>0 the arrival anchor
+above. The approx+band-0 phase, during which the engine is idle in every arm, is identical
+across d: 51 / 37 / 175 ms -- the control that the arms differ only in the spacing.)
+
+1. Queueing disappears at any spacing >= a step: q_1..q_3 fall from 13-34 ms to ~1 ms at
+   d=60 and d=150 (V* was already spaced by its 60 ms bands). Crit drops to 46-52 ms on the
+   two ~1.1-1.4k-token datasets: band correction 8-12 + transfer 1 + the last step 36-38.
+   That last step is the MoE step floor (36 ms at 327-358 tokens/step, the same at d=0), so
+   spaced arrival gets streaming to ~0.6-0.7x of the one-shot TTFT, not to 1/4: with a flat
+   per-step cost the last chunk's prefill costs what the whole image's prefill costs.
+2. The tower/engine contention is real and is measured on V*, where the per-band GPU work is
+   long enough to overlap an engine step. At d=150 (sleep outlasts the band's GPU work and
+   the step it triggers) a band costs 34 ms and the engine step 38 ms; at d=60 the sleep
+   ends exactly when the chunk lands on the engine (the sync-free tower issues the push
+   ~60 ms before the GPU finishes the band), so band r+1's correction runs on top of chunk
+   r's step: 59-74 ms per band and 48 ms per step -- both sides pay, roughly a step's worth
+   (+31 ms) on the tower and +10-14 ms on the engine. At d=0 V*'s bands 1-3 take 172 ms of
+   GPU-serial time against 3 x 34 = 102 alone (+70), and RWQA's 55 vs 36 (+19), VisDrone's
+   37 vs 26 (+11). The RWQA/VisDrone engine step itself does not slow (36 ms at every d):
+   their 8-12 ms bands lose to the step, the step does not lose to them.
+3. So: spacing removes the queueing wholesale, and removes the contention only when the
+   spacing exceeds band GPU time + step time (V* needs >= ~80-100 ms between bands; the
+   ~1k-token datasets are contention-free from 60 ms). Below that the two GPU clients
+   overlap and the band correction stretches by about one engine step.
+4. What remains fixed regardless of spacing: the step floor (36-40 ms) plus one band
+   correction (8-34 ms) plus ~1-3 ms transfer. For a slow-transmission scenario the honest
+   Crit. Lat. of this design is ~46-52 ms on 35B at 1-1.4k tokens (0.62-0.69x of one-shot),
+   ~78 ms on V* (0.42x); the table's d=0 numbers (queue behind the previous step) are the
+   fast-producer worst case.
+
+### Crit. Lat. re-measured with 150 ms band spacing (2026-09-09, table cells; rule from now on)
+
+Rule (user, 2026-09-09): streaming latency is measured with the bands spaced far enough apart
+that neither the chunk queue nor the tower/engine overlap enters the critical window --
+`latency_probe.py --push-delay-ms 150 --skip-ceiling` (env `APPCORR_PUSH_DELAY_MS=150` on the
+streaming arms). `k1.00` in `inprocess_latency.json` is now that number, anchored at the last
+band's pixel arrival (push g-2 issue + delay); `full`, `total_k1.00` and the other streaming
+columns keep their back-to-back (fast-producer) values -- `total_k*` with the spacing inside
+would be the link, not the pipeline. The fast-producer crit stays in
+`detail.streaming_k1.00.ttft_last_band_ms`; the spaced run's decomposition in
+`detail.streaming_k1.00_d150` (`last_band_correct_ms`, `last_chunk_wait_ms`,
+`last_chunk_to_ft_ms`, `max_chunk_wait_ms`). Rows: `probe_qwen35_{moe,122b}_d150/`.
+
+35B (n=36, medians ms; crit = last band correction + chunk wait + last prefill step):
+
+| dataset | tok | full-res TTFT | crit back-to-back | crit spaced | ratio | L_3 | wait | last step |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| VisDrone Det | 1066 | 67.8 | 63.5 | 46.0 | 0.68 | 8.6 | 1.0 | 36.3 |
+| VisDrone Count | 1036 | 69.3 | 68.9 | 46.3 | 0.67 | 8.8 | 1.1 | 36.3 |
+| V* | 3341 | 186.5 | 101.0 | 75.9 | 0.41 | 34.5 | 2.3 | 39.0 |
+| TextVQA | 799 | 62.7 | 64.9 | 45.9 | 0.73 | 7.1 | 0.9 | 37.9 |
+| RefCOCO | 320 | 47.8 | 48.3 | 22.8 | 0.48 | 6.1 | 0.6 | 15.7 |
+| RealWorldQA | 1351 | 79.3 | 83.3 | 50.8 | 0.64 | 12.5 | 1.2 | 37.2 |
+| ChartQA | 466 | 52.0 | 53.7 | 47.3 | 0.91 | 7.0 | 0.9 | 39.3 |
+| MMVP | 110 | 24.9 | 31.7 | 21.2 | 0.85 | 6.4 | 0.6 | 14.1 |
+| CV-Bench | 366 | 59.5 | 52.2 | 45.8 | 0.77 | 7.6 | 1.3 | 36.9 |
+| VSR | 346 | 50.3 | 48.8 | 23.1 | 0.46 | 6.7 | 0.8 | 15.5 |
+
+Every chunk wait is ~1 ms (max 0.8-3.1), so the spaced numbers are the pipeline's own cost.
+
+**The last prefill step is bimodal, and the threshold is the CUDA-graph capture limit.** The
+server trace of the spaced RWQA / VisDrone / V* runs, engine step time by tokens computed in
+the step: 50-128 tokens 15.0-15.8 ms; 128-850 tokens 35.3-39.2 ms, flat. The 35B server runs
+with `--max-num-seqs 64`, and vLLM 0.28 derives `max_cudagraph_capture_size = 128` from it
+(`cudagraph_capture_sizes` 1..128 in the server log): a step of <= 128 tokens replays a
+piecewise CUDA graph, a larger one runs the eager Python/launch path, and the ~37 ms "MoE step
+floor" the earlier sections attributed to the model is therefore mostly launch overhead of the
+eager path (Qwen3.5's 40 hybrid layers x MoE routing + gated-delta-net ops), not GPU math --
+the graph path does the same math in 15 ms. RefCOCO / MMVP / VSR land in the 15 ms mode
+because their last chunk (band + short trailing text) is under 128 tokens; ChartQA's long
+question pushes a 117-token band over it (39 ms, 0.91x). The 122B server (`--max-num-seqs
+32`) captures only up to 64 tokens, so every chunk step there is eager (47-63 ms).
+Hypothesis to test, not yet run: `--max-num-seqs 512` (or `compilation_config`
+`max_cudagraph_capture_size`) so chunk-sized steps replay graphs -- if the 15 ms mode holds up
+to ~400 tokens the 35B Crit. Lat. would drop to ~25 ms (0.35-0.45x) on the 1k-token datasets,
+and the one-shot TTFT would fall less (its ~1k-token step stays eager unless capture goes past
+it). Needs a go; it changes the engine config of every served number.
+
+122B-FP8 (same run, `--max-num-seqs 32` -> capture <= 64 tokens, so every chunk step is eager):
+
+| dataset | tok | full-res TTFT | crit back-to-back | crit spaced | ratio | L_3 | wait | last step |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| VisDrone Det | 1066 | 101.0 | 128.3 | 57.1 | 0.57 | 8.6 | 1.2 | 47.9 |
+| VisDrone Count | 1036 | 80.2 | 125.7 | 58.3 | 0.73 | 8.6 | 1.2 | 48.0 |
+| V* | 3341 | 304.9 | 215.9 | 102.0 | 0.33 | 34.6 | 3.3 | 64.1 |
+| TextVQA | 799 | 78.9 | 84.4 | 60.1 | 0.76 | 7.4 | 1.3 | 51.0 |
+| RefCOCO | 320 | 61.7 | 87.3 | 58.5 | 0.95 | 6.8 | 0.8 | 50.3 |
+| RealWorldQA | 1351 | 121.7 | 144.0 | 64.7 | 0.53 | 12.9 | 1.7 | 50.1 |
+| ChartQA | 466 | 64.9 | 82.5 | 60.3 | 0.93 | 6.9 | 1.2 | 51.8 |
+
+The 122B step floor (48-52 ms eager, 64 at 830 tokens) sets the crit almost alone: the
+tower's last band is 7-13 ms on every dataset but V*. On the small-image datasets (RefCOCO,
+ChartQA) the one-shot prefill is itself one such step, so streaming cannot beat 0.93-0.95x
+there; it wins where the one-shot tower + prefill are large (RWQA 0.53, VisDrone Det 0.57,
+V* 0.33). Table regenerated (`latency_table_20260909.tex`, both trees) with these `k1.00`
+cells; the (%) is the ratio to the fast-producer one-shot TTFT.
+
+### CUDA-graph capture limit: the "MoE step floor" is half eager launch overhead (2026-09-09, go)
+
+vLLM sizes the piecewise CUDA graphs it captures as `min(2 x max_num_seqs, 1024 on Blackwell)`:
+128 at the 35B server's `--max-num-seqs 64`, 64 at the 122B's `--max-num-seqs 32`. Every chunk
+prefill step above the largest captured size runs eager, and the earlier trace showed those steps
+flat at 35-40 ms from 130 to 850 tokens while <=128-token steps replayed in 15 ms. New server flag
+`--max-cudagraph-capture-size N` (-> `compilation_config.max_cudagraph_capture_size`; default
+unchanged). 35B at 1024: 83 piecewise + 11 full-decode graphs, 1.24 GiB, captured in 9 s, server
+listening 2.5 min after launch. Probe (`analysis/results/latency/probe_qwen35_moe_cg1024/`, json key
+`qwen35_moe_cg1024`, n=32, d=150, ceiling + k=1.0):
+
+| step tokens | cg128 median ms | cg1024 median ms |
+|---|--:|--:|
+| <=128 | 14.7 | 14.7 |
+| 129-256 | 38.3 | 16.8 |
+| 257-512 | 35.8 | 18.7 |
+| 513-1024 | 40.3 | 23.3 |
+| 1025-2048 | 47.5 | 37.0 (still eager) |
+
+| dataset | Crit. Lat. cg128 -> cg1024 | last-band correction | chunk wait | last chunk -> FT | Full-res TTFT |
+|---|--:|--:|--:|--:|--:|
+| RealWorldQA | 50.8 -> 33.8 (0.64x -> 0.43x) | 12.5 / 12.7 | 1.2 / 1.3 | 37.2 -> 19.9 | 79.3 / 79.2 |
+| VisDrone Det | 46.0 -> 29.3 (0.68x -> 0.43x) | 8.6 / 8.5 | 1.0 / 1.1 | 36.3 -> 19.3 | 67.8 / 67.9 |
+| V*Bench | 75.9 -> 62.8 (0.41x -> 0.33x) | 34.5 / 34.3 | 2.3 / 2.6 | 39.0 -> 25.5 | 186.5 / 187.8 |
+
+Only the engine span moved; correction, transfer and the one-shot ceiling (prompt > 1024 tokens,
+still eager) are unchanged, so the whole 17 ms is the eager-launch overhead of a 27-layer MoE
+step and the remaining ~20 ms is the prefill step (17-23) plus the first decode step (3.7). The
+table keeps the cg128 numbers; re-measuring the table under 1024 (and 122B, where the 64 limit
+leaves every chunk step eager) needs a go -- costs 1.2 GiB of graph memory and startup time only.
+
+### keep<1 (Ours 50/25%) latency cells under the deferred pscore + 150 ms rule (2026-09-09, go)
+
+Same probe, keep 0.50/0.25, two passes per model: d=0 (`total_k*`, Lat.) and d=150 (`k*`, Crit.
+Lat.), `analysis/results/latency/probe_qwen35_{moe,122b}_klt1_d{0,150}/`. 35B (n=36; k=1.0 for
+reference):
+
+| dataset | Lat. k1 / k0.5 / k0.25 | Crit. k1 / k0.5 / k0.25 | last-band corr. k1 / k0.5 / k0.25 | last chunk->FT k1 / k0.5 / k0.25 |
+|---|---|---|---|---|
+| VisDrone Det | 121.5 / 166.5 / 168.4 | 46.0 / 45.7 / 44.9 | 8.6 / 7.3 / 7.3 | 36.3 / 36.8 / 36.3 |
+| VisDrone Count | 125.4 / 163.3 / 169.8 | 46.3 / 46.8 / 46.4 | 8.8 / 7.7 / 7.1 | 36.3 / 37.7 / 37.5 |
+| V*Bench | 388.9 / 607.7 / 580.9 | 75.9 / 67.0 / 56.9 | 34.5 / 23.1 / 13.7 | 39.0 / 41.1 / 40.4 |
+| TextVQA | 113.8 / 158.4 / 149.7 | 45.9 / 48.8 / 51.3 | 7.1 / 7.6 / 7.8 | 37.9 / 39.9 / 42.3 |
+| RefCOCO | 81.1 / 103.1 / 100.5 | 22.8 / 27.5 / 27.8 | 6.1 / 7.4 / 7.9 | 15.7 / 17.6 / 16.5 |
+| RealWorldQA | 173.0 / 200.1 / 201.8 | 50.8 / 53.8 / 49.1 | 12.5 / 10.3 / 7.4 | 37.2 / 39.8 / 39.1 |
+| ChartQA | 89.5 / 107.4 / 125.6 | 47.3 / 50.0 / 50.7 | 7.0 / 7.3 / 7.7 | 39.3 / 40.4 / 41.0 |
+| MMVP | 61.1 / 61.3 / 63.1 | 21.2 / 24.1 / 24.9 | 6.4 / 7.1 / 6.9 | 14.1 / 15.4 / 15.3 |
+| CV-Bench | 91.7 / 103.8 / 121.5 | 45.8 / 45.6 / 45.2 | 7.6 / 7.6 / 7.5 | 36.9 / 36.7 / 36.7 |
+| VSR | 80.9 / 97.0 / 96.8 | 23.1 / 25.1 / 23.2 | 6.7 / 7.7 / 6.9 | 15.5 / 15.6 / 15.1 |
+
+Reading: Crit. Lat. at keep<1 equals keep=1.0 within +-3 ms (the last band corrects fewer rows,
+but its correction is already only 6-9 ms at ~250 tokens and the prefill step is the same size);
+only V* (830-token bands) drops with keep (34 -> 23 -> 14 ms correction). Lat. is 20-45 ms
+higher than keep=1.0 (V*: +190/+220) because the deferred received-attention score pass runs
+after push 0 on the serialized path (`t_vision` 68 -> 100 on VisDrone) -- keep<1 buys FLOPs, not
+first-token time, on this axis. The stale `stale_issue_anchor` entries stay in the json for the
+record.
+
+122B-FP8 (n=36, same probe; server listened 15.4 min after launch):
+
+| dataset | Lat. k1 / k0.5 / k0.25 | Crit. k1 / k0.5 / k0.25 | last-band corr. k1 / k0.5 / k0.25 | last chunk->FT k1 / k0.5 / k0.25 |
+|---|---|---|---|---|
+| VisDrone Det | 192.2 / 213.9 / 213.0 | 57.1 / 60.3 / 58.3 | 8.6 / 7.3 / 7.6 | 47.9 / 50.0 / 48.5 |
+| VisDrone Count | 192.6 / 215.5 / 214.6 | 58.3 / 58.7 / 59.0 | 8.6 / 8.3 / 7.8 | 48.0 / 48.8 / 49.2 |
+| V*Bench | 531.9 / 760.2 / 717.7 | 102.0 / 92.7 / 80.4 | 34.6 / 23.8 / 14.4 | 64.1 / 64.6 / 63.2 |
+| TextVQA | 135.0 / 196.5 / 191.8 | 60.1 / 57.9 / 58.9 | 7.4 / 7.5 / 7.0 | 51.0 / 48.9 / 49.7 |
+| RefCOCO | 119.0 / 119.3 / 125.4 | 58.5 / 59.5 / 58.9 | 6.8 / 7.1 / 7.5 | 50.3 / 50.9 / 49.7 |
+| RealWorldQA | 233.3 / 306.6 / 296.7 | 64.7 / 61.0 / 61.0 | 12.9 / 8.9 / 8.4 | 50.1 / 50.1 / 49.9 |
+| ChartQA | 120.5 / 130.2 / 134.0 | 60.3 / 58.4 / 58.7 | 6.9 / 7.5 / 7.7 | 51.8 / 50.2 / 50.1 |
+
+Same picture as 35B: Crit. Lat. is keep-independent (+-3 ms) except V* (102 -> 93 -> 80 from the
+830-token band's correction), and on 122B the window is dominated by the ~50 ms eager chunk step
+(capture limit 64 at `--max-num-seqs 32`), so the capture-limit lever above is worth more here.
+Lat. carries the deferred score pass (+20-70 ms; V* +190-230). Table cells regenerated
+(`analysis/results/latency_table_20260909.tex`), mirrored to AppCorr-qwen35-eval.

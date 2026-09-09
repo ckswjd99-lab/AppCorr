@@ -74,20 +74,35 @@ class QwenVLStreamingAxis(nn.Module):
         self.correct_rows_only = True
         self.positions_mode = "fast"
         self.image_embeds_with_sink = False
+        # keep<1 selection score: True = the attention term is computed after the first band's
+        # push (band 0 selects on the residual-energy hint alone), False = the eager score
+        # (attention before band 0; the arms measured up to 2026-09-09). See streaming_forward.
+        self.pscore_defer = True
 
     # --- per-model hooks (subclasses) ----------------------------------------------------------- #
 
     def _make_tower(self, model: nn.Module) -> nn.Module:
         raise NotImplementedError
 
+    # Whether the tower can stash the base pass's queries and compute the received-attention
+    # term of the selection score later (`_attn_layermean_deferred`). Off = the eager path: the
+    # score is complete before the first band and delays the first push by the whole column
+    # sum (60 ms on the 35B RWQA probe, O(T^2) memory traffic over 27 layers).
+    supports_deferred_pscore = False
+
     def _approx_base(self, ctx_base: Dict[str, Any], cache: Dict[str, Any],
-                     collect_attn: bool) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Full-depth approx of the base image; with `collect_attn`, also leave the per-row
-        received-attention mean where `_attn_layermean` finds it."""
+                     collect_attn) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Full-depth approx of the base image; with `collect_attn` True, also leave the per-row
+        received-attention mean where `_attn_layermean` finds it; with "defer" (only where
+        `supports_deferred_pscore`), leave what `_attn_layermean_deferred` needs instead."""
         raise NotImplementedError
 
     def _attn_layermean(self, cache: Dict[str, Any]) -> torch.Tensor:
         """[n_rows] received-attention mean, in the tower's row order."""
+        raise NotImplementedError
+
+    def _attn_layermean_deferred(self, cache: Dict[str, Any], ctx_base: Dict[str, Any]) -> torch.Tensor:
+        """The same vector as `_attn_layermean`, computed now from what a deferred base pass left."""
         raise NotImplementedError
 
     def _rows_of_groups(self, ctx: Dict[str, Any], group_idx: torch.Tensor) -> torch.Tensor:
@@ -252,6 +267,16 @@ class QwenVLStreamingAxis(nn.Module):
                 duplicate). Unselected tokens enter the LLM at their approximate reconstruction
                 and, this being streaming, are never revisited -- that permanence is the knob's
                 cost, and what the accuracy arms price.
+                With `pscore_defer` (default where the tower supports it) the attention column
+                sum runs AFTER the first band's push instead of inside the base pass: band 0
+                selects on the energy hint alone, bands 1.. on energy x attention. The budget,
+                the quota split and the per-band ranking are unchanged (the score's global
+                normalisations are per-request scalars, so the within-band ranking never
+                depended on them); only band 0's ranking differs from the eager arm. Motivation:
+                the sum is O(T^2) memory traffic over every layer, excluded from the FLOP columns
+                (`PSCORE`), yet it sat on the first push's critical path -- +63 ms of first-push
+                latency on the 35B RWQA probe, and with the engine's per-step floor that became
+                the whole keep<1 vs keep=1 TTFT gap (2026-09-09).
             sink: optional `StreamSink`. When given, every chunk goes to the vLLM server instead of
                 the in-process HF model and the return is `(None, None, stats)`; read the answer
                 from `sink.result()`.
@@ -291,12 +316,15 @@ class QwenVLStreamingAxis(nn.Module):
             n_groups_total = n_rows // unit
             if n_tok != n_groups_total:
                 raise ValueError(f"{n_tok} image tokens vs {n_groups_total} merge groups")
+            defer = keep < 1.0 and self.pscore_defer and self.supports_deferred_pscore
             with self._stage("vision_base"):
-                x_base_out, cache = self._approx_base(ctx_base, cache, collect_attn=(keep < 1.0))
+                x_base_out, cache = self._approx_base(
+                    ctx_base, cache, collect_attn=("defer" if defer else keep < 1.0))
 
         emb_all = self.lm.embed_tokens(ids)
         bands = self._bands(groups, n_groups_total)
-        stats = {"prefill_tokens": 0, "corrected_groups": 0, "chunks": []}  # decode_start_pos added below
+        stats = {"prefill_tokens": 0, "corrected_groups": 0, "chunks": [],
+                 "group_idx": []}  # decode_start_pos added below
 
         pos_3d, rope_delta = self._positions(inputs, image_run=(lo, n_tok), grid_thw=grid_thw)
         # Where a decode loop on top of the returned cache must continue from: stock advances all
@@ -313,10 +341,15 @@ class QwenVLStreamingAxis(nn.Module):
             # in the tower's row order and is gathered into group order through `rows_all`.
             resid = (px_full.float() - px_base.float()).pow(2).mean(dim=-1)      # [n_rows]
             energy = resid.reshape(n_groups_total, unit).mean(dim=1)
-            attn = self._attn_layermean(cache).to(energy.device)
-            attn = attn[rows_all.to(attn.device)].reshape(n_groups_total, unit).mean(dim=1)
-            score = ((energy / energy.mean().clamp_min(1e-12))
-                     * (attn / attn.mean().clamp_min(1e-12)))
+            energy = energy / energy.mean().clamp_min(1e-12)
+
+            def attn_term(vec: torch.Tensor) -> torch.Tensor:
+                vec = vec.to(energy.device)
+                vec = vec[rows_all.to(vec.device)].reshape(n_groups_total, unit).mean(dim=1)
+                return vec / vec.mean().clamp_min(1e-12)
+
+            # Deferred: band 0 ranks on the energy hint; the attention term joins after push 0.
+            score = energy if defer else energy * attn_term(self._attn_layermean(cache))
             n_sel = max(1, int(round(keep * n_groups_total)))
             quota = [n_sel // groups + (1 if r_ < n_sel % groups else 0) for r_ in range(groups)]
             selected = torch.zeros(n_groups_total, dtype=torch.bool, device=score.device)
@@ -353,11 +386,19 @@ class QwenVLStreamingAxis(nn.Module):
             arrived_rows = torch.zeros(n_rows, dtype=torch.bool, device=dev)
         last_arrival = 0
         last_band = max(r for r, (g0, g1) in enumerate(bands) if g1 > g0)
+        pscore_pending = keep < 1.0 and defer
         for r, (g0, g1) in enumerate(bands):
             if g1 <= g0:
                 continue
             last_arrival = r + 1
             with self._arrival(last_arrival):
+                if pscore_pending and pos_done > 0:
+                    # First band is out: complete the score for the bands still to be selected.
+                    # PSCORE stage = the FLOP counter's excluded scope (a bare column sum the
+                    # hooks never saw anyway; the label keeps the split honest if that changes).
+                    with self._stage("PSCORE"):
+                        score = energy * attn_term(self._attn_layermean_deferred(cache, ctx_base))
+                    pscore_pending = False
                 band_groups = torch.arange(g0, g1, device=dev)
                 band_rows_idx = self._rows_of_groups(ctx_full, band_groups)
                 if not rows_only:
@@ -394,6 +435,7 @@ class QwenVLStreamingAxis(nn.Module):
                                                                     len(self.tower.blocks), ctx_full,
                                                                     cache, "v")
                 stats["corrected_groups"] += int(group_idx.numel()) if keep < 1.0 else (g1 - g0)
+                stats["group_idx"].append(group_idx)  # device tensors, no sync (gates read them)
                 # Merge ONLY this band. The merger is per-merge-group (norm -> reshape(unit) ->
                 # MLP), so slicing at group granularity is exact. Under keep<1, UNCORRECTED rows
                 # take the PURE approx output -- the same convention gemma3's progressive walk
@@ -432,6 +474,8 @@ class QwenVLStreamingAxis(nn.Module):
         assert pos_done == seq, (pos_done, seq)
         stats["decode_start_pos"] = stats_decode_pos
         stats["rope_delta"] = rope_delta
+        if keep < 1.0:
+            stats["pscore"] = "deferred" if defer else "eager"
         # The image-row embeddings the LLM actually consumed, for feature-space gating. Task
         # metrics are not monotone in fidelity (the interleaved contract says this in as many
         # words), and Qwen3.5's first generated token is CoT boilerplate that ignores the image

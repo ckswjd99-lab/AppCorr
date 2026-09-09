@@ -68,6 +68,32 @@ class StreamServer:
         self.conns: dict[socket.socket, _Conn] = {}
         self.reqs: dict[str, _Req] = {}
         self.n_done = 0
+        # Diagnostics (off unless the env vars are set; the 2026-09-09 critical-latency analysis).
+        # APPCORR_SERVER_TRACE=<file>: one JSON line per handled chunk frame and per engine step
+        # (server perf_counter, comparable with the driver's -- same host, CLOCK_MONOTONIC).
+        # APPCORR_STEP_PROFILE=<dir>:<first_step>:<count>[,<first>:<count>...]: torch.profiler per
+        # engine step over those windows -> <dir>/steps.jsonl (wall vs summed CUDA kernel time,
+        # top kernels). Profiled steps are slower than unprofiled ones: read the wall from the
+        # trace outside the windows, the GPU/CPU split from inside them.
+        self._trace = None
+        tp = os.environ.get("APPCORR_SERVER_TRACE")
+        if tp:
+            self._trace = open(tp, "a", buffering=1)
+        self._n_steps = 0
+        self._prof = None
+        self._prof_window = None
+        pw = os.environ.get("APPCORR_STEP_PROFILE")
+        if pw:
+            d, spec = pw.split(":", 1)
+            os.makedirs(d, exist_ok=True)
+            self._prof_window = (d, [tuple(int(v) for v in w.split(":")) for w in spec.split(",")])
+        self._last_step_info = None
+
+    def _tr(self, ev: str, **kw):
+        if self._trace is not None:
+            import json
+            kw["ev"] = ev
+            self._trace.write(json.dumps(kw) + "\n")
 
     # -- socket plumbing ----------------------------------------------------------------------
     def _accept(self):
@@ -175,6 +201,7 @@ class StreamServer:
         if final:
             r.t_final = t
         self._reply(c, Frame({"ok": True, "t_recv": t, "num_prompt_tokens": r.n_prompt}))
+        self._tr("chunk", t=t, rid=rid, op=op, n=chunk.num_tokens, final=final, n_prompt=r.n_prompt)
 
     def _check_len(self, rid: str, n_prompt: int, max_tokens: int) -> None:
         cap = self.llm.max_model_len
@@ -211,12 +238,40 @@ class StreamServer:
 
     # -- loop ---------------------------------------------------------------------------------
     def _step(self):
-        for o in self.llm.step():
+        live = [rid for rid, r in self.reqs.items() if not r.finished]
+        before = {rid: (self.llm.stream_state(rid) or {}).get("num_computed_tokens", 0) for rid in live} \
+            if (self._trace is not None or self._prof_window is not None) else None
+        if self._prof_window is not None:
+            self._prof_step_begin()
+        t0 = time.perf_counter()
+        outs = self.llm.step()
+        t1 = time.perf_counter()
+        firsts, dones = [], []
+        for o in outs:
             r = self.reqs.get(o.request_id)
             if r is None:
                 continue
             if r.t_first is None and o.outputs and len(o.outputs[0].token_ids) >= 1:
                 r.t_first = time.perf_counter()
+                firsts.append(o.request_id)
+            if o.finished:
+                dones.append(o.request_id)
+        if before is not None:
+            comp = {}
+            for rid in live:
+                st = self.llm.stream_state(rid) or {}
+                comp[rid] = (before[rid], st.get("num_computed_tokens", before[rid]), st.get("num_prompt_tokens"))
+            info = {"step": self._n_steps, "t0": t0, "ms": (t1 - t0) * 1e3, "computed": comp,
+                    "first": firsts, "done": dones}
+            self._last_step_info = info
+            self._tr("step", **info)
+        self._n_steps += 1
+        if self._prof_window is not None:
+            self._prof_step_end()
+        for o in outs:
+            r = self.reqs.get(o.request_id)
+            if r is None:
+                continue
             if o.finished:
                 r.finished = True
                 r.t_done = time.perf_counter()
@@ -226,6 +281,39 @@ class StreamServer:
                     w, r.waiter = r.waiter, None
                     if w.sock in self.conns:
                         self._send_result(w, r)
+
+    # -- per-step profiler window (diagnostic) --------------------------------------------------
+    def _prof_step_begin(self):
+        d, windows = self._prof_window
+        if self._prof is None and any(f <= self._n_steps < f + n for f, n in windows):
+            from torch.profiler import ProfilerActivity, profile
+            self._prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
+            self._prof.__enter__()
+
+    def _prof_step_end(self):
+        if self._prof is None:
+            return
+        import json
+        d, _ = self._prof_window
+        self._prof.__exit__(None, None, None)
+        torch.cuda.synchronize()
+        ka = self._prof.key_averages()
+        cuda_ms = sum(getattr(e, "self_device_time_total", getattr(e, "self_cuda_time_total", 0.0))
+                      for e in ka) / 1e3
+        top = sorted(ka, key=lambda e: -getattr(e, "self_device_time_total",
+                                                 getattr(e, "self_cuda_time_total", 0.0)))[:12]
+        info = dict(self._last_step_info or {})
+        info.update({"cuda_ms": cuda_ms,
+                     "n_kernels": sum(e.count for e in ka
+                                      if getattr(e, "self_device_time_total",
+                                                 getattr(e, "self_cuda_time_total", 0.0)) > 0),
+                     "top": [(e.key[:60], e.count,
+                              round(getattr(e, "self_device_time_total",
+                                            getattr(e, "self_cuda_time_total", 0.0)) / 1e3, 3))
+                             for e in top]})
+        with open(os.path.join(d, "steps.jsonl"), "a") as fh:
+            fh.write(json.dumps(info) + "\n")
+        self._prof = None
 
     def serve_forever(self):
         print(f"[server] {self.llm.model_name} (vllm {self.llm.vllm_version}) listening on "
@@ -247,7 +335,11 @@ class StreamServer:
                     self._drop(c)
                     continue
                 for f in c.parser.feed(data):
+                    th = time.perf_counter()
                     self._handle(c, f)
+                    if self._trace is not None:
+                        self._tr("handle", t=th, op=f.header.get("op"), rid=f.header.get("rid"),
+                                 ms=(time.perf_counter() - th) * 1e3)
             if any(not r.finished for r in self.reqs.values()):
                 self._step()
 
@@ -266,6 +358,17 @@ def main():
                          "the 122B-FP8 trtllm MoE workspace for one 15.5k-token prefill exceeded "
                          "the ~31 GiB left beside a 48.9 GiB KV cache (OOM, 2026-09-08). 8192 "
                          "keeps the per-step activation at the size the 8192-max-len runs proved")
+    ap.add_argument("--moe-backend", default=None,
+                    help="vLLM MoE kernel backend (auto | triton | flashinfer_trtllm | "
+                         "flashinfer_cutlass | batched_triton). The auto pick on B200 for "
+                         "Qwen3.5 bf16 is FlashInfer TRTLLM, whose prefill step costs ~35 ms "
+                         "flat from ~130 to ~1400 tokens (2026-09-09 critical-latency probe)")
+    ap.add_argument("--max-cudagraph-capture-size", type=int, default=None,
+                    help="largest token count a captured CUDA graph covers. vLLM defaults it to "
+                         "2 x max_num_seqs (128 at --max-num-seqs 64), so every chunk prefill step "
+                         "above that runs eager: 35B steps of 128..850 tokens cost 35-39 ms flat "
+                         "vs 15-16 ms for graph replay at <=128 tokens (2026-09-09 trace). 1024 "
+                         "(the Blackwell default cap) covers every g=4 band of the table's datasets")
     a = ap.parse_args()
     os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
     from .client import StreamingLLM
@@ -274,6 +377,10 @@ def main():
         kw["max_num_seqs"] = a.max_num_seqs
     if a.max_num_batched_tokens:
         kw["max_num_batched_tokens"] = a.max_num_batched_tokens
+    if a.moe_backend:
+        kw["moe_backend"] = a.moe_backend
+    if a.max_cudagraph_capture_size:
+        kw["compilation_config"] = {"max_cudagraph_capture_size": a.max_cudagraph_capture_size}
     llm = StreamingLLM(a.model, gpu_memory_utilization=a.gpu_mem, max_model_len=a.max_model_len,
                        enforce_eager=a.enforce_eager, **kw)
     StreamServer(llm, a.host, a.port).serve_forever()

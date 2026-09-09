@@ -123,8 +123,9 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
 
     def approx_forward(self, x_feature: torch.Tensor, start_l: int, end_l: int, ctx: Dict[str, Any],
                        cache_feature: Dict[str, Any], tag_prefix: str,
-                       collect_attn_mean: bool = False) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Runs blocks[start_l:end_l] in approx mode."""
+                       collect_attn_mean=False) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Runs blocks[start_l:end_l] in approx mode. `collect_attn_mean`: False | True | "defer"
+        (see `attention.approx`)."""
         for i in range(start_l, end_l):
             x_feature, cache_feature = self.blocks[i].approx(
                 x_feature, ctx["segment_ranges"], ctx["position_embeddings"],
@@ -211,6 +212,17 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
                 cache_feature, tag=f"{tag_prefix}_layer{i}", plan=plan, span=span,
             )
         return x_rows, cache_feature
+
+    def deferred_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str,
+                                n_layers: int, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """Turn the queries an `approx_forward(..., collect_attn_mean="defer")` stashed into the
+        per-layer received-attention vectors and their layer mean -- the eager path's result,
+        computed when the caller can afford it (the streaming axis: after the first band left)."""
+        for i in range(n_layers):
+            tag = f"{tag_prefix}_layer{i}"
+            cache_feature[f"{tag}_attn_mean"] = self.blocks[i].attn.received_attention_from_cache(
+                cache_feature, tag, ctx["segment_ranges"])
+        return self.finalize_attn_layermean(cache_feature, tag_prefix, n_layers)
 
     def finalize_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str,
                                 n_layers: int) -> Dict[str, Any]:

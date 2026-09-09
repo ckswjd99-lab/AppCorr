@@ -51,7 +51,7 @@ class ApproxCorrectQwen35VisionBlock(nn.Module):
         return x
 
     def approx(self, x: torch.Tensor, segment_ranges, position_embeddings,
-               cache_feature: Dict[str, Any], tag: str, collect_attn_mean: bool = False):
+               cache_feature: Dict[str, Any], tag: str, collect_attn_mean=False):
         x_attn, cache_feature = self.attn.approx(
             self.norm1(x), segment_ranges, position_embeddings, cache_feature, tag,
             collect_attn_mean=collect_attn_mean,
