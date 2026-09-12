@@ -1,0 +1,311 @@
+{
+ "_model": "tiny-glm46v",
+ "_family": "glm46v",
+ "_groups": 4,
+ "_source": "synthetic patches, grid 8x12",
+ "rows": [
+  {
+   "keep": 1.0,
+   "groups": 4,
+   "seq": 32,
+   "image_run": [
+    3,
+    24
+   ],
+   "streaming_chunks": [
+    [
+     0,
+     9
+    ],
+    [
+     9,
+     15
+    ],
+    [
+     15,
+     21
+    ],
+    [
+     21,
+     32
+    ]
+   ],
+   "interleaved_chunks": [
+    [
+     "approx",
+     0,
+     31
+    ],
+    [
+     "correct",
+     3,
+     9,
+     6
+    ],
+    [
+     "correct",
+     9,
+     15,
+     6
+    ],
+    [
+     "correct",
+     15,
+     21,
+     6
+    ],
+    [
+     "correct",
+     21,
+     31,
+     10
+    ]
+   ],
+   "prefill_tokens": {
+    "streaming": 32,
+    "interleaved": 59
+   },
+   "corrected_groups": {
+    "streaming": 24,
+    "interleaved": 24
+   },
+   "bitwise_equal": true,
+   "n_positions_differing": 0,
+   "max_abs_diff": 0.0,
+   "rel_l2": 0.0,
+   "approx_push": {
+    "kind": "push",
+    "n": 32,
+    "final": false
+   },
+   "approx_image_rows_bitwise": true,
+   "approx_image_rows_max_abs": 0.0,
+   "n_messages": 5,
+   "n_correct": 4,
+   "correct_messages": [
+    {
+     "window": [
+      3,
+      9
+     ],
+     "n": 6,
+     "n_img": 6,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      9,
+      15
+     ],
+     "n": 6,
+     "n_img": 6,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      15,
+      21
+     ],
+     "n": 6,
+     "n_img": 6,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      21,
+      31
+     ],
+     "n": 10,
+     "n_img": 6,
+     "n_text": 4,
+     "final": true,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    }
+   ],
+   "ok_structure": true,
+   "same_selection": true,
+   "pscore": {
+    "streaming": null,
+    "interleaved": null
+   },
+   "same_pscore": true,
+   "n_selected": 24,
+   "coverage_ok": true,
+   "PASS": true
+  },
+  {
+   "keep": 0.5,
+   "groups": 4,
+   "seq": 32,
+   "image_run": [
+    3,
+    24
+   ],
+   "streaming_chunks": [
+    [
+     0,
+     9
+    ],
+    [
+     9,
+     15
+    ],
+    [
+     15,
+     21
+    ],
+    [
+     21,
+     32
+    ]
+   ],
+   "interleaved_chunks": [
+    [
+     "approx",
+     0,
+     31
+    ],
+    [
+     "correct",
+     3,
+     9,
+     3
+    ],
+    [
+     "correct",
+     9,
+     15,
+     3
+    ],
+    [
+     "correct",
+     15,
+     21,
+     3
+    ],
+    [
+     "correct",
+     21,
+     31,
+     7
+    ]
+   ],
+   "prefill_tokens": {
+    "streaming": 32,
+    "interleaved": 47
+   },
+   "corrected_groups": {
+    "streaming": 12,
+    "interleaved": 12
+   },
+   "bitwise_equal": true,
+   "n_positions_differing": 0,
+   "max_abs_diff": 0.0,
+   "rel_l2": 0.0,
+   "approx_push": {
+    "kind": "push",
+    "n": 32,
+    "final": false
+   },
+   "approx_image_rows_bitwise": true,
+   "approx_image_rows_max_abs": 0.0,
+   "n_messages": 5,
+   "n_correct": 4,
+   "correct_messages": [
+    {
+     "window": [
+      3,
+      9
+     ],
+     "n": 3,
+     "n_img": 3,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      9,
+      15
+     ],
+     "n": 3,
+     "n_img": 3,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      15,
+      21
+     ],
+     "n": 3,
+     "n_img": 3,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      21,
+      31
+     ],
+     "n": 7,
+     "n_img": 3,
+     "n_text": 4,
+     "final": true,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    }
+   ],
+   "ok_structure": true,
+   "same_selection": true,
+   "pscore": {
+    "streaming": "deferred",
+    "interleaved": "deferred"
+   },
+   "same_pscore": true,
+   "n_selected": 12,
+   "coverage_ok": true,
+   "PASS": true
+  }
+ ],
+ "PASS": true
+}
