@@ -74,6 +74,20 @@ QWEN35_PYR_ROWS = {"RefCOCO val (Acc.@0.5)": ("refcoco", "ok"),
                    "VisDrone Det (Acc.@0.5)":     ("visdrone_det", "ok"),
                    "VisDrone Det (mIoU)":         ("visdrone_det", "val")}
 
+# Box-filter Qwen3.5 rows (RealWorldQA / ChartQA / VSR / MMVP / CV-Bench): same jsonl schema
+# under analysis/results/qwen35_accuracy (35B: no slug; 122B: QWEN122B_SLUG). The LITERALS for
+# these rows are the same files' historical values; the loader wins for every complete arm, so a
+# re-measured arm (2026-09-09: keep<1 rows under the deferred patch score, eager files parked in
+# _eager_pscore_20260909/) replaces its literal without a hand edit.
+QWEN35_BOX_DIR = os.path.join(RESULTS, "qwen35_accuracy")
+QWEN35_BOX_EXPECTED = {"realworldqa": 765, "chartqa": 2500, "vsr": 1222, "mmvp": 300,
+                       "cvbench": 2638}
+QWEN35_BOX_ROWS = {"RealWorldQA (Acc.)":      ("realworldqa", "ok"),
+                   "ChartQA (Relaxed Acc.)":  ("chartqa", "ok"),
+                   "VSR zeroshot (Acc.)":     ("vsr", "ok"),
+                   "MMVP (Acc.)":             ("mmvp", "ok"),
+                   "CV-Bench (Acc.)":         ("cvbench", "ok")}
+
 # Muse Glimmer campaign jsonls (same schema, same driver family).
 MG_PYR_DIR = os.path.join(RESULTS, "museglimmer_accuracy_pyr")
 MG_PYR_EXPECTED = {"vstar": 191, "textvqa": 5000, "refcoco": 8811,
@@ -94,6 +108,7 @@ MG_PYR_ROWS = {"V*Bench (Acc.)":              ("vstar", "ok"),
 QWEN122B_DIR = os.path.join(RESULTS, "qwen35_122b_probe")
 QWEN122B_EXPECTED = {"refcoco": 240, "textvqa": 240}
 QWEN122B_SLUG = "_qwen3.5-122b-a10b-fp8"
+QWEN35_4B_SLUG = "_qwen3.5-4b"        # the driver's slug for Qwen/Qwen3.5-4B
 # 2026-09-08: the remaining 122B datasets run through the vLLM single-GPU form (AppCorr-vllm,
 # analysis/experiments/qwen_vllm_accuracy.py, --concurrency 4 -> "_c4" file suffix). Same vision
 # tower (bitwise, vision_only.py), same processor family and greedy rule; the engine's own kernel
@@ -118,6 +133,10 @@ def qwen35_pyr_lit(dataset: str, metric: str, slug: str = "",
                      ("k0.25", "streaming_g4_k0.25"), ("k0.50", "streaming_g4_k0.50"),
                      ("stream", "streaming_g4")):
         p = os.path.join(QWEN35_PYR_DIR_, f"{dataset}{slug}_{tag}{suffix}.jsonl")
+        if not os.path.exists(p) and suffix:
+            # the served campaigns added the "_c4" tail later than their bounds / k=1 arms
+            # (e.g. 122B RealWorldQA: floor / ceiling / streaming_g4 without it, k<1 with it)
+            p = os.path.join(QWEN35_PYR_DIR_, f"{dataset}{slug}_{tag}.jsonl")
         if not os.path.exists(p):
             continue
         rows = [json.loads(l) for l in open(p) if l.strip()]
@@ -175,6 +194,26 @@ SPEC = [
         ("VisDrone Count (Exact Acc.)", None, None),
         ("VisDrone Det (Acc.@0.5)",     None, None),
         ("V*Bench (Acc.)",              None, ("inproc", "qwen25vl_32b", "vstar")),
+    ]),
+    # Qwen3.5-4B (dense; the same 13 rows as the 35B block, same drivers with slug
+    # "_qwen3.5-4b"; added 2026-09-11, cells fill as the arms land)
+    ("Qwen3.5 (4B)$^\\dagger$", [
+        ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_4b", "chartqa")),
+        ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_4b", "realworldqa")),
+        ("VSR zeroshot (Acc.)",    None, ("inproc", "qwen35_4b", "vsr")),
+        ("MMVP (Acc.)",            None, ("inproc", "qwen35_4b", "mmvp")),
+        ("CV-Bench (Acc.)",        None, ("inproc", "qwen35_4b", "cvbench")),
+        # Resolution-sensitive track (2026-08-31, B200 box): accuracy is measured under the
+        # pyr filter (Option B) by qwen35_accuracy.py into qwen35_accuracy_pyr/ -- jsonl, not
+        # the {arm}.json layout, so cells stay "--" until a loader is wired. FLOPs n=12.
+        ("RefCOCO val (Acc.@0.5)", None, ("inproc", "qwen35_4b", "refcoco")),
+        ("RefCOCO val (mIoU)",     None, ("inproc", "qwen35_4b", "refcoco")),
+        ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_4b", "textvqa")),
+        ("VisDrone Count (Exact Acc.)", None, ("inproc", "qwen35_4b", "visdrone_count")),
+        ("VisDrone Count (Soft)",       None, ("inproc", "qwen35_4b", "visdrone_count")),
+        ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_4b", "visdrone_det")),
+        ("VisDrone Det (mIoU)",         None, ("inproc", "qwen35_4b", "visdrone_det")),
+        ("V*Bench (Acc.)",              None, ("inproc", "qwen35_4b", "vstar")),
     ]),
     ("Qwen3.5-MoE (35B-A3B)$^\\dagger$", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_moe", "chartqa")),
@@ -255,15 +294,24 @@ SPEC = [
     # finegrained-fp8 fallback (TRANSFORMERS_DISABLE_DEEPGEMM_LINEAR=1). Cells below are the
     # 2026-09-01 REDUCED-SCALE probe (n=240/arm, user-directed) via the QWEN122B_* loader; the
     # pilcrow footnote states both the fallback and the n. COMPUTE figures are shape-determined
-    # and kernel-independent (n=12, attention term included except chartqa -- see _note).
+    # and kernel-independent (n=12, attention term included, routed experts counted since the
+    # 2026-09-10 FP8Experts hook fix -- see _note; the pre-fix entry is qwen35_122b_prefix).
     ("Qwen3.5-MoE (122B-A10B FP8)$^\\dagger$\\textsuperscript{\\P}", [
         ("ChartQA (Relaxed Acc.)", None, ("inproc", "qwen35_122b", "chartqa")),
         ("RealWorldQA (Acc.)",     None, ("inproc", "qwen35_122b", "realworldqa")),
+        ("VSR zeroshot (Acc.)",    None, ("inproc", "qwen35_122b", "vsr")),
+        ("MMVP (Acc.)",            None, ("inproc", "qwen35_122b", "mmvp")),
+        ("CV-Bench (Acc.)",        None, ("inproc", "qwen35_122b", "cvbench")),
+        # Resolution-sensitive track (2026-08-31, B200 box): accuracy is measured under the
+        # pyr filter (Option B) by qwen35_accuracy.py into qwen35_accuracy_pyr/ -- jsonl, not
+        # the {arm}.json layout, so cells stay "--" until a loader is wired. FLOPs n=12.
         ("RefCOCO val (Acc.@0.5)", None, ("inproc", "qwen35_122b", "refcoco")),
         ("RefCOCO val (mIoU)",     None, ("inproc", "qwen35_122b", "refcoco")),
         ("TextVQA (VQA Acc.)",     None, ("inproc", "qwen35_122b", "textvqa")),
         ("VisDrone Count (Exact Acc.)", None, ("inproc", "qwen35_122b", "visdrone_count")),
+        ("VisDrone Count (Soft)",       None, ("inproc", "qwen35_122b", "visdrone_count")),
         ("VisDrone Det (Acc.@0.5)",     None, ("inproc", "qwen35_122b", "visdrone_det")),
+        ("VisDrone Det (mIoU)",         None, ("inproc", "qwen35_122b", "visdrone_det")),
         ("V*Bench (Acc.)",              None, ("inproc", "qwen35_122b", "vstar")),
     ]),
     # OpenVLA FLOPs (2026-09-07): AppCorr-openvla/analysis/experiments/flops_report_openvla.py,
@@ -335,7 +383,7 @@ SPEC = [
 # Presentation order (user, 2026-08-31): VFMs first, then the VLMs, then the VLA. Sorting here
 # instead of moving the literal blocks keeps each block's comments next to its rows.
 _ROW_ORDER = ["DINOv3", "SAM 3", "OpenCLIP", "VGGT-Omega", "Gemma 3", "Gemma 4", "LLaVA-OV2",
-              "Mistral Small", "Muse Glimmer", "Qwen2.5-VL", "Qwen3.5-MoE (35B",
+              "Mistral Small", "Muse Glimmer", "Qwen2.5-VL", "Qwen3.5 (4B", "Qwen3.5-MoE (35B",
               "Qwen3.5-MoE (122B", "OpenVLA"]
 
 
@@ -752,13 +800,41 @@ def build_rows(keeps, groups: int, latency: bool = False):
             if base_model == "Qwen3.5-MoE (35B-A3B)" and label in QWEN35_PYR_ROWS:
                 ds_name, metric = QWEN35_PYR_ROWS[label]
                 lit = {**lit, **qwen35_pyr_lit(ds_name, metric)}
+            if base_model == "Qwen3.5-MoE (35B-A3B)" and label in QWEN35_BOX_ROWS:
+                ds_name, metric = QWEN35_BOX_ROWS[label]
+                lit = {**lit, **qwen35_pyr_lit(ds_name, metric, dir_=QWEN35_BOX_DIR,
+                                               expected=QWEN35_BOX_EXPECTED)}
+            if base_model == "Qwen3.5 (4B)" and label in QWEN35_PYR_ROWS:
+                ds_name, metric = QWEN35_PYR_ROWS[label]
+                lit = {**lit, **qwen35_pyr_lit(ds_name, metric, slug=QWEN35_4B_SLUG)}
+            if base_model == "Qwen3.5 (4B)" and label in QWEN35_BOX_ROWS:
+                ds_name, metric = QWEN35_BOX_ROWS[label]
+                lit = {**lit, **qwen35_pyr_lit(ds_name, metric, slug=QWEN35_4B_SLUG,
+                                               dir_=QWEN35_BOX_DIR, expected=QWEN35_BOX_EXPECTED)}
+            if base_model.startswith("Qwen3.5-MoE (122B") and label in QWEN35_BOX_ROWS \
+                    and label not in ("RealWorldQA (Acc.)", "ChartQA (Relaxed Acc.)"):
+                # VSR / MMVP / CV-Bench (added 2026-09-11): the vLLM form ("_c4") or the HF box
+                # chain, whichever has landed; the HF value wins where both exist.
+                ds_name, metric = QWEN35_BOX_ROWS[label]
+                lit = {**lit,
+                       **qwen35_pyr_lit(ds_name, metric, slug=QWEN122B_SLUG,
+                                        dir_=QWEN122B_VLLM_DIR, expected=QWEN35_BOX_EXPECTED,
+                                        suffix=QWEN122B_VLLM_SUFFIX),
+                       **qwen35_pyr_lit(ds_name, metric, slug=QWEN122B_SLUG, dir_=QWEN35_BOX_DIR,
+                                        expected=QWEN35_BOX_EXPECTED)}
             if base_model.startswith("Qwen3.5-MoE (122B") and label == "RealWorldQA (Acc.)":
                 # Full split (765), 2026-09-08 GPU0 chain (q122b_rwqa_*.log): same dir, filter
                 # (box) and greedy loop as the 35B RealWorldQA literals, so the cells render
                 # normally. Streaming ran with the Triton finegrained-fp8 fallback like the probe.
-                lit = {**lit, **qwen35_pyr_lit("realworldqa", "ok", slug=QWEN122B_SLUG,
-                                               dir_=os.path.join(RESULTS, "qwen35_accuracy"),
-                                               expected={"realworldqa": 765})}
+                # keep<1 arms (2026-09-09, deferred patch score) ran through the vLLM form into
+                # qwen_vllm_accuracy/ ("_c4"); the HF chain's bounds and keep=1 arm win where
+                # both exist (the vLLM bounds are the engine-band gate copies).
+                lit = {**lit,
+                       **qwen35_pyr_lit("realworldqa", "ok", slug=QWEN122B_SLUG,
+                                        dir_=QWEN122B_VLLM_DIR, expected={"realworldqa": 765},
+                                        suffix=QWEN122B_VLLM_SUFFIX),
+                       **qwen35_pyr_lit("realworldqa", "ok", slug=QWEN122B_SLUG,
+                                        dir_=QWEN35_BOX_DIR, expected={"realworldqa": 765})}
             if base_model.startswith("Qwen3.5-MoE (122B") and label == "ChartQA (Relaxed Acc.)":
                 # vLLM form, box filter (the ChartQA convention of every other Qwen3.5 row).
                 lit = {**lit, **qwen35_pyr_lit("chartqa", "ok", slug=QWEN122B_SLUG,
@@ -957,40 +1033,23 @@ def emit_latex(table, keeps, latency: bool = False) -> str:
     L.append(r"% requires \usepackage[table]{xcolor} in the preamble (for \cellcolor)")
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
-    L.append(r"\caption{Evaluation Results across Different Configurations. Crit.\ Comp.\ is "
-             r"backbone prefill FLOPs per instruction that can only begin once the whole image has "
-             r"arrived (decode excluded); Comp.\ is the arm's total backbone compute including "
-             r"work overlapped with transmission. Parentheses give the ratio to the Full-res.\ "
-             r"computation. " + lat_sent +
-             r"Ours uses interleaved $g{=}4$; shaded Ours and Streaming accuracy "
-             r"cells retain $\geq$98\% of the Full-res.\ accuracy. "
-             r"The Streaming (k$=$1.0) block is the causal-LLM category: the LLM prefills exactly "
-             r"once in arrival-order chunks while the vision encoder corrects everything "
-             r"progressively -- total $\approx$ full + one vision pass, critical $\approx 1/g$. "
-             r"Only causal models qualify (Gemma 3's image tokens are bidirectional; VFMs have no "
-             r"LLM). $^\dagger$Qwen3.5's Ours columns are keep-limited STREAMING arms (band-wise "
-             r"top-$k$ selection), not interleaved correction. "
-             r"$^\ddagger$Gemma 3, LLaVA-OV2 and Mistral compute figures are from the progressive "
-             r"per-round selection arm (2026-08-26); accuracy cells are the progressive arm's "
-             r"where re-measured (2026-08-28 sweep; Mistral: the 50\% cells of RefCOCO, TextVQA and VisDrone) and the "
-             r"earlier upfront (Mistral: one-shot corrected) arm's otherwise. "
-             r"$^\S$Qwen2.5 ours ran at batch size 1 against batch-16 bounds "
-             r"(measured equivalent); the 25\% arm excludes 8/8811 images (0.09\%, a since-fixed "
-             r"driver defect) with bounds restricted to the same kept set -- the 50\% arm has "
-             r"full coverage. \textsuperscript{\P}122B-FP8 runs under the Triton finegrained-fp8 "
-             r"fallback (the DeepGEMM path mis-generates on sm\_100). Its PARENTHESIZED, unshaded "
-             r"accuracy cells are a reduced-scale probe (n$=$240 per arm) and must not be compared "
-             r"1:1 against full-split cells; unparenthesized 122B cells are full-split values "
-             r"(RealWorldQA, VisDrone Count, V*Bench in-process; VisDrone Det, TextVQA, RefCOCO and "
-             r"ChartQA through a vLLM 0.28 FP8 engine fed by the same vision tower, whose "
-             r"prediction-level agreement with the in-process path is 96--99\% on all arms alike). "
-             r"Compute figures are shape-determined and kernel-independent. $\diamond$: the model is not capable of the task itself (floor $\approx$ ceiling at degenerate accuracy), so these rows carry no signal about the method. "
-             r"$^\ast$OpenVLA Streaming corrects cumulatively (every patch received so far is "
-             r"re-corrected each round). A cheaper new-only variant (each round corrects only the "
-             r"patches that just arrived; total 113\%, critical 32\%) ties the ceiling on "
-             r"Object/Goal (85.6/74.6) but loses on Spatial (77.2, $-$4.6pp) and Long (41.0, "
-             r"$-$10.8pp vs.\ Full-res.; 500 episodes each, paired 95\% CIs exclude 0), so the "
-             r"cumulative form is the one reported.}")
+    # The long caption moved to docs/memo/eval_table_notes.md (2026-09-11): the table is a working
+    # view; the caption keeps the column definitions and a one-line legend of the cell markers.
+    L.append(r"\caption{Evaluation results. Crit.\ Comp.: backbone prefill FLOPs per "
+             r"instruction that can only start once the whole image has arrived (decode "
+             r"excluded); Comp.: total backbone compute incl.\ work overlapped with transmission; "
+             r"parentheses: ratio to Full-res. Ours = interleaved $g{=}4$ (progressive per-round "
+             r"selection); Streaming ($k{=}1$) = causal-LLM chunked prefill with progressive "
+             r"vision correction. Shaded: $\geq$98\% of Full-res.\ accuracy. Markers: "
+             r"$^\dagger$ Qwen3.5 Ours = keep-limited streaming arm; $^\ddagger$ compute from "
+             r"the progressive arm, accuracy partly from the earlier upfront arm; $^\S$ batch-1 "
+             r"vs.\ batch-16 bounds; \textsuperscript{\P} 122B-FP8 (parenthesized = 240-row "
+             r"probe); $\diamond$ model not capable of the task; $^\ast$ OpenVLA cumulative "
+             r"correction. Every Qwen3.5-35B row has all its arms from one box, code version and "
+             r"degrade filter EXCEPT RefCOCO, whose Low-/Full-res.\ and Streaming cells predate "
+             r"the 2026-09-11 re-measurement (same pyr filter, different box); its Ours cells "
+             r"should be read against each other rather than against those bounds. "
+             r"Notes: docs/memo/eval\_table\_notes.md.}")
     L.append(r"\label{tab:evaluation_results}")
     L.append(r"\begin{center}\begin{small}\begin{sc}")
     L.append(r"\resizebox{\textwidth}{!}{%")
@@ -1047,8 +1106,13 @@ def emit_md(table, keeps, latency: bool = False) -> str:
 # from inprocess_latency.json's `detail` block (per-column medians over the probe's 36 images --
 # the columns of one row therefore do not sum); part (b) the concurrency sweeps
 # (conc_sweep_20260909.json, folded by vllm_stream/conc_sweep_20260909/conc_table_json.py).
-LAT_MODELS = [("qwen35_moe", "Qwen3.5-MoE (35B-A3B)"),
-              ("qwen35_122b", "Qwen3.5-MoE (122B-A10B FP8)")]
+# Keys with the `_cg1024` suffix are the 2026-09-09 re-measurement with the engine's CUDA-graph
+# capture limit raised to 1024 tokens (server --max-cudagraph-capture-size 1024; vLLM's default
+# is 2 x max_num_seqs = 128 / 64, so every prefill step above it -- most chunk steps and every
+# short full-res prompt -- ran eager at ~+20 ms). The bare keys keep the default-capture numbers.
+LAT_MODELS = [("qwen35_4b_cg1024", "Qwen3.5 (4B)"),
+              ("qwen35_moe_cg1024", "Qwen3.5-MoE (35B-A3B)"),
+              ("qwen35_122b_cg1024", "Qwen3.5-MoE (122B-A10B FP8)")]
 LAT_DATASETS = [("chartqa", "ChartQA"), ("realworldqa", "RealWorldQA"), ("vsr", "VSR"),
                 ("mmvp", "MMVP"), ("cvbench", "CV-Bench"), ("refcoco", "RefCOCO val"),
                 ("textvqa", "TextVQA"), ("visdrone_count", "VisDrone Count"),
@@ -1074,7 +1138,11 @@ def emit_latency_latex(keeps) -> str:
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
     L.append(r"\caption{Measured latency of the served Qwen3.5 models (vLLM 0.28 engine on one "
-             r"B200, FP8 for 122B, fed by the in-process vision tower). A \emph{band} is one of "
+             r"B200, FP8 for 122B, fed by the in-process vision tower; CUDA-graph capture limit raised "
+             r"to 1024 tokens from vLLM's default of $2\times$max-num-seqs, so prefill steps up to "
+             r"1024 tokens replay a captured graph for both paths -- the default left every chunk "
+             r"step above 128 (35B) / 64 (122B) tokens and every short full-resolution prompt "
+             r"eager, ${\approx}20$\,ms of launch overhead per step). A \emph{band} is one of "
              r"$g{=}4$ contiguous raster-order strips of the image's vision tokens (the unit that "
              r"arrives, is corrected and is pushed to the engine as one \emph{chunk}); the prompt "
              r"is [leading text][vision tokens][trailing text], so chunk 0 carries the leading text "
@@ -1107,7 +1175,8 @@ def emit_latency_latex(keeps) -> str:
              r"pushed): that score pass sits on the serialized path, so their Lat.\ exceeds "
              r"k$=$1.0's, while their Crit.\ Lat.\ matches it (band $g{-}1$ corrects fewer rows "
              r"but its prefill step is the same). "
-             r"\textbf{(b)} Closed-loop concurrency sweep on the 35B model (RealWorldQA 765 / "
+             r"\textbf{(b)} Closed-loop concurrency sweep on the 35B model at the engine's default "
+             r"capture limit (128; measured before the limit was raised) (RealWorldQA 765 / "
              r"VisDrone Det 448 splits, 160 or 400 evenly spaced images per cell): $N$ driver "
              r"processes (one vision tower each, same GPU) $\times$ $c$ requests in flight per "
              r"driver against one engine. Med./p90 in ms; req/s and engine busy (share of wall "
@@ -1209,6 +1278,311 @@ def emit_latency_latex(keeps) -> str:
     return "\n".join(L)
 
 
+
+# ---------------------------------------------------------------------------------------------
+# Interleaved LLM correction on Qwen3.5 (develop/vllm-interleaved-engine, 2026-09-10): the LLM
+# decoder re-corrects the rows of each vision band inside the vLLM engine instead of prefilling
+# once after the vision stream (docs/memo/vllm_interleaved_design.md). Its own table
+# (--table interleaved) -- streaming vs interleaved at every keep, both arms on ONE served
+# engine (paired rows, same driver, same vision tower) -- until the user decides how the main
+# table carries it. The rows/FLOPs/latency live in the interleaved-engine worktree until the
+# branch is squash-merged; IL_ROOT falls back to that worktree when the local tree lacks them.
+IL_ROOT = next((r for r in (RESULTS,
+                            "/NHNHOME/share/cjpark/AppCorr-il-engine/analysis/results")
+                if os.path.isdir(os.path.join(r, "qwen_vllm_accuracy_il_pyr"))), RESULTS)
+IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, flops json per ds,
+               #  interleaved latency key, streaming latency key, inproc flops key)
+    ("Qwen3.5-MoE (35B-A3B)", "_qwen3.5-35b-a3b", "_c4",
+     {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
+      "visdrone_count": 2350, "visdrone_det": 448,
+      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
+     {"vstar": "qwen35_flops_il.json", "realworldqa": "qwen35_flops_il_rwqa.json",
+      "textvqa": "qwen35_flops_il_ext.json", "infovqa": "qwen35_flops_il_ext.json",
+      "visdrone_count": "qwen35_flops_il_ext.json", "visdrone_det": "qwen35_flops_il_ext.json",
+      "chartqa": "qwen35_flops_il_ext2.json", "cvbench": "qwen35_flops_il_ext2.json",
+      "mmvp": "qwen35_flops_il_ext2.json", "refcoco": "qwen35_flops_il_ext2.json"},
+     "qwen35_35b_il", "qwen35_moe_cg1024", "qwen35_moe"),
+    # 122B: 40-row V* probe on the interleaved server (c2: the DeltaNet side buffers sit outside
+    # the KV budget), parenthesized per the 2026-09-01 probe rule; FLOPs json is the 2026-09-10
+    # hooked re-measure (FP8Experts fix; qwen35_122b_flops_fixed.json, --il-rows), so its vision
+    # half is the 122B run's own streaming arm (the older decoder-only fold that borrowed the 35B
+    # tower is kept as qwen35_122b_flops_il_decoderonly.json).
+    # The 2026-09-10 extension (TextVQA / InfoVQA / VisDrone, interleaved + staged arms only,
+    # user go) runs 122B on 240-row strided subsets (--samples 240), parenthesized like the V*
+    # probe; their FLOPs fold (--il-only) into the fixed json's own hooked rows, InfoVQA being
+    # a separate hooked run (it was not in the 2026-09-10 re-measure).
+    ("Qwen3.5-MoE (122B-A10B FP8)", "_qwen3.5-122b-a10b-fp8", "_c2",
+     {"vstar": 40, "realworldqa": 240, "textvqa": 240, "infovqa": 240, "visdrone_count": 240,
+      "visdrone_det": 240, "chartqa": 240, "cvbench": 240, "mmvp": 240, "refcoco": 240},
+     True,
+     {"vstar": "qwen35_122b_flops_il.json", "textvqa": "qwen35_122b_flops_fixed.json",
+      "visdrone_count": "qwen35_122b_flops_fixed.json",
+      "visdrone_det": "qwen35_122b_flops_fixed.json",
+      "infovqa": "qwen35_122b_flops_infovqa.json",
+      "realworldqa": "qwen35_122b_flops_fixed.json",
+      "chartqa": "qwen35_122b_flops_fixed.json", "cvbench": "qwen35_122b_flops_ext2.json",
+      "mmvp": "qwen35_122b_flops_ext2.json", "refcoco": "qwen35_122b_flops_fixed.json"},
+     "qwen35_122b_il", "qwen35_122b_cg1024", "qwen35_122b"),
+]
+IL_DATASETS = [("vstar", "V*Bench (Acc.)", "ok", "qwen_vllm_accuracy_il_pyr"),
+               ("realworldqa", "RealWorldQA (Acc.)", "ok", "qwen_vllm_accuracy_il"),
+               # 2026-09-10 extension: pyr filter on all four (the chain-2b convention for
+               # TextVQA / VisDrone; InfoVQA has no Qwen precedent and follows them). Metric
+               # keys as in the main table: TextVQA = mean(val) (VQA soft score), InfoVQA =
+               # mean(val) (ANLS), VisDrone Count = exact match, Det = Acc.@IoU0.5.
+               ("textvqa", "TextVQA (VQA Acc.)", "val", "qwen_vllm_accuracy_il_pyr"),
+               ("infovqa", "InfoVQA (ANLS)", "val", "qwen_vllm_accuracy_il_pyr"),
+               ("visdrone_count", "VisDrone Count (Exact Acc.)", "ok", "qwen_vllm_accuracy_il_pyr"),
+               ("visdrone_det", "VisDrone Det (Acc.@0.5)", "ok", "qwen_vllm_accuracy_il_pyr"),
+               # 2026-09-12 extension (user go): the four main-table datasets the interleaved
+               # table lacked. VSR is deliberately NOT added -- it is saturated on both models
+               # (floor vs ceiling p=0.268 on 35B, 0.403 on 122B), so it carries no signal about
+               # the schedule. Filter follows the campaign convention: box -> _il, pyr -> _il_pyr.
+               ("chartqa", "ChartQA (Relaxed Acc.)", "ok", "qwen_vllm_accuracy_il"),
+               ("cvbench", "CV-Bench (Acc.)", "ok", "qwen_vllm_accuracy_il"),
+               ("mmvp", "MMVP (Acc.)", "ok", "qwen_vllm_accuracy_il"),
+               ("refcoco", "RefCOCO val (Acc.@0.5)", "ok", "qwen_vllm_accuracy_il_pyr")]
+IL_KEEPS = [1.0, 0.5, 0.25]
+# Full split per dataset. A row whose arms carry fewer unique `i` than this is a reduced-n subset
+# and renders parenthesized, unshaded, with no preservation % (the 2026-09-01 probe rule).
+IL_FULL_N = {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
+             "visdrone_count": 2350, "visdrone_det": 448,
+             "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}
+# Latency keys whose hooked FLOPs reference is known-understated: the FLOPs cells render with a
+# dagger until the reference is re-measured. Empty since the 2026-09-10 122B re-measure (the
+# FP8Experts hook fix; gate F on the ceiling: closed form within 0.05% of full - tower).
+IL_FLOPS_PENDING: set = set()
+
+
+def il_lit(dataset: str, metric: str, slug: str, dir_: str, expected: int,
+           suffix: str) -> Dict[str, float]:
+    """{floor, ceiling, stream_k*, il_k*, ils_k*, ilu_k*} from one paired served run; complete
+    arms only."""
+    out: Dict[str, float] = {}
+    # `_n`: the smallest unique-i count among the arms that loaded. The 122B rows were first
+    # measured on strided subsets and are being re-run at full split dataset by dataset, so
+    # whether a row is a probe is a property of the FILES, not of the model -- the emitter
+    # parenthesises on this rather than on a per-model flag (2026-09-12).
+    out: Dict[str, float] = {}
+    tags = [("floor", "floor"), ("ceiling", "ceiling")]
+    for k in IL_KEEPS:
+        kk = "" if k == 1.0 else f"_k{k:.2f}"
+        tags += [(f"stream_k{k:.2f}", f"streaming_g4{kk}"), (f"il_k{k:.2f}", f"interleaved_g4{kk}"),
+                 (f"ils_k{k:.2f}", f"interleaved_staged_g4{kk}"),
+                 # `ilu`: the unified vision+decoder axis (memo §7.12), 35B V*/RWQA so far
+                 (f"ilu_k{k:.2f}", f"interleaved_unified_g4{kk}")]
+    # Pass 1: load every arm's scored rows. Arms can skip DIFFERENT rows -- `prompt_too_long` is
+    # the same set for all arms of a model, but `oom` is not: on 122B InfoVQA the keep<1
+    # interleaved arms OOM on 194-236 long documents that the bounds arms scored. Averaging each
+    # arm over its own survivors would then compare different row sets, and since the dropped
+    # rows are the long (harder) ones it would flatter exactly the arms that dropped them.
+    # Pass 2 therefore scores every arm on the INTERSECTION of all arms' scored rows.
+    per_arm: Dict[str, Dict[int, float]] = {}
+    for key, tag in tags:
+        p = os.path.join(dir_, f"{dataset}{slug}_{tag}{suffix}.jsonl")
+        if not os.path.exists(p):
+            continue
+        rows = [json.loads(l) for l in open(p) if l.strip()]
+        if len({r["i"] for r in rows}) < expected:
+            continue
+        sc = {int(r["i"]): float(r[metric]) for r in rows if "skip" not in r}
+        if sc:
+            per_arm[key] = sc
+            n_i = len({r["i"] for r in rows})
+            out["_n"] = min(out.get("_n", n_i), n_i)
+    if per_arm:
+        common = set.intersection(*(set(v) for v in per_arm.values()))
+        for key, sc in per_arm.items():
+            use = {i: sc[i] for i in common} if common else sc
+            out[key] = 100.0 * sum(use.values()) / len(use)
+        out["_n_scored"] = len(common)
+    return out
+
+
+def il_flops(model_row, dataset: str) -> Dict[str, float]:
+    """{full, stream_total_k*, stream_crit_k*, il_total_k*, il_crit_k*} in GFLOPs."""
+    _, _, _, _, _, fjson, _, _, inproc_key = model_row
+    out: Dict[str, float] = {}
+    name = fjson.get(dataset)
+    p = os.path.join(IL_ROOT, "flops", name) if name else None
+    j = json.load(open(p)).get(dataset, {}) if p and os.path.exists(p) else {}
+    # streaming half: the same measurement run when it carried the streaming arms (35B),
+    # the campaign's inprocess_flops entry otherwise (122B, --il-only).
+    if "full" in j:
+        out["full"] = j["full"]
+        for k in IL_KEEPS:
+            kk = "" if k == 1.0 else f"_k{k:.2f}"
+            if f"crit_g4{kk}" in j:
+                out[f"stream_crit_k{k:.2f}"] = j[f"crit_g4{kk}"]
+                out[f"stream_total_k{k:.2f}"] = j[f"total_g4{kk}"]
+    else:
+        v = inproc_flops(inproc_key, dataset, "full")
+        if v is not None:
+            out["full"] = v
+        for k in IL_KEEPS:
+            c, t = inproc_flops(inproc_key, dataset, f"k{k:.2f}"), \
+                inproc_flops(inproc_key, dataset, f"total_k{k:.2f}")
+            if c is not None:
+                out[f"stream_crit_k{k:.2f}"], out[f"stream_total_k{k:.2f}"] = c, t
+    # vision half for a decoder-only (--il-only) json: the 35B run's split at the same keep.
+    p35 = os.path.join(IL_ROOT, "flops", IL_MODELS[0][5].get(dataset, ""))
+    j35 = json.load(open(p35)).get(dataset, {}) if os.path.exists(p35) else {}
+    for tag in ("il", "ils", "ilu"):   # unstaged / depth-staged / unified-axis interleaved arm
+        for k in IL_KEEPS:
+            kk = "" if k == 1.0 else f"_k{k:.2f}"
+            d = j.get(f"_{tag}_g4{kk}")
+            if not d:
+                continue
+            vt, vc = d["vision_total"], d["vision_crit"]
+            if vt == 0 and j35.get(f"_il_g4{kk}"):
+                vt, vc = j35[f"_il_g4{kk}"]["vision_total"], j35[f"_il_g4{kk}"]["vision_crit"]
+            out[f"{tag}_total_k{k:.2f}"] = d["decoder_total"] + vt
+            out[f"{tag}_crit_k{k:.2f}"] = d["decoder_crit"] + vc
+    return out
+
+
+def il_latency(model_row, dataset: str) -> Dict[str, float]:
+    """{full, stream_k*, il_k*} Crit. Lat. medians (ms, d=150 anchor = last band's pixels)."""
+    _, _, _, _, _, _, il_key, st_key, _ = model_row
+    lat = {}
+    # the local file wins per model key (the worktree copy of the streaming entries is stale);
+    # the interleaved keys exist only in the worktree copy until the branch is merged.
+    for root in (IL_ROOT, RESULTS):
+        p = os.path.join(root, "latency", "inprocess_latency.json")
+        if os.path.exists(p):
+            lat.update(json.load(open(p)))
+    st = (lat.get(st_key) or {}).get(dataset) or {}
+    il = (lat.get(il_key) or {}).get(dataset) or {}
+    ils = (lat.get(il_key + "_staged") or {}).get(dataset) or {}
+    ilu = (lat.get(il_key + "_unified") or {}).get(dataset) or {}
+    out: Dict[str, float] = {}
+    if "full" in st:
+        out["full"] = st["full"]
+    for k in IL_KEEPS:
+        if f"k{k:.2f}" in st:
+            out[f"stream_k{k:.2f}"] = st[f"k{k:.2f}"]
+        if f"k{k:.2f}" in il:
+            out[f"il_k{k:.2f}"] = il[f"k{k:.2f}"]
+        if f"k{k:.2f}" in ils:
+            out[f"ils_k{k:.2f}"] = ils[f"k{k:.2f}"]
+        if f"k{k:.2f}" in ilu:
+            out[f"ilu_k{k:.2f}"] = ilu[f"k{k:.2f}"]
+    return out
+
+
+def emit_interleaved_latex() -> str:
+    L = []
+    L.append(r"\begin{table*}[t]")
+    L.append(r"\vspace{-0.1in}")
+    # The long measurement caption moved to docs/memo/interleaved_table_notes.md (2026-09-11):
+    # this table is a working view, so the caption only names the arms and the columns.
+    L.append(r"\caption{Streaming vs.\ interleaved LLM correction, served Qwen3.5 (vLLM, one "
+             r"B200; FP8 for 122B). Streaming: LLM prefills each band's final rows once. "
+             r"Interleaved: LLM prefills the base-resolution prompt, then re-runs each band's "
+             r"corrected rows (full depth). Depth-staged: round $r$ corrects over the first $b_r$ "
+             r"decoder layers and carries every row through $[b_r, b_{r+1})$. Unified: one depth "
+             r"axis of tower $+$ decoder stages split by equal cost; $k{<}1$ selects by the "
+             r"prefix layer-mean attention (progressive). Acc.\ (preservation vs.\ Full-res.); "
+             r"Comp.\ / Crit.\ Comp.: total / last-round FLOPs (share of the full-resolution "
+             r"pass); Crit.\ Lat.: TTFT from the last band's arrival, bands 150\,ms apart, "
+             r"median of 36 (share of the full-res TTFT). All arms of a model from one served "
+             r"engine, paired rows. Every cell is the full split unless PARENTHESIZED, which "
+             r"marks a reduced-$n$ strided subset (rendered unshaded and without a preservation "
+             r"\%; the per-row flag compares each row's own $n$ against its full split). VSR is "
+             r"deliberately absent: its floor and ceiling are indistinguishable on both models "
+             r"(paired $p = 0.27$ / $0.40$), so it carries no signal about the schedule. "
+             r"Notes: docs/memo/interleaved\_table\_notes.md.}")
+    L.append(r"\label{tab:interleaved_results}")
+    L.append(r"\vspace{0.05in}")
+    L.append(r"\centering")
+    L.append(r"\resizebox{\textwidth}{!}{%")
+    L.append(r"\setlength{\tabcolsep}{4pt}")
+    L.append(r"\begin{tabular}{l c | c c c c | c c c c | c c | c c c}")
+    L.append(r"\toprule")
+    L.append(r" & & \multicolumn{4}{c|}{Streaming (LLM prefills once)} & "
+             r"\multicolumn{4}{c|}{Interleaved (LLM re-corrects per band)} & "
+             r"\multicolumn{2}{c|}{Interleaved, depth-staged} & "
+             r"\multicolumn{3}{c}{Unified (tower $+$ decoder)} \\")
+    L.append(r"Dataset & $k$ & Acc.\ (\%) & Comp. & Crit.\ Comp. & Crit.\ Lat. & "
+             r"Acc.\ (\%) & Comp. & Crit.\ Comp. & Crit.\ Lat. & Acc.\ (\%) & Comp. & "
+             r"Acc.\ (\%) & Comp. & Crit.\ Lat. \\")
+    for model_row in IL_MODELS:
+        disp, slug, suffix, expected, probe_model, _, lat_key, _, _ = model_row
+        probe = probe_model
+        dag = r"$^\dagger$" if lat_key in IL_FLOPS_PENDING else ""
+        L.append(r"\midrule")
+        L.append(r"\multicolumn{15}{l}{\emph{" + disp + r"}} \\")
+        first_ds = True
+        for ds, label, metric, sub in IL_DATASETS:
+            if ds not in expected:
+                continue
+            if not first_ds:          # a light rule between datasets (the model rows use \midrule)
+                L.append(r"\cmidrule(lr){1-15}")
+            first_ds = False
+            lit = il_lit(ds, metric, slug, os.path.join(IL_ROOT, sub), expected[ds], suffix)
+            # per-ROW probe flag: reduced n renders parenthesized even when the model's other
+            # rows are full-split (and vice versa), which is what the 122B re-run needs
+            # Parenthesise on SCORED coverage, not on the file's row count: a row can hold every
+            # index and still be a biased subsample of the split if arms skipped rows
+            # (122B InfoVQA scores 2227 of 2801 -- 338 over-length + up to 236 OOM -- and the
+            # dropped rows are the longest, so floor moves -1.44 pp when they go).
+            n_file = lit.pop("_n", 0); n_scored = lit.pop("_n_scored", n_file)
+            probe = min(n_file, n_scored) < 0.95 * IL_FULL_N.get(ds, 0) if lit else probe_model
+            fl = il_flops(model_row, ds)
+            lat = il_latency(model_row, ds)
+            ceil = lit.get("ceiling")
+            full_gf, full_ms = fl.get("full"), lat.get("full")
+
+            def acc(v):
+                if v is None:
+                    return "--"
+                if probe:
+                    return f"({v:.2f})"
+                s = f"{v:.2f}"
+                if ceil:
+                    pres = 100.0 * v / ceil
+                    s += f" ({pres:.1f}\\%)"
+                    if pres >= SHADE_PRES:
+                        s = SHADE_MACRO + s
+                return s
+            bounds = []
+            if "floor" in lit or ceil is not None:
+                fv = lit.get("floor")
+                bounds.append((f"({fv:.2f})" if probe else f"{fv:.2f}") if fv is not None else "--")
+                bounds.append((f"({ceil:.2f})" if probe else f"{ceil:.2f}") if ceil is not None else "--")
+            # dataset cell: the name on the k=1 row, the references the percentages are taken
+            # against on the two rows below it (floor / ceiling accuracy; full-res FLOPs + TTFT)
+            sub = []
+            if bounds:
+                sub.append(r"{\footnotesize Low-res.\ " + bounds[0] + r" / Full-res.\ " + bounds[1] + "}")
+            ref = [x for x in ((fmt_tf(full_gf, None) + dag) if full_gf else "",
+                               fmt_ms(full_ms, None) if full_ms else "") if x]
+            if ref:
+                sub.append(r"{\footnotesize Full-res.\ " + ", ".join(ref) + "}")
+            heads = [label] + sub + [""] * len(IL_KEEPS)
+            for i, k in enumerate(IL_KEEPS):
+                kk = f"k{k:.2f}"
+                cells = [heads[i], f"{k:.2f}",
+                         acc(lit.get(f"stream_{kk}")),
+                         fmt_tf(fl.get(f"stream_total_{kk}"), full_gf) + dag,
+                         fmt_tf(fl.get(f"stream_crit_{kk}"), full_gf) + dag,
+                         fmt_ms(lat.get(f"stream_{kk}"), full_ms),
+                         acc(lit.get(f"il_{kk}")),
+                         fmt_tf(fl.get(f"il_total_{kk}"), full_gf) + dag,
+                         fmt_tf(fl.get(f"il_crit_{kk}"), full_gf) + dag,
+                         fmt_ms(lat.get(f"il_{kk}"), full_ms),
+                         acc(lit.get(f"ils_{kk}")),
+                         fmt_tf(fl.get(f"ils_total_{kk}"), full_gf) + dag,
+                         acc(lit.get(f"ilu_{kk}")),
+                         fmt_tf(fl.get(f"ilu_total_{kk}"), full_gf) + dag,
+                         fmt_ms(lat.get(f"ilu_{kk}"), full_ms)]
+                L.append(" & ".join(cells) + r" \\")
+    L.append(r"\bottomrule")
+    L.append(r"\end{tabular}}")
+    L.append(r"\end{table*}")
+    return "\n".join(L)
+
+
 def emit_status(keeps, groups: int) -> str:
     L, missing, total = [], 0, 0
     for model, rows in SPEC:
@@ -1246,9 +1620,10 @@ def main():
     ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--format", choices=["latex", "md"], default="latex")
-    ap.add_argument("--table", choices=["eval", "latency"], default="eval",
+    ap.add_argument("--table", choices=["eval", "latency", "interleaved"], default="eval",
                     help="eval: accuracy + compute (eval_table_*.tex); latency: the served-path "
-                         "latency table (latency_table_*.tex)")
+                         "latency table (latency_table_*.tex); interleaved: streaming vs "
+                         "interleaved LLM correction on Qwen3.5 (interleaved_table_*.tex)")
     ap.add_argument("--with-latency", action="store_true",
                     help="eval table in the combined form (Lat. / Crit. Lat. columns inline)")
     ap.add_argument("--status", action="store_true")
@@ -1264,6 +1639,9 @@ def main():
         return
     if a.table == "latency":
         print(emit_latency_latex(a.keeps))
+        return
+    if a.table == "interleaved":
+        print(emit_interleaved_latex())
         return
     table = build_rows(a.keeps, a.groups, latency=a.with_latency)
     print(emit_latex(table, a.keeps, a.with_latency) if a.format == "latex"

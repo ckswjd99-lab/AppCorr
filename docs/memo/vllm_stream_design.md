@@ -889,3 +889,40 @@ Same picture as 35B: Crit. Lat. is keep-independent (+-3 ms) except V* (102 -> 9
 (capture limit 64 at `--max-num-seqs 32`), so the capture-limit lever above is worth more here.
 Lat. carries the deferred score pass (+20-70 ms; V* +190-230). Table cells regenerated
 (`analysis/results/latency_table_20260909.tex`), mirrored to AppCorr-qwen35-eval.
+
+### Whole latency table under the capture limit 1024 (2026-09-09, go; table switched)
+
+Chain `scratchpad/campaign_cg1024_klt1acc.sh` phases 1a/1b: server `--max-cudagraph-capture-size
+1024` (35B: 1.24 GiB of graphs, 122B-FP8: 1.58 GiB, capture 9-13 s), probe n=36 per cell,
+ceiling + keeps 1.0/0.50/0.25, d=0 (Lat.) then d=150 (Crit. Lat.), new json keys
+`qwen35_moe_cg1024` / `qwen35_122b_cg1024` (row dirs `probe_qwen35_{moe,122b}_cg1024_d{0,150}`);
+the bare keys keep the default-capture numbers. `make_eval_table.py` LAT_MODELS now points at
+the cg1024 keys and the caption states the condition; part (b) (concurrency sweep) is still the
+default-capture measurement and says so.
+
+Default capture -> 1024, ms (Full-res TTFT | Crit. Lat. k1.0 / 0.50 / 0.25):
+
+| dataset | 35B full | 35B crit k1 | k.5 | k.25 | 122B full | 122B crit k1 | k.5 | k.25 |
+|---|---|---|---|---|---|---|---|---|
+| ChartQA | 52->35 | 47->24 | 50->24 | 51->24 | 65->53 | 60->35 | 58->34 | 59->35 |
+| RealWorldQA | 79->85 | 51->35 | 54->30 | 49->30 | 122->125 | 65->50 | 61->46 | 61->44 |
+| VSR | 50->34 | 23->23 | 25->26 | 23->25 | - | - | - | - |
+| MMVP | 25->24 | 21->22 | 24->22 | 25->23 | - | - | - | - |
+| CV-Bench | 60->37 | 46->25 | 46->25 | 45->26 | - | - | - | - |
+| RefCOCO | 48->32 | 23->24 | 28->24 | 28->24 | 62->45 | 58->34 | 60->35 | 59->35 |
+| TextVQA | 63->46 | 46->27 | 49->26 | 51->27 | 79->67 | 60->39 | 58->38 | 59->39 |
+| VisDrone Count | 69->68 | 46->30 | 47->28 | 46->28 | 80->84 | 58->42 | 59->43 | 59->41 |
+| VisDrone Det | 68->69 | 46->30 | 46->28 | 45->29 | 101->102 | 57->45 | 60->43 | 58->42 |
+| V*Bench | 186->184 | 76->63 | 67->52 | 57->41 | 305->307 | 102->86 | 93->75 | 80->65 |
+
+Lat. (d=0, k1.0): 35B 173->143 RWQA, 122->103 VisDrone Det, 389->376 V*, 114->98 TextVQA,
+81->63 RefCOCO, 90->67 ChartQA; 122B 233->202, 192->160, 532->476, 135->132, 119->83, 120->96.
+
+Reading. (i) The limit is an engine setting that both paths see: Full-res TTFT falls by 14-23 ms
+wherever the whole prompt is <= 1024 tokens (TextVQA/RefCOCO/ChartQA/CV-Bench/VSR) and is
+unchanged where it is not (RWQA/VisDrone/V*, still eager); streaming's chunk steps are <= 1024
+on every dataset but V* (830-token bands, prompt 3341), so streaming gains everywhere. (ii) Under
+the limit every Crit. Lat. except V* sits at 22-35 ms (35B) / 34-50 ms (122B), keep-independent
+within 2-3 ms; RefCOCO/MMVP/VSR did not move because their last bands were already <= 128
+tokens. (iii) The ratio to Full-res TTFT is now 0.35-0.45x on the >1024-token datasets (RWQA,
+VisDrone) and 0.65-0.75x on the short ones, where both clocks are near the step floor.
