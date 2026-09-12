@@ -16,17 +16,45 @@ reinterpreted on the other side (`tensor_to_wire` / `wire_to_tensor`); nothing i
 Request flow (client -> server; every message gets one reply frame):
 
     {"op": "info"}                                     -> {"ok", "model", "vllm", ...}
-    {"op": "open",   "rid", "final", "max_tokens", "mrope_delta", "embeds": T, "mrope": T|null}
+    {"op": "open",   "rid", "final", "max_tokens", "mrope_delta", "embeds": T, "mrope": T|null,
+                     "correct": bool (opt.), "image_start": int (opt.), "image_end": int (opt.),
+                     "open_walk": int (opt.; unified axis: skip the stock prefill and walk
+                                  rows [0, image_end) through layers [0, open_walk) at open)}
                                                        -> {"ok", "t_recv"}          (final=True is one-shot)
     {"op": "append", "rid", "final", "mrope_delta", "embeds": T, "mrope": T|null}
                                                        -> {"ok", "t_recv"}
+    {"op": "correct", "rid", "final", "window": [s, e], "stage": [r, g] | [r, g, [b0..]] (opt.),
+                      "positions": T(int64 [P]), "embeds": T(bf16 [P, D])}
+                                                       -> {"ok", "t_recv", "t_step_ms", "num_rows",
+                                                           "stage": {...} (staged only)}
     {"op": "result", "rid"}                            -> {"ok", "text", "token_ids", "timing": {...}}
                                                           (blocks until the request finishes)
     {"op": "abort",  "rid"}                            -> {"ok"}
 
+`correct` is the interleaved schedule's op (docs/memo/vllm_interleaved_design.md §3.1): the whole
+approximate prompt goes in once with `open(final=False, correct=True, image_start=lo)` (the flag
+makes the engine keep the DeltaNet side buffer for the prompt), then each band of corrected image rows
+REWRITES prompt rows already prefilled -- `positions` are prompt positions (strictly increasing,
+all below the held-back last row) and `embeds` their corrected values. M-RoPE is NOT sent: the
+engine keeps the request's positions from the opening push and indexes them by `positions`.
+`window` is the [start, end) prompt range the Gated DeltaNet layers re-scan for this round; it is
+always explicit because under keep<1 the corrected positions are not contiguous. `final` closes
+the prompt exactly like `append(final=True)` with an empty chunk (hold-back released).
+`stage=[r, g]` selects the depth-staged form (memo §7.11): round r corrects its rows over the
+first `b_r = round(L(r+1)/g)` decoder layers and then walks every image row `[image_start,
+image_end)` through layers `[b_r, b_{r+1})` with the corrected context; `image_end` must then be
+given at `open`. The last round (r = g-1) is full depth and behaves as the unstaged `correct`.
+`stage=[r, g, [b_0, ..., b_{g-1}]]` is the same form with EXPLICIT bounds (memo §7.12, the
+unified vision+decoder axis): `g` is then the number of LLM rounds -- which is smaller than the
+schedule's `groups`, because the rounds before the frontier crosses the projector never reach the
+decoder -- and the bounds come from a cost split over the joint axis rather than from `L(r+1)/g`.
+Strictly increasing, `b_{g-1} == L`; the two-element form is exactly `[r, g, stage_bounds(L, g)]`
+and is kept as-is so existing runs stay bit-identical.
+
 Timing (server perf_counter, seconds): t_open, t_final (last chunk received), t_first_token
-(first sampled token observed), t_done. TTFT-from-last-chunk = t_first_token - t_final, the
-same quantity vllm_stream_ttft.py measures in-process.
+(first sampled token observed), t_done, and for the interleaved schedule t_correct (one entry per
+`correct` round). TTFT-from-last-chunk = t_first_token - t_final, the same quantity
+vllm_stream_ttft.py measures in-process.
 
 No vllm import here -- this module is imported on BOTH sides.
 """
@@ -42,6 +70,25 @@ import torch
 
 _LEN = struct.Struct(">I")
 MAX_HEADER = 64 << 20
+
+
+def stage_to_header(stage) -> list:
+    """`stage` -> the JSON header form of the `correct` op's `stage` field (see §correct above):
+    `[r, g]` for the equal-layer staged schedule, `[r, g, [b_0..b_{g-1}]]` with explicit bounds.
+    One place, so the two-element form serialises exactly as it did before bounds existed."""
+    if len(stage) == 2:
+        return [int(stage[0]), int(stage[1])]
+    r, g, bounds = stage
+    return [int(r), int(g), [int(b) for b in bounds]]
+
+
+def stage_from_header(stage):
+    """The inverse; `None` passes through. Returns a 2- or 3-tuple (bounds as a tuple)."""
+    if stage is None:
+        return None
+    if len(stage) == 2:
+        return int(stage[0]), int(stage[1])
+    return int(stage[0]), int(stage[1]), tuple(int(b) for b in stage[2])
 
 _TORCH_TO_NP = {
     torch.float32: ("float32", np.float32),

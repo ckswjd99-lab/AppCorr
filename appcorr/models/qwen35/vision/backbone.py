@@ -224,6 +224,33 @@ class ApproxCorrectQwen35VisionTower(nn.Module):
                 cache_feature, tag, ctx["segment_ranges"])
         return self.finalize_attn_layermean(cache_feature, tag_prefix, n_layers)
 
+    def prefix_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str,
+                              n_layers: int) -> torch.Tensor:
+        """[T] mean received attention over the FIRST `n_layers` layers, returned (not stored).
+
+        The unified axis's selection signal: its approximate pass is chunked by layer range, so
+        when band r must be chosen only layers `[0, frontier_r)` exist and the full-tower mean
+        `finalize_attn_layermean` insists on cannot be formed yet. Averaging the walked prefix is
+        the best signal available at the moment the choice must be made -- gemma3's
+        `attn_running_layermean`, same reasoning.
+
+        Eager collection only (`approx_forward(..., collect_attn_mean=True)`): the deferred stash
+        is unsafe here because a correction between two approx ranges overwrites `{tag}_kv` in
+        place, and the deferred path reads the base keys it stashed alongside -- correct, but the
+        stash is per layer and would have to survive the whole walk. The chunked walk collects
+        each layer's vector inside its own approx range, before any correction touches it.
+        """
+        acc = None
+        for i in range(n_layers):
+            v = cache_feature.get(f"{tag_prefix}_layer{i}_attn_mean")
+            if v is None:
+                raise KeyError(
+                    f"qwen35 prefix_attn_layermean: layer {i} of {n_layers} did not collect "
+                    "received attention -- the chunked approx walk must pass "
+                    "collect_attn_mean=True on every range up to the frontier.")
+            acc = v.float() if acc is None else acc + v.float()
+        return acc / max(1, n_layers)
+
     def finalize_attn_layermean(self, cache_feature: Dict[str, Any], tag_prefix: str,
                                 n_layers: int) -> Dict[str, Any]:
         """Average the per-layer received-attention vectors into `{tag_prefix}_attn_layermean` [T].

@@ -29,6 +29,9 @@ The dataset:filter pairs follow the campaign's degrade-filter per dataset.
 import argparse, json, os, statistics as st, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Mirrors `qwen_vllm_accuracy.SCHEDULE_TAG` (copied, not imported: that module pulls in torch and
+# this one only launches subprocesses). Keep the two in step.
+SCHEDULE_TAG = {"unified_staged": "interleaved_unified"}
 OUT_JSON = os.path.join(ROOT, "analysis", "results", "latency", "inprocess_latency.json")
 README = [
     "Single-request (concurrency 1) time-to-first-token medians, ms, for the eval table's Lat. /",
@@ -48,13 +51,60 @@ README = [
     "Reproduce: python analysis/experiments/latency_probe.py (see its docstring).",
 ]
 FIELDS = ["t_vision_ms", "t_open_ms", "t_last_push_ms", "ttft_open_ms", "ttft_last_chunk_ms",
-          "ttft_last_band_ms", "ttft_start_ms", "t_client_done_ms", "prompt_tokens", "gen_tokens"]
+          "ttft_last_band_ms", "last_correct_step_ms", "ttft_start_ms", "t_client_done_ms",
+          "prompt_tokens", "gen_tokens"]
 
 
 def rows_of(path, warmup, groups, delay_ms=0.0):
     rows = [json.loads(l) for l in open(path) if l.strip()]
     rows = [r for r in rows if "skip" not in r and r.get("ttft_start_ms") is not None]
     for r in rows:
+        sched = str(r.get("llm_schedule", ""))
+        if sched == "unified_staged" and len(r.get("t_bands_ms") or []) >= groups:
+            # Unified axis: the bands before the crossing send nothing, so neither the push
+            # list nor the correct list is one-per-band. The driver stamps the start of every
+            # band's processing (t_bands_ms, after the spacing sleep) -- the same moment the
+            # other conventions below reconstruct from their message times.
+            tb = r["t_bands_ms"]
+            tr, td = r.get("t_recv_ms") or [], r.get("t_done_ms") or []
+            ts = r.get("t_sent_ms") or r.get("t_pushes_ms") or []
+            r["ttft_last_band_ms"] = r["ttft_start_ms"] - tb[groups - 1]
+            if ts and ts[-1] is not None:
+                r["last_band_correct_ms"] = ts[-1] - tb[groups - 1]
+            if tr and ts and tr[-1] is not None and ts[-1] is not None:
+                r["last_chunk_wait_ms"] = tr[-1] - ts[-1]
+            if td and tr and td[-1] is not None and tr[-1] is not None:
+                r["last_correct_step_ms"] = td[-1] - tr[-1]
+                r["last_chunk_to_ft_ms"] = r["ttft_start_ms"] - td[-1]
+            continue
+        if sched.startswith("interleaved"):
+            # The interleaved schedule sends g+1 messages: the whole approximate prompt at t=0
+            # and one `correct` per band. Its Crit. Lat. uses the STREAMING anchor -- the last
+            # band's pixel arrival = the issue of the previous correct + the band spacing (so the
+            # two schedules are compared on one convention; from that moment the driver still
+            # owes the last band's vision correction, the correct message, its decoder step over
+            # k/g of the image rows + the text suffix, and the first decode step). The
+            # decomposition keeps transport (t_recv - t_send), the server's drain + correct step
+            # (t_done - t_recv) and the hold-back step (first token - t_done) apart.
+            tp = r.get("t_pushes_ms") or []
+            ts = r.get("t_sent_ms") or tp
+            tr, td = r.get("t_recv_ms") or [], r.get("t_done_ms") or []
+            if len(tp) >= 2 and tp[-2] is not None and delay_ms > 0:
+                r["ttft_last_band_ms"] = r["ttft_start_ms"] - tp[-2] - delay_ms
+            elif len(ts) >= 2 and ts[-2] is not None:
+                r["ttft_last_band_ms"] = r["ttft_start_ms"] - ts[-2]
+            else:
+                r["ttft_last_band_ms"] = r["ttft_start_ms"]
+            if len(ts) >= 2 and ts[-1] is not None and tp[-2] is not None:
+                r["last_band_correct_ms"] = ts[-1] - tp[-2] - delay_ms
+            if tr and ts and tr[-1] is not None and ts[-1] is not None:
+                r["last_chunk_wait_ms"] = tr[-1] - ts[-1]
+            if td and tr and td[-1] is not None and tr[-1] is not None:
+                r["last_correct_step_ms"] = td[-1] - tr[-1]
+                r["last_chunk_to_ft_ms"] = r["ttft_start_ms"] - td[-1]
+            elif tr and tr[-1] is not None:
+                r["last_chunk_to_ft_ms"] = r["ttft_start_ms"] - tr[-1]
+            continue
         if delay_ms > 0 and r.get("t_pushes_ms") and len(r["t_pushes_ms"]) >= groups:
             # spaced-arrival arm (APPCORR_PUSH_DELAY_MS): band g-1's correction starts when the
             # sleep after push g-2 ends = its pixels' arrival; the last chunk's transfer wait
@@ -108,6 +158,13 @@ def main():
                          "window (2026-09-09 rule: 150). Writes k{keep} from the pixel-arrival "
                          "anchor and detail streaming_k*_d<ms>; leaves 'full'/'total_k*' alone")
     ap.add_argument("--skip-ceiling", action="store_true", help="streaming arms only")
+    ap.add_argument("--llm-schedule",
+                    choices=["streaming", "interleaved", "interleaved_staged", "unified_staged"],
+                    default="streaming",
+                    help="forwarded to the driver; 'interleaved' probes the correct-op schedule "
+                         "and reads its rows (whose arm files are named interleaved_*); "
+                         "'unified_staged' is the tower-inside-the-staging form (memo §7.12), "
+                         "whose rows are named interleaved_unified_*")
     a = ap.parse_args()
     out = a.out or os.path.join(ROOT, "analysis", "results", "latency", f"probe_{a.key}")
     os.makedirs(out, exist_ok=True)
@@ -120,13 +177,16 @@ def main():
 
     def arm_path(ds, arm, keep=None):
         suf = "" if arm != "streaming" else f"_g{a.groups}" + (f"_k{keep:.2f}" if keep < 1.0 else "")
-        return os.path.join(out, f"{ds}_{slug}_{arm}{suf}.jsonl")
+        # driver's `arm_tag` (incl. its schedule -> row-file-tag mapping)
+        tag = SCHEDULE_TAG.get(a.llm_schedule, a.llm_schedule) if arm == "streaming" else arm
+        return os.path.join(out, f"{ds}_{slug}_{tag}{suf}.jsonl")
 
     def run(ds, filt, arm, keep=1.0):
         p = arm_path(ds, arm, keep)
         if os.path.exists(p):
             os.remove(p)          # the driver resumes from existing rows; a probe must be fresh
-        cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm, "--keep", f"{keep}"]
+        cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm, "--keep", f"{keep}",
+                     "--llm-schedule", a.llm_schedule]
         log = os.path.join(out, f"log_{ds}_{arm}_k{keep:.2f}.log")
         e = dict(env)
         if arm == "streaming" and a.push_delay_ms > 0:

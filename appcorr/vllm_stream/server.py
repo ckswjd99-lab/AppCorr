@@ -2,11 +2,11 @@
 
 Runs in the `appcorr-vllm` env (vllm 0.28.0) and owns the LLM; the AppCorr process (vision fork,
 `appcorr` env) talks to it through `bridge.LLMBridge` using the frames in `wire.py`. Single
-event loop: poll the sockets, apply every message that arrived (open / append / final / result),
-then run one engine step if any request is live -- the engine prefills whatever has arrived while
-the vision side is still correcting the next band, which is the whole point (§ docs/memo/
-vllm_stream_design.md). Several clients / requests may be live at once; the engine batches them
-(that is the throughput measurement's lever).
+event loop: poll the sockets, apply every message that arrived (open / append / final / correct /
+result), then run one engine step if any request is live -- the engine prefills whatever has
+arrived while the vision side is still correcting the next band, which is the whole point
+(§ docs/memo/vllm_stream_design.md). Several clients / requests may be live at once; the engine
+batches them (that is the throughput measurement's lever).
 
     CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 VLLM_ENABLE_V1_MULTIPROCESSING=0 \
     PYTHONPATH=/NHNHOME/share/cjpark/AppCorr-vllm \
@@ -28,18 +28,19 @@ from typing import Any, Optional
 
 import torch
 
-from .wire import Frame, FrameParser, error_frame
+from .wire import Frame, FrameParser, error_frame, stage_from_header, stage_to_header
 
 
 class _Req:
     __slots__ = ("rid", "conn", "t_open", "t_final", "t_first", "t_done", "n_prompt", "out",
-                 "waiter", "finished", "logprobs", "max_tokens")
+                 "waiter", "finished", "logprobs", "max_tokens", "t_correct")
 
     def __init__(self, rid, conn, logprobs, max_tokens=0):
         self.rid, self.conn, self.logprobs = rid, conn, logprobs
         self.max_tokens = int(max_tokens)
         self.t_open = time.perf_counter()
         self.t_final = None
+        self.t_correct = []     # interleaved schedule: one arrival per `correct` round
         self.t_first = None
         self.t_done = None
         self.n_prompt = 0
@@ -88,6 +89,15 @@ class StreamServer:
             os.makedirs(d, exist_ok=True)
             self._prof_window = (d, [tuple(int(v) for v in w.split(":")) for w in spec.split(",")])
         self._last_step_info = None
+        # APPCORR_CORRECT_PROFILE=<dir>:<first>:<count>: same profiler window over `correct` calls
+        # (drain + correct step), written to <dir>/corrects.jsonl with the wall/CUDA split.
+        self._cprof_window = None
+        self._n_corrects = 0
+        pw = os.environ.get("APPCORR_CORRECT_PROFILE")
+        if pw:
+            d, f, n = pw.split(":")
+            os.makedirs(d, exist_ok=True)
+            self._cprof_window = (d, int(f), int(n))
 
     def _tr(self, ev: str, **kw):
         if self._trace is not None:
@@ -135,6 +145,8 @@ class StreamServer:
                                       "done_requests": self.n_done}))
             elif op in ("open", "append"):
                 self._chunk(c, f, op)
+            elif op == "correct":
+                self._correct(c, f)
             elif op == "result":
                 self._result(c, f.header["rid"])
             elif op == "abort":
@@ -171,7 +183,10 @@ class StreamServer:
             self.reqs[rid] = r
             c.rids.add(rid)
             try:
-                self.llm.open(rid, chunk, sp)
+                self.llm.open(rid, chunk, sp, correct=bool(f.header.get("correct", False)),
+                              image_start=int(f.header.get("image_start", 0)),
+                              image_end=int(f.header.get("image_end", 0)),
+                              open_walk=int(f.header.get("open_walk", 0)))
             except Exception:
                 self.reqs.pop(rid, None)     # a rejected open must not leave a dead entry
                 c.rids.discard(rid)
@@ -203,6 +218,94 @@ class StreamServer:
         self._reply(c, Frame({"ok": True, "t_recv": t, "num_prompt_tokens": r.n_prompt}))
         self._tr("chunk", t=t, rid=rid, op=op, n=chunk.num_tokens, final=final, n_prompt=r.n_prompt)
 
+    def _correct(self, c: _Conn, f: Frame):
+        """Interleaved schedule (docs/memo/vllm_interleaved_design.md §3.2): rewrite prompt rows
+        of an OPEN request and re-run the decoder on them. Adds no prompt rows, so there is no
+        length check against max_model_len; what is checked instead is that every rewritten row
+        and the whole re-scan window sit below the held-back last row (`request.py`)."""
+        rid = f.header["rid"]
+        r = self.reqs.get(rid)
+        if r is None:
+            raise KeyError(f"correct on unknown request {rid!r}")
+        if r.t_final is not None:
+            raise ValueError(f"{rid}: correct after final")
+        positions = f.get_tensor("positions")
+        embeds = f.get_tensor("embeds")
+        final = bool(f.header.get("final", False))
+        w = f.header["window"]
+        window = (int(w[0]), int(w[1]))
+        # [r, g] (equal-layer bounds, derived engine-side) or [r, g, [b_0..b_{g-1}]] (explicit
+        # -- the unified axis's cost split; wire.py §correct)
+        stage = stage_from_header(f.header.get("stage"))
+        t0 = time.perf_counter()
+        prof = None
+        if self._cprof_window is not None:
+            d, f0, n = self._cprof_window
+            if f0 <= self._n_corrects < f0 + n:
+                from torch.profiler import ProfilerActivity, profile
+                prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
+                prof.__enter__()
+            self._n_corrects += 1
+        try:
+            self._check_rows(rid, positions, embeds, window, r.n_prompt)
+            n_steps0 = self._n_steps
+            out = self.llm.correct(rid, positions, embeds, window, final, step_fn=self._step,
+                                   stage=stage) or {}
+            if prof is not None:
+                prof.__exit__(None, None, None)
+                torch.cuda.synchronize()
+                self._write_correct_profile(prof, rid, positions.shape[0], window, final,
+                                            self._n_steps - n_steps0, out, time.perf_counter() - t0)
+                prof = None
+        except Exception:
+            # Same abort-on-error behaviour as an over-length append: the request can no longer
+            # be completed correctly, and left alone it would never be scheduled again (it is
+            # open with 0 schedulable tokens), so its `result` would block forever.
+            self.reqs.pop(rid, None)
+            c.rids.discard(rid)
+            try:
+                self.llm.engine.abort_request([rid])
+            except Exception as e:  # noqa: BLE001
+                print(f"[server] abort of failed correct {rid} failed: {e}", file=sys.stderr)
+            raise
+        t = time.perf_counter()
+        r.t_correct.append(t)
+        if final:
+            r.t_final = t
+        n_rows = int(positions.shape[0])
+        # t_recv = arrival (same meaning as a push's t_recv); the drain + correct step run
+        # between it and t_done, so the latency probe can split transport from the step.
+        rep = {"ok": True, "t_recv": t0, "t_done": t, "num_rows": n_rows,
+               "n_sub": int(out.get("n_sub", 1)),
+               "t_step_ms": float(out.get("t_step_ms", (t - t0) * 1e3))}
+        if out.get("stage") is not None:
+            rep["stage"] = out["stage"]      # per-step walk/correct timings of the staged form
+        self._reply(c, Frame(rep))
+        self._tr("correct", t=t, rid=rid, n=n_rows, window=list(window), final=final,
+                 stage=(None if stage is None else stage_to_header(stage)))
+
+    def _check_rows(self, rid: str, positions, embeds, window: tuple, n_prompt: int) -> None:
+        n = int(n_prompt)
+        if positions is None or positions.ndim != 1 or positions.numel() == 0:
+            raise ValueError(f"{rid}: correct needs a non-empty 1-D positions tensor")
+        if embeds is None or embeds.ndim != 2 or embeds.shape[0] != positions.shape[0]:
+            shape = None if embeds is None else tuple(embeds.shape)
+            raise ValueError(f"{rid}: correct embeds {shape} do not match "
+                             f"{int(positions.numel())} positions")
+        p0, p1 = int(positions[0]), int(positions[-1])
+        if positions.numel() > 1 and not bool((positions[1:] > positions[:-1]).all()):
+            raise ValueError(f"{rid}: correct positions must be strictly increasing")
+        s, e = window
+        # Row n-1 is held back while the request is open and is computed only at final; nothing
+        # may rewrite it or re-scan across it.
+        if p0 < 0 or p1 >= n - 1:
+            raise ValueError(f"{rid}: correct positions [{p0}, {p1}] outside [0, {n - 1}) "
+                             f"(prompt {n} rows, last one held back)")
+        if not (0 <= s < e <= n - 1):
+            raise ValueError(f"{rid}: correct window [{s}, {e}) outside [0, {n - 1})")
+        if p0 < s or p1 >= e:
+            raise ValueError(f"{rid}: correct positions [{p0}, {p1}] outside window [{s}, {e})")
+
     def _check_len(self, rid: str, n_prompt: int, max_tokens: int) -> None:
         cap = self.llm.max_model_len
         if n_prompt + max_tokens > cap:
@@ -223,7 +326,7 @@ class StreamServer:
         h = {"ok": True, "rid": r.rid, "text": o.text, "token_ids": list(o.token_ids),
              "finish_reason": o.finish_reason, "num_prompt_tokens": r.n_prompt,
              "timing": {"t_open": r.t_open, "t_final": r.t_final, "t_first_token": r.t_first,
-                        "t_done": r.t_done,
+                        "t_done": r.t_done, "t_correct": list(r.t_correct),
                         "ttft_from_last_chunk_ms": (None if r.t_first is None or r.t_final is None
                                                     else (r.t_first - r.t_final) * 1e3),
                         "ttft_from_open_ms": (None if r.t_first is None
@@ -315,6 +418,23 @@ class StreamServer:
             fh.write(json.dumps(info) + "\n")
         self._prof = None
 
+    def _write_correct_profile(self, prof, rid, n_rows, window, final, drain_steps, out, wall_s):
+        import json
+        d, _, _ = self._cprof_window
+        ka = prof.key_averages()
+
+        def dev(e):
+            return getattr(e, "self_device_time_total", getattr(e, "self_cuda_time_total", 0.0))
+        top = sorted(ka, key=lambda e: -dev(e))[:15]
+        info = {"rid": rid, "n_rows": int(n_rows), "window": list(window), "final": bool(final),
+                "drain_steps": int(drain_steps), "wall_ms": wall_s * 1e3,
+                "t_step_ms": float(out.get("t_step_ms", 0.0)), "n_sub": int(out.get("n_sub", 1)),
+                "cuda_ms": sum(dev(e) for e in ka) / 1e3,
+                "n_kernels": sum(e.count for e in ka if dev(e) > 0),
+                "top": [(e.key[:60], e.count, round(dev(e) / 1e3, 3)) for e in top]}
+        with open(os.path.join(d, "corrects.jsonl"), "a") as fh:
+            fh.write(json.dumps(info) + "\n")
+
     def serve_forever(self):
         print(f"[server] {self.llm.model_name} (vllm {self.llm.vllm_version}) listening on "
               f"{self.srv.getsockname()}", flush=True)
@@ -369,8 +489,20 @@ def main():
                          "above that runs eager: 35B steps of 128..850 tokens cost 35-39 ms flat "
                          "vs 15-16 ms for graph replay at <=128 tokens (2026-09-09 trace). 1024 "
                          "(the Blackwell default cap) covers every g=4 band of the table's datasets")
+    ap.add_argument("--interleaved", action="store_true",
+                    help="serve the interleaved schedule: forces VLLM_GDN_DECODE_KERNEL=triton (the "
+                         "default cuda path bypasses the DeltaNet capture/correct hook, memo §6.1) and "
+                         "requires --max-num-seqs >= the largest correct batch (band rows + text "
+                         "suffix; 1024 covers the table's datasets at g=4)")
     a = ap.parse_args()
     os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    if a.interleaved:
+        os.environ["VLLM_GDN_DECODE_KERNEL"] = "triton"
+        # a correct round is sub-batched at max_num_seqs rows (correct.py); a small value only
+        # costs repeated DeltaNet window re-scans. 1024 on 35B; the 122B-FP8 server at gpu-mem
+        # 0.85 / 8k has ~360 mamba blocks, which bounds it to ~256.
+        assert a.max_num_seqs and a.max_num_seqs >= 64, \
+            "--interleaved needs --max-num-seqs >= 64 (rounds are sub-batched at that size)"
     from .client import StreamingLLM
     kw = {"limit_mm_per_prompt": {"image": 1}}
     if a.max_num_seqs:

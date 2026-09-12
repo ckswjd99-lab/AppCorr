@@ -80,6 +80,67 @@ class Qwen35Axis(QwenVLStreamingAxis):
     def _attn_layermean(self, cache: Dict[str, Any]) -> torch.Tensor:
         return cache["v_attn_layermean"]
 
+    # --- unified stage axis ------------------------------------------------------------------- #
+    supports_unified_axis = True
+
+    def _approx_range(self, ctx: Dict[str, Any], cache: Dict[str, Any], start_l: int, end_l: int,
+                      x=None, collect_attn: bool = False) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        return self.tower.approx_forward(
+            ctx["hidden_states"] if x is None else x, start_l, end_l, ctx, cache, "v",
+            collect_attn_mean=bool(collect_attn))
+
+    def _attn_layermean_prefix(self, cache: Dict[str, Any], n_layers: int) -> torch.Tensor:
+        return self.tower.prefix_attn_layermean(cache, "v", n_layers)
+
+    def _vision_stage_cost(self, n_rows: int) -> float:
+        """One tower layer over `n_rows` rows: fused qkv + full attention + out proj + the
+        2-layer (ungated) MLP, 2 FLOPs per MAC, norms/softmax excluded -- the convention
+        `appcorr/flops/hooks.py` and `analysis/experiments/flops_analytic.vision_layer_flops`
+        both follow, so the axis's bounds and the cost table price the same stage."""
+        v = self.cfg.vision_config
+        h, heads, ffn = int(v.hidden_size), int(v.num_heads), int(v.intermediate_size)
+        return float(2 * n_rows * h * (3 * h)                       # qkv
+                     + 2 * 2 * heads * n_rows * n_rows * (h // heads)   # QK^T + AV
+                     + 2 * n_rows * h * h                           # out proj
+                     + 2 * 2 * n_rows * h * ffn)                    # fc1 + fc2
+
+    def _llm_stage_costs(self, n_prompt: int) -> list:
+        """Per decoder layer over an `n_prompt`-token prefill, from the text config alone (the
+        vLLM campaigns load the tower only, so no decoder module exists to measure).
+
+        Term for term `flops_analytic.Qwen35Decoder.prefill_flops` split by layer: every layer
+        pays the MoE block (routed top-k + router + shared expert) or the 4B's dense MLP; a
+        Gated DeltaNet layer pays its projections, the depthwise conv and the delta-rule scan; a
+        softmax layer pays q/k/v/o and the quadratic term at Sq = Sk = N.
+        """
+        t = self.cfg.text_config
+        L, H = int(t.num_hidden_layers), int(t.hidden_size)
+        heads, kv_heads = int(t.num_attention_heads), int(t.num_key_value_heads)
+        dh = int(getattr(t, "head_dim", H // heads))
+        types = getattr(t, "layer_types", None)
+        if types is None:
+            iv = int(t.full_attention_interval)
+            types = ["full_attention" if (i + 1) % iv == 0 else "linear_attention"
+                     for i in range(L)]
+        n_exp = int(getattr(t, "num_experts", 0) or 0)
+        if n_exp:
+            mlp = (2 * int(t.num_experts_per_tok) * 3 * int(t.moe_intermediate_size) * H
+                   + 2 * H * n_exp
+                   + 3 * 2 * H * int(t.shared_expert_intermediate_size) + 2 * H)
+        else:
+            mlp = 3 * 2 * H * int(t.intermediate_size)
+        k_dim = int(t.linear_num_key_heads) * int(t.linear_key_head_dim)
+        v_dim = int(t.linear_num_value_heads) * int(t.linear_value_head_dim)
+        gdn = (2 * H * (2 * k_dim + v_dim) + 2 * H * v_dim
+               + 2 * 2 * H * int(t.linear_num_value_heads) + 2 * v_dim * H          # projections
+               + 2 * (2 * k_dim + v_dim) * int(t.linear_conv_kernel_dim)            # conv
+               + 2 * int(t.linear_num_value_heads) * 2 * int(t.linear_key_head_dim)
+               * int(t.linear_value_head_dim))                                      # scan
+        full = 2 * H * (heads * dh * 2 + 2 * kv_heads * dh) + 2 * (heads * dh) * H
+        quad = 2 * 2 * heads * n_prompt * n_prompt * dh
+        return [float(n_prompt * (mlp + full) + quad) if ty == "full_attention"
+                else float(n_prompt * (mlp + gdn)) for ty in types]
+
     def _attn_layermean_deferred(self, cache: Dict[str, Any], ctx_base: Dict[str, Any]) -> torch.Tensor:
         cache = self.tower.deferred_attn_layermean(cache, "v", len(self.tower.blocks), ctx_base)
         return cache["v_attn_layermean"]

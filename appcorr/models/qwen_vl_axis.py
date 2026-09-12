@@ -30,6 +30,22 @@ same in both modes; only who consumes the chunks changes. `oneshot_embeds` gives
 ceiling arms the same one-request path (stock tower, one chunk), so all arms of a vLLM campaign
 decode through the identical engine -- the decode-mechanism-consistency rule the HF driver
 enforces with its shared greedy loop, restated for the two-process form.
+
+**Two LLM schedules over that one vision path.** `llm_schedule="streaming"` (default) appends each
+band to the prompt; `llm_schedule="interleaved"` pushes the whole approximate prompt at t=0 and
+rewrites each band's rows in place through `StreamSink.correct` (docs/memo/
+vllm_interleaved_design.md). The vision work and the band boundaries are identical in both -- only
+what the sink is told changes -- so at keep=1 the per-position embeddings the LLM ends up holding
+are bitwise equal (gate G5, `analysis/experiments/vllm_interleaved_axis_gate.py`).
+`llm_schedule="interleaved_staged"` sends the same messages tagged with the round index so the
+engine runs the depth-staged form (memo §7.11): round r's rows are corrected over the first
+`b_r` decoder layers and every image row is then walked through the next layer band with the
+corrected context -- the ProgVFM §3.3 schedule, whose k<1 result differs from the unstaged one.
+`llm_schedule="unified_staged"` puts the VISION TOWER inside that staging (memo §7.12): the
+tower's layers and the decoder's form ONE axis, cut into `groups` rounds of equal COST, so the
+early rounds fall inside the tower and the LLM is opened only when a bound crosses the projector
+-- the whole prompt then goes out with the bands corrected so far already corrected. It is the
+gemma3 `interleaved_forward` walk (`appcorr/models/gemma3/unified.py`) on the Qwen3.5 pair.
 """
 from __future__ import annotations
 
@@ -72,6 +88,21 @@ class QwenVLStreamingAxis(nn.Module):
         # image_embeds_with_sink: keep the fp32 image-row copy in `stats` even when the chunks
         # left the process (only the in-process gates read it; 250 MB at 15k tokens).
         self.correct_rows_only = True
+        # Unified axis only: once the frontier has crossed the projector no approximate range
+        # reads the vision stream again, so the rounds after the crossing satisfy the
+        # `correct_rows` contract (every corrected row read from layer 0, non-corrected rows
+        # never read: the merge takes them from the crossing stream `x_base_out`) and can drop
+        # the [T, D] reconstruction + rule-3 write-back of `correct_forward`. Rows are bitwise
+        # the same (gated: analysis/experiments/vllm_unified_hybrid_gate.py); the last band's
+        # vision correct was 62 vs 34 ms on V*Bench with the full-stream form (2026-09-11).
+        self.unified_rows_after_crossing = True
+        # Unified axis only: the opening push asks the engine to SKIP its stock full-depth
+        # prefill and instead walk the prompt rows through the first LLM stage `[0, b_0)` at
+        # open (`open_walk`), so the served work is the closed form's (approx pass spread over
+        # the rounds) and the first LLM round does not carry a full prefill on its critical path.
+        # State-identical to the stock-prefill form (the same walk ran inside the first round
+        # before); gated served (vllm_unified_gate.py).
+        self.engine_open_walk = True
         self.positions_mode = "fast"
         self.image_embeds_with_sink = False
         # keep<1 selection score: True = the attention term is computed after the first band's
@@ -111,6 +142,77 @@ class QwenVLStreamingAxis(nn.Module):
         unit = self.tower.spatial_merge_unit
         return (group_idx.unsqueeze(1) * unit
                 + torch.arange(unit, device=group_idx.device)).flatten()
+
+    # --- unified stage axis (vision layers then decoder layers) --------------------------------- #
+    #
+    # `llm_schedule="unified_staged"` walks ONE axis of `n_vision + n_llm` stages, split into
+    # rounds by equal COST (gemma3's `layer_bounds`, ported). Counting stages would be wrong: a
+    # vision layer runs 4 x n_image_tokens rows at width 1152 and a decoder layer N tokens at
+    # width 2048-3072 with three layers in four recurrent -- not interchangeable units. The
+    # bounds are therefore a function of the REQUEST (n_rows, N), computed per request.
+
+    supports_unified_axis = False        # subclasses that implement the two cost hooks
+
+    def _vision_stage_cost(self, n_rows: int) -> float:
+        """FLOPs of ONE vision-tower layer over `n_rows` patch rows (full attention)."""
+        raise NotImplementedError
+
+    def _llm_stage_costs(self, n_prompt: int) -> List[float]:
+        """FLOPs of EACH decoder layer over an `n_prompt`-token prefill. A list, not one number:
+        the Qwen3.5 decoder is hybrid (softmax vs Gated DeltaNet layers cost differently), so the
+        bound must fall where the cumulative cost says, not where a layer count says."""
+        raise NotImplementedError
+
+    def _approx_range(self, ctx: Dict[str, Any], cache: Dict[str, Any], start_l: int, end_l: int,
+                      x: Optional[torch.Tensor] = None, collect_attn: bool = False):
+        """Approximate walk of vision layers `[start_l, end_l)` on `x` (the layer-0 stream of
+        `ctx` when None). The unified axis's replacement for `_approx_base`'s full-depth pass."""
+        raise NotImplementedError
+
+    def _attn_layermean_prefix(self, cache: Dict[str, Any], n_layers: int) -> torch.Tensor:
+        """[n_rows] received-attention mean over the first `n_layers` vision layers."""
+        raise NotImplementedError
+
+    def unified_stage_costs(self, n_rows: int, n_prompt: int) -> List[float]:
+        return ([self._vision_stage_cost(n_rows)] * len(self.tower.blocks)
+                + self._llm_stage_costs(n_prompt))
+
+    def unified_bounds(self, groups: int, n_rows: int, n_prompt: int) -> List[int]:
+        """Round boundaries over the unified axis, split by equal cumulative COST.
+
+        `bounds[r]` is the depth round r corrects at (and the depth its own approximate frontier
+        sits at when it starts); the frontier then advances to `bounds[r+1]`. The last bound is
+        always the whole axis, so the final round is full depth -- which is what makes `groups=1`
+        the identity against today's `interleaved` and keeps the critical path unchanged.
+        """
+        costs = self.unified_stage_costs(n_rows, n_prompt)
+        n = len(costs)
+        if groups <= 1:
+            return [n]
+        if groups > n:
+            # The de-duplication loop below can only invent bounds that exist; asking for more
+            # rounds than stages would spin forever looking for one (gemma3's `layer_bounds`
+            # has the same loop and the same hole -- it never bites there because 61 stages are
+            # never split 61 ways, and 67/75 here are not either).
+            raise ValueError(f"{groups} rounds over a {n}-stage axis: at most one round per stage")
+        total = sum(costs)
+        cum, acc = [], 0.0
+        for c in costs:
+            acc += c
+            cum.append(acc / total)
+        bounds = []
+        for r in range(1, groups):
+            target = r / groups
+            b = next((i + 1 for i, c in enumerate(cum) if c >= target), n)
+            bounds.append(max(1, min(b, n - 1)))
+        bounds = sorted(set(bounds))
+        while len(bounds) < groups - 1:            # keep `groups` distinct rounds
+            for cand in range(1, n):
+                if cand not in bounds:
+                    bounds.append(cand)
+                    break
+            bounds = sorted(set(bounds))
+        return bounds + [n]
 
     # --- flop scopes (same shape as gemma3/ov2) ------------------------------------------------- #
 
@@ -249,6 +351,7 @@ class QwenVLStreamingAxis(nn.Module):
                           sink: Optional[Any] = None,
                           image_run: Optional[Tuple[int, int]] = None,
                           grid_thw: Optional[Tuple[int, int, int]] = None,
+                          llm_schedule: str = "streaming",
                           ) -> Tuple[Optional[torch.Tensor], Any, Dict[str, Any]]:
         """Progressive arrival: vision approximates-then-corrects per band, the LLM streams.
 
@@ -283,11 +386,41 @@ class QwenVLStreamingAxis(nn.Module):
             image_run: optional (start, count) of the image-token run, and grid_thw the (t, h, w)
                 patch grid, both as Python ints from the CPU side of the driver's prep; when
                 given, nothing about the prompt layout is read back from the GPU.
+            llm_schedule: how the LLM consumes the bands (docs/memo/vllm_interleaved_design.md).
+                "streaming" (default) prefills each band once, append-only: band r's chunk is
+                rows [lo+g0_r, lo+g1_r) and no row is ever revisited. "interleaved" pushes the
+                WHOLE prompt once at t=0 with every image row at its approximate (base) merge,
+                lets the engine prefill it, and then REWRITES each band's corrected rows in
+                place as they are produced -- so the critical path after the last arrival is
+                k/g of the image rows plus the text suffix, not the whole prompt. Sink path
+                only: rewriting rows of a KV cache the HF model already built is exactly the
+                engine-side work `StreamingLLM.correct` exists for. "interleaved_staged" is
+                the same message sequence with `stage=(r, g)` on every correct (depth-staged
+                rounds on the engine; g = number of non-empty bands). "unified_staged" walks
+                the tower and the decoder as ONE cost-split axis: the approximate pass is
+                chunked by layer range too, band r is corrected only over the stages walked so
+                far, and the opening push happens when the frontier crosses the projector, so
+                it carries the earlier bands already corrected. Fewer LLM rounds than `groups`,
+                at explicit bounds -- `stage=(r, n_llm_rounds, bounds)` on the wire.
 
         Returns (final_position_logits, kv_cache, stats).
         """
         from transformers.cache_utils import DynamicCache
 
+        if llm_schedule not in ("streaming", "interleaved", "interleaved_staged",
+                                "unified_staged"):
+            raise ValueError(f"llm_schedule {llm_schedule!r}")
+        unified = llm_schedule == "unified_staged"
+        interleaved = llm_schedule.startswith("interleaved") or unified
+        staged = llm_schedule in ("interleaved_staged", "unified_staged")
+        if unified and not self.supports_unified_axis:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no unified stage axis (the two cost hooks and the "
+                "chunked approx walk); it is implemented for Qwen3.5 only")
+        if interleaved and sink is None:
+            raise NotImplementedError(
+                "llm_schedule='interleaved' is sink-only: rewriting rows an HF DynamicCache has "
+                "already prefilled is the engine-side `StreamingLLM.correct` step (memo §2)")
         ids = inputs["input_ids"]
         grid = inputs["image_grid_thw"]
         px_full = inputs["pixel_values"].to(self.model.dtype)
@@ -300,7 +433,11 @@ class QwenVLStreamingAxis(nn.Module):
         seq = int(ids.shape[1])
         unit = self.tower.spatial_merge_unit
         dev = px_full.device
-        rows_only = self.correct_rows_only
+        # `correct_rows` is a full-depth shortcut that skips the rule-3 write-back and the
+        # [T, D] reconstruction; the unified axis needs both while its later approx ranges READ
+        # the stream a correction produced, i.e. up to the projector crossing -- after it the
+        # per-round `rows_r` below switches to the shortcut (`unified_rows_after_crossing`).
+        rows_only = self.correct_rows_only and not unified
 
         # Arrival 0: everything that needs only the base image. The grid-only prep (positions,
         # rotary tables, segment ranges) is shared by the two embeds -- it is grid-shape-exact,
@@ -316,15 +453,37 @@ class QwenVLStreamingAxis(nn.Module):
             n_groups_total = n_rows // unit
             if n_tok != n_groups_total:
                 raise ValueError(f"{n_tok} image tokens vs {n_groups_total} merge groups")
-            defer = keep < 1.0 and self.pscore_defer and self.supports_deferred_pscore
-            with self._stage("vision_base"):
-                x_base_out, cache = self._approx_base(
-                    ctx_base, cache, collect_attn=("defer" if defer else keep < 1.0))
+            # The deferred score buys nothing on the unified axis: it hides the attention column
+            # sum behind the first PUSH, and the unified schedule has not pushed anything when
+            # band 0 must be selected (the LLM opens only when the frontier crosses the tower).
+            defer = (keep < 1.0 and self.pscore_defer and self.supports_deferred_pscore
+                     and not unified)
+            n_vis = len(self.tower.blocks)
+            if unified:
+                # One axis: tower layers 0..n_vis-1 then decoder layers 0..n_llm-1, cut into
+                # `groups` rounds of equal COST. Round r corrects at depth bounds[r] and then
+                # advances the frontier to bounds[r+1] (gemma3/unified.py's walk).
+                n_llm = int(self.cfg.text_config.num_hidden_layers)
+                bounds = self.unified_bounds(groups, int(n_rows), seq)
+                assert len(bounds) == groups and bounds[-1] == n_vis + n_llm, bounds
+                v_front = min(bounds[0], n_vis)
+                with self._stage("vision_base"):
+                    x_v, cache = self._approx_range(ctx_base, cache, 0, v_front,
+                                                    collect_attn=keep < 1.0)
+                x_base_out = x_v          # the frontier stream; becomes the crossing merge below
+            else:
+                with self._stage("vision_base"):
+                    x_base_out, cache = self._approx_base(
+                        ctx_base, cache, collect_attn=("defer" if defer else keep < 1.0))
 
         emb_all = self.lm.embed_tokens(ids)
         bands = self._bands(groups, n_groups_total)
         stats = {"prefill_tokens": 0, "corrected_groups": 0, "chunks": [],
                  "group_idx": []}  # decode_start_pos added below
+        if unified:
+            # The cost script replays the vision half from these (it is no longer common across
+            # arms): one record per approximate layer range and per band correction.
+            stats["chunks"].append(("vapprox", 0, v_front, int(n_rows)))
 
         pos_3d, rope_delta = self._positions(inputs, image_run=(lo, n_tok), grid_thw=grid_thw)
         # Where a decode loop on top of the returned cache must continue from: stock advances all
@@ -349,7 +508,17 @@ class QwenVLStreamingAxis(nn.Module):
                 return vec / vec.mean().clamp_min(1e-12)
 
             # Deferred: band 0 ranks on the energy hint; the attention term joins after push 0.
-            score = energy if defer else energy * attn_term(self._attn_layermean(cache))
+            # Unified: PROGRESSIVE -- band r ranks on the layers walked so far (recomputed at the
+            # top of each round below), because the full-tower mean does not exist yet. That is a
+            # different SIGNAL, not only a different schedule: at keep<1 the unified arm selects a
+            # different set from the streaming / interleaved arms, so contract rule 5 says the
+            # k<1 arms are not directly comparable across schedules (k=1 is: everything is
+            # selected). Same trade gemma3's `interleaved_forward_progressive` makes, and the
+            # alternative -- a full-depth scoring pass before round 0 -- runs the tower twice.
+            if unified:
+                score = energy * attn_term(self._attn_layermean_prefix(cache, v_front))
+            else:
+                score = energy if defer else energy * attn_term(self._attn_layermean(cache))
             n_sel = max(1, int(round(keep * n_groups_total)))
             quota = [n_sel // groups + (1 if r_ < n_sel % groups else 0) for r_ in range(groups)]
             selected = torch.zeros(n_groups_total, dtype=torch.bool, device=score.device)
@@ -375,6 +544,45 @@ class QwenVLStreamingAxis(nn.Module):
             stats["prefill_tokens"] += end - pos_done
             pos_done = end
 
+        sent_in_round = True     # arrival 0 counts as "spaced": band 0 is never delayed
+
+        def open_prompt(x_stream):
+            """Open the LLM with the WHOLE prompt, every image row at the merge of `x_stream`.
+
+            The engine prefills it (hold-back: row seq-1 waits for `final`) while the next band
+            is still being corrected; each band then rewrites its own rows in place. Merging in
+            band-sized slices bounds the merger's working set to what the streaming schedule
+            already gives it. The interleaved schedules call this at t=0 with the base pass's
+            output; the unified axis calls it the moment its approximate frontier crosses out of
+            the tower, so the bands already corrected go out CORRECTED and the rest approximate.
+            """
+            nonlocal sent_in_round
+            sent_in_round = True
+            with self._stage("merge"):
+                for g0_, g1_ in bands:
+                    if g1_ <= g0_:
+                        continue
+                    b_rows = self._rows_of_groups(ctx_full, torch.arange(g0_, g1_, device=dev))
+                    emb_all[:, lo + g0_:lo + g1_] = \
+                        self.tower.merger(x_stream[b_rows]).unsqueeze(0).to(emb_all.dtype)
+            with self._stage("llm_prefill"):
+                # clone: the push's device->host copy is ordered after this point on a side
+                # stream, and the band loop overwrites these very rows -- without the
+                # snapshot the approx prompt could carry rows corrected later, which is the
+                # contract's rule-2 leak (data from the future) in wire form.
+                sink.push(emb_all[0, :seq].clone(), pos_3d[:, 0, :seq], rope_delta, final=False,
+                          correct_from=lo,
+                          correct_to=(lo + n_groups_total if staged else None),
+                          **({"open_walk": int(llm_bounds[0])}
+                             if unified and self.engine_open_walk else {}))
+            stats["chunks"].append(("approx", 0, seq - 1))
+            stats["prefill_tokens"] += seq - 1
+
+        if interleaved and not unified:
+            # t=0: the WHOLE approximate prompt, every image row at its base-resolution merge.
+            with self._arrival(0):
+                open_prompt(x_base_out)
+
         # Rows arrived so far -- the residual-stream restart mixes full rows (arrived) with base
         # rows (not yet), which is the in-process equivalent of the executor path's "reconstructed
         # canvas": the stream the correction restarts from is exactly what has been received.
@@ -387,21 +595,98 @@ class QwenVLStreamingAxis(nn.Module):
         last_arrival = 0
         last_band = max(r for r, (g0, g1) in enumerate(bands) if g1 > g0)
         pscore_pending = keep < 1.0 and defer
+        # Bands whose message has already left. `pos_done > 0` used to stand in for this, but the
+        # interleaved branch never advances `pos_done` (its prompt went out whole at t=0), so the
+        # deferred score would never have completed there and the two schedules would have
+        # SELECTED DIFFERENT GROUPS -- the interleaved contract's rule 5, and unobservable in any
+        # gate that compares the two arms' embeddings alone.
+        bands_done = 0
+        if unified:
+            # Only the rounds whose bound has crossed out of the tower send a `correct`: before
+            # that the LLM has not been opened at all. So the engine sees FEWER rounds than
+            # `groups`, at bounds that are neither `L(r+1)/g` nor equally spaced -- hence the
+            # explicit-bounds form of the wire's `stage` field (memo §7.12).
+            if any(g1_ <= g0_ for g0_, g1_ in bands):
+                raise ValueError(f"unified_staged needs one non-empty band per round: groups="
+                                 f"{groups} over {n_groups_total} merge groups")
+            llm_rounds = [r_ for r_ in range(groups) if bounds[r_] > n_vis]
+            assert llm_rounds and llm_rounds[-1] == groups - 1, (bounds, n_vis)
+            llm_bounds = tuple(bounds[r_] - n_vis for r_ in llm_rounds)
+            assert llm_bounds[-1] == n_llm, (llm_bounds, n_llm)
+            stage_of = {r_: (j, len(llm_rounds), llm_bounds) for j, r_ in enumerate(llm_rounds)}
+            stats["unified_bounds"] = list(bounds)
+            stats["unified_llm_bounds"] = list(llm_bounds)
+            stats["open_walk"] = int(llm_bounds[0]) if self.engine_open_walk else 0
+            opened = bounds[0] > n_vis
+            if opened:
+                # The first bound already crosses the projector (always at groups=1, and on
+                # prompts whose decoder half dominates): the tower has just been walked to full
+                # depth on the base image, so this push IS the interleaved schedule's t=0 push
+                # -- which is what makes groups=1 an identity against it.
+                with self._arrival(0):
+                    x_base_out = x_v
+                    open_prompt(x_v)
+
+        def advance(r_: int) -> None:
+            """End of round r_: push the approximate frontier from bounds[r_] to bounds[r_+1].
+
+            Tower stages first; the moment the next bound reaches past the last tower layer the
+            axis crosses the projector -- the vision stream is merged AS IT STANDS (bands
+            0..r_ corrected and carried, the rest approximate) and the whole prompt opens the
+            LLM. After that the tower frontier is at `n_vis` and only corrections change it, so
+            `x_base_out` (the merge's reference for rows a later band does NOT correct) is
+            pinned to the crossing stream -- the unified analogue of the interleaved arm's
+            base-resolution merge, and what keeps an uncorrected row's LLM input the value the
+            opening push actually carried.
+            """
+            nonlocal x_v, v_front, opened, x_base_out, cache
+            nxt = bounds[r_ + 1] if r_ + 1 < groups else bounds[-1]
+            v_nxt = min(nxt, n_vis)
+            if v_front < v_nxt:
+                with self._stage("vision_approx"):
+                    x_v, cache = self._approx_range(ctx_base, cache, v_front, v_nxt, x=x_v,
+                                                    collect_attn=keep < 1.0)
+                stats["chunks"].append(("vapprox", v_front, v_nxt, int(n_rows)))
+                v_front = v_nxt
+            if nxt > n_vis and not opened:
+                x_base_out = x_v
+                open_prompt(x_v)
+                opened = True
+
         for r, (g0, g1) in enumerate(bands):
             if g1 <= g0:
                 continue
             last_arrival = r + 1
+            if unified and not sent_in_round and hasattr(sink, "band_gap"):
+                # The previous round crossed nothing and sent nothing, so the bridge's
+                # band-spacing sleep never ran: apply it here, or this band's pixels would
+                # "arrive" the instant the last one was processed (memo §7.12, latency).
+                sink.band_gap()
+            sent_in_round = False
+            if hasattr(sink, "band_start"):
+                sink.band_start()
             with self._arrival(last_arrival):
-                if pscore_pending and pos_done > 0:
+                if pscore_pending and bands_done:
                     # First band is out: complete the score for the bands still to be selected.
                     # PSCORE stage = the FLOP counter's excluded scope (a bare column sum the
                     # hooks never saw anyway; the label keeps the split honest if that changes).
                     with self._stage("PSCORE"):
                         score = energy * attn_term(self._attn_layermean_deferred(cache, ctx_base))
                     pscore_pending = False
+                if unified and keep < 1.0:
+                    # Progressive: rank on every tower layer walked SO FAR. Costs nothing extra
+                    # -- each layer's received-attention vector was collected inside its own
+                    # approximate range (uncounted; see PSCORE above) -- and is the best signal
+                    # that exists at the moment this band's groups must be chosen.
+                    score = energy * attn_term(self._attn_layermean_prefix(cache, v_front))
                 band_groups = torch.arange(g0, g1, device=dev)
                 band_rows_idx = self._rows_of_groups(ctx_full, band_groups)
-                if not rows_only:
+                # Unified, after the crossing: the tower frontier is at full depth for good and
+                # this round's correct is full depth too -- the rows-only shortcut applies.
+                rows_r = rows_only or (unified and opened and v_front == n_vis
+                                       and self.correct_rows_only
+                                       and self.unified_rows_after_crossing)
+                if not rows_r:
                     arrived_rows[band_rows_idx] = True
                     stream = torch.where(arrived_rows.unsqueeze(-1),
                                          ctx_full["hidden_states"], ctx_base["hidden_states"])
@@ -423,17 +708,28 @@ class QwenVLStreamingAxis(nn.Module):
                     group_idx = band_groups
                 if group_idx.numel():
                     with self._stage("vision_correct"):
-                        if rows_only:
+                        if rows_r:
                             # keep=1.0: the band IS the contiguous group range [g0, g1), so the
                             # tower can slice rows instead of gathering them (span, no sync).
                             unit = self.tower.spatial_merge_unit
                             x_rows, cache = self.tower.correct_rows(
                                 ctx_full["hidden_states"], group_idx, ctx_full, cache, "v",
                                 span=(g0 * unit, g1 * unit) if keep >= 1.0 else None)
+                            if unified:
+                                stats["chunks"].append(
+                                    ("vcorrect", 0, n_vis, int(group_idx.numel()) * unit))
                         else:
+                            # Unified: over the tower layers walked so far, not the full depth.
+                            # `v_front` is this round's bound (bounds[r]) clamped to the tower --
+                            # correcting deeper than the approximate pass has reached would read
+                            # K/V that does not exist yet.
+                            depth = v_front if unified else len(self.tower.blocks)
                             x_v, cache = self.tower.correct_forward(stream, group_idx, 0,
-                                                                    len(self.tower.blocks), ctx_full,
+                                                                    depth, ctx_full,
                                                                     cache, "v")
+                            if unified:
+                                stats["chunks"].append(
+                                    ("vcorrect", 0, depth, int(group_idx.numel()) * unit))
                 stats["corrected_groups"] += int(group_idx.numel()) if keep < 1.0 else (g1 - g0)
                 stats["group_idx"].append(group_idx)  # device tensors, no sync (gates read them)
                 # Merge ONLY this band. The merger is per-merge-group (norm -> reshape(unit) ->
@@ -442,8 +738,15 @@ class QwenVLStreamingAxis(nn.Module):
                 # uses (mixed = corrected rows from the walk, everything else feats_appr), not the
                 # stream+increment reconstruction, which mixes refined layer-0 with degraded
                 # increments (the self-inconsistent combination the CLIP memo measured below floor).
+                # Unified: nothing to merge or send before the LLM has been opened -- the rounds
+                # up to the crossing are pure tower rounds and their corrections reach the LLM
+                # through the opening push's merge of the stream as it then stands.
+                if unified and not opened:
+                    advance(r)
+                    bands_done += 1
+                    continue
                 with self._stage("merge"):
-                    if rows_only:
+                    if rows_r:
                         if keep < 1.0:
                             # Gather is a fresh tensor; the corrected rows (group-major in
                             # group_idx order) overwrite their groups' slots within the band.
@@ -465,17 +768,69 @@ class QwenVLStreamingAxis(nn.Module):
                     merged = self.tower.merger(band_rows)
                 emb_all[:, lo + g0:lo + g1] = merged.unsqueeze(0).to(emb_all.dtype)
                 with self._stage("llm_prefill"):
-                    # r=0 also carries the leading text; the last band carries the trailing text
-                    # (question + generation prompt) in the SAME chunk: it waits on the last band
-                    # anyway (same arrival -- charging it later would invent an arrival the
-                    # transmission never had), and one prefill of image tail + text is one
-                    # engine step instead of two (2026-09-09, was a separate trailing push).
-                    prefill(seq if r == last_band else lo + g1)
-        assert pos_done == seq, (pos_done, seq)
+                    if interleaved:
+                        # Round r rewrites ONLY this band's corrected rows (contract rule 1);
+                        # rows this band did not select keep the approximate value the t=0 push
+                        # already carried, and are simply absent from P_r. The last round also
+                        # carries the text suffix -- it must see the fully corrected image -- and
+                        # since [lo+g0, lo+G) and [lo+G, seq-1) are ADJACENT, one re-scan window
+                        # [lo+g0, seq-1) covers both, so it is one message, not two.
+                        pos_r = lo + group_idx.to(dev)
+                        end = lo + g1
+                        if r == last_band:
+                            end = seq - 1        # row seq-1 is the hold-back, never rewritten
+                            pos_r = torch.cat([pos_r, torch.arange(
+                                lo + n_groups_total, end, device=dev, dtype=pos_r.dtype)])
+                        if r == last_band and pos_r.numel() == 0:
+                            raise RuntimeError(
+                                "interleaved: the final round corrects nothing and carries no "
+                                "text suffix -- nothing would release the held-back last row")
+                        if pos_r.numel():
+                            # Gathered from emb_all, which this band's merge has just been
+                            # written into: bitwise the rows the streaming schedule pushes for
+                            # the same positions (gate G5).
+                            # staged: rounds are the non-empty bands 0..last_band; a band
+                            # that selected no row is simply not sent (the engine's next
+                            # round walks the frontier over the skipped layer range).
+                            # unified: the LLM rounds are only the bands after the crossing,
+                            # and their bounds come from the cost split, so the round index,
+                            # the round COUNT and the bounds all go on the wire explicitly.
+                            rec = ("correct", lo + g0, end, int(pos_r.numel()))
+                            if unified:
+                                stage = stage_of[r]
+                                rec = rec + (stage[0], stage[1], int(stage[2][stage[0]]))
+                            elif staged:
+                                stage = (r, last_band + 1)
+                                rec = rec + stage
+                            else:
+                                stage = None
+                            sink.correct(pos_r, emb_all[0, pos_r], (lo + g0, end),
+                                         final=(r == last_band), stage=stage)
+                            sent_in_round = True
+                            stats["chunks"].append(rec)
+                            stats["prefill_tokens"] += int(pos_r.numel())
+                    else:
+                        # r=0 also carries the leading text; the last band carries the trailing
+                        # text (question + generation prompt) in the SAME chunk: it waits on the
+                        # last band anyway (same arrival -- charging it later would invent an
+                        # arrival the transmission never had), and one prefill of image tail +
+                        # text is one engine step instead of two (2026-09-09, was a separate
+                        # trailing push).
+                        prefill(seq if r == last_band else lo + g1)
+                if unified:
+                    advance(r)
+            bands_done += 1
+        if interleaved:
+            assert pos_done == 0, "the streaming prefill closure ran in the interleaved branch"
+        else:
+            assert pos_done == seq, (pos_done, seq)
+        if unified:
+            assert opened and v_front == n_vis, (opened, v_front, n_vis)
+        stats["llm_schedule"] = llm_schedule
         stats["decode_start_pos"] = stats_decode_pos
         stats["rope_delta"] = rope_delta
         if keep < 1.0:
-            stats["pscore"] = "deferred" if defer else "eager"
+            stats["pscore"] = "progressive" if unified else ("deferred" if defer else "eager")
         # The image-row embeddings the LLM actually consumed, for feature-space gating. Task
         # metrics are not monotone in fidelity (the interleaved contract says this in as many
         # words), and Qwen3.5's first generated token is CoT boilerplate that ignores the image

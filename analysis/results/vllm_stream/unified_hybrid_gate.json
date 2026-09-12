@@ -1,0 +1,114 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "rows": [
+  {
+   "dataset": "vstar",
+   "keep": 1.0,
+   "prompt_tokens": 2966,
+   "n_msgs": 3,
+   "msgs_bitwise": true,
+   "why": "",
+   "chunks_equal": true,
+   "n_vcorrect": 4,
+   "bounds": [
+    11,
+    22,
+    41,
+    67
+   ],
+   "t_full_stream_s": 0.602,
+   "t_rows_s": 0.211
+  },
+  {
+   "dataset": "vstar",
+   "keep": 0.5,
+   "prompt_tokens": 2966,
+   "n_msgs": 3,
+   "msgs_bitwise": true,
+   "why": "",
+   "chunks_equal": true,
+   "n_vcorrect": 4,
+   "bounds": [
+    11,
+    22,
+    41,
+    67
+   ],
+   "t_full_stream_s": 0.834,
+   "t_rows_s": 0.401
+  },
+  {
+   "dataset": "vstar",
+   "keep": 0.25,
+   "prompt_tokens": 2966,
+   "n_msgs": 3,
+   "msgs_bitwise": true,
+   "why": "",
+   "chunks_equal": true,
+   "n_vcorrect": 4,
+   "bounds": [
+    11,
+    22,
+    41,
+    67
+   ],
+   "t_full_stream_s": 0.381,
+   "t_rows_s": 0.371
+  },
+  {
+   "dataset": "realworldqa",
+   "keep": 1.0,
+   "prompt_tokens": 1363,
+   "n_msgs": 3,
+   "msgs_bitwise": true,
+   "why": "",
+   "chunks_equal": true,
+   "n_vcorrect": 4,
+   "bounds": [
+    13,
+    26,
+    47,
+    67
+   ],
+   "t_full_stream_s": 0.12,
+   "t_rows_s": 0.154
+  },
+  {
+   "dataset": "realworldqa",
+   "keep": 0.5,
+   "prompt_tokens": 1363,
+   "n_msgs": 3,
+   "msgs_bitwise": true,
+   "why": "",
+   "chunks_equal": true,
+   "n_vcorrect": 4,
+   "bounds": [
+    13,
+    26,
+    47,
+    67
+   ],
+   "t_full_stream_s": 0.136,
+   "t_rows_s": 0.179
+  },
+  {
+   "dataset": "realworldqa",
+   "keep": 0.25,
+   "prompt_tokens": 1363,
+   "n_msgs": 3,
+   "msgs_bitwise": true,
+   "why": "",
+   "chunks_equal": true,
+   "n_vcorrect": 4,
+   "bounds": [
+    13,
+    26,
+    47,
+    67
+   ],
+   "t_full_stream_s": 0.18,
+   "t_rows_s": 0.131
+  }
+ ],
+ "PASS": true
+}

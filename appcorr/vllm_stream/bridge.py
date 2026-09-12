@@ -15,6 +15,11 @@ sent in the order the axis produces them, which is sequence order -- the server 
 One-shot arms (floor/ceiling) are a single `push(..., final=True)` -- the same request path with
 one chunk, so every arm decodes through the identical engine.
 
+The interleaved schedule uses the same sink with a second verb: one `push(whole approx prompt,
+final=False)` at t=0 and then `correct(positions, embeds, window, final)` per band, which
+REWRITES rows the engine already prefilled instead of appending new ones (docs/memo/
+vllm_interleaved_design.md §3.3). Both verbs record into `pushes`, tagged by `rec["kind"]`.
+
 Pushes do not wait for the server's acknowledgement (added 2026-09-07): the server answers a
 chunk only between engine steps, so a blocking push parked the vision side for 5-15 ms per band
 -- 26-50 ms of a ~150 ms streaming pass on Qwen2.5-VL-7B -- which is exactly the overlap the
@@ -44,7 +49,7 @@ from typing import Any, Optional
 
 import torch
 
-from .wire import Frame, recv_frame, send_frame
+from .wire import Frame, recv_frame, send_frame, stage_to_header
 
 # Diagnostic knob (2026-09-09): sleep after every push so a fast driver reproduces a slow one's
 # chunk-arrival spacing -- used to tell engine batch-timing nondeterminism (which chunks the
@@ -141,6 +146,12 @@ class LLMBridge:
                     else:
                         rec["t_ack"] = time.perf_counter()
                         rec["t_recv_server"] = float(rep.header["t_recv"])
+                        if "t_done" in rep.header:      # correct: after the drain + step
+                            rec["t_done_server"] = float(rep.header["t_done"])
+                            rec["t_step_ms"] = float(rep.header.get("t_step_ms", 0.0))
+                            st = rep.header.get("stage")
+                            if isinstance(st, dict) and st.get("steps") is not None:
+                                rec["stage_steps"] = st["steps"]   # walk/correct split (staged)
                     if sink is not None and rec.get("final"):
                         sink.final_acked.set()
                         if sink.error is None:
@@ -242,10 +253,23 @@ class LLMBridge:
     def open(self, rid: str, embeds: torch.Tensor, mrope: Optional[torch.Tensor],
              mrope_delta: Optional[int], final: bool, max_tokens: int,
              logprobs: Optional[int] = None, sink: Optional["StreamSink"] = None,
-             rec: Optional[dict] = None) -> None:
+             rec: Optional[dict] = None, correct_from: Optional[int] = None,
+             correct_to: Optional[int] = None, open_walk: Optional[int] = None) -> None:
+        """`correct_from` (first image row) opens the request for the interleaved schedule: the
+        server keeps the DeltaNet side buffer for the whole prompt so `correct` can rewrite rows.
+        `correct_to` (one past the last image row) is required by the depth-staged form.
+        `open_walk` = b_0 > 0 (unified axis): skip the stock prefill, walk rows [0, image_end)
+        through decoder layers [0, b_0) at open (wire.py §open)."""
         f = Frame({"op": "open", "rid": rid, "final": bool(final), "max_tokens": int(max_tokens),
                    "mrope_delta": (None if mrope_delta is None else int(mrope_delta)),
                    "logprobs": logprobs, "t_client": time.perf_counter()})
+        if correct_from is not None:
+            f.header["correct"] = True
+            f.header["image_start"] = int(correct_from)
+            if correct_to is not None:
+                f.header["image_end"] = int(correct_to)
+            if open_walk:
+                f.header["open_walk"] = int(open_walk)
         f.put_tensor("embeds", embeds, async_d2h=True).put_tensor("mrope", mrope, async_d2h=True)
         self._send_async(f, sink, rec if rec is not None else {})
 
@@ -256,6 +280,23 @@ class LLMBridge:
                    "mrope_delta": (None if mrope_delta is None else int(mrope_delta)),
                    "t_client": time.perf_counter()})
         f.put_tensor("embeds", embeds, async_d2h=True).put_tensor("mrope", mrope, async_d2h=True)
+        self._send_async(f, sink, rec if rec is not None else {})
+
+    def correct(self, rid: str, positions: torch.Tensor, embeds: torch.Tensor,
+                window: tuple, final: bool, sink: Optional["StreamSink"] = None,
+                rec: Optional[dict] = None, stage: Optional[tuple] = None) -> None:
+        """The interleaved schedule's rewrite of already-prefilled prompt rows (wire.py §correct).
+        Same tx thread and same ack path as `append`, so a band's correction leaves the caller's
+        thread without waiting for the server's between-steps reply. `stage=(r, g)` selects the
+        depth-staged form on the server; `stage=(r, g, bounds)` the same with explicit bounds
+        (the unified axis, whose LLM rounds are fewer than the schedule's and unequally deep)."""
+        f = Frame({"op": "correct", "rid": rid, "final": bool(final),
+                   "window": [int(window[0]), int(window[1])],
+                   "t_client": time.perf_counter()})
+        if stage is not None:
+            f.header["stage"] = stage_to_header(stage)
+        f.put_tensor("positions", positions, async_d2h=True)
+        f.put_tensor("embeds", embeds, async_d2h=True)
         self._send_async(f, sink, rec if rec is not None else {})
 
     def result(self, rid: str) -> dict:
@@ -292,13 +333,33 @@ class StreamSink:
         self.done = threading.Event()          # set by the result thread: `_result` or `error` filled
         self._result: Optional[dict] = None
         self.pushes: list[dict] = []
+        self.bands: list[float] = []   # perf_counter at the start of each band's processing
         self.num_tokens = 0
 
+    def band_start(self) -> None:
+        """Stamp the start of a band's processing (its pixels' arrival on the spaced-arrival
+        convention: the sleep after the previous band's message has ended). The latency probe
+        anchors Crit. Lat. here for schedules whose bands do not map one-to-one onto messages."""
+        self.bands.append(time.perf_counter())
+
+    def band_gap(self) -> None:
+        """The band-spacing sleep for a round that sent NO message (unified axis: the rounds
+        before the frontier crosses the projector). push/correct apply the same sleep after
+        their message, so the bands stay spaced whether or not one leaves the driver."""
+        if _PUSH_DELAY_S > 0:
+            time.sleep(_PUSH_DELAY_S)          # diagnostic only: mimic a slower producer
+
     def push(self, embeds: torch.Tensor, mrope: Optional[torch.Tensor],
-             mrope_delta: Optional[int], final: bool) -> None:
+             mrope_delta: Optional[int], final: bool, *,
+             correct_from: Optional[int] = None, correct_to: Optional[int] = None,
+             open_walk: Optional[int] = None) -> None:
         """embeds [T, D] (any device, bf16/fp16/fp32), mrope [3, T] int64 or None. The
         device->host copy is deferred to the sender thread (`wire.tensor_to_wire_async`), so
-        this returns without stalling the caller's CUDA stream."""
+        this returns without stalling the caller's CUDA stream. `correct_from` (only on the
+        opening push, the first image row) opens the request for the interleaved schedule;
+        `correct_to` (one past the last image row) is what the depth-staged form walks up to."""
+        if correct_from is not None and (self.opened or final):
+            raise BridgeError(f"{self.rid}: correct_from belongs on the opening, non-final push")
         if self.error is not None:
             raise BridgeError(f"{self.rid}: {self.error}")
         if self.closed:
@@ -306,11 +367,15 @@ class StreamSink:
         assert embeds.ndim == 2, embeds.shape
         if mrope is not None:
             assert mrope.shape == (3, embeds.shape[0]), (mrope.shape, embeds.shape)
-        rec = {"n": int(embeds.shape[0]), "final": bool(final), "t_send": time.perf_counter(),
-               "t_ack": None, "t_recv_server": None}
+        rec = {"kind": "push", "n": int(embeds.shape[0]), "final": bool(final),
+               "t_send": time.perf_counter(), "t_ack": None, "t_recv_server": None}
+        if open_walk:
+            rec["open_walk"] = int(open_walk)
         if not self.opened:
             self.bridge.open(self.rid, embeds, mrope, mrope_delta, final,
-                             self.max_tokens, self.logprobs, sink=self, rec=rec)
+                             self.max_tokens, self.logprobs, sink=self, rec=rec,
+                             correct_from=correct_from, correct_to=correct_to,
+                             open_walk=open_walk)
             self.opened = True
         else:
             self.bridge.append(self.rid, embeds, mrope, mrope_delta, final, sink=self, rec=rec)
@@ -318,6 +383,40 @@ class StreamSink:
         if _PUSH_DELAY_S > 0:
             time.sleep(_PUSH_DELAY_S)          # diagnostic only: mimic a slower producer
         self.num_tokens += int(embeds.shape[0])
+        self.pushes.append(rec)
+        if final:
+            self.closed = True
+
+    def correct(self, positions: torch.Tensor, embeds: torch.Tensor, window: tuple,
+                final: bool, *, stage: Optional[tuple] = None) -> None:
+        """Interleaved schedule: rewrite prompt rows `positions` (int64 [P], strictly increasing,
+        prompt positions) with `embeds` [P, D] and re-run the decoder on them; `window` [s, e) is
+        the round's DeltaNet re-scan range and contains every position. The prompt itself went in
+        with the opening `push(final=False)`, so this adds no prompt rows -- `final` releases the
+        held-back last row instead of carrying one. Same deferred device->host copy and same
+        band-spacing sleep as `push`. `stage=(r, g)`: depth-staged round r of g;
+        `stage=(r, g, bounds)`: the same with explicit per-round depths (unified axis)."""
+        if self.error is not None:
+            raise BridgeError(f"{self.rid}: {self.error}")
+        if not self.opened:
+            raise BridgeError(f"{self.rid}: correct before the prompt was pushed")
+        if self.closed:
+            raise BridgeError(f"{self.rid}: correct after final")
+        assert embeds.ndim == 2, embeds.shape
+        assert positions.ndim == 1 and positions.shape[0] == embeds.shape[0], (
+            positions.shape, embeds.shape)
+        assert positions.dtype == torch.int64, positions.dtype
+        s, e = int(window[0]), int(window[1])
+        rec = {"kind": "correct", "n": int(embeds.shape[0]), "final": bool(final),
+               "t_send": time.perf_counter(), "t_ack": None, "t_recv_server": None,
+               "window": [s, e]}
+        if stage is not None:
+            rec["stage"] = stage_to_header(stage)
+        self.bridge.correct(self.rid, positions, embeds, (s, e), final, sink=self, rec=rec,
+                            stage=stage)
+        rec["t_queued"] = time.perf_counter()   # encoded and handed to the sender thread
+        if _PUSH_DELAY_S > 0:
+            time.sleep(_PUSH_DELAY_S)          # diagnostic only: mimic a slower producer
         self.pushes.append(rec)
         if final:
             self.closed = True
@@ -346,5 +445,6 @@ class StreamSink:
             raise BridgeError(f"{self.rid}: {self.error}")
         out = dict(self._result)
         out["pushes"] = self.pushes
+        out["bands"] = self.bands
         out["num_prompt_tokens_sent"] = self.num_tokens
         return out
