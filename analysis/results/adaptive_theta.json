@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "produced": "2026-09-13 B200-8",
+    "model": "Qwen/Qwen3.5-35B-A3B",
+    "score": "rms x attn",
+    "pscore": "deferred",
+    "bucket": 8,
+    "groups": 4,
+    "level": 2,
+    "calibration": "pscore_dump.py --samples 36 (every 5th index of the split), threshold_sim.py",
+    "note": "theta is PER DATASET and per filter. The rms score is in raw pixel units, so a theta from one dataset is meaningless on another. `realised_mean_k` is the sim's prediction on the 36 calibration images; the measured mean on the full split is in `measured_mean_k` where an arm has been run."
+  },
+  "entries": [
+    {"dataset": "vstar",   "filter": "pyr", "target_k": 0.50, "theta": 0.0492176, "realised_mean_k": 0.5006, "p05": 0.243, "p95": 0.688, "at_floor_pct": 0, "measured_mean_k": 0.4829},
+    {"dataset": "vstar",   "filter": "pyr", "target_k": 0.25, "theta": 0.0908626, "realised_mean_k": 0.2505, "p05": 0.126, "p95": 0.415, "at_floor_pct": 3, "measured_mean_k": 0.2585},
+    {"dataset": "chartqa", "filter": "box", "target_k": 0.50, "theta": 0.0250834, "realised_mean_k": 0.5003, "p05": 0.317, "p95": 0.865, "at_floor_pct": 0, "measured_mean_k": 0.4934},
+    {"dataset": "chartqa", "filter": "box", "target_k": 0.25, "theta": 0.0845849, "realised_mean_k": 0.2503, "p05": 0.162, "p95": 0.487, "at_floor_pct": 3, "measured_mean_k": 0.2544},
+    {"dataset": "refcoco", "filter": "pyr", "target_k": 0.50, "theta": 0.0606236, "realised_mean_k": 0.5006, "p05": 0.245, "p95": 0.910, "at_floor_pct": 0, "measured_mean_k": null},
+    {"dataset": "refcoco", "filter": "pyr", "target_k": 0.25, "theta": 0.101354,  "realised_mean_k": 0.2507, "p05": 0.133, "p95": 0.530, "at_floor_pct": 11, "measured_mean_k": null},
+    {"dataset": "textvqa", "filter": "pyr", "target_k": 0.50, "theta": 0.0362091, "realised_mean_k": 0.5001, "p05": 0.211, "p95": 0.797, "at_floor_pct": 3, "measured_mean_k": null},
+    {"dataset": "textvqa", "filter": "pyr", "target_k": 0.25, "theta": 0.0779701, "realised_mean_k": 0.2500, "p05": 0.125, "p95": 0.398, "at_floor_pct": 11, "measured_mean_k": null}
+  ]
+}

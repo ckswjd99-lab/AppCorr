@@ -32,6 +32,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # Mirrors `qwen_vllm_accuracy.SCHEDULE_TAG` (copied, not imported: that module pulls in torch and
 # this one only launches subprocesses). Keep the two in step.
 SCHEDULE_TAG = {"unified_staged": "interleaved_unified"}
+
+
+def parse_keep(s: str):
+    """`--keeps` token: a float budget, or `auto:<theta>` for the bucketized-threshold arm."""
+    if s.startswith("auto:"):
+        return ("auto", float(s[5:]))
+    return float(s)
+
+
+def ktag(k) -> str:
+    """Row-file / json key suffix: `k0.50` for a fixed keep, `auto0.0251` for theta (driver's arm_tag)."""
+    return f"auto{k[1]:g}" if isinstance(k, tuple) else f"k{k:.2f}"
+
+
+def klt1(k) -> bool:
+    return isinstance(k, tuple) or k < 1.0
+
+
+def kdriver(k) -> list:
+    if isinstance(k, tuple):
+        return ["--keep", "auto", "--pscore-threshold", f"{k[1]}", "--pscore-bucket", "8",
+                "--pscore-score", "rms"]
+    return ["--keep", f"{k}"]
 OUT_JSON = os.path.join(ROOT, "analysis", "results", "latency", "inprocess_latency.json")
 README = [
     "Single-request (concurrency 1) time-to-first-token medians, ms, for the eval table's Lat. /",
@@ -140,7 +163,9 @@ def main():
     ap.add_argument("--port", type=int, default=5591)
     ap.add_argument("--key", required=True, help="model key in inprocess_latency.json, e.g. qwen35_122b")
     ap.add_argument("--datasets", nargs="+", required=True, help="dataset[:degrade-filter] ...")
-    ap.add_argument("--keeps", type=float, nargs="+", default=[1.0, 0.50, 0.25])
+    ap.add_argument("--keeps", type=parse_keep, nargs="+", default=[1.0, 0.50, 0.25],
+                    help="fixed keeps as floats, or `auto:<theta>` for the adaptive arm (keep=auto, "
+                         "--pscore-threshold theta, bucket 8, rms score); keys are k0.50 / auto0.0251")
     ap.add_argument("--samples", type=int, default=40)
     ap.add_argument("--warmup", type=int, default=4)
     ap.add_argument("--groups", type=int, default=4)
@@ -176,7 +201,7 @@ def main():
            "--samples", str(a.samples), "--concurrency", "1", "--out", out, "--pscore", a.pscore]
 
     def arm_path(ds, arm, keep=None):
-        suf = "" if arm != "streaming" else f"_g{a.groups}" + (f"_k{keep:.2f}" if keep < 1.0 else "")
+        suf = "" if arm != "streaming" else f"_g{a.groups}" + (f"_{ktag(keep)}" if klt1(keep) else "")
         # driver's `arm_tag` (incl. its schedule -> row-file-tag mapping)
         tag = SCHEDULE_TAG.get(a.llm_schedule, a.llm_schedule) if arm == "streaming" else arm
         return os.path.join(out, f"{ds}_{slug}_{tag}{suf}.jsonl")
@@ -185,9 +210,9 @@ def main():
         p = arm_path(ds, arm, keep)
         if os.path.exists(p):
             os.remove(p)          # the driver resumes from existing rows; a probe must be fresh
-        cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm, "--keep", f"{keep}",
-                     "--llm-schedule", a.llm_schedule]
-        log = os.path.join(out, f"log_{ds}_{arm}_k{keep:.2f}.log")
+        cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm] + kdriver(keep) + [
+            "--llm-schedule", a.llm_schedule]
+        log = os.path.join(out, f"log_{ds}_{arm}_{ktag(keep)}.log")
         e = dict(env)
         if arm == "streaming" and a.push_delay_ms > 0:
             e["APPCORR_PUSH_DELAY_MS"] = f"{a.push_delay_ms:g}"
@@ -195,7 +220,7 @@ def main():
         with open(log, "w") as lf:
             rc = subprocess.call(cmd, stdout=lf, stderr=subprocess.STDOUT, env=e, cwd=ROOT,
                                  timeout=a.timeout)
-        print(f"  {ds:15s} {arm:10s} k={keep:.2f} rc={rc} {time.time() - t0:5.0f}s", flush=True)
+        print(f"  {ds:15s} {arm:10s} {ktag(keep)} rc={rc} {time.time() - t0:5.0f}s", flush=True)
 
     specs = [(d.split(":")[0], d.split(":")[1] if ":" in d else "box") for d in a.datasets]
     if not a.aggregate_only:
@@ -228,20 +253,30 @@ def main():
             if not os.path.exists(p):
                 continue
             r = rows_of(p, a.warmup, a.groups, D)
-            e[f"k{k:.2f}"] = med(r, "ttft_last_band_ms")
+            kt = ktag(k)
+            e[kt] = med(r, "ttft_last_band_ms")
+            if isinstance(k, tuple):
+                # adaptive arm: the per-image budget is in the rows, not the file name; keep the
+                # realised-k distribution next to the latency so the two can be read together
+                kr = sorted(float(x["keep_realised"]) for x in r if x.get("keep_realised") is not None)
+                if kr:
+                    e[f"{kt}_keep_realised"] = {"mean": sum(kr) / len(kr), "p05": kr[int(0.05 * len(kr))],
+                                                "p50": kr[len(kr) // 2], "p95": kr[int(0.95 * len(kr))]}
+                    e[f"{kt}_ttft_last_band_p95_ms"] = sorted(
+                        float(x["ttft_last_band_ms"]) for x in r)[int(0.95 * len(r))]
             if D > 0:
                 # spaced arrival: TTFT-from-t0 contains the injected spacing, so 'total_k*'
                 # (the everything-serialized Lat.) keeps its fast-producer value
-                e[f"k{k:.2f}_push_delay_ms"] = D
-                e["detail"][f"streaming_k{k:.2f}{dsuf}"] = {kk: med(r, kk) for kk in FIELDS + [
+                e[f"{kt}_push_delay_ms"] = D
+                e["detail"][f"streaming_{kt}{dsuf}"] = {kk: med(r, kk) for kk in FIELDS + [
                     "last_band_correct_ms", "last_chunk_wait_ms", "last_chunk_to_ft_ms",
                     "max_chunk_wait_ms"]}
             else:
-                e[f"total_k{k:.2f}"] = med(r, "ttft_start_ms")
-                e["detail"][f"streaming_k{k:.2f}"] = {kk: med(r, kk) for kk in FIELDS}
+                e[f"total_{kt}"] = med(r, "ttft_start_ms")
+                e["detail"][f"streaming_{kt}"] = {kk: med(r, kk) for kk in FIELDS}
         full = e.get("full")
         print(f"{ds:15s} full {full} ms | " + " | ".join(
-            f"k{k:.2f}: total {e.get(f'total_k{k:.2f}')} crit {e.get(f'k{k:.2f}')}" for k in a.keeps)
+            f"{ktag(k)}: total {e.get(f'total_{ktag(k)}')} crit {e.get(ktag(k))}" for k in a.keeps)
               + (f" | n={e.get('n')}" if full else ""), flush=True)
     json.dump(J, open(OUT_JSON, "w"), indent=1)
     print(f"wrote {OUT_JSON}")

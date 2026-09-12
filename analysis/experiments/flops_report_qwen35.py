@@ -97,10 +97,14 @@ def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=Fal
     arm = "interleaved_unified" if unified else ("interleaved_staged" if staged else "interleaved")
     for path in sorted(glob.glob(os.path.join(
             rows_dir, f"{ds_name}_{slug}_{arm}_g{groups}*.jsonl"))):
-        m = re.search(rf"_{arm}_g(\d+)(?:_k(\d+\.\d+))?", os.path.basename(path))
+        # `_k0.50` fixed budgets, or `_auto<theta>` adaptive arms (keep=auto, 2026-09-13): the
+        # closed form prices the per-row `chunks` either way -- an adaptive row simply carries
+        # its own |P_r| -- so the arm is keyed by its tag string instead of a float.
+        m = re.search(rf"_{arm}_g(\d+)(?:_k(\d+\.\d+)|_auto([0-9.eE+-]+))?(?:_c\d+)?\.jsonl$",
+                      os.path.basename(path))
         if m is None or int(m.group(1)) != groups:
             continue
-        keep = float(m.group(2)) if m.group(2) else 1.0
+        keep = float(m.group(2)) if m.group(2) else (f"auto{m.group(3)}" if m.group(3) else 1.0)
         tot = crit = pre = 0.0
         v_tot = v_crit = v_ref_tot = v_ref_crit = 0.0
         n = 0
@@ -156,11 +160,13 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
                                  (False, True, "ilu")):
         il = interleaved_from_rows(args.il_rows, ds_name, slug, args.groups, args.il_model,
                                    staged=staged, unified=unified)
-        for keep, (tot, crit, n, path, pre, vscale) in sorted(il.items()):
+        for keep, (tot, crit, n, path, pre, vscale) in sorted(il.items(), key=lambda kv: str(kv[0])):
             vis = vis_arg
-            if keeps is not None and not any(abs(keep - k) < 1e-9 for k in keeps):
+            adaptive = isinstance(keep, str)          # "auto<theta>"
+            if keeps is not None and not adaptive and not any(abs(keep - k) < 1e-9 for k in keeps):
                 continue
-            suffix = f"_g{args.groups}" if keep == 1.0 else f"_g{args.groups}_k{keep:.2f}"
+            suffix = (f"_g{args.groups}_{keep}" if adaptive else
+                      f"_g{args.groups}" if keep == 1.0 else f"_g{args.groups}_k{keep:.2f}")
             # --il-only re-fold: keep the vision half an earlier hooked run stored for this
             # (or the sibling) arm rather than zeroing it
             prev = row.get(f"_il{suffix}") or row.get(f"_ils{suffix}") or {}
