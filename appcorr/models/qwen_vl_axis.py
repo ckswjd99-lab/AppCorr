@@ -30,6 +30,13 @@ same in both modes; only who consumes the chunks changes. `oneshot_embeds` gives
 ceiling arms the same one-request path (stock tower, one chunk), so all arms of a vLLM campaign
 decode through the identical engine -- the decode-mechanism-consistency rule the HF driver
 enforces with its shared greedy loop, restated for the two-process form.
+
+**Two LLM schedules over that one vision path.** `llm_schedule="streaming"` (default) appends each
+band to the prompt; `llm_schedule="interleaved"` pushes the whole approximate prompt at t=0 and
+rewrites each band's rows in place through `StreamSink.correct` (docs/memo/
+vllm_interleaved_design.md). The vision work and the band boundaries are identical in both -- only
+what the sink is told changes -- so at keep=1 the per-position embeddings the LLM ends up holding
+are bitwise equal (gate G5, `analysis/experiments/vllm_interleaved_axis_gate.py`).
 """
 from __future__ import annotations
 
@@ -249,6 +256,7 @@ class QwenVLStreamingAxis(nn.Module):
                           sink: Optional[Any] = None,
                           image_run: Optional[Tuple[int, int]] = None,
                           grid_thw: Optional[Tuple[int, int, int]] = None,
+                          llm_schedule: str = "streaming",
                           ) -> Tuple[Optional[torch.Tensor], Any, Dict[str, Any]]:
         """Progressive arrival: vision approximates-then-corrects per band, the LLM streams.
 
@@ -283,11 +291,27 @@ class QwenVLStreamingAxis(nn.Module):
             image_run: optional (start, count) of the image-token run, and grid_thw the (t, h, w)
                 patch grid, both as Python ints from the CPU side of the driver's prep; when
                 given, nothing about the prompt layout is read back from the GPU.
+            llm_schedule: how the LLM consumes the bands (docs/memo/vllm_interleaved_design.md).
+                "streaming" (default) prefills each band once, append-only: band r's chunk is
+                rows [lo+g0_r, lo+g1_r) and no row is ever revisited. "interleaved" pushes the
+                WHOLE prompt once at t=0 with every image row at its approximate (base) merge,
+                lets the engine prefill it, and then REWRITES each band's corrected rows in
+                place as they are produced -- so the critical path after the last arrival is
+                k/g of the image rows plus the text suffix, not the whole prompt. Sink path
+                only: rewriting rows of a KV cache the HF model already built is exactly the
+                engine-side work `StreamingLLM.correct` exists for.
 
         Returns (final_position_logits, kv_cache, stats).
         """
         from transformers.cache_utils import DynamicCache
 
+        if llm_schedule not in ("streaming", "interleaved"):
+            raise ValueError(f"llm_schedule {llm_schedule!r}")
+        interleaved = llm_schedule == "interleaved"
+        if interleaved and sink is None:
+            raise NotImplementedError(
+                "llm_schedule='interleaved' is sink-only: rewriting rows an HF DynamicCache has "
+                "already prefilled is the engine-side `StreamingLLM.correct` step (memo §2)")
         ids = inputs["input_ids"]
         grid = inputs["image_grid_thw"]
         px_full = inputs["pixel_values"].to(self.model.dtype)
@@ -375,6 +399,29 @@ class QwenVLStreamingAxis(nn.Module):
             stats["prefill_tokens"] += end - pos_done
             pos_done = end
 
+        if interleaved:
+            # t=0: the WHOLE approximate prompt, every image row at its base-resolution merge.
+            # The engine prefills it (hold-back: row seq-1 waits for `final`) while band 0 is
+            # still being corrected; each band then rewrites its own rows in place. Merging in
+            # band-sized slices bounds the merger's working set to what the streaming schedule
+            # already gives it.
+            with self._arrival(0):
+                with self._stage("merge"):
+                    for g0, g1 in bands:
+                        if g1 <= g0:
+                            continue
+                        b_rows = self._rows_of_groups(ctx_full, torch.arange(g0, g1, device=dev))
+                        emb_all[:, lo + g0:lo + g1] = \
+                            self.tower.merger(x_base_out[b_rows]).unsqueeze(0).to(emb_all.dtype)
+                with self._stage("llm_prefill"):
+                    # clone: the push's device->host copy is ordered after this point on a side
+                    # stream, and the band loop overwrites these very rows -- without the
+                    # snapshot the approx prompt could carry rows corrected later, which is the
+                    # contract's rule-2 leak (data from the future) in wire form.
+                    sink.push(emb_all[0, :seq].clone(), pos_3d[:, 0, :seq], rope_delta, final=False)
+            stats["chunks"].append(("approx", 0, seq - 1))
+            stats["prefill_tokens"] += seq - 1
+
         # Rows arrived so far -- the residual-stream restart mixes full rows (arrived) with base
         # rows (not yet), which is the in-process equivalent of the executor path's "reconstructed
         # canvas": the stream the correction restarts from is exactly what has been received.
@@ -387,12 +434,18 @@ class QwenVLStreamingAxis(nn.Module):
         last_arrival = 0
         last_band = max(r for r, (g0, g1) in enumerate(bands) if g1 > g0)
         pscore_pending = keep < 1.0 and defer
+        # Bands whose message has already left. `pos_done > 0` used to stand in for this, but the
+        # interleaved branch never advances `pos_done` (its prompt went out whole at t=0), so the
+        # deferred score would never have completed there and the two schedules would have
+        # SELECTED DIFFERENT GROUPS -- the interleaved contract's rule 5, and unobservable in any
+        # gate that compares the two arms' embeddings alone.
+        bands_done = 0
         for r, (g0, g1) in enumerate(bands):
             if g1 <= g0:
                 continue
             last_arrival = r + 1
             with self._arrival(last_arrival):
-                if pscore_pending and pos_done > 0:
+                if pscore_pending and bands_done:
                     # First band is out: complete the score for the bands still to be selected.
                     # PSCORE stage = the FLOP counter's excluded scope (a bare column sum the
                     # hooks never saw anyway; the label keeps the split honest if that changes).
@@ -465,13 +518,45 @@ class QwenVLStreamingAxis(nn.Module):
                     merged = self.tower.merger(band_rows)
                 emb_all[:, lo + g0:lo + g1] = merged.unsqueeze(0).to(emb_all.dtype)
                 with self._stage("llm_prefill"):
-                    # r=0 also carries the leading text; the last band carries the trailing text
-                    # (question + generation prompt) in the SAME chunk: it waits on the last band
-                    # anyway (same arrival -- charging it later would invent an arrival the
-                    # transmission never had), and one prefill of image tail + text is one
-                    # engine step instead of two (2026-09-09, was a separate trailing push).
-                    prefill(seq if r == last_band else lo + g1)
-        assert pos_done == seq, (pos_done, seq)
+                    if interleaved:
+                        # Round r rewrites ONLY this band's corrected rows (contract rule 1);
+                        # rows this band did not select keep the approximate value the t=0 push
+                        # already carried, and are simply absent from P_r. The last round also
+                        # carries the text suffix -- it must see the fully corrected image -- and
+                        # since [lo+g0, lo+G) and [lo+G, seq-1) are ADJACENT, one re-scan window
+                        # [lo+g0, seq-1) covers both, so it is one message, not two.
+                        pos_r = lo + group_idx.to(dev)
+                        end = lo + g1
+                        if r == last_band:
+                            end = seq - 1        # row seq-1 is the hold-back, never rewritten
+                            pos_r = torch.cat([pos_r, torch.arange(
+                                lo + n_groups_total, end, device=dev, dtype=pos_r.dtype)])
+                        if r == last_band and pos_r.numel() == 0:
+                            raise RuntimeError(
+                                "interleaved: the final round corrects nothing and carries no "
+                                "text suffix -- nothing would release the held-back last row")
+                        if pos_r.numel():
+                            # Gathered from emb_all, which this band's merge has just been
+                            # written into: bitwise the rows the streaming schedule pushes for
+                            # the same positions (gate G5).
+                            sink.correct(pos_r, emb_all[0, pos_r], (lo + g0, end),
+                                         final=(r == last_band))
+                            stats["chunks"].append(("correct", lo + g0, end, int(pos_r.numel())))
+                            stats["prefill_tokens"] += int(pos_r.numel())
+                    else:
+                        # r=0 also carries the leading text; the last band carries the trailing
+                        # text (question + generation prompt) in the SAME chunk: it waits on the
+                        # last band anyway (same arrival -- charging it later would invent an
+                        # arrival the transmission never had), and one prefill of image tail +
+                        # text is one engine step instead of two (2026-09-09, was a separate
+                        # trailing push).
+                        prefill(seq if r == last_band else lo + g1)
+            bands_done += 1
+        if interleaved:
+            assert pos_done == 0, "the streaming prefill closure ran in the interleaved branch"
+        else:
+            assert pos_done == seq, (pos_done, seq)
+        stats["llm_schedule"] = llm_schedule
         stats["decode_start_pos"] = stats_decode_pos
         stats["rope_delta"] = rope_delta
         if keep < 1.0:

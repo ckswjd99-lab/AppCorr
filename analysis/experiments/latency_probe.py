@@ -48,13 +48,30 @@ README = [
     "Reproduce: python analysis/experiments/latency_probe.py (see its docstring).",
 ]
 FIELDS = ["t_vision_ms", "t_open_ms", "t_last_push_ms", "ttft_open_ms", "ttft_last_chunk_ms",
-          "ttft_last_band_ms", "ttft_start_ms", "t_client_done_ms", "prompt_tokens", "gen_tokens"]
+          "ttft_last_band_ms", "ttft_last_band_pixels_ms", "ttft_start_ms", "t_client_done_ms",
+          "prompt_tokens", "gen_tokens"]
 
 
 def rows_of(path, warmup, groups, delay_ms=0.0):
     rows = [json.loads(l) for l in open(path) if l.strip()]
     rows = [r for r in rows if "skip" not in r and r.get("ttft_start_ms") is not None]
     for r in rows:
+        if r.get("llm_schedule") == "interleaved":
+            # The interleaved schedule sends g+1 messages: the whole approximate prompt at t=0
+            # and one `correct` per band. Its Crit. Lat. is anchored at the LAST correct's
+            # arrival on the server (t_recv_ms[-1]) -- after that point the engine still owes
+            # k/g of the image rows, the text suffix and the first decode step. The
+            # last-band-PIXELS anchor (the streaming convention: the message before the last one
+            # departs when the previous band is done, i.e. when the last band's correction
+            # starts) is kept beside it so the two schedules can be compared on one convention.
+            tr, ts = r.get("t_recv_ms") or [], r.get("t_sent_ms") or r.get("t_pushes_ms") or []
+            r["ttft_last_band_ms"] = (r["ttft_start_ms"] - tr[-1]) if tr and tr[-1] is not None \
+                else r["ttft_start_ms"]
+            if len(ts) >= 2 and ts[-2] is not None:
+                r["ttft_last_band_pixels_ms"] = r["ttft_start_ms"] - ts[-2] - delay_ms
+            if tr and ts and tr[-1] is not None and ts[-1] is not None:
+                r["last_chunk_wait_ms"] = tr[-1] - ts[-1]
+            continue
         if delay_ms > 0 and r.get("t_pushes_ms") and len(r["t_pushes_ms"]) >= groups:
             # spaced-arrival arm (APPCORR_PUSH_DELAY_MS): band g-1's correction starts when the
             # sleep after push g-2 ends = its pixels' arrival; the last chunk's transfer wait
@@ -108,6 +125,9 @@ def main():
                          "window (2026-09-09 rule: 150). Writes k{keep} from the pixel-arrival "
                          "anchor and detail streaming_k*_d<ms>; leaves 'full'/'total_k*' alone")
     ap.add_argument("--skip-ceiling", action="store_true", help="streaming arms only")
+    ap.add_argument("--llm-schedule", choices=["streaming", "interleaved"], default="streaming",
+                    help="forwarded to the driver; 'interleaved' probes the correct-op schedule "
+                         "and reads its rows (whose arm files are named interleaved_*)")
     a = ap.parse_args()
     out = a.out or os.path.join(ROOT, "analysis", "results", "latency", f"probe_{a.key}")
     os.makedirs(out, exist_ok=True)
@@ -120,13 +140,15 @@ def main():
 
     def arm_path(ds, arm, keep=None):
         suf = "" if arm != "streaming" else f"_g{a.groups}" + (f"_k{keep:.2f}" if keep < 1.0 else "")
-        return os.path.join(out, f"{ds}_{slug}_{arm}{suf}.jsonl")
+        tag = a.llm_schedule if arm == "streaming" else arm     # driver's `arm_tag`
+        return os.path.join(out, f"{ds}_{slug}_{tag}{suf}.jsonl")
 
     def run(ds, filt, arm, keep=1.0):
         p = arm_path(ds, arm, keep)
         if os.path.exists(p):
             os.remove(p)          # the driver resumes from existing rows; a probe must be fresh
-        cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm, "--keep", f"{keep}"]
+        cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm, "--keep", f"{keep}",
+                     "--llm-schedule", a.llm_schedule]
         log = os.path.join(out, f"log_{ds}_{arm}_k{keep:.2f}.log")
         e = dict(env)
         if arm == "streaming" and a.push_delay_ms > 0:

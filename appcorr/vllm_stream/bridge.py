@@ -15,6 +15,11 @@ sent in the order the axis produces them, which is sequence order -- the server 
 One-shot arms (floor/ceiling) are a single `push(..., final=True)` -- the same request path with
 one chunk, so every arm decodes through the identical engine.
 
+The interleaved schedule uses the same sink with a second verb: one `push(whole approx prompt,
+final=False)` at t=0 and then `correct(positions, embeds, window, final)` per band, which
+REWRITES rows the engine already prefilled instead of appending new ones (docs/memo/
+vllm_interleaved_design.md §3.3). Both verbs record into `pushes`, tagged by `rec["kind"]`.
+
 Pushes do not wait for the server's acknowledgement (added 2026-09-07): the server answers a
 chunk only between engine steps, so a blocking push parked the vision side for 5-15 ms per band
 -- 26-50 ms of a ~150 ms streaming pass on Qwen2.5-VL-7B -- which is exactly the overlap the
@@ -258,6 +263,19 @@ class LLMBridge:
         f.put_tensor("embeds", embeds, async_d2h=True).put_tensor("mrope", mrope, async_d2h=True)
         self._send_async(f, sink, rec if rec is not None else {})
 
+    def correct(self, rid: str, positions: torch.Tensor, embeds: torch.Tensor,
+                window: tuple, final: bool, sink: Optional["StreamSink"] = None,
+                rec: Optional[dict] = None) -> None:
+        """The interleaved schedule's rewrite of already-prefilled prompt rows (wire.py §correct).
+        Same tx thread and same ack path as `append`, so a band's correction leaves the caller's
+        thread without waiting for the server's between-steps reply."""
+        f = Frame({"op": "correct", "rid": rid, "final": bool(final),
+                   "window": [int(window[0]), int(window[1])],
+                   "t_client": time.perf_counter()})
+        f.put_tensor("positions", positions, async_d2h=True)
+        f.put_tensor("embeds", embeds, async_d2h=True)
+        self._send_async(f, sink, rec if rec is not None else {})
+
     def result(self, rid: str) -> dict:
         """Blocks until the request finished; returns text / token_ids / timing (+ logprobs).
         Goes over the result socket, so it is answered as soon as the request finishes instead
@@ -306,8 +324,8 @@ class StreamSink:
         assert embeds.ndim == 2, embeds.shape
         if mrope is not None:
             assert mrope.shape == (3, embeds.shape[0]), (mrope.shape, embeds.shape)
-        rec = {"n": int(embeds.shape[0]), "final": bool(final), "t_send": time.perf_counter(),
-               "t_ack": None, "t_recv_server": None}
+        rec = {"kind": "push", "n": int(embeds.shape[0]), "final": bool(final),
+               "t_send": time.perf_counter(), "t_ack": None, "t_recv_server": None}
         if not self.opened:
             self.bridge.open(self.rid, embeds, mrope, mrope_delta, final,
                              self.max_tokens, self.logprobs, sink=self, rec=rec)
@@ -318,6 +336,36 @@ class StreamSink:
         if _PUSH_DELAY_S > 0:
             time.sleep(_PUSH_DELAY_S)          # diagnostic only: mimic a slower producer
         self.num_tokens += int(embeds.shape[0])
+        self.pushes.append(rec)
+        if final:
+            self.closed = True
+
+    def correct(self, positions: torch.Tensor, embeds: torch.Tensor, window: tuple,
+                final: bool) -> None:
+        """Interleaved schedule: rewrite prompt rows `positions` (int64 [P], strictly increasing,
+        prompt positions) with `embeds` [P, D] and re-run the decoder on them; `window` [s, e) is
+        the round's DeltaNet re-scan range and contains every position. The prompt itself went in
+        with the opening `push(final=False)`, so this adds no prompt rows -- `final` releases the
+        held-back last row instead of carrying one. Same deferred device->host copy and same
+        band-spacing sleep as `push`."""
+        if self.error is not None:
+            raise BridgeError(f"{self.rid}: {self.error}")
+        if not self.opened:
+            raise BridgeError(f"{self.rid}: correct before the prompt was pushed")
+        if self.closed:
+            raise BridgeError(f"{self.rid}: correct after final")
+        assert embeds.ndim == 2, embeds.shape
+        assert positions.ndim == 1 and positions.shape[0] == embeds.shape[0], (
+            positions.shape, embeds.shape)
+        assert positions.dtype == torch.int64, positions.dtype
+        s, e = int(window[0]), int(window[1])
+        rec = {"kind": "correct", "n": int(embeds.shape[0]), "final": bool(final),
+               "t_send": time.perf_counter(), "t_ack": None, "t_recv_server": None,
+               "window": [s, e]}
+        self.bridge.correct(self.rid, positions, embeds, (s, e), final, sink=self, rec=rec)
+        rec["t_queued"] = time.perf_counter()   # encoded and handed to the sender thread
+        if _PUSH_DELAY_S > 0:
+            time.sleep(_PUSH_DELAY_S)          # diagnostic only: mimic a slower producer
         self.pushes.append(rec)
         if final:
             self.closed = True

@@ -14,6 +14,12 @@ never a confound between arms, the rule qwen35_accuracy.py's docstring explains)
              (`streaming_forward(..., sink=)`); the server prefills band r while the tower is
              still correcting band r+1 -- that overlap is what the timing columns measure.
 
+`--llm-schedule interleaved` runs the same vision path against the engine's `correct` op instead:
+the whole approximate prompt goes in at t=0 and each band REWRITES its own rows in place, so the
+work left after the last arrival is keep/groups of the image rows plus the text suffix rather than
+the last band's chunk (docs/memo/vllm_interleaved_design.md). Its rows are named `interleaved_*`
+and sit beside the streaming ones.
+
 Per row the jsonl carries the score AND the server's clock: TTFT measured from the LAST chunk
 (what the user waits after the image finished arriving), TTFT from the first chunk, total time,
 prompt tokens, chunk count, and the client's vision wall time. `--concurrency N` keeps N requests
@@ -22,7 +28,7 @@ lever; N=1 is the latency form. `--backend hf` runs the identical loop in-proces
 explicit greedy loop (a consistency reference, not a campaign arm).
 
 Same degrade()/get_spec()/record() conventions as qwen35_accuracy.py; output naming
-  {dataset}_{model-slug}_{arm}[_g{groups}[_k{keep}]][_c{concurrency}].jsonl
+  {dataset}_{model-slug}_{arm|llm-schedule}[_g{groups}[_k{keep}]][_c{concurrency}].jsonl
 under --out, resumable by row index.
 
 Run (appcorr env; server first, in the appcorr-vllm env, same --model):
@@ -89,6 +95,13 @@ def rescale_box(pred: str, size) -> str:
     return f"{x1 * w_ / 1000:.1f},{y1 * h_ / 1000:.1f},{x2 * w_ / 1000:.1f},{y2 * h_ / 1000:.1f}"
 
 
+def arm_tag(arm: str, args) -> str:
+    """Row-file name of an arm. The progressive arm is named after its LLM SCHEDULE
+    (`streaming_g4_k0.50` / `interleaved_g4_k0.50`), so the two schedules' rows sit next to each
+    other under --out instead of one resuming from the other's file."""
+    return args.llm_schedule if arm == "streaming" else arm
+
+
 @torch.no_grad()
 def merge_shards(args) -> None:
     """`--merge N`: for every arm, fold `<row file>_sKofN.jsonl` (K = 0..N-1) and whatever the
@@ -105,7 +118,7 @@ def merge_shards(args) -> None:
             suffix += f"_c{args.concurrency}"
         if args.backend == "hf":
             suffix += "_hf"
-        base = os.path.join(args.out, f"{args.dataset}_{slug}_{arm}{suffix}")
+        base = os.path.join(args.out, f"{args.dataset}_{slug}_{arm_tag(arm, args)}{suffix}")
         rows = {}
         srcs = [f"{base}.jsonl"] + [f"{base}_s{k}of{n_sh}.jsonl" for k in range(n_sh)]
         counts = {}
@@ -154,6 +167,13 @@ def main():
     ap.add_argument("--concurrency", type=int, default=1,
                     help="requests kept in flight on the server (vllm backend only)")
     ap.add_argument("--think", action="store_true", help="qwen35: enable_thinking in the template")
+    ap.add_argument("--llm-schedule", choices=["streaming", "interleaved"], default="streaming",
+                    help="how the LLM consumes the bands (docs/memo/vllm_interleaved_design.md). "
+                         "'streaming' appends band r to the prompt and prefills it once; "
+                         "'interleaved' pushes the WHOLE approximate prompt at t=0 and rewrites "
+                         "each band's corrected rows in place (`correct` op), so the work after "
+                         "the last arrival is keep/groups of the image rows plus the text suffix. "
+                         "Names the progressive arm's rows `interleaved_g{g}[_k{keep}]`")
     ap.add_argument("--pscore", choices=["deferred", "eager"], default="deferred",
                     help="keep<1 selection score: 'deferred' computes the received-attention term "
                          "after the first band's push (band 0 ranks on energy alone; default since "
@@ -199,6 +219,9 @@ def main():
     if args.merge is not None:
         return merge_shards(args)
     if args.backend == "hf":
+        if args.llm_schedule != "streaming":
+            raise SystemExit("--llm-schedule interleaved needs the vllm backend: rewriting rows "
+                             "of a KV cache the HF model already prefilled is the engine step")
         args.concurrency = 1
         args.load = "full"
     elif args.load is None:
@@ -258,7 +281,8 @@ def main():
             suffix += "_hf"
         if shard is not None:
             suffix += f"_s{shard[0]}of{shard[1]}"
-        path = os.path.join(args.out, f"{args.dataset}_{slug}_{arm}{suffix}.jsonl")
+        tag = arm_tag(arm, args)
+        path = os.path.join(args.out, f"{args.dataset}_{slug}_{tag}{suffix}.jsonl")
         done = set()
         if os.path.exists(path):
             with open(path) as fh:
@@ -396,9 +420,17 @@ def main():
                 t_loop_h2d = (time.perf_counter() - t_h) * 1e3
                 t1 = time.perf_counter()
                 lg, kv, st = axis.streaming_forward(inputs, px_base, args.groups, keep=args.keep,
-                                                    sink=sink, **layout)
+                                                    sink=sink, llm_schedule=args.llm_schedule,
+                                                    **layout)
+                # `chunks`: the count for the streaming schedule (what every existing row file
+                # holds), the RECORDS for the interleaved one -- ("approx", 0, N-1) then
+                # ("correct", s, e, |P_r|) per round, which is what the closed-form cost script
+                # replays (flops_analytic.interleaved_cost).
                 extra = {"corrected_groups": int(st["corrected_groups"]),
-                         "chunks": len(st["chunks"])}
+                         "chunks": ([list(c) for c in st["chunks"]]
+                                    if st.get("llm_schedule") == "interleaved"
+                                    else len(st["chunks"])),
+                         "llm_schedule": st.get("llm_schedule", "streaming")}
                 if "pscore" in st:
                     extra["pscore"] = st["pscore"]
                 if sink is None:
@@ -424,6 +456,9 @@ def main():
             extra["t_loop_h2d_ms"] = t_loop_h2d       # pageable host -> GPU copies of the inputs
             extra["t_vision_ms"] = (time.perf_counter() - t1) * 1e3
             extra["prompt_tokens"] = int(inputs["input_ids"].shape[1])
+            # the prompt layout the cost script needs to replay `chunks` (lo, number of merge
+            # groups); free here, and not recoverable from the chunk records alone
+            extra["image_run"] = [int(v) for v in p["image_run"]]
             return gold, size, extra, hf
 
         if args.backend == "hf":
@@ -518,7 +553,7 @@ def main():
                 t_loop_prep = (time.perf_counter() - t_p) * 1e3
                 if too_long(i, p):
                     continue
-                sink = bridge.sink(f"{arm}-{i}", max_tokens=args.max_tokens)
+                sink = bridge.sink(f"{tag}-{i}", max_tokens=args.max_tokens)
                 t_start = time.perf_counter()
                 try:
                     gold, size, extra, _ = vision(p, sink)
@@ -545,7 +580,7 @@ def main():
         el = time.perf_counter() - t_arm0
         if scored:
             print(f"Final Summary: {{\"dataset\": \"{args.dataset}\", \"model\": \"{slug}\", "
-                  f"\"arm\": \"{arm}{suffix}\", \"scored\": {scored}, "
+                  f"\"arm\": \"{tag}{suffix}\", \"scored\": {scored}, "
                   f"\"acc\": {correct / scored * 100:.4f}, \"elapsed_s\": {el:.1f}, "
                   f"\"samples_per_s\": {scored / el:.3f}, "
                   f"\"skipped\": {json.dumps(skipped)}}}", flush=True)

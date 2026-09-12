@@ -144,6 +144,20 @@ class StreamingLLM:
         ecr.request_id = core_id
         self.engine.engine_core.add_request(ecr)
 
+    def correct(self, request_id: str, positions: torch.Tensor, embeds: torch.Tensor,
+                window: tuple, final: bool) -> dict:
+        """Rewrite prompt rows `positions` (int64 [P], strictly increasing, all below the held-back
+        last row) with `embeds` (bf16 [P, D]) and re-run the decoder on them; `window` [s, e) is
+        the round's Gated DeltaNet re-scan range and contains every position. `final` closes the
+        request like `append(final=True)` with an empty chunk. Returns
+        {"t_recv", "t_step_ms", "num_rows", "round"}.
+
+        STUB in the driver worktree (docs/memo/vllm_interleaved_design.md §2.1): the engine side
+        -- runner step, GDN side buffer, mamba-block write-back -- is implemented against the same
+        memo on `develop/vllm-interleaved`. The signature is the interface between the two."""
+        raise NotImplementedError(
+            "StreamingLLM.correct: engine side not in this worktree (design memo §2.1/§2.2)")
+
     def step(self):
         """One engine step; returns the finished/streamed RequestOutputs of that step."""
         outs = self.engine.step()

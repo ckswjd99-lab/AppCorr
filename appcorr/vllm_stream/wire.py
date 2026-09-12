@@ -20,13 +20,26 @@ Request flow (client -> server; every message gets one reply frame):
                                                        -> {"ok", "t_recv"}          (final=True is one-shot)
     {"op": "append", "rid", "final", "mrope_delta", "embeds": T, "mrope": T|null}
                                                        -> {"ok", "t_recv"}
+    {"op": "correct", "rid", "final", "window": [s, e],
+                      "positions": T(int64 [P]), "embeds": T(bf16 [P, D])}
+                                                       -> {"ok", "t_recv", "t_step_ms", "num_rows"}
     {"op": "result", "rid"}                            -> {"ok", "text", "token_ids", "timing": {...}}
                                                           (blocks until the request finishes)
     {"op": "abort",  "rid"}                            -> {"ok"}
 
+`correct` is the interleaved schedule's op (docs/memo/vllm_interleaved_design.md §3.1): the whole
+approximate prompt goes in once with `open(final=False)`, then each band of corrected image rows
+REWRITES prompt rows already prefilled -- `positions` are prompt positions (strictly increasing,
+all below the held-back last row) and `embeds` their corrected values. M-RoPE is NOT sent: the
+engine keeps the request's positions from the opening push and indexes them by `positions`.
+`window` is the [start, end) prompt range the Gated DeltaNet layers re-scan for this round; it is
+always explicit because under keep<1 the corrected positions are not contiguous. `final` closes
+the prompt exactly like `append(final=True)` with an empty chunk (hold-back released).
+
 Timing (server perf_counter, seconds): t_open, t_final (last chunk received), t_first_token
-(first sampled token observed), t_done. TTFT-from-last-chunk = t_first_token - t_final, the
-same quantity vllm_stream_ttft.py measures in-process.
+(first sampled token observed), t_done, and for the interleaved schedule t_correct (one entry per
+`correct` round). TTFT-from-last-chunk = t_first_token - t_final, the same quantity
+vllm_stream_ttft.py measures in-process.
 
 No vllm import here -- this module is imported on BOTH sides.
 """

@@ -173,6 +173,224 @@ class Axis:
         return critical, total
 
 
+# --- Qwen3.5 hybrid decoder ----------------------------------------------------------------------- #
+#
+# The `Axis` above prices a UNIFORM decoder (GQA + a gated MLP at every layer). Qwen3.5 is neither:
+# three layers in four are Gated DeltaNet (linear attention, no quadratic term, a depthwise conv and
+# a recurrent scan the generic hooks cannot see) and every layer's MLP is a 256-expert MoE. So it
+# gets its own entry, whose per-token formulas are the SAME ones `appcorr/flops/hooks.py` charges --
+# `_qwen35_experts_flops` and `_qwen35_deltanet_core_flops` copied here term for term (copied, not
+# imported: this module must stay a CPU-only, torch-free closed form) -- so the two are comparable
+# by construction and the reconciliation below is a real check rather than a tautology.
+#
+# Dims come from the HF configs under /NHNHOME/huggingface/hub (text_config): `layer_types` /
+# `full_attention_interval` for the layer mix, `linear_{num_key,num_value}_heads` and
+# `linear_{key,value}_head_dim` + `linear_conv_kernel_dim` for the GDN block, `moe_intermediate_size`
+# / `shared_expert_intermediate_size` / `num_experts` / `num_experts_per_tok` for the MoE (the 4B is
+# dense: `intermediate_size`, no experts).
+
+
+@dataclass
+class Qwen35Decoder:
+    """One Qwen3.5 text decoder, priced per token and per corrected row.
+
+    Conventions match the hooks exactly: 2 FLOPs per MAC, no norms/activations/softmax/bias,
+    attention charged as `2 * 2 * H_q * Sq * Sk * D` (query heads, so GQA is not under-counted),
+    experts charged on the ROUTED count (top_k per token) plus the router's own projection,
+    lm_head and the embedding table excluded (the hooked reports install on the vision tower and
+    the language model only, so `lm_head` sits outside the subtree).
+    """
+    layers: int
+    hidden: int
+    heads: int
+    kv_heads: int
+    head_dim: int
+    n_full: int                  # layers with softmax attention
+    n_linear: int                # layers with Gated DeltaNet
+    lin_k_heads: int
+    lin_v_heads: int
+    lin_k_dim: int
+    lin_v_dim: int
+    conv_kernel: int
+    num_experts: int = 0
+    top_k: int = 0
+    moe_inter: int = 0
+    shared_inter: int = 0
+    dense_inter: int = 0         # 4B: an ordinary gated MLP instead of the MoE block
+    vocab: int = 248320
+
+    def __post_init__(self):
+        assert self.n_full + self.n_linear == self.layers, (self.n_full, self.n_linear, self.layers)
+
+    # -- per-token, per-layer pieces ---------------------------------------------------------
+    @property
+    def key_dim(self) -> int:
+        return self.lin_k_heads * self.lin_k_dim
+
+    @property
+    def value_dim(self) -> int:
+        return self.lin_v_heads * self.lin_v_dim
+
+    def mlp_tok(self) -> float:
+        """MoE block, per token. `2 * top_k * 3 * I * H` for the routed experts and
+        `2 * H * num_experts` for the router are `hooks._qwen35_experts_flops` divided by the token
+        count; the shared expert's gate/up/down and its 1-wide gate are ordinary Linears the
+        generic hooks see."""
+        if self.dense_inter:
+            return 3 * 2 * self.hidden * self.dense_inter
+        return (2 * self.top_k * 3 * self.moe_inter * self.hidden
+                + 2 * self.hidden * self.num_experts
+                + 3 * 2 * self.hidden * self.shared_inter
+                + 2 * self.hidden)
+
+    def gdn_proj_tok(self) -> float:
+        """The Gated DeltaNet layer's GEMMs: in_proj_qkv [H x 2K+V], in_proj_z [H x V],
+        in_proj_b and in_proj_a [H x num_v_heads], out_proj [V x H]."""
+        return (2 * self.hidden * (2 * self.key_dim + self.value_dim)
+                + 2 * self.hidden * self.value_dim
+                + 2 * 2 * self.hidden * self.lin_v_heads
+                + 2 * self.value_dim * self.hidden)
+
+    def gdn_conv_tok(self) -> float:
+        """Depthwise causal conv over the 2K+V mixed channels: `hooks._conv_flops` with
+        in_channels/groups = 1, i.e. 2 * C * K per output column (the K-1 padding columns are a
+        boundary term, not charged)."""
+        return 2 * (2 * self.key_dim + self.value_dim) * self.conv_kernel
+
+    def gdn_scan_tok(self) -> float:
+        """`hooks._qwen35_deltanet_core_flops` per token: the state update (k (x) v) and the
+        readout (q . S), 2 * dk * dv MACs per value head."""
+        return 2 * self.lin_v_heads * 2 * self.lin_k_dim * self.lin_v_dim
+
+    def full_proj_tok(self) -> float:
+        """q_proj is [H x heads*dh*2] (query and its output gate in one GEMM), k/v are
+        [H x kv_heads*dh], o is [heads*dh x H]."""
+        return (2 * self.hidden * (self.heads * self.head_dim * 2
+                                   + 2 * self.kv_heads * self.head_dim)
+                + 2 * (self.heads * self.head_dim) * self.hidden)
+
+    def attn(self, q_tokens: float, keys: float) -> float:
+        """QK^T + AV at the query heads, the `record_attention` convention."""
+        return 2 * 2 * self.heads * q_tokens * keys * self.head_dim
+
+    # -- the three closed forms --------------------------------------------------------------
+    def prefill_flops(self, n: float) -> float:
+        """A stock prefill of `n` prompt rows in ONE forward: every layer over every row, with the
+        softmax layers' quadratic term at Sq = Sk = n (SDPA is charged as Sq*Sk whether or not the
+        mask is causal -- the hooks' convention, so the ceiling arm matches this)."""
+        gdn = self.gdn_proj_tok() + self.gdn_conv_tok() + self.gdn_scan_tok()
+        per_tok = (self.layers * self.mlp_tok() + self.n_linear * gdn
+                   + self.n_full * self.full_proj_tok())
+        return per_tok * n + self.n_full * self.attn(n, n)
+
+    def corrected_row_flops(self, p: float) -> float:
+        """One rewritten prompt row at position `p`: every layer's GEMMs once, and on the softmax
+        layers an attention against the p+1 keys at or before it (write-before-read inside a round
+        makes the row's own key visible, hence p+1). The GDN conv and scan are NOT here -- a
+        corrected row's recurrent contribution comes from the round's window re-scan, which is
+        charged once per round by `rescan_flops`."""
+        return (self.layers * self.mlp_tok()
+                + self.n_linear * self.gdn_proj_tok()
+                + self.n_full * (self.full_proj_tok() + self.attn(1, p + 1)))
+
+    def rescan_flops(self, window_len: float) -> float:
+        """The round's Gated DeltaNet re-scan of `[s, e)`: conv + delta-rule scan over the whole
+        window on every linear layer, however few of its rows the round actually corrected. This
+        is real overhead of the schedule, not an implementation detail, so it is counted."""
+        return self.n_linear * window_len * (self.gdn_conv_tok() + self.gdn_scan_tok())
+
+    def lm_head_flops(self, rows: float = 1) -> float:
+        """Reported separately and NOT added anywhere: the hooked reference installs on the vision
+        tower + language model, so `lm_head` is outside the subtree in every measured number."""
+        return 2 * rows * self.hidden * self.vocab
+
+    # -- the schedule ------------------------------------------------------------------------
+    def interleaved_cost(self, n: int, lo: int, n_groups: int, chunks) -> Dict[str, float]:
+        """Replay `stats["chunks"]` of an interleaved run -> {"total", "crit"} decoder FLOPs.
+
+        `chunks` is what `qwen_vl_axis.streaming_forward(llm_schedule="interleaved")` records and
+        the driver stores per row: `("approx", 0, n-1)` for the t=0 pass over the whole
+        approximate prompt (the last row is held back), then `("correct", s, e, |P_r|)` per round.
+
+        Critical = everything that can only start once the last band's pixels are in: the final
+        round's corrected rows and its re-scan, plus the held-back row `n-1`, which the engine
+        computes in the step that follows and which no arrival can precede. Earlier rounds and the
+        approximate pass overlapped with transmission (`appcorr/flops/counter.py`'s rule).
+
+        A round's rows are priced at the MEAN position of its window: `corrected_row_flops` is
+        affine in `p`, so the sum over |P_r| rows spread across `[s, e)` is exact at keep=1 (the
+        rows ARE the window) and unbiased under keep<1, where the selection within a band is not
+        positionally ordered.
+        """
+        total = 0.0
+        last = 0.0
+        n_correct = 0
+        for c in chunks:
+            kind = c[0]
+            if kind == "approx":
+                s, e = int(c[1]), int(c[2])
+                assert s == 0 and e == n - 1, f"approx pass {s, e} is not the held-back prompt {n}"
+                cost = self.prefill_flops(e - s)
+            elif kind == "correct":
+                s, e, rows = int(c[1]), int(c[2]), int(c[3])
+                assert lo <= s < e <= n - 1, f"window {s, e} outside [{lo}, {n - 1})"
+                assert rows <= e - s, f"{rows} corrected rows in a {e - s}-row window"
+                cost = rows * self.corrected_row_flops((s + e - 1) / 2.0) + self.rescan_flops(e - s)
+                n_correct += 1
+            else:
+                raise ValueError(f"unknown chunk record {c!r}")
+            total += cost
+            last = cost
+        assert n_correct >= 1, "an interleaved run has at least one `correct` round"
+        assert n_groups > 0
+        tail = self.corrected_row_flops(n - 1)      # the held-back row, in the first engine step
+        return {"total": total + tail, "crit": last + tail}
+
+
+def qwen35_from_config(path: str) -> Qwen35Decoder:
+    """Build the entry from an HF `config.json` (the snapshot dirs under /NHNHOME/huggingface/hub);
+    `MODELS35` below is what this returns for the three checkpoints, frozen so the module needs no
+    filesystem."""
+    import json as _json
+    cfg = _json.load(open(path))
+    t = cfg.get("text_config", cfg)
+    lt = t.get("layer_types")
+    if lt is None:                      # older configs only carry the interval
+        iv = int(t["full_attention_interval"])
+        lt = ["full_attention" if (i + 1) % iv == 0 else "linear_attention"
+              for i in range(int(t["num_hidden_layers"]))]
+    return Qwen35Decoder(
+        layers=int(t["num_hidden_layers"]), hidden=int(t["hidden_size"]),
+        heads=int(t["num_attention_heads"]), kv_heads=int(t["num_key_value_heads"]),
+        head_dim=int(t.get("head_dim", t["hidden_size"] // t["num_attention_heads"])),
+        n_full=sum(1 for x in lt if x == "full_attention"),
+        n_linear=sum(1 for x in lt if x == "linear_attention"),
+        lin_k_heads=int(t["linear_num_key_heads"]), lin_v_heads=int(t["linear_num_value_heads"]),
+        lin_k_dim=int(t["linear_key_head_dim"]), lin_v_dim=int(t["linear_value_head_dim"]),
+        conv_kernel=int(t["linear_conv_kernel_dim"]),
+        num_experts=int(t.get("num_experts", 0)), top_k=int(t.get("num_experts_per_tok", 0)),
+        moe_inter=int(t.get("moe_intermediate_size", 0)),
+        shared_inter=int(t.get("shared_expert_intermediate_size", 0)),
+        dense_inter=int(t.get("intermediate_size", 0)) if "num_experts" not in t else 0,
+        vocab=int(t.get("vocab_size", 248320)))
+
+
+# Read off the snapshots on 2026-09-10 (models--Qwen--Qwen3.5-{35B-A3B,122B-A10B-FP8,4B}).
+MODELS35: Dict[str, Qwen35Decoder] = {
+    "qwen35_35b": Qwen35Decoder(layers=40, hidden=2048, heads=16, kv_heads=2, head_dim=256,
+                                n_full=10, n_linear=30, lin_k_heads=16, lin_v_heads=32,
+                                lin_k_dim=128, lin_v_dim=128, conv_kernel=4,
+                                num_experts=256, top_k=8, moe_inter=512, shared_inter=512),
+    "qwen35_122b": Qwen35Decoder(layers=48, hidden=3072, heads=32, kv_heads=2, head_dim=256,
+                                 n_full=12, n_linear=36, lin_k_heads=16, lin_v_heads=64,
+                                 lin_k_dim=128, lin_v_dim=128, conv_kernel=4,
+                                 num_experts=256, top_k=8, moe_inter=1024, shared_inter=1024),
+    "qwen35_4b": Qwen35Decoder(layers=32, hidden=2560, heads=16, kv_heads=4, head_dim=256,
+                               n_full=8, n_linear=24, lin_k_heads=16, lin_v_heads=32,
+                               lin_k_dim=128, lin_v_dim=128, conv_kernel=4, dense_inter=9216),
+}
+
+
 # --- model registry ------------------------------------------------------------------------------- #
 
 MODELS: Dict[str, Axis] = {
@@ -197,11 +415,62 @@ MODELS: Dict[str, Axis] = {
 }
 
 
+# Prompt lengths of the 12 strided samples `flops_report_qwen35.load_samples` feeds -- the SAME
+# images the hooked numbers below were measured on, recomputed on CPU from the HF processor
+# (2026-09-10). Per-sample, not a mean: the softmax term is quadratic in N, so a mean of shapes
+# would not be a mean of costs.
+QWEN35_SHAPES = {
+    "refcoco":     [325, 418, 319, 320, 395, 421, 361, 360, 361, 318, 358, 318],
+    "chartqa":     [549, 545, 547, 458, 467, 466, 483, 465, 467, 466, 466, 463],
+    "textvqa":     [705, 768, 803, 707, 1055, 1053, 708, 607, 609, 804, 703, 735],
+    "realworldqa": [1363, 1337, 1359, 1362, 1344, 1397, 1361, 1813, 1340, 1340, 1791, 1344],
+}
+# Hooked means over those samples, GFLOPs. `full` = the ceiling forward, vision tower + decoder,
+# from analysis/results/flops/inprocess_flops.json["qwen35_moe"] (sourced from
+# qwen35_flops_attnfix_legacy4.json -- the 2026-08-31 re-measure WITH `hooks.patch_attention`;
+# the older analysis/results/flops/qwen35_flops.json is the PRE-fix file and its `full` is 10-26%
+# low, which shows up here as a decoder cost that falls with N). `V` = the tower alone, measured
+# in isolation because `patch_attention` is a global SDPA patch
+# (analysis/results/flops/qwen35_vision_share.json, same `load_samples(ds, 12)`). The decoder-side
+# reference this module reconciles against is their difference.
+QWEN35_MEASURED = {
+    "refcoco":     {"full": 2948.4, "V": 1168.6},
+    "chartqa":     {"full": 4347.5, "V": 1904.4},
+    "textvqa":     {"full": 7520.5, "V": 3610.3},
+    "realworldqa": {"full": 15855.5, "V": 8458.1},
+}
+
+
+def validate_qwen35(model_key: str = "qwen35_35b") -> float:
+    """Gate F: the closed-form decoder prefill against the hooked ceiling minus the hooked tower.
+    Returns the worst |calc/meas - 1|."""
+    dec = MODELS35[model_key]
+    print(f"{'dataset':<14}{'N (mean)':>10}{'meas full':>11}{'meas V':>10}{'meas L':>10}"
+          f"{'calc L':>10}{'ratio':>9}")
+    worst = 0.0
+    for ds, ns in QWEN35_SHAPES.items():
+        m = QWEN35_MEASURED[ds]
+        meas = m["full"] - m["V"]
+        calc = sum(dec.prefill_flops(n) for n in ns) / len(ns) / 1e9
+        worst = max(worst, abs(calc / meas - 1))
+        print(f"{ds:<14}{sum(ns) / len(ns):>10.1f}{m['full']:>11.1f}{m['V']:>10.1f}"
+              f"{meas:>10.1f}{calc:>10.1f}{calc / meas:>9.5f}")
+    print(f"\n  worst |calc/meas - 1| on the decoder prefill: {100 * worst:.3f}%  (gate F: < 1%)")
+    return worst
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--validate", action="store_true")
+    ap.add_argument("--validate-qwen35", action="store_true",
+                    help="gate F for the Qwen3.5 hybrid entry: closed-form decoder prefill vs the "
+                         "hooked ceiling minus the hooked vision tower")
+    ap.add_argument("--model35", default="qwen35_35b", choices=sorted(MODELS35))
     ap.add_argument("--groups", type=int, default=4)
     a = ap.parse_args()
+
+    if a.validate_qwen35:
+        validate_qwen35(a.model35)
 
     if a.validate:
         # (model, dataset, n_patch, seq, n_img_tok, measured_full, meas_k30, meas_k50) in GFLOPs.
