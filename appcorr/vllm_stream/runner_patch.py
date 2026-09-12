@@ -96,3 +96,7 @@ def install() -> None:
     if vllm_version() == "0.11.2":
         GPUModelRunner._preprocess = _preprocess
     GPUModelRunner._appcorr_stream_patched = True
+    if vllm_version() != "0.11.2":
+        # interleaved correction (correct.py) is 0.28.0-only: the GDN patch reads 0.28 internals
+        from . import correct
+        correct.install()

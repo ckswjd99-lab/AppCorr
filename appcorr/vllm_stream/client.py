@@ -80,7 +80,24 @@ class _DuckFeature:
         self.identifier = f"appcorr-{modality}-{offset}"
 
 
+def _cpu_scatter_rows(dst: torch.Tensor, pos: torch.Tensor, rows: torch.Tensor) -> None:
+    """``dst[pos] = rows`` for CPU tensors through numpy: torch's CPU ``index_put_`` on a few
+    hundred rows fans out over the OpenMP pool (72 threads here) and costs milliseconds; a numpy
+    memcpy does not.  bf16 has no numpy dtype, so both sides are viewed as int16."""
+    assert dst.device.type == "cpu" and rows.device.type == "cpu" and rows.dtype == dst.dtype
+    if dst.dtype == torch.bfloat16:
+        d, r = dst.view(torch.int16), rows.contiguous().view(torch.int16)
+    else:
+        d, r = dst, rows.contiguous()
+    d.numpy()[pos.numpy()] = r.numpy()
+
+
 class StreamingLLM:
+    # `correct(final=True)`: run the final step inside the engine step that releases the
+    # hold-back (correct.py: fused hold-back) rather than before it. Env APPCORR_DEFER_FINAL=0
+    # restores the synchronous form (gate reference).
+    defer_final: bool = os.environ.get("APPCORR_DEFER_FINAL", "1") == "1"
+
     def __init__(self, model: str, *, gpu_memory_utilization: float = 0.35, max_model_len: int = 8192,
                  enforce_eager: bool = False, dtype: str = "bfloat16", **kw):
         os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
@@ -128,13 +145,120 @@ class StreamingLLM:
     def _core_id(self, request_id: str) -> str:
         return self._internal.get(request_id, request_id)
 
-    def open(self, request_id: str, chunk: StreamChunk, sampling_params) -> None:
+    def open(self, request_id: str, chunk: StreamChunk, sampling_params, *,
+             correct: bool = False, capture_out: bool = False, image_start: int = 0,
+             image_end: int = 0) -> None:
+        """`correct=True` opens the request for interleaved correction: the runner keeps a side
+        buffer of every GDN layer's pre-conv inputs for the whole prompt (see `correct.py`), which
+        `self.correct(...)` then rewrites band by band. The whole (approximate) prompt must be in
+        `chunk` and `chunk.final` must be False (the hold-back is released by the last correct).
+        `image_start`/`image_end` = the image rows [lo, hi) -- `image_end` is needed by the
+        depth-staged form only (its frontier walks cover exactly those rows)."""
         assert sampling_params.max_tokens is not None, "set max_tokens: the prompt length is not known at open"
         mode = "oneshot" if chunk.final else "open"
         ecr = self._ecr(request_id, chunk, sampling_params, mode)
         ret = self.engine.add_request(request_id, ecr, sampling_params)
         self._internal[request_id] = ret if isinstance(ret, str) else request_id
         self._open[request_id] = time.perf_counter()
+        if correct:
+            assert not chunk.final, "a correcting request is opened with the whole approx prompt, not final"
+            from . import correct as _correct
+            _correct.check_gdn_path(self.engine.vllm_config)
+            _correct.open_buffer(self._core_id(request_id), chunk.num_tokens,
+                                 self.runner.device, lo=image_start, hi=image_end,
+                                 capture_out=capture_out)
+
+    # -- interleaved correction ---------------------------------------------------------------
+    @property
+    def runner(self):
+        """The in-process `GPUModelRunner` (UniProcExecutor, VLLM_ENABLE_V1_MULTIPROCESSING=0)."""
+        r = getattr(self, "_runner", None)
+        if r is None:
+            from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+            r = self.core.model_executor.driver_worker.worker.model_runner
+            assert isinstance(r, GPUModelRunner), type(r)
+            self._runner = r
+        return r
+
+    def _drain_until_prefilled(self, request_id: str, *, max_steps: int = 256,
+                               timeout_s: float = 300.0, step_fn=None) -> dict:
+        """Step the engine until the approx prefill is complete (computed == num_prompt - 1).
+        `step_fn` replaces `self.step` so an owner that books outputs per step (the server's
+        `_step`: first-token times, finished results) does not lose the other requests' outputs
+        produced while draining."""
+        step = step_fn or self.step
+        t0 = time.perf_counter()
+        for i in range(max_steps + 1):
+            st = self.stream_state(request_id)
+            if st is None:
+                raise RuntimeError(f"{request_id}: request gone before the correct step")
+            if not st["open"]:
+                raise RuntimeError(f"{request_id}: correct on a closed request ({st})")
+            if st["num_computed_tokens"] == st["num_prompt_tokens"] - 1:
+                return st
+            if i == max_steps:
+                break
+            if time.perf_counter() - t0 > timeout_s:
+                raise RuntimeError(f"{request_id}: approx prefill did not finish in {timeout_s}s ({st})")
+            step()
+        raise RuntimeError(f"{request_id}: approx prefill did not finish in {max_steps} steps "
+                           f"({self.stream_state(request_id)})")
+
+    def correct(self, request_id: str, positions, embeds, window, final: bool,
+                *, replay: bool = False, step_fn=None, stage=None) -> dict:
+        """Rewrite prompt rows `positions` with `embeds` and re-run the decoder on them.
+
+        positions int64 [P] (sorted, all < N-1), embeds [P, D], window = (start, end) prompt
+        positions of this round's DeltaNet re-scan. `final=True` also commits the recurrent state
+        to the request's mamba block and releases the hold-back (empty final chunk).
+        `stage=(r, g)` selects the depth-staged form (`correct.appcorr_staged_correct`): the
+        rows are corrected over the first `b_r` layers only and the image rows are walked
+        through the next layer band with the corrected context."""
+        assert request_id in self._open, request_id
+        core_id = self._core_id(request_id)
+        t_recv = time.perf_counter()
+        self._drain_until_prefilled(request_id, step_fn=step_fn)
+        deferred = final and self.defer_final
+        if deferred:
+            # the final step runs inside the engine step that computes the released row N-1
+            # (correct.py: fused hold-back), armed here and run after the release below
+            self.runner.appcorr_arm_final(core_id, positions, embeds, window, stage=stage,
+                                          replay=replay)
+            info = None
+        elif stage is None:
+            info = self.runner.appcorr_correct_step(core_id, positions, embeds, window, final,
+                                                    replay=replay)
+        else:
+            info = self.runner.appcorr_staged_correct(core_id, positions, embeds, window, final,
+                                                      stage, replay=replay)
+        # keep both CPU copies of the prompt in sync so a preempted request re-prefills the
+        # corrected rows (scheduler-side `StreamingRequest` and worker-side `CachedRequestState`)
+        t_sc = time.perf_counter()
+        pos_cpu = positions.detach().cpu().to(torch.int64)
+        req = self.core.scheduler.requests[core_id]
+        # clone: the caller's rows may alias the tensor `open` was given (same storage)
+        rows = embeds.detach().to("cpu", req.prompt_embeds.dtype).clone()
+        _cpu_scatter_rows(req.prompt_embeds, pos_cpu, rows)
+        st = self.runner.requests[core_id]
+        _cpu_scatter_rows(st.prompt_embeds, pos_cpu, rows.to(st.prompt_embeds.dtype))
+        t_sc = time.perf_counter() - t_sc
+        if final:
+            d = req.prompt_embeds.shape[1]
+            empty = StreamChunk(embeds=torch.empty((0, d), dtype=req.prompt_embeds.dtype),
+                                final=True,
+                                mrope_positions=torch.empty((3, 0), dtype=torch.int64),
+                                mrope_delta=req.mrope_delta)
+            # straight to the scheduler: vLLM's Processor rejects a zero-length prompt, and the
+            # engine-core append path would only forward this to `stream_append` anyway.
+            self.core.scheduler.stream_append(core_id, empty)
+        if deferred:
+            (step_fn or self.step)()
+            info = self.runner.appcorr_take_final_info(core_id)
+            if info is None:       # not scheduled in that step (c>1 budget): runs when it is
+                info = {"num_rows": int(positions.numel()), "n_sub": 0, "deferred": True}
+        info["t_recv"] = t_recv
+        info["t_scatter_ms"] = t_sc * 1e3
+        return info
 
     def append(self, request_id: str, chunk: StreamChunk) -> None:
         assert request_id in self._open, request_id

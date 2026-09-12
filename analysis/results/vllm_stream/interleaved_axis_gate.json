@@ -1,0 +1,311 @@
+{
+ "_model": "Qwen/Qwen3.5-35B-A3B",
+ "_family": "qwen35",
+ "_groups": 4,
+ "_source": "realworldqa",
+ "rows": [
+  {
+   "keep": 1.0,
+   "groups": 4,
+   "seq": 1363,
+   "image_run": [
+    4,
+    1305
+   ],
+   "streaming_chunks": [
+    [
+     0,
+     330
+    ],
+    [
+     330,
+     656
+    ],
+    [
+     656,
+     983
+    ],
+    [
+     983,
+     1363
+    ]
+   ],
+   "interleaved_chunks": [
+    [
+     "approx",
+     0,
+     1362
+    ],
+    [
+     "correct",
+     4,
+     330,
+     326
+    ],
+    [
+     "correct",
+     330,
+     656,
+     326
+    ],
+    [
+     "correct",
+     656,
+     983,
+     327
+    ],
+    [
+     "correct",
+     983,
+     1362,
+     379
+    ]
+   ],
+   "prefill_tokens": {
+    "streaming": 1363,
+    "interleaved": 2720
+   },
+   "corrected_groups": {
+    "streaming": 1305,
+    "interleaved": 1305
+   },
+   "bitwise_equal": true,
+   "n_positions_differing": 0,
+   "max_abs_diff": 0.0,
+   "rel_l2": 0.0,
+   "approx_push": {
+    "kind": "push",
+    "n": 1363,
+    "final": false
+   },
+   "approx_image_rows_bitwise": true,
+   "approx_image_rows_max_abs": 0.0,
+   "n_messages": 5,
+   "n_correct": 4,
+   "correct_messages": [
+    {
+     "window": [
+      4,
+      330
+     ],
+     "n": 326,
+     "n_img": 326,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      330,
+      656
+     ],
+     "n": 326,
+     "n_img": 326,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      656,
+      983
+     ],
+     "n": 327,
+     "n_img": 327,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      983,
+      1362
+     ],
+     "n": 379,
+     "n_img": 326,
+     "n_text": 53,
+     "final": true,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    }
+   ],
+   "ok_structure": true,
+   "same_selection": true,
+   "pscore": {
+    "streaming": null,
+    "interleaved": null
+   },
+   "same_pscore": true,
+   "n_selected": 1305,
+   "coverage_ok": true,
+   "PASS": true
+  },
+  {
+   "keep": 0.5,
+   "groups": 4,
+   "seq": 1363,
+   "image_run": [
+    4,
+    1305
+   ],
+   "streaming_chunks": [
+    [
+     0,
+     330
+    ],
+    [
+     330,
+     656
+    ],
+    [
+     656,
+     983
+    ],
+    [
+     983,
+     1363
+    ]
+   ],
+   "interleaved_chunks": [
+    [
+     "approx",
+     0,
+     1362
+    ],
+    [
+     "correct",
+     4,
+     330,
+     163
+    ],
+    [
+     "correct",
+     330,
+     656,
+     163
+    ],
+    [
+     "correct",
+     656,
+     983,
+     163
+    ],
+    [
+     "correct",
+     983,
+     1362,
+     216
+    ]
+   ],
+   "prefill_tokens": {
+    "streaming": 1363,
+    "interleaved": 2067
+   },
+   "corrected_groups": {
+    "streaming": 652,
+    "interleaved": 652
+   },
+   "bitwise_equal": true,
+   "n_positions_differing": 0,
+   "max_abs_diff": 0.0,
+   "rel_l2": 0.0,
+   "approx_push": {
+    "kind": "push",
+    "n": 1363,
+    "final": false
+   },
+   "approx_image_rows_bitwise": true,
+   "approx_image_rows_max_abs": 0.0,
+   "n_messages": 5,
+   "n_correct": 4,
+   "correct_messages": [
+    {
+     "window": [
+      4,
+      330
+     ],
+     "n": 163,
+     "n_img": 163,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      330,
+      656
+     ],
+     "n": 163,
+     "n_img": 163,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      656,
+      983
+     ],
+     "n": 163,
+     "n_img": 163,
+     "n_text": 0,
+     "final": false,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    },
+    {
+     "window": [
+      983,
+      1362
+     ],
+     "n": 216,
+     "n_img": 163,
+     "n_text": 53,
+     "final": true,
+     "in_window": true,
+     "below_holdback": true,
+     "sorted": true,
+     "img_in_band": true,
+     "text_only_last": true
+    }
+   ],
+   "ok_structure": true,
+   "same_selection": true,
+   "pscore": {
+    "streaming": "deferred",
+    "interleaved": "deferred"
+   },
+   "same_pscore": true,
+   "n_selected": 652,
+   "coverage_ok": true,
+   "PASS": true
+  }
+ ],
+ "PASS": true
+}

@@ -86,10 +86,16 @@ class StreamingScheduler(Scheduler):
         out.appcorr_stream_updates = updates
         return out
 
-    def _free_request(self, request):
+    def _free_request(self, request, *args, **kwargs):   # 0.28: (request, delay_free_blocks=)
         self._runner_updates.pop(request.request_id, None)
         self._runner_knows.discard(request.request_id)
-        return super()._free_request(request)
+        try:
+            from . import correct
+        except ImportError:  # vllm 0.11.2 / no-vllm process
+            pass
+        else:
+            correct.free(request.request_id)
+        return super()._free_request(request, *args, **kwargs)
 
     # -- introspection for the client ---------------------------------------------------------
     def stream_state(self, request_id: str) -> Optional[dict]:
