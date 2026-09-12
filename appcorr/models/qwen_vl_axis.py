@@ -69,6 +69,10 @@ torch.backends.cuda.enable_cudnn_sdp(False)
 
 
 class QwenVLStreamingAxis(nn.Module):
+    # Family default: the text model consumes M-RoPE (3, T) positions. GLM-5.3-Flash sets
+    # this False (see the instance attribute's comment in `__init__`).
+    uses_mrope = True
+
     def __init__(self, model: nn.Module, processor: Any, flop_counter: Optional[Any] = None):
         super().__init__()
         self.model = model
@@ -104,6 +108,18 @@ class QwenVLStreamingAxis(nn.Module):
         # before); gated served (vllm_unified_gate.py).
         self.engine_open_walk = True
         self.positions_mode = "fast"
+        # `uses_mrope`: does the TEXT model consume the (3, T) t/h/w position tensor?
+        # True for every Qwen2-VL-family model and for GLM-4.6V. FALSE for GLM-5.3-Flash,
+        # whose decoder has no rotary at all (34 KDA layers ignore `positions`, the 11
+        # MLA layers are built with `skip_rope=config.mla_nope`), so vLLM's
+        # `model_config.uses_mrope` is False and the engine never calls
+        # `_init_mrope_positions`. A streaming chunk MUST then carry `mrope=None`: the
+        # runner patch asserts `st.mrope_positions is not None` before extending it
+        # (`appcorr/vllm_stream/runner_patch.py:45-48`) and that field is only ever filled
+        # by `_init_mrope_positions`, which the runner skips for a non-M-RoPE model
+        # (vLLM main `v1/worker/gpu_model_runner.py:1343-1345, 1676-1677`). Pushing a
+        # broadcast 1-D tensor instead would crash on the first appended chunk.
+        self.uses_mrope = type(self).uses_mrope
         self.image_embeds_with_sink = False
         # keep<1 selection score: True = the attention term is computed after the first band's
         # push (band 0 selects on the residual-energy hint alone), False = the eager score
@@ -534,11 +550,15 @@ class QwenVLStreamingAxis(nn.Module):
             if sink is not None:
                 # The chunk leaves the process: rows of the (partially corrected) embedding
                 # sequence plus their M-RoPE positions; `final` closes the prompt on the server.
-                sink.push(emb_all[0, pos_done:end], pos_3d[:, 0, pos_done:end], rope_delta,
+                sink.push(emb_all[0, pos_done:end],
+                          pos_3d[:, 0, pos_done:end] if self.uses_mrope else None,
+                          rope_delta if self.uses_mrope else None,
                           final=(end == seq))
             else:
-                out = self.model(inputs_embeds=emb_all[:, pos_done:end], past_key_values=kv,
-                                 position_ids=pos_3d[:, :, pos_done:end], use_cache=True)
+                out = self.model(
+                    inputs_embeds=emb_all[:, pos_done:end], past_key_values=kv,
+                    position_ids=(pos_3d[:, :, pos_done:end] if self.uses_mrope else None),
+                    use_cache=True)
                 last_logits = out.logits[:, -1]
             stats["chunks"].append((pos_done, end))
             stats["prefill_tokens"] += end - pos_done
@@ -570,7 +590,9 @@ class QwenVLStreamingAxis(nn.Module):
                 # stream, and the band loop overwrites these very rows -- without the
                 # snapshot the approx prompt could carry rows corrected later, which is the
                 # contract's rule-2 leak (data from the future) in wire form.
-                sink.push(emb_all[0, :seq].clone(), pos_3d[:, 0, :seq], rope_delta, final=False,
+                sink.push(emb_all[0, :seq].clone(),
+                          pos_3d[:, 0, :seq] if self.uses_mrope else None,
+                          rope_delta if self.uses_mrope else None, final=False,
                           correct_from=lo,
                           correct_to=(lo + n_groups_total if staged else None),
                           **({"open_walk": int(llm_bounds[0])}
@@ -879,4 +901,6 @@ class QwenVLStreamingAxis(nn.Module):
             emb = self.lm.embed_tokens(ids)[0]
             emb[lo:lo + n_tok] = feats.to(emb.dtype)
         pos_3d, rope_delta = self._positions(inputs, image_run=(lo, n_tok), grid_thw=grid_thw)
+        if not self.uses_mrope:
+            return emb, None, None
         return emb, pos_3d[:, 0], rope_delta

@@ -512,6 +512,249 @@ MODELS35: Dict[str, Qwen35Decoder] = {
 }
 
 
+# --- GLM-4.6V (106B-A12B-FP8) --------------------------------------------------------------------- #
+
+
+@dataclass
+class Glm46VDecoder:
+    """One GLM-4.6V text decoder, priced per token and per corrected row.
+
+    Same conventions as `Qwen35Decoder` (2 FLOPs per MAC; no norms/activations/softmax/bias;
+    attention at the QUERY heads; experts on the ROUTED count plus the router; lm_head and the
+    embedding table outside the subtree).  Two structural differences from the Qwen3.5 entry:
+
+      * **no recurrent layers at all.**  All 46 layers are softmax GQA (`Glm4MoeAttention`,
+        `$V/glm4_moe.py:222`), so there is no GDN projection/conv/scan term and
+        `rescan_flops` is identically zero -- the interleaved schedule's per-round window
+        re-scan, which is real overhead on Qwen3.5, does not exist here.
+      * the MLP is not uniform across layers: layer 0 is a dense SwiGLU of width
+        `intermediate_size` (`first_k_dense_replace: 1`) and layers 1-45 are MoE blocks.
+
+    q_proj is [H x heads*dh] -- GLM has no query output gate, so it is half the Qwen3.5 term.
+    """
+    layers: int
+    hidden: int
+    heads: int
+    kv_heads: int
+    head_dim: int
+    n_dense: int                 # leading layers with a dense MLP (`first_k_dense_replace`)
+    dense_inter: int
+    num_experts: int
+    top_k: int
+    moe_inter: int
+    shared_inter: int            # `moe_intermediate_size * n_shared_experts`
+    vocab: int = 151552
+
+    def __post_init__(self):
+        assert 0 <= self.n_dense <= self.layers, (self.n_dense, self.layers)
+
+    # -- per-token, per-layer pieces ---------------------------------------------------------
+    def dense_tok(self) -> float:
+        return 3 * 2 * self.hidden * self.dense_inter
+
+    def moe_tok(self) -> float:
+        """Routed experts (`2 * top_k * 3 * I * H`), the 128-way router (`2 * H * E`) and the one
+        shared expert's gate/up/down.  GLM's shared expert has no scalar gate, so there is no
+        `+ 2 * H` term here (Qwen3.5 has one)."""
+        return (2 * self.top_k * 3 * self.moe_inter * self.hidden
+                + 2 * self.hidden * self.num_experts
+                + 3 * 2 * self.hidden * self.shared_inter)
+
+    def mlp_tok(self, layer: int) -> float:
+        return self.dense_tok() if layer < self.n_dense else self.moe_tok()
+
+    def proj_tok(self) -> float:
+        """q [H x heads*dh], k/v [H x kv*dh], o [heads*dh x H].  The q/k/v biases
+        (`attention_bias: true`) are adds, which this convention does not charge."""
+        return (2 * self.hidden * (self.heads * self.head_dim + 2 * self.kv_heads * self.head_dim)
+                + 2 * (self.heads * self.head_dim) * self.hidden)
+
+    def attn(self, q_tokens: float, keys: float) -> float:
+        return 2 * 2 * self.heads * q_tokens * keys * self.head_dim
+
+    # -- the closed forms --------------------------------------------------------------------
+    def mlp_prefix_tok(self, depth: Optional[int] = None) -> float:
+        """Sum of the per-token MLP cost over the first `depth` layers (all of them by default).
+        Not `depth * mlp_tok` because layer 0 differs."""
+        d = self.layers if depth is None or depth >= self.layers else depth
+        assert d > 0, d
+        nd = min(self.n_dense, d)
+        return nd * self.dense_tok() + (d - nd) * self.moe_tok()
+
+    def prefill_flops(self, n: float) -> float:
+        """A stock prefill of `n` prompt rows in ONE forward: every layer over every row, with the
+        quadratic term at Sq = Sk = n on all 46 layers."""
+        return (n * (self.layers * self.proj_tok() + self.mlp_prefix_tok())
+                + self.layers * self.attn(n, n))
+
+    def corrected_row_flops(self, p: float, depth: Optional[int] = None) -> float:
+        """One rewritten prompt row at position `p`: every layer's GEMMs once, plus an attention
+        against the `p + 1` keys at or before it (write-before-read inside a round makes the
+        row's own key visible).  `depth`: the first `depth` layers only (a staged round)."""
+        d = self.layers if depth is None or depth >= self.layers else depth
+        return d * self.proj_tok() + self.mlp_prefix_tok(d) + d * self.attn(1, p + 1)
+
+    def rescan_flops(self, window_len: float, depth: Optional[int] = None) -> float:
+        """Zero: no recurrent layers, so a round re-scans nothing.  Kept so the schedule replay
+        below reads the same as `Qwen35Decoder.interleaved_cost`."""
+        return 0.0
+
+    def lm_head_flops(self, rows: float = 1) -> float:
+        return 2 * rows * self.hidden * self.vocab
+
+    def interleaved_cost(self, n: int, lo: int, n_groups: int, chunks) -> Dict[str, float]:
+        return _interleaved_replay(self, n, lo, n_groups, chunks)
+
+
+def _interleaved_replay(dec, n: int, lo: int, n_groups: int, chunks) -> Dict[str, float]:
+    """Replay `stats["chunks"]` of an interleaved run -> {"total", "crit", "staged"}.
+
+    Line for line `Qwen35Decoder.interleaved_cost` (see its docstring for what each record means
+    and why a round's rows are priced at the mean position of its window); factored out so the
+    GLM entry does not fork the schedule logic, and left un-wired from the Qwen3.5 entry so that
+    validated path is untouched.
+    """
+    total = 0.0
+    last = 0.0
+    n_correct = 0
+    n_staged = 0
+    for c in chunks:
+        kind = c[0]
+        if kind in ("vapprox", "vcorrect"):
+            continue
+        if kind == "approx":
+            s, e = int(c[1]), int(c[2])
+            assert s == 0 and e == n - 1, f"approx pass {s, e} is not the held-back prompt {n}"
+            cost = dec.prefill_flops(e - s)
+        elif kind == "correct":
+            s, e, rows = int(c[1]), int(c[2]), int(c[3])
+            assert lo <= s < e <= n - 1, f"window {s, e} outside [{lo}, {n - 1})"
+            assert rows <= e - s, f"{rows} corrected rows in a {e - s}-row window"
+            depth = None
+            if len(c) >= 7:                     # explicit depth (r, n_rounds, b_r)
+                depth = int(c[6])
+                n_staged += 1
+            elif len(c) >= 6:                   # depth-staged round (r, g)
+                r, g = int(c[4]), int(c[5])
+                depth = stage_bounds(dec.layers, g)[r]
+                n_staged += 1
+            cost = (rows * dec.corrected_row_flops((s + e - 1) / 2.0, depth)
+                    + dec.rescan_flops(e - s, depth))
+            n_correct += 1
+        else:
+            raise ValueError(f"unknown chunk record {c!r}")
+        total += cost
+        last = cost
+    assert n_correct >= 1, "an interleaved run has at least one `correct` round"
+    assert n_staged in (0, n_correct), "mixed staged / unstaged rounds in one run"
+    assert n_groups > 0
+    tail = dec.corrected_row_flops(n - 1)      # the held-back row, in the first engine step
+    return {"total": total + tail, "crit": last + tail, "staged": bool(n_staged)}
+
+
+@dataclass
+class Glm46VVision:
+    """The GLM-4.6V vision tower, priced per layer, per corrected row and per one-off term.
+
+    Unlike `Qwen35Vision` the MLP is GATED (`Glm4vVisionMLP` = gate/up/down + SiluAndMul), and
+    unlike it the merge head is counted: `pre_flops` (Conv3d patch embed) and `merge_flops`
+    (2x2 Conv2d downsample 1536 -> 4096 + `Glm4vPatchMerger`) are 4.5% of the tower at 4096
+    patch rows, which is too big to wave away as Qwen3.5's 0.25% merger was.  They are one-off
+    per image in every arm and are therefore NOT axis stages (see
+    `appcorr/models/glm46v/unified.py`), only absolute terms.
+    """
+    layers: int = 24
+    hidden: int = 1536
+    heads: int = 12
+    ffn: int = 4096                 # = out_hidden_size, the block MLP's hidden width
+    out_hidden: int = 4096
+    merger_ctx: int = 10944         # `vision_config.intermediate_size`
+    merge_size: int = 2
+    patch_size: int = 14
+    temporal_patch_size: int = 2
+    in_channels: int = 3
+
+    def layer_flops(self, n_rows: float) -> float:
+        head_dim = self.hidden // self.heads
+        return (2 * n_rows * self.hidden * (3 * self.hidden)
+                + attn_flops(n_rows, self.heads, head_dim)
+                + 2 * n_rows * self.hidden * self.hidden
+                + 3 * 2 * n_rows * self.hidden * self.ffn)
+
+    def row_layer_flops(self, n_rows: float) -> float:
+        """One CORRECTED row through one layer at the full key length (exact, not an average:
+        `layer_flops` is linear in the query count at fixed keys)."""
+        return self.layer_flops(n_rows) / max(n_rows, 1)
+
+    def pre_flops(self, n_rows: float) -> float:
+        k = self.temporal_patch_size * self.patch_size * self.patch_size
+        return 2 * n_rows * self.hidden * self.in_channels * k
+
+    def merge_flops(self, n_groups: float) -> float:
+        m = self.merge_size
+        down = 2 * (n_groups * self.out_hidden) * self.hidden * (m * m)
+        merger = (2 * n_groups * self.out_hidden * self.out_hidden
+                  + 3 * 2 * n_groups * self.out_hidden * self.merger_ctx)
+        return down + merger
+
+    def tower_flops(self, n_rows: float) -> float:
+        """Patch embed + 24 blocks + downsample + merger over one image."""
+        return (self.pre_flops(n_rows) + self.layers * self.layer_flops(n_rows)
+                + self.merge_flops(n_rows / (self.merge_size ** 2)))
+
+    def unified_cost(self, chunks) -> Dict[str, float]:
+        """{"total", "crit", "n_rows"} from a unified run's records -- the block stages only
+        (`Qwen35Vision.unified_cost` verbatim); the one-off pre/merge terms are common to every
+        arm and are added by the caller if it wants absolutes."""
+        total = 0.0
+        last = 0.0
+        n_rows = 0
+        for c in chunks:
+            if c[0] == "vapprox":
+                a, b, nr = int(c[1]), int(c[2]), int(c[3])
+                n_rows = max(n_rows, nr)
+                total += (b - a) * self.layer_flops(nr)
+            elif c[0] == "vcorrect":
+                a, b, rows = int(c[1]), int(c[2]), int(c[3])
+                assert a == 0, f"a vision correction always restarts at layer 0, got {c!r}"
+                last = rows * (b - a) * self.row_layer_flops(max(n_rows, 1))
+                total += last
+        assert n_rows > 0, "no `vapprox` record: these are not a unified run's chunks"
+        return {"total": total, "crit": last, "n_rows": n_rows}
+
+
+GLM46V_VISION = Glm46VVision()
+
+
+def glm46v_from_config(path: str) -> Glm46VDecoder:
+    """Build the entry from an HF `config.json` (the snapshot dir under /NHNHOME/huggingface/hub);
+    `MODELS46` below is what this returns for `zai-org/GLM-4.6V-FP8`, frozen so the module needs
+    no filesystem."""
+    import json as _json
+    cfg = _json.load(open(path))
+    t = cfg.get("text_config", cfg)
+    moe_i = int(t["moe_intermediate_size"])
+    return Glm46VDecoder(
+        layers=int(t["num_hidden_layers"]), hidden=int(t["hidden_size"]),
+        heads=int(t["num_attention_heads"]), kv_heads=int(t["num_key_value_heads"]),
+        head_dim=int(t.get("head_dim", t["hidden_size"] // t["num_attention_heads"])),
+        n_dense=int(t.get("first_k_dense_replace", 0)),
+        dense_inter=int(t["intermediate_size"]),
+        num_experts=int(t.get("n_routed_experts", 0) or t.get("num_local_experts", 0)),
+        top_k=int(t["num_experts_per_tok"]), moe_inter=moe_i,
+        shared_inter=moe_i * int(t.get("n_shared_experts", 0) or 0),
+        vocab=int(t["vocab_size"]))
+
+
+# Read off models--zai-org--GLM-4.6V-FP8 on 2026-09-12 (`lm_head.weight` is [151552, 4096] in
+# the checkpoint index -- the port plan's "lm_head 154880" is wrong).
+MODELS46: Dict[str, Glm46VDecoder] = {
+    "glm46v": Glm46VDecoder(layers=46, hidden=4096, heads=96, kv_heads=8, head_dim=128,
+                            n_dense=1, dense_inter=10944, num_experts=128, top_k=8,
+                            moe_inter=1408, shared_inter=1408, vocab=151552),
+}
+
+
 # --- model registry ------------------------------------------------------------------------------- #
 
 MODELS: Dict[str, Axis] = {

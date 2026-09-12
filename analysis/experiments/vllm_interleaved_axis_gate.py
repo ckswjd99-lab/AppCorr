@@ -44,7 +44,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "analysis"))
 from PIL import Image
-from analysis.experiments.qwen35_accuracy import degrade
+def degrade(*args, **kwargs):
+    """Lazy re-export of `qwen35_accuracy.degrade`.
+
+    That module imports `datasets` (and `qwen_vl_prefill.datasets_eval`) at import time, which
+    the served `appcorr-vllm-main` env does not have -- and the paths that only need the AXIS
+    (`--tiny`, the composer/prompt gates) never call `degrade`. Importing it here at module level
+    made `--tiny --family glm53` unrunnable in the ONLY env that has `transformers.models
+    .glm5_next`. Same function, resolved on first call."""
+    from analysis.experiments.qwen35_accuracy import degrade as _degrade
+    return _degrade(*args, **kwargs)
+
 from analysis.experiments.qwen_vllm_accuracy import make_axis
 
 
@@ -232,7 +242,7 @@ def check(axis, inputs, px_base, groups, keep, report):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--family", choices=["qwen25vl", "qwen35"], default="qwen35")
+    ap.add_argument("--family", choices=["qwen25vl", "qwen35", "glm46v", "glm53"], default="qwen35")
     ap.add_argument("--model", default="Qwen/Qwen3.5-35B-A3B")
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--keeps", type=float, nargs="+", default=[1.0, 0.5])
@@ -251,7 +261,16 @@ def main():
 
     if a.tiny:
         from analysis.experiments.qwen_axis_cpu_unittest import make_inputs, tiny_models
-        model = tiny_models()[a.family]
+        tiny = tiny_models()
+        if a.family not in tiny:
+            raise SystemExit(
+                f"--tiny has no {a.family} model in this environment. `glm53` needs "
+                "transformers >= 5.16 (models/glm5_next); this box's `appcorr` env is 5.13.0. "
+                "Run it with the served env's interpreter:\n"
+                "  PYTHONPATH=$PWD /NHNHOME/share/cjpark/backup/env/appcorr-vllm-main/bin/"
+                "python3.11 analysis/experiments/vllm_interleaved_axis_gate.py --tiny "
+                f"--family {a.family} ...")
+        model = tiny[a.family]
         axis = make_axis(a.family, model, None)
         inputs, px_base = make_inputs(model, a.grid[0], a.grid[1], 0)
         report = []

@@ -1,0 +1,27 @@
+{
+ "_mode": "port",
+ "_model": "zai-org/GLM-5.3-Flash",
+ "row": {
+  "shape": [
+   24,
+   4096
+  ],
+  "eps_port": {
+   "norm": 1e-06,
+   "qk_norm": 1e-05,
+   "post": 1e-06
+  },
+  "eps_hf": {
+   "norm": 1e-06,
+   "qk_norm": 1e-05,
+   "post": 1e-06
+  },
+  "port_vs_hf_relL2": 0.0,
+  "port_vs_hf_max_abs": 0.0,
+  "fork_vs_hf_relL2": 0.0,
+  "fork_vs_hf_max_abs": 0.0,
+  "fork_vs_port_bitwise": true,
+  "wall_s": 81.09559290669858
+ },
+ "fails": []
+}

@@ -1,0 +1,51 @@
+{
+ "_mode": "prompt",
+ "_model": "zai-org/GLM-5.3-Flash",
+ "row": {
+  "prompt_text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|><|begin_of_image|><|image|><|end_of_image|>What is this?<|assistant|><think>",
+  "tmpl_starts_gmask_sop": true,
+  "tmpl_has_flanked_placeholder": true,
+  "tmpl_ends_assistant_think": true,
+  "tmpl_has_no_nothink_switch": true,
+  "seq": 49,
+  "grid": [
+   1,
+   10,
+   12
+  ],
+  "build_inputs_appends_think_close": true,
+  "per_token_fields_extended": true,
+  "image_run": [
+   11,
+   41
+  ],
+  "placeholder_expanded_by_processor": true,
+  "sentinels_flank_the_run": true,
+  "trailing_text_rows_ge_2": true,
+  "think_True_keeps_the_open_block": true,
+  "composer_matches_axis_edit": true,
+  "family_default_uses_mrope": true,
+  "glm53_uses_mrope_false": true,
+  "positions_are_none": true,
+  "tokens_full": 414,
+  "tokens_low": 63,
+  "grid_full": [
+   1,
+   36,
+   46
+  ],
+  "grid_low": [
+   1,
+   14,
+   18
+  ],
+  "low_res_shrinks_the_grid": true,
+  "driver_family_registered": true,
+  "family_max_px": true,
+  "clean_text_strips_box": true,
+  "composer_for_glm53": true,
+  "composer_for_glm46v": true,
+  "composer_for_raises_on_unknown": true
+ },
+ "fails": []
+}

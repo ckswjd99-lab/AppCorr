@@ -1358,6 +1358,24 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
                                             "visdrone_count", "visdrone_det", "chartqa",
                                             "cvbench", "mmvp", "refcoco")},
      "glm46v_il", "glm46v_cg1024", "glm46v"),
+    # GLM-5.3-Flash (port started 2026-09-13; docs/memo/glm53_correct_design.md). A 3rd-generation
+    # GLM vision MoE and the first model in this table whose decoder is HYBRID in a new way:
+    # 45 layers = 34 KDA (gated delta-rule linear attention) + 11 sparse-MLA with an fp8 pooled
+    # indexer, mHC 4-stream residuals, 288 routed experts top-8, FP8 checkpoint with a BF16
+    # 24-layer full-attention ViT at hidden 1024. It is also the first row served under TP=2
+    # (B200-8 GPUs 2-3), which our stream server does not support yet -- see
+    # docs/memo/glm53_tp_plan.md and analysis/experiments/glm53_tp_gate.sh.
+    # Slug follows the driver (`args.model.split("/")[-1].lower()`); concurrency 2 like the other
+    # two big rows. Every cell renders "--" until the port lands; n-per-dataset mirrors the
+    # GLM-4.6V row so a finished run is checked against the same expectation.
+    ("GLM-5.3-Flash (FP8)", "_glm-5.3-flash", "_c2",
+     {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
+      "visdrone_count": 2350, "visdrone_det": 448,
+      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
+     {ds: "glm53_flops_il.json" for ds in ("vstar", "realworldqa", "textvqa", "infovqa",
+                                           "visdrone_count", "visdrone_det", "chartqa",
+                                           "cvbench", "mmvp", "refcoco")},
+     "glm53_il", "glm53_cg1024", "glm53"),
 ]
 IL_DATASETS = [("vstar", "V*Bench (Acc.)", "ok", "qwen_vllm_accuracy_il_pyr"),
                ("realworldqa", "RealWorldQA (Acc.)", "ok", "qwen_vllm_accuracy_il"),

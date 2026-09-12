@@ -40,22 +40,28 @@ from appcorr.models.qwen35.unified import Qwen35Axis, MODEL_ID_35B
 from PIL import Image
 
 
-def degrade(img: Image.Image, level: int = 2, filt: str = "bicubic") -> Image.Image:
+def degrade(img: Image.Image, level: int = 2, filt: str = "bicubic",
+            max_px: int = None) -> Image.Image:
     """The transmission's level-`level` base: 2^level x down, back up. Content degrades, geometry
     does not -- the token grid must match the full-res image or the band mixing is meaningless.
 
     `filt` selects the DOWNSAMPLING filter: 'bicubic' is what every qwen35 number in the table was
     measured with; 'box' (area average) matches the gemma3/ov2 oracles and approximates the
     canonical cv2.pyrDown pyramid more closely. The 2026-08-28 convention audit flagged the
-    divergence; the BOX-vs-BICUBIC sensitivity probe decides whether the table needs re-measuring."""
+    divergence; the BOX-vs-BICUBIC sensitivity probe decides whether the table needs re-measuring.
+
+    `max_px` overrides the pixel-AREA cap of the family's image processor (default: Qwen's).
+    Added 2026-09-12 for GLM-4.6V, whose `Glm46VImageProcessor` caps at 9,633,792 rather than
+    16,777,216; the default is the Qwen constant, so every existing caller is bit-identical."""
     # Pyramid-direction cap (both branches of the rule): degrade relative to
     # min(native, what the model samples). Qwen's smart_resize tops out at
     # max_pixels=12.8M, so every bench measured so far sat below it and the two
     # branches coincided -- MME-RealWorld (36M px) is where this first BINDS.
     QWEN_MAX_PX = 16_777_216  # measured 2026-08-31: processor longest_edge cap; images stay native below it
+    cap = QWEN_MAX_PX if max_px is None else int(max_px)
     f = 2 ** level
     w, h = img.size
-    s = min(1.0, (QWEN_MAX_PX / (w * h)) ** 0.5)
+    s = min(1.0, (cap / (w * h)) ** 0.5)
     if s < 1.0:
         w2, h2 = max(1, int(w * s)), max(1, int(h * s))
     else:

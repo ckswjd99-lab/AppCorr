@@ -472,6 +472,14 @@ def main():
     ap.add_argument("--gpu-mem", type=float, default=0.5)
     ap.add_argument("--max-model-len", type=int, default=16384)
     ap.add_argument("--enforce-eager", action="store_true")
+    ap.add_argument("--tensor-parallel-size", type=int, default=1,
+                    help="vLLM TP degree. 1 keeps the model runner in THIS process (the path the "
+                         "Qwen3.5 / GLM-4.6V campaigns measured, byte-identical). >1 makes vLLM "
+                         "use MultiProcExecutor, one worker process per rank: the runner patch "
+                         "is installed in each worker through --worker-extension-cls and every "
+                         "correction op is dispatched with collective_rpc "
+                         "(appcorr/vllm_stream/tp_worker.py, docs/memo/glm53_tp_plan.md). "
+                         "GLM-5.3-Flash on B200-8 is the first model that needs this")
     ap.add_argument("--max-num-seqs", type=int, default=None)
     ap.add_argument("--max-num-batched-tokens", type=int, default=None,
                     help="engine prefill batch cap. vLLM defaults it to max_model_len; at 16384 "
@@ -514,7 +522,8 @@ def main():
     if a.max_cudagraph_capture_size:
         kw["compilation_config"] = {"max_cudagraph_capture_size": a.max_cudagraph_capture_size}
     llm = StreamingLLM(a.model, gpu_memory_utilization=a.gpu_mem, max_model_len=a.max_model_len,
-                       enforce_eager=a.enforce_eager, **kw)
+                       enforce_eager=a.enforce_eager,
+                       tensor_parallel_size=a.tensor_parallel_size, **kw)
     StreamServer(llm, a.host, a.port).serve_forever()
 
 

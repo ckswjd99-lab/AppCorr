@@ -70,7 +70,79 @@ def tiny_models():
     cfg3._attn_implementation = "sdpa"
     torch.manual_seed(2)
     m35 = Qwen3_5ForConditionalGeneration(cfg3).eval()
-    return {"qwen25vl": m25, "qwen35": m35}
+
+    # GLM-4.6V (`Glm4vMoeForConditionalGeneration`), same shape trick: real HF classes, random
+    # weights, fp32. `image_size` sizes the absolute-posemb table (56/14 -> a 4x4 grid, bicubic
+    # `grid_sample`d to the request's), `intermediate_size` is the MERGER's context dim (not the
+    # vision MLP's, which is `out_hidden_size`), and the text half is a 2-layer MoE with
+    # `first_k_dense_replace=1` so both layer kinds are exercised. mrope_section sums to
+    # head_dim/4 here because the text rope is partial 0.5.
+    from transformers import Glm4vMoeConfig, Glm4vMoeForConditionalGeneration
+    vcg = dict(depth=4, hidden_size=64, num_heads=4, intermediate_size=128, out_hidden_size=96,
+               patch_size=14, spatial_merge_size=2, temporal_patch_size=2, in_channels=3,
+               image_size=56, rms_norm_eps=1e-5, hidden_act="silu", attention_bias=False)
+    tcg = dict(hidden_size=96, intermediate_size=192, num_hidden_layers=2, num_attention_heads=4,
+               num_key_value_heads=2, head_dim=24, vocab_size=1000, max_position_embeddings=4096,
+               first_k_dense_replace=1, n_routed_experts=4, num_experts_per_tok=2,
+               moe_intermediate_size=48, n_shared_experts=1, n_group=1, topk_group=1,
+               routed_scaling_factor=1.0, norm_topk_prob=True, attention_bias=True,
+               partial_rotary_factor=0.5,
+               rope_parameters={"rope_type": "default", "rope_theta": 10000.0,
+                                "mrope_section": [2, 2, 2], "partial_rotary_factor": 0.5},
+               bos_token_id=1, eos_token_id=2)
+    cfgg = Glm4vMoeConfig(vision_config=vcg, text_config=tcg, image_token_id=5,
+                          image_start_token_id=3, image_end_token_id=4, video_token_id=6,
+                          bos_token_id=1, eos_token_id=2)
+    cfgg._attn_implementation = "sdpa"
+    torch.manual_seed(3)
+    mglm = Glm4vMoeForConditionalGeneration(cfgg).eval()
+
+    models = {"qwen25vl": m25, "qwen35": m35, "glm46v": mglm}
+    models.update(_tiny_glm53())
+    return models
+
+
+def _tiny_glm53():
+    """GLM-5.3-Flash (`Glm5NextForConditionalGeneration`), same shape trick -- or nothing.
+
+    This one needs `transformers >= 5.16` (`models/glm5_next`); the `appcorr` env on this box
+    ships 5.13.0, which has no such module, so the entry is simply ABSENT there rather than a
+    broken stub, and the callers that ask for it fail with a message naming the env to use
+    (`/NHNHOME/share/cjpark/backup/env/appcorr-vllm-main/bin/python3.11`, transformers 5.16.1).
+    A stub would be worse than an omission: the whole point of the tiny model is that it is the
+    REAL HF class with random weights.
+
+    Shapes: vision `swiglu_limit` must be set (the fork asserts on it) and `attention_bias=True`
+    (the checkpoint's, and what puts biases on qkv/proj/mlp). The text half is 2 layers, one
+    `linear_attention` (KDA) and one `deepseek_sparse_attention` (MLA), `mhc=True` so the
+    4-stream residual path is exercised, and the MoE widths are the smallest the router accepts.
+    """
+    try:
+        from transformers import Glm5NextConfig, Glm5NextForConditionalGeneration
+    except ImportError:
+        return {}
+    vc5 = dict(depth=4, hidden_size=64, num_heads=4, intermediate_size=128, out_hidden_size=96,
+               projection_intermediate_size=160, patch_size=14, spatial_merge_size=2,
+               temporal_patch_size=2, in_channels=3, rms_norm_eps=1e-5, hidden_act="silu",
+               attention_bias=True, swiglu_limit=10.0, image_size=56)
+    tc5 = dict(hidden_size=96, intermediate_size=192, num_hidden_layers=2,
+               num_attention_heads=4, num_key_value_heads=4, head_dim=24, vocab_size=1000,
+               max_position_embeddings=4096, mhc=True,
+               layer_types=["linear_attention", "deepseek_sparse_attention"],
+               mlp_layer_types=["dense", "sparse"],
+               n_routed_experts=4, num_experts_per_tok=2, moe_intermediate_size=48,
+               n_shared_experts=1, n_group=1, topk_group=1, routed_scaling_factor=1.0,
+               norm_topk_prob=True, scoring_func="sigmoid", swiglu_limit=10.0,
+               kv_lora_rank=32, q_lora_rank=32, qk_nope_head_dim=24, qk_rope_head_dim=0,
+               v_head_dim=24, qk_head_dim=24, mla_use_nope=True,
+               index_n_heads=4, index_head_dim=32, index_topk=16, index_kpool=4,
+               eos_token_id=2, pad_token_id=0)
+    cfg5 = Glm5NextConfig(vision_config=vc5, text_config=tc5, image_token_id=5,
+                          image_start_token_id=3, image_end_token_id=4, video_token_id=6,
+                          video_start_token_id=7, video_end_token_id=8)
+    cfg5._attn_implementation = "sdpa"
+    torch.manual_seed(4)
+    return {"glm53": Glm5NextForConditionalGeneration(cfg5).eval()}
 
 
 def make_inputs(model, h, w, seed):
