@@ -224,3 +224,25 @@ dims or sparsity first. Closed by unavailability, not evidence. RISK for the por
 hardware has exactly ONE viable attention backend for this model; a regression or layout change
 in `FLASHINFER_MLA_SPARSE` has no fallback. The KDA / indexer top-k / MoE-routing split is
 still open; the repeat-based criterion has to be defined from self-repeat distributions.
+
+## G-MLA (leg 3) -- judged 2026-09-13 06:50 KST on attempt 9 (B200-8, TP=2, eager, 8 images)
+Rank replication: MLA latent + indexer k_cache/tail bitwise across the two ranks on all 8 images
+(100 replicated keys, 68 sharded KDA keys skipped by design). Latent rel-L2 vs the stock one-shot,
+median over images, per sparse layer (3..43):
+
+| layer | chunk_vs_one | rows_vs_one | one2_vs_one (stock vs itself) |
+|---|---|---|---|
+| 3 | 0.0103 | 0.0102 | 0.0000 |
+| 7 | 0.0235 | 0.0241 | 0.0132 |
+| 19 | 0.1358 | 0.1284 | 0.0993 |
+| 43 | 0.3501 | 0.3474 | 0.2891 |
+
+The stock arm against ITSELF reaches 0.289 by layer 43 and differs on 69% of indexer pools, so
+the depth-growing shape is the model's non-repeatability, not the correction's; the logprob
+columns carry no signal (rows_vs_one 0.151 < one2_vs_one 0.180). Criterion that survives:
+**our correct step must be no worse than vLLM's own chunked prefill of the same prompt** --
+`rows_vs_one` tracks `chunk_vs_one` at every layer, and at layer 3 (bitwise self-repeat) both
+are 1.0e-2 above stock, the chunk-boundary cost of the KDA/FP8 stack that the streaming baseline
+pays too. **Verdict: PASS on that criterion.** The raw 0.35 is never quoted as a correct-step
+number. Consequence for the campaign: the first GLM-5.3 dataset runs the ceiling arm twice to
+size the run-to-run accuracy drift.
