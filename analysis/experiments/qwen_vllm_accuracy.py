@@ -28,7 +28,9 @@ lever; N=1 is the latency form. `--backend hf` runs the identical loop in-proces
 explicit greedy loop (a consistency reference, not a campaign arm).
 
 Same degrade()/get_spec()/record() conventions as qwen35_accuracy.py; output naming
-  {dataset}_{model-slug}_{arm|llm-schedule}[_g{groups}[_k{keep}]][_c{concurrency}].jsonl
+  {dataset}_{model-slug}_{arm|llm-schedule}[_g{groups}[_k{keep}|_auto{theta}]][_c{concurrency}].jsonl
+`_auto{theta}` is the adaptive arm (`--keep auto`): a threshold, not a budget, so the
+realised k is per sample and lives in the rows (`keep_realised`), not in the file name.
 under --out, resumable by row index.
 
 Run (appcorr env; server first, in the appcorr-vllm env, same --model):
@@ -101,6 +103,19 @@ def rescale_box(pred: str, size) -> str:
 SCHEDULE_TAG = {"unified_staged": "interleaved_unified"}
 
 
+def keep_suffix(args) -> str:
+    """The `--keep` half of the progressive arm's row-file name.
+
+    Fixed budget: `_k0.50` as always (and nothing at keep=1.0). Adaptive ("--keep auto"): the
+    THRESHOLD, `_auto0.02` -- a per-image k is not a property of the arm, so naming the file after
+    a k would be a lie and, worse, would collide with a fixed-k row file. `%g` so 0.02 is
+    "0.02" and 2e-05 is "2e-05" (no trailing zeros to drift between runs).
+    """
+    if args.keep == "auto":
+        return f"_auto{args.pscore_threshold:g}"
+    return f"_k{args.keep:.2f}" if args.keep < 1.0 else ""
+
+
 def arm_tag(arm: str, args) -> str:
     """Row-file name of an arm. The progressive arm is named after its LLM SCHEDULE
     (`streaming_g4_k0.50` / `interleaved_g4_k0.50`), so the two schedules' rows sit next to each
@@ -121,7 +136,7 @@ def merge_shards(args) -> None:
     for arm in args.arms:
         suffix = ""
         if arm == "streaming":
-            suffix = f"_g{args.groups}" + (f"_k{args.keep:.2f}" if args.keep < 1.0 else "")
+            suffix = f"_g{args.groups}" + keep_suffix(args)
         if args.concurrency > 1:
             suffix += f"_c{args.concurrency}"
         if args.backend == "hf":
@@ -166,7 +181,24 @@ def main():
     ap.add_argument("--port", type=int, default=5591)
     ap.add_argument("--arms", nargs="+", default=["floor", "streaming", "ceiling"])
     ap.add_argument("--groups", type=int, default=4)
-    ap.add_argument("--keep", type=float, default=1.0)
+    ap.add_argument("--keep", default="1.0",
+                    help="fraction of image tokens corrected (0.25 / 0.50 / 1.0), or 'auto' for "
+                         "bucketized THRESHOLD selection: no budget, each band corrects the "
+                         "groups whose score clears --pscore-threshold, ceilinged onto the "
+                         "1/--pscore-bucket lattice of the band (rows "
+                         "`..._g{g}_auto{theta}.jsonl`, each carrying its own `keep_realised`)")
+    ap.add_argument("--pscore-threshold", type=float, default=None,
+                    help="--keep auto: the GLOBAL score cut theta (one number for every image "
+                         "and dataset). Calibrate it offline against a target mean k with "
+                         "analysis/experiments/threshold_sim.py on a pscore_dump.py npz")
+    ap.add_argument("--pscore-bucket", type=int, default=8,
+                    help="--keep auto: the 1/b lattice each band's corrected count is ceilinged "
+                         "onto (and its floor: a band never corrects fewer than ceil(G_r/b))")
+    ap.add_argument("--pscore-score", choices=["rms", "mse"], default="rms",
+                    help="--keep auto: energy factor of the score. 'rms' = RMS residual in RAW "
+                         "[0,1] pixel units (absolute -- what a global threshold needs) x mean-1 "
+                         "received attention; 'mse' = the fixed-k arm's per-image mean-1 score "
+                         "(thresholdable only in shape, kept for the A/B and the identity gate)")
     ap.add_argument("--level", type=int, default=2)
     ap.add_argument("--degrade-filter", choices=["bicubic", "box", "pyr"], default="box")
     ap.add_argument("--samples", type=int, default=0, help="0 = full split")
@@ -230,6 +262,11 @@ def main():
                          "the canonical file) into the canonical row file, sorted by i, and exit")
     ap.add_argument("--out", default="analysis/results/qwen_vllm_accuracy")
     args = ap.parse_args()
+    # `--keep` is str-typed so "auto" can share the flag with the numeric budgets; resolve it
+    # once, here, and everything downstream sees either a float or the string "auto".
+    args.keep = "auto" if str(args.keep).lower() == "auto" else float(args.keep)
+    if args.keep == "auto" and args.pscore_threshold is None:
+        raise SystemExit("--keep auto needs --pscore-threshold (the global score cut)")
     shard = None
     if args.shard is not None:
         k, n_sh = (int(v) for v in args.shard.split("/"))
@@ -281,6 +318,10 @@ def main():
           f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB", flush=True)
     axis = make_axis(args.family, model, proc)
     axis.pscore_defer = args.pscore == "deferred"
+    if args.keep == "auto":
+        axis.pscore_threshold = args.pscore_threshold
+        axis.pscore_bucket = args.pscore_bucket
+        axis.pscore_score = args.pscore_score
     if args.no_open_walk:
         axis.engine_open_walk = False
     tmpl_kw = {"think": True} if (args.think and args.family == "qwen35") else {}
@@ -297,7 +338,7 @@ def main():
     for arm in args.arms:
         suffix = ""
         if arm == "streaming":
-            suffix = f"_g{args.groups}" + (f"_k{args.keep:.2f}" if args.keep < 1.0 else "")
+            suffix = f"_g{args.groups}" + keep_suffix(args)
         if args.concurrency > 1:
             suffix += f"_c{args.concurrency}"
         if args.backend == "hf":
@@ -457,6 +498,13 @@ def main():
                          "llm_schedule": st.get("llm_schedule", "streaming")}
                 if "pscore" in st:
                     extra["pscore"] = st["pscore"]
+                # Adaptive arm: the per-sample k is a RESULT, not a setting -- without these two
+                # a row file says nothing about what the arm spent (make_eval_table reads
+                # `keep_realised` for the mean/p95 column).
+                for f_ in ("keep_realised", "theta", "pscore_score", "pscore_bucket",
+                           "pscore_rms_units", "band_selected", "n_groups"):
+                    if f_ in st:
+                        extra[f_] = st[f_]
                 if sink is None:
                     hf = (lg, kv, st["decode_start_pos"])
             else:
