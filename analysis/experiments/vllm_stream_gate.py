@@ -26,6 +26,10 @@ Run (GPU0, appcorr-vllm env = vllm 0.28.0; openrlhf_base = 0.11.2 also works, of
   Qwen3.5 (hybrid GDN/attention MoE; the composer is the same, no deepstack in these checkpoints):
   ... --model Qwen/Qwen3.5-35B-A3B --gpu-mem 0.6 --out analysis/results/vllm_stream/gate_qwen35_35b_vllm0280.json
   ... --model Qwen/Qwen3.5-122B-A10B-FP8 --gpu-mem 0.85 --out analysis/results/vllm_stream/gate_qwen35_122b_fp8_vllm0280.json
+  GLM-4.6V (106B-A12B FP8; `composer_for` picks `Glm46VComposer`: `<|image|>` placeholder,
+  enable_thinking=False). Arm A here is the stock anchor `glm46v_tower_gate.py --mode g0` joins:
+  ... --model zai-org/GLM-4.6V-FP8 --gpu-mem 0.85 --arms A,B,C \
+      --out analysis/results/vllm_stream/gate_glm46v_fp8_vllm0280.json
 """
 from __future__ import annotations
 
@@ -42,6 +46,13 @@ COCO = "/NHNHOME/share/cjpark/data/coco_train2017/train2017"
 IMAGES = ["000000000009.jpg", "000000000025.jpg", "000000000030.jpg", "000000000034.jpg",
           "000000000036.jpg", "000000000049.jpg", "000000000061.jpg", "000000000064.jpg"]
 QUESTION = "Describe this image in two sentences, then name the most salient object."
+
+
+def composer_for(model_id: str):
+    """The prompt composer for a model family. GLM-4.6V/4.5V differ from the Qwen2-VL family only
+    in the placeholder token and the thinking switch (`appcorr/vllm_stream/client.py`)."""
+    from appcorr.vllm_stream.client import Glm46VComposer, Qwen25VLComposer
+    return Glm46VComposer if "glm-4" in model_id.lower() else Qwen25VLComposer
 
 
 def tokens_and_lp(out):
@@ -79,7 +90,6 @@ def main():
     from PIL import Image
     from vllm import SamplingParams
     from appcorr.vllm_stream import StreamingLLM
-    from appcorr.vllm_stream.client import Qwen25VLComposer
 
     from appcorr.vllm_stream.compat import fix_qwen2_5_vit_upstream_fa
     fix_qwen2_5_vit_upstream_fa()
@@ -88,7 +98,7 @@ def main():
         kw["max_num_batched_tokens"] = a.max_num_batched_tokens
     llm = StreamingLLM(a.model, gpu_memory_utilization=a.gpu_mem, enforce_eager=a.enforce_eager,
                        limit_mm_per_prompt={"image": 1}, **kw)
-    comp = Qwen25VLComposer(llm)
+    comp = composer_for(a.model)(llm)
     sp = SamplingParams(temperature=0.0, max_tokens=a.max_tokens, logprobs=1)
 
     res = json.load(open(a.out)) if os.path.exists(a.out) else {"_meta": {}}

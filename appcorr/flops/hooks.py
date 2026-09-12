@@ -139,6 +139,21 @@ _SPECIAL_HOOKS = {
     # this entry the 122B hooked runs counted no routed experts at all (7.3 GF/token missing;
     # found 2026-09-10 when the closed form disagreed by exactly that term).
     "FP8Experts": _qwen35_experts_flops,
+    # GLM-4.6V (`Glm4vMoeForConditionalGeneration`, transformers 5.13
+    # `models/glm4v_moe/modeling_glm4v_moe.py:254`): the same parameter-stack module under a
+    # different name -- `gate_up_proj`/`down_proj` are 3-D `nn.Parameter`s and the forward loops
+    # `F.linear` over the HIT experts, so the generic hooks see nothing, and `num_experts` /
+    # `hidden_dim` / `intermediate_dim` / the positional `(hidden_states, top_k_index,
+    # top_k_weights)` signature are identical to Qwen3.5's, so the handler is reusable verbatim.
+    # The `FP8Experts` entry above does NOT cover it: that class only appears under the
+    # FineGrainedFP8 quantizer (`integrations/finegrained_fp8.py:573`, substituted at :779);
+    # GLM-4.6V-FP8 is compressed-tensors, whose HF quantizer never swaps the experts class
+    # (`quantizers/quantizer_compressed_tensors.py:64-80` only calls `apply_quantization_config`
+    # + `compress_model` on the Linears).  Its 128-way fp32 router is an `nn.Parameter` +
+    # `F.linear` too (`Glm4vMoeTextTopkRouter`), and is charged by the handler's token term.
+    "Glm4vMoeTextExperts": _qwen35_experts_flops,
+    # the text-only sibling's class name, for a GLM-4.6/4.5 text decoder measured on its own
+    "Glm4MoeExperts": _qwen35_experts_flops,
     "Qwen3_5MoeGatedDeltaNet": _qwen35_deltanet_core_flops,
 }
 

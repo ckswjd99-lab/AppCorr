@@ -13,10 +13,11 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import torch
 
+from .embed_lookup import resolve_embed_fn
 from .request import StreamChunk, make_stream_headers
 
 
@@ -339,7 +340,16 @@ class Qwen25VLComposer:
     span, `get_mrope_input_positions` over placeholder features, tower -> [T, D]). Qwen3-VL proper
     ships deepstack (`vision_config.deepstack_visual_indexes` non-empty: extra per-level features
     added at early LM layers through a side buffer the embeds path never fills); the Qwen3.5
-    checkpoints ship it EMPTY, so they take the plain path -- `embed` asserts that."""
+    checkpoints ship it EMPTY, so they take the plain path -- `embed` asserts that.
+
+    The placeholder token and the chat-template kwargs are class attributes so a sibling family
+    whose prompt differs only in those two places (GLM-4.6V: `<|image|>` and
+    `enable_thinking=False`) is a two-line subclass -- see `Glm46VComposer`. The embedding table
+    is found by `embed_lookup.resolve_embed_fn`, because the family that needs the subclass ALSO
+    keeps that table one level down."""
+
+    IMAGE_TOKEN = "<|image_pad|>"
+    TEMPLATE_KWARGS: Dict[str, Any] = {}
 
     def __init__(self, llm: StreamingLLM):
         from transformers import AutoProcessor
@@ -347,13 +357,17 @@ class Qwen25VLComposer:
         # the engine's resolved (local snapshot) path: transformers' tokenizer loader otherwise
         # queries the hub for a repo id even under HF_HUB_OFFLINE
         self.hf = AutoProcessor.from_pretrained(llm.engine.model_config.model)
-        self.image_pad_id = self.hf.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+        self.image_pad_id = self.hf.tokenizer.convert_tokens_to_ids(self.IMAGE_TOKEN)
+        if self.image_pad_id is None or self.image_pad_id == self.hf.tokenizer.unk_token_id:
+            raise ValueError(f"{self.IMAGE_TOKEN!r} is not a token of "
+                             f"{llm.engine.model_config.model}'s tokenizer")
 
     def messages(self, question: str):
         return [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}]
 
     def prompt_text(self, question: str) -> str:
-        return self.hf.apply_chat_template(self.messages(question), tokenize=False, add_generation_prompt=True)
+        return self.hf.apply_chat_template(self.messages(question), tokenize=False,
+                                           add_generation_prompt=True, **self.TEMPLATE_KWARGS)
 
     def parts(self, image, question: str) -> PromptParts:
         text = self.prompt_text(question)
@@ -378,7 +392,9 @@ class Qwen25VLComposer:
             assert getattr(model, "deepstack_num_level", 0) == 0, (
                 "deepstack model: the [T, D] embeds wire format cannot carry the per-level features")
             with torch.no_grad():
-                emb = model.embed_input_ids(ids.to(dev))
+                # Not `model.embed_input_ids` unconditionally: GLM-4.6V keeps the table on
+                # `model.language_model` (embed_lookup.py has the paths and the reason).
+                emb = resolve_embed_fn(model)(ids.to(dev))
                 if image_embeds is None:
                     with set_forward_context(None, vllm_config):
                         vis = model.visual(pv.to(dev, model.visual.dtype), grid_thw=thw.tolist())
@@ -405,3 +421,22 @@ class Qwen25VLComposer:
 
 
 QwenVLComposer = Qwen25VLComposer  # Qwen2.5-VL / Qwen3.5 (see class docstring)
+
+
+class Glm46VComposer(Qwen25VLComposer):
+    """GLM-4.6V / GLM-4.5V (`Glm4vMoeForConditionalGeneration` in vLLM's `glm4_1v.py`).
+
+    Two differences from the Qwen2-VL family, both in the prompt:
+      * the placeholder is `<|image|>` (151363), flanked by `<|begin_of_image|>` /
+        `<|end_of_image|>` text tokens -- the span `parts()` finds is the placeholder run alone,
+        which is what `image_bounds` and the band math want;
+      * the template must be asked for the non-thinking form, or a short greedy decode spends its
+        budget on a reasoning preamble (`enable_thinking=False` -> `/nothink` + an empty
+        `<think></think>`), matching `appcorr/models/glm46v/axis.py`'s default.
+
+    Everything else carries: `spatial_merge_size` is 2 so `image_bounds`' merged-grid width is
+    unchanged, `get_mrope_input_positions` has the Qwen signature and walks `_DuckFeature`s the
+    same way (`glm4_1v.py:2218-2280`), and the model has no deepstack levels."""
+
+    IMAGE_TOKEN = "<|image|>"
+    TEMPLATE_KWARGS = {"enable_thinking": False}

@@ -70,7 +70,33 @@ def tiny_models():
     cfg3._attn_implementation = "sdpa"
     torch.manual_seed(2)
     m35 = Qwen3_5ForConditionalGeneration(cfg3).eval()
-    return {"qwen25vl": m25, "qwen35": m35}
+
+    # GLM-4.6V (`Glm4vMoeForConditionalGeneration`), same shape trick: real HF classes, random
+    # weights, fp32. `image_size` sizes the absolute-posemb table (56/14 -> a 4x4 grid, bicubic
+    # `grid_sample`d to the request's), `intermediate_size` is the MERGER's context dim (not the
+    # vision MLP's, which is `out_hidden_size`), and the text half is a 2-layer MoE with
+    # `first_k_dense_replace=1` so both layer kinds are exercised. mrope_section sums to
+    # head_dim/4 here because the text rope is partial 0.5.
+    from transformers import Glm4vMoeConfig, Glm4vMoeForConditionalGeneration
+    vcg = dict(depth=4, hidden_size=64, num_heads=4, intermediate_size=128, out_hidden_size=96,
+               patch_size=14, spatial_merge_size=2, temporal_patch_size=2, in_channels=3,
+               image_size=56, rms_norm_eps=1e-5, hidden_act="silu", attention_bias=False)
+    tcg = dict(hidden_size=96, intermediate_size=192, num_hidden_layers=2, num_attention_heads=4,
+               num_key_value_heads=2, head_dim=24, vocab_size=1000, max_position_embeddings=4096,
+               first_k_dense_replace=1, n_routed_experts=4, num_experts_per_tok=2,
+               moe_intermediate_size=48, n_shared_experts=1, n_group=1, topk_group=1,
+               routed_scaling_factor=1.0, norm_topk_prob=True, attention_bias=True,
+               partial_rotary_factor=0.5,
+               rope_parameters={"rope_type": "default", "rope_theta": 10000.0,
+                                "mrope_section": [2, 2, 2], "partial_rotary_factor": 0.5},
+               bos_token_id=1, eos_token_id=2)
+    cfgg = Glm4vMoeConfig(vision_config=vcg, text_config=tcg, image_token_id=5,
+                          image_start_token_id=3, image_end_token_id=4, video_token_id=6,
+                          bos_token_id=1, eos_token_id=2)
+    cfgg._attn_implementation = "sdpa"
+    torch.manual_seed(3)
+    mglm = Glm4vMoeForConditionalGeneration(cfgg).eval()
+    return {"qwen25vl": m25, "qwen35": m35, "glm46v": mglm}
 
 
 def make_inputs(model, h, w, seed):

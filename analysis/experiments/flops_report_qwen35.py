@@ -1,5 +1,18 @@
 """Critical/total FLOPs for the Qwen3.5-35B streaming arm, via the unified axis's scopes.
 
+`--family glm46v` runs the same three arms for GLM-4.6V-FP8 (`zai-org/GLM-4.6V-FP8`), whose
+decoder is pure softmax: the closed form is `flops_analytic.Glm46VDecoder` (no DeltaNet term, no
+per-round re-scan) and the tower `Glm46VVision` (gated block MLP, and the patch-embed + merge
+head counted rather than waved away).  Two things the hooked run needs on that family:
+
+  * `appcorr/flops/hooks.py` must carry `"Glm4vMoeTextExperts"` -- GLM's routed experts are a
+    parameter-stack module, invisible to the Linear/Conv hooks, and the `FP8Experts` entry does
+    NOT cover them (that class is FineGrainedFP8's; GLM-4.6V-FP8 is compressed-tensors, which
+    leaves the experts class alone).  Pinned by `tests/test_glm46v_flops_hooks.py`.
+  * the HF load needs `compressed-tensors>=0.15.0` in the environment (not installed in the
+    `appcorr` env as of 2026-09-12) and `attn_implementation="sdpa"`, because `patch_attention`
+    wraps `scaled_dot_product_attention` and a flash-attn path would slip past it.
+
 Three arms per sample, matching every other model's report:
     ceiling    stock forward on the full image          -> 100% critical
     floor      stock forward on the degraded base       -> 100% critical
@@ -24,6 +37,34 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 from appcorr.flops.counter import FlopCounter
 from appcorr.flops import hooks
 from appcorr.models.qwen35.unified import Qwen35Axis, MODEL_ID_35B
+
+# (model id, flops_analytic decoder key, closed-form vision entry) per family
+FAMILIES = {"qwen35": (MODEL_ID_35B, "qwen35_35b"),
+            "glm46v": ("zai-org/GLM-4.6V-FP8", "glm46v")}
+
+
+def _closed_form(family: str, model_key: str):
+    """(decoder entry, vision entry) from `flops_analytic` for this family."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from flops_analytic import MODELS35, MODELS46, QWEN35_VISION, GLM46V_VISION
+    if family == "glm46v":
+        return MODELS46[model_key], GLM46V_VISION
+    return MODELS35[model_key], QWEN35_VISION
+
+
+def _axis_cls(family: str):
+    """The unified axis class of this family.  GLM's lives in `appcorr/models/glm46v/axis.py`
+    (built in parallel with this file); the cost hooks it must mix in are
+    `appcorr.models.glm46v.unified.Glm46VUnifiedCosts`."""
+    if family != "glm46v":
+        return Qwen35Axis
+    try:
+        from appcorr.models.glm46v.axis import Glm46VAxis
+    except ImportError as e:      # the vision half is not merged yet
+        raise SystemExit(
+            "--family glm46v needs appcorr/models/glm46v/axis.py (the tower + merger + axis "
+            f"class); the closed-form half (--il-only) works without it.  {e}")
+    return Glm46VAxis
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from qwen_vl_prefill.datasets_eval import get_spec  # the registry every other report uses
@@ -70,7 +111,7 @@ def stage_split(counter):
 
 
 def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=False,
-                          unified=False):
+                          unified=False, family="qwen35"):
     """{keep: (total, crit, n_rows, path, prefill, vis)} decoder-side GFLOPs of the interleaved
     schedule, replayed from the accuracy driver's rows. `staged`: the depth-staged arm's rows
     (`interleaved_staged_g*`), whose `chunks` carry the round index and are priced at the
@@ -90,9 +131,7 @@ def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=Fal
     datasets, 2026-09-10); run that before trusting a number from here. `prefill` is the
     closed-form stock prefill of the same rows (the "1" of the schedule), so a caller can turn
     total/crit into ratios and apply them to a hooked prefill of a different sample."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from flops_analytic import MODELS35, QWEN35_VISION
-    dec = MODELS35[model_key]
+    dec, vision = _closed_form(family, model_key)
     out = {}
     arm = "interleaved_unified" if unified else ("interleaved_staged" if staged else "interleaved")
     for path in sorted(glob.glob(os.path.join(
@@ -118,18 +157,21 @@ def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=Fal
             crit += c["crit"] / 1e9
             pre += dec.prefill_flops(int(r["prompt_tokens"]) - 1) / 1e9
             if unified:
-                v = QWEN35_VISION.unified_cost(chunks)
+                v = vision.unified_cost(chunks)
                 nr = v["n_rows"]
-                rowl = QWEN35_VISION.row_layer_flops(nr)
+                rowl = vision.row_layer_flops(nr)
                 # Reference = the SAME corrections at full tower depth on top of one full
                 # approximate pass: the vision half every other arm runs, so the ratio is what
                 # the staging changed and nothing else.
                 corr = [int(x[3]) for x in chunks if x[0] == "vcorrect"]
                 v_tot += v["total"] / 1e9
                 v_crit += v["crit"] / 1e9
-                v_ref_tot += (QWEN35_VISION.tower_flops(nr)
-                              + sum(corr) * QWEN35_VISION.layers * rowl) / 1e9
-                v_ref_crit += ((corr[-1] if corr else 0) * QWEN35_VISION.layers * rowl) / 1e9
+                # blocks only, matching `unified_cost`'s scope (identical to the old
+                # `QWEN35_VISION.tower_flops(nr)` for Qwen3.5; GLM's `tower_flops` also carries
+                # the one-off patch-embed + merge terms, which are common to every arm)
+                v_ref_tot += (vision.layers * vision.layer_flops(nr)
+                              + sum(corr) * vision.layers * rowl) / 1e9
+                v_ref_crit += ((corr[-1] if corr else 0) * vision.layers * rowl) / 1e9
             n += 1
         if n:
             vis = None
@@ -155,7 +197,7 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
     for staged, unified, tag in ((False, False, "il"), (True, False, "ils"),
                                  (False, True, "ilu")):
         il = interleaved_from_rows(args.il_rows, ds_name, slug, args.groups, args.il_model,
-                                   staged=staged, unified=unified)
+                                   staged=staged, unified=unified, family=args.family)
         for keep, (tot, crit, n, path, pre, vscale) in sorted(il.items()):
             vis = vis_arg
             if keeps is not None and not any(abs(keep - k) < 1e-9 for k in keeps):
@@ -203,8 +245,9 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
                 "closed_crit": round(crit, 1),
                 "ratio_total": round(ratio_t, 4), "ratio_crit": round(ratio_c, 4),
                 "rows": n, "source": os.path.basename(path),
-                "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder "
-                        "replayed from the rows' `chunks`"
+                "note": ("decoder half is the closed form of flops_analytic."
+                         + ("Glm46VDecoder" if args.family == "glm46v" else "Qwen35Decoder")
+                         + " replayed from the rows' `chunks`")
                         + (" (depth-staged: rows priced at their round's depth, approx pass + "
                            "frontier walks = one full prefill)" if staged else "")
                         + (" (unified axis: rows priced at their round's EXPLICIT depth over the "
@@ -228,7 +271,12 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default=MODEL_ID_35B)
+    ap.add_argument("--family", default="qwen35", choices=sorted(FAMILIES),
+                    help="qwen35 (hybrid decoder, Qwen35Decoder closed form) or glm46v "
+                         "(pure-softmax decoder, Glm46VDecoder closed form)")
+    ap.add_argument("--model", default=None,
+                    help="HF id; defaults to the family's (%s)" % ", ".join(
+                        f"{k}: {v[0]}" for k, v in sorted(FAMILIES.items())))
     ap.add_argument("--samples", type=int, default=12)
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--datasets", nargs="+", default=["chartqa"])
@@ -240,12 +288,21 @@ def main():
                          " rows; adds total_g{g}[_k{k}]_il / crit_g{g}[_k{k}]_il, the interleaved "
                          "schedule's cost replayed from each row's `chunks` (closed form, "
                          "flops_analytic.Qwen35Decoder) on top of THIS run's measured vision half")
-    ap.add_argument("--il-model", default="qwen35_35b",
-                    help="flops_analytic.MODELS35 key for the --il-rows replay")
+    ap.add_argument("--il-model", default=None,
+                    help="flops_analytic MODELS35/MODELS46 key for the --il-rows replay; "
+                         "defaults to the family's")
+    ap.add_argument("--device", default="cuda:0",
+                    help="where the hooked model lives; \"cpu\" for checkpoints that do not fit "
+                         "one GPU once HF decompresses them (GLM-4.6V-FP8: compressed-tensors "
+                         "FP8 -> bf16 on load, 212 GB > 178 GB, 2026-09-12). Counts are "
+                         "device-independent; a CPU run is slow, not wrong.")
     ap.add_argument("--il-only", action="store_true",
                     help="no GPU: only fold the --il-rows keys into an existing --out-json "
                          "(vision half from the stored _split when the json has one, else decoder-side only)")
     args = ap.parse_args()
+    default_model, default_key = FAMILIES[args.family]
+    args.model = args.model or default_model
+    args.il_model = args.il_model or default_key
 
     if args.il_only:
         if not args.il_rows:
@@ -266,21 +323,25 @@ def main():
         return
 
     proc = AutoProcessor.from_pretrained(args.model)
+    # sdpa, always: `hooks.patch_attention` wraps `scaled_dot_product_attention`, so a flash-attn
+    # path would put the whole quadratic term outside the count (hooks.py's "a missed path is the
+    # failure mode that matters").
     model = AutoModelForImageTextToText.from_pretrained(
-        args.model, dtype="auto", device_map="cuda:0").eval()
+        args.model, dtype="auto", device_map=args.device, attn_implementation="sdpa").eval()
+    axis_cls = _axis_cls(args.family)
 
     result = {"_model": args.model, "_samples": args.samples, "_groups": args.groups}
     for ds_name in args.datasets:
         samples = load_samples(ds_name, args.samples)
         arms = ["ceiling", "floor"] + [f"streaming_k{k:.2f}" for k in args.keeps]
         counters = {k: FlopCounter() for k in arms}
-        axis_by = {k: Qwen35Axis(model, proc, flop_counter=c) for k, c in counters.items()}
+        axis_by = {k: axis_cls(model, proc, flop_counter=c) for k, c in counters.items()}
         # Hooks installed per arm inside the loop (visual + language model); lm_head excluded
         # as everywhere.
         for si, (img, q) in enumerate(samples):
             base = degrade(img)
-            inputs = axis_by["ceiling"].build_inputs(img, q).to("cuda:0")
-            inputs_base = axis_by["ceiling"].build_inputs(base, q).to("cuda:0")
+            inputs = axis_by["ceiling"].build_inputs(img, q).to(args.device)
+            inputs_base = axis_by["ceiling"].build_inputs(base, q).to(args.device)
             with torch.no_grad():
                 for arm in arms:
                     c = counters[arm]

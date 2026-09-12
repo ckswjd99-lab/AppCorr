@@ -232,7 +232,7 @@ def check(axis, inputs, px_base, groups, keep, report):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--family", choices=["qwen25vl", "qwen35"], default="qwen35")
+    ap.add_argument("--family", choices=["qwen25vl", "qwen35", "glm46v"], default="qwen35")
     ap.add_argument("--model", default="Qwen/Qwen3.5-35B-A3B")
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--keeps", type=float, nargs="+", default=[1.0, 0.5])

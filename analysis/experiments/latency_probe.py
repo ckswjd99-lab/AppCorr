@@ -25,6 +25,12 @@ Usage (122B on the live server, all seven table datasets):
       --datasets visdrone_det:pyr visdrone_count:pyr vstar:pyr textvqa:pyr refcoco:pyr \
                  realworldqa:box chartqa:box
 The dataset:filter pairs follow the campaign's degrade-filter per dataset.
+
+GLM-4.6V (106B-A12B FP8, one B200, slug `glm-4.6v-fp8`) is the same call with the family and the
+model swapped:
+  python analysis/experiments/latency_probe.py --family glm46v --model zai-org/GLM-4.6V-FP8 \
+      --port 5591 --key glm46v --samples 36 --warmup 4 --keeps 1.0 0.50 0.25 \
+      --push-delay-ms 150 --llm-schedule interleaved --datasets vstar:pyr realworldqa:box
 """
 import argparse, json, os, statistics as st, subprocess, sys, time
 
@@ -135,7 +141,8 @@ def med(rows, k):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--family", required=True)
+    ap.add_argument("--family", choices=["qwen25vl", "qwen35", "glm46v"], required=True,
+                    help="forwarded to qwen_vllm_accuracy.py (which owns the axis dispatch)")
     ap.add_argument("--model", required=True)
     ap.add_argument("--port", type=int, default=5591)
     ap.add_argument("--key", required=True, help="model key in inprocess_latency.json, e.g. qwen35_122b")

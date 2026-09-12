@@ -18,6 +18,14 @@ then rewrites individual prompt rows in place as their corrected embeddings arri
 Semantics follow ``docs/memo/interleaved_correction_contract.md`` (round r corrects P_r only; rows
 outside P_r keep their captured value; the checkpoint chain is what persists earlier rounds).
 
+The whole second half -- side buffer, capture, re-scan, recurrent write-back -- is CONDITIONAL on
+the served decoder actually having Gated DeltaNet layers (``has_gdn`` / ``install_gdn_patch``,
+2026-09-12).  A pure-softmax decoder (GLM-4.6V: 46 x ``Glm4MoeDecoderLayer``, all GQA) leaves
+``_SIDE``'s qkv/b/a dicts empty, has no mamba KV-cache group, never reaches
+``_forward_core_patch`` (so the re-scan window is a no-op) and runs ``appcorr_rows_step`` as the
+pseudo-sequence softmax path alone.  Detection walks ``_decoder_module(model).layers`` and looks
+at layer classes -- never at the model name.
+
 Depth staging (``appcorr_staged_correct``, 2026-09-10): round r corrects its rows over layers
 ``[0, b_r)`` only and a *frontier walk* then carries every image row -- corrected input or not --
 through ``[b_r, b_{r+1})`` with the corrected rows' K/V and side-buffer rows visible as context
@@ -158,6 +166,11 @@ class SideBuffer:
 
     Keyed by the layer's ``prefix`` (its name in ``static_forward_context``).  Rows are prompt
     positions ``[0, n)``; row ``n-1`` is only filled when the hold-back is released.
+
+    On a pure-softmax decoder the ``qkv``/``b``/``a``/``ckpt`` dicts stay empty (nothing captures
+    into them) and the object degenerates to the request's bookkeeping: ``n``/``lo``/``hi``, the
+    frontier buffers of the depth-staged walks, and ``committed_end``/``n_corrected``.
+    ``nbytes()`` is then the frontier buffers alone.
     """
     n: int
     device: torch.device
@@ -236,22 +249,109 @@ class SideBuffer:
         self.fr_r[positions] = res.to(self.fr_r.dtype)
 
 
+# --------------------------------------------------------------------------------------------
+# Gated-DeltaNet detection.  Everything above (the side buffer) and the ``_rescan`` machinery
+# below exists for models whose decoder carries recurrent layers.  A pure-softmax decoder
+# (GLM-4.6V: 46 x ``Glm4MoeDecoderLayer``, all GQA) has nothing to capture, nothing to re-scan
+# and no recurrent block to write back, so the correct step is the pseudo-sequence softmax path
+# alone -- and ``install()`` must not even import the Qwen GDN class.  Detection walks the served
+# model's decoder layers (NOT the model name): a layer is recurrent iff any module under it has
+# ``GatedDeltaNet`` in its class MRO.
+# --------------------------------------------------------------------------------------------
+
+_GDN_MRO_MARKER = "GatedDeltaNet"
+_GDN: Optional[bool] = None                    # None = not determined yet for this process
+
+
+def _is_gdn_module(mod) -> bool:
+    return any(_GDN_MRO_MARKER in c.__name__ for c in type(mod).__mro__)
+
+
+def gdn_modules(model) -> list:
+    """Every Gated-DeltaNet module under the served model's decoder layers, in layer order."""
+    out = []
+    for layer in _decoder_module(model).layers:
+        for _, sub in layer.named_modules():
+            if _is_gdn_module(sub):
+                out.append(sub)
+    return out
+
+
+def has_gdn(model) -> bool:
+    """True iff the served model's decoder has recurrent (Gated DeltaNet) layers."""
+    return bool(gdn_modules(model))
+
+
+def _patch_gdn_class(mods: list) -> bool:
+    """Install the ``_forward_core`` patch for the (non-empty) GDN modules ``mods``.
+
+    Idempotent, and the answer is cached in ``_GDN`` -- one engine process serves one model.
+    Deferred from ``install()`` (which runs as a vLLM plugin, before any model exists) to the
+    first moment a model is in hand: ``check_gdn_path`` at ``open(correct=True)`` and, as a
+    backstop, the first ``execute_model`` that carries a side buffer.  Both are before any
+    capture, and the patch is a pure pass-through while ``_ST.mode is MODE_NONE``, so the
+    deferral is invisible: a Qwen3.5 run behaves exactly as it did when the patch went on at
+    import time.
+    """
+    global _GDN, _ORIG_FORWARD_CORE
+    if not mods:
+        if _GDN is None:
+            _GDN = False
+        return bool(_GDN)
+    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
+        QwenGatedDeltaNetAttention)
+    bad = [type(m).__name__ for m in mods if not isinstance(m, QwenGatedDeltaNetAttention)]
+    assert not bad, (
+        f"recurrent decoder layers of an unknown class {sorted(set(bad))}: the side-buffer "
+        "capture patches QwenGatedDeltaNetAttention._forward_core only")
+    if _ORIG_FORWARD_CORE is None:
+        _ORIG_FORWARD_CORE = QwenGatedDeltaNetAttention._forward_core
+        QwenGatedDeltaNetAttention._forward_core = _forward_core_patch
+    _GDN = True
+    return True
+
+
+def install_gdn_patch(model) -> bool:
+    """Patch ``_forward_core`` iff the served ``model`` has GDN layers; returns whether it does."""
+    if _GDN is not None:
+        return _GDN
+    return _patch_gdn_class(gdn_modules(model))
+
+
+def _ensure_gdn(self: GPUModelRunner) -> bool:
+    """Does this runner's decoder have recurrent layers?  Resolved once, then cached."""
+    return install_gdn_patch(self.model)
+
+
+def reset_gdn_cache() -> None:
+    """Forget the detection (tests only: one process serves one model in production)."""
+    global _GDN
+    _GDN = None
+
+
 def check_gdn_path(vllm_config) -> list[str]:
-    """The GDN layers must route through ``_forward_core`` (the method this module patches).
+    """The GDN layers, if any, must route through ``_forward_core`` (the method this patches).
 
     ``VLLM_GDN_DECODE_KERNEL`` defaults to ``cuda`` in vllm 0.28.0, which makes ``forward_cuda``
     call ``qwen_gdn_attention_core_fused_norm_packed`` -> ``_forward_core_fused_norm_packed``
     instead -- the capture and correct hooks would silently never fire.  (The design memo says
     this path "is not patched -- assert it is off"; it is ON by default, so every run of the
-    interleaved path must set ``VLLM_GDN_DECODE_KERNEL=triton``.)"""
-    from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
+    interleaved path must set ``VLLM_GDN_DECODE_KERNEL=triton``.)
+
+    Returns [] for a pure-softmax decoder -- which is NOT an error: GLM-4.6V's 46 layers are all
+    softmax GQA, so there is no side-buffer machinery to check and `appcorr_rows_step` runs the
+    pseudo-sequence path alone.  Detection here is by class MRO on the forward context's layer
+    modules, so nothing GDN-specific is imported when the model has none.
+    """
     ctx = vllm_config.compilation_config.static_forward_context
-    gdn = [ln for ln, m in ctx.items() if isinstance(m, GatedDeltaNetAttention)]
-    assert gdn, "no Gated DeltaNet layers in this model"
+    gdn = [ln for ln, m in ctx.items() if _is_gdn_module(m)]
+    if not gdn:
+        return []
     for ln in gdn:
         assert not getattr(ctx[ln], "enable_fused_gdn_decode", False), (
             f"{ln}: VLLM_GDN_DECODE_KERNEL=cuda bypasses _forward_core "
             "(qwen_gdn_linear_attn.py:1781); run with VLLM_GDN_DECODE_KERNEL=triton")
+    _patch_gdn_class([ctx[ln] for ln in gdn])
     return gdn
 
 
@@ -631,6 +731,9 @@ def _prepare_inputs(self: GPUModelRunner, scheduler_output, num_scheduled_tokens
             pos0 = int(self.input_batch.num_computed_tokens_cpu[idx])
             if pos0 + ntok > sb.n:      # decode steps: nothing left to capture
                 continue
+            # on a softmax-only decoder nothing consumes these (`_forward_core_patch` is never
+            # reached); they are kept because `skip_forward` / `n_capture_steps` below are about
+            # the request's scheduling, not about recurrent state
             caps.append(_Capture(sb=sb, tok0=int(starts[idx]), ntok=ntok, pos0=pos0))
             sb.n_capture_steps += 1
         total = int(starts[-1])
@@ -651,6 +754,9 @@ def _prepare_inputs(self: GPUModelRunner, scheduler_output, num_scheduled_tokens
 def _execute_model(self: GPUModelRunner, scheduler_output, intermediate_tensors=None):
     if not _SIDE:
         return _ORIG_EXECUTE_MODEL(self, scheduler_output, intermediate_tensors)
+    # backstop for the deferred GDN patch (`check_gdn_path` at open is the normal entry): this
+    # runs before the stock call, so before any capture. One walk of the decoder, then cached.
+    _ensure_gdn(self)
     prev, _ST.mode = _ST.mode, MODE_CAPTURE
     try:
         return _ORIG_EXECUTE_MODEL(self, scheduler_output, intermediate_tensors)
@@ -662,6 +768,8 @@ def _execute_model(self: GPUModelRunner, scheduler_output, intermediate_tensors=
 
 
 def _mamba_group_ids(self: GPUModelRunner) -> list[int]:
+    """KV-cache groups holding recurrent state.  EMPTY for a pure-softmax decoder (GLM-4.6V),
+    where every group is an attention group and the correct step touches nothing else."""
     from vllm.v1.kv_cache_interface import MambaSpec
     return [gid for gid, g in enumerate(self.kv_cache_config.kv_cache_groups)
             if isinstance(g.kv_cache_spec, MambaSpec)]
@@ -702,7 +810,7 @@ def _mamba_blocks(self: GPUModelRunner, req_id: str, mamba_gids: list[int]) -> d
     """GDN layer prefix -> the request's recurrent-state block, per mamba KV-cache group.
 
     Qwen3.5 splits its GDN layers over several mamba groups (4B: 3 groups + 1 attention group),
-    so a single block id is not enough."""
+    so a single block id is not enough.  Returns {} when `mamba_gids` is empty (GLM-4.6V)."""
     out: dict[str, int] = {}
     for gid in mamba_gids:
         blk = int(_block_row(self, req_id, gid)[0])
@@ -711,14 +819,23 @@ def _mamba_blocks(self: GPUModelRunner, req_id: str, mamba_gids: list[int]) -> d
     return out
 
 
-def _decoder(self: GPUModelRunner):
-    """The text decoder (`Qwen3_5Model`): its `layers` are what a partial-depth step walks."""
-    m = self.model
+def _decoder_module(model):
+    """The text decoder of a served model (`Qwen3_5Model`, `Glm4MoeModel`, ...): its `layers`
+    are what a partial-depth step walks and what the GDN detection inspects.  Structural walk
+    (`.unwrap()` -> `.language_model` -> `.model`), no model-name or class-name keying: GLM-4.6V's
+    `Glm4vMoeForConditionalGeneration.language_model` is a `Glm4MoeForCausalLM` whose `.model`
+    holds the 46 `Glm4MoeDecoderLayer`s, so the same walk resolves it (checked on the vLLM
+    sources, glm4_1v.py:1803 + glm4_moe.py:402/524)."""
+    m = model
     m = m.unwrap() if hasattr(m, "unwrap") else m
     lm = getattr(m, "language_model", m)
     lm = getattr(lm, "model", lm)
     assert hasattr(lm, "layers"), type(lm)
     return lm
+
+
+def _decoder(self: GPUModelRunner):
+    return _decoder_module(self.model)
 
 
 def num_layers(self: GPUModelRunner) -> int:
@@ -799,6 +916,9 @@ def appcorr_rows_step(self: GPUModelRunner, req_id: str, positions: torch.Tensor
     assert (a == 0) == (not from_frontier), "from_frontier iff the step starts above layer 0"
     if final:
         assert b == L, "the final round (state write-back) runs at full depth"
+    assert not replay or _ensure_gdn(self), (
+        "replay mode (gate g1) isolates the softmax rewrite from the DeltaNet re-scan; on a "
+        "pure-softmax decoder there is nothing to replay and the correct step IS the softmax path")
     pos_cpu = positions.detach().cpu()
     assert bool((pos_cpu[1:] > pos_cpu[:-1]).all()) if P > 1 else True, "positions must be sorted"
     assert int(pos_cpu[0]) >= s and int(pos_cpu[-1]) < e, (int(pos_cpu[0]), int(pos_cpu[-1]), s, e)
@@ -989,8 +1109,13 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
     assert mrope is not None and mrope.shape[1] >= sb.n, (None if mrope is None else mrope.shape)
     positions_gpu = mrope[:, pos_cpu].to(dev, torch.int64)
 
+    # A pure-softmax decoder has no mamba group and no side-buffer state: `mamba_gids` is empty,
+    # `mamba_blocks` is {}, the `gid in mamba_gids` skip below never fires (every group is an
+    # attention group) and `_forward_core_patch` is never reached, so the re-scan window is a
+    # no-op and this step is the pseudo-sequence softmax path alone.
     mamba_gids = _mamba_group_ids(self)
-    assert mamba_gids, "no mamba/GDN kv cache group found"
+    assert mamba_gids or not _ensure_gdn(self), (
+        "the decoder has Gated DeltaNet layers but no mamba kv-cache group")
     mamba_blocks = _mamba_blocks(self, req_id, mamba_gids)
 
     _rf_meta = torch.profiler.record_function("appcorr.metadata")
@@ -1145,16 +1270,17 @@ def install() -> None:
       * the G1 "passthrough" mode of the memo is a *replay* mode: the approx pass also captures the
         GDN layer output, and the correct step replays it for the corrected rows.  Writing nothing
         (as the memo says) would leave ``core_attn_out`` zero and corrupt the residual stream, so
-        the softmax path could not be isolated at all.
+        the softmax path could not be isolated at all;
+      * the GDN side-buffer half is installed LAZILY (`install_gdn_patch`, 2026-09-12).  This
+        function is a vLLM general plugin: it runs before a model exists, so it cannot know
+        whether the served decoder is hybrid.  It therefore patches the runner only, and the
+        `QwenGatedDeltaNetAttention` import + `_forward_core` patch happen at the first
+        `check_gdn_path` / `execute_model` that sees a model WITH recurrent layers.  A
+        pure-softmax decoder (GLM-4.6V: 46 softmax GQA layers) never imports it.
     """
-    global _ORIG_FORWARD_CORE, _ORIG_PREPARE_INPUTS, _ORIG_EXECUTE_MODEL, _ORIG_MODEL_FORWARD
+    global _ORIG_PREPARE_INPUTS, _ORIG_EXECUTE_MODEL, _ORIG_MODEL_FORWARD
     if getattr(GPUModelRunner, "_appcorr_correct_patched", False):
         return
-    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
-        QwenGatedDeltaNetAttention)
-
-    _ORIG_FORWARD_CORE = QwenGatedDeltaNetAttention._forward_core
-    QwenGatedDeltaNetAttention._forward_core = _forward_core_patch
 
     _ORIG_PREPARE_INPUTS = GPUModelRunner._prepare_inputs
     _ORIG_EXECUTE_MODEL = GPUModelRunner.execute_model

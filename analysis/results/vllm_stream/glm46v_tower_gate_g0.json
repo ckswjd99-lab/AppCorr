@@ -1,0 +1,88 @@
+{
+ "_mode": "g0",
+ "_model": "zai-org/GLM-4.6V-FP8",
+ "_server": {
+  "ok": true,
+  "model": "zai-org/GLM-4.6V-FP8",
+  "vllm": "0.28.0",
+  "pid": 2488444,
+  "max_model_len": 8192,
+  "live_requests": 0,
+  "done_requests": 0
+ },
+ "rows": [
+  {
+   "i": 0,
+   "gold": "A",
+   "prompt_tokens": 3884,
+   "ceiling": "<|begin_of_box|>A<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>A<|end_of_box|>"
+  },
+  {
+   "i": 23,
+   "gold": "B",
+   "prompt_tokens": 3887,
+   "ceiling": "<|begin_of_box|>B<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>B<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>B<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>B<|end_of_box|>"
+  },
+  {
+   "i": 46,
+   "gold": "A",
+   "prompt_tokens": 4424,
+   "ceiling": "<|begin_of_box|>A<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>A<|end_of_box|>"
+  },
+  {
+   "i": 69,
+   "gold": "C",
+   "prompt_tokens": 4539,
+   "ceiling": "<|begin_of_box|>D<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>D<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>D<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>D<|end_of_box|>"
+  },
+  {
+   "i": 92,
+   "gold": "D",
+   "prompt_tokens": 4315,
+   "ceiling": "<|begin_of_box|>D<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>D<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>D<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>D<|end_of_box|>"
+  },
+  {
+   "i": 115,
+   "gold": "A",
+   "prompt_tokens": 4366,
+   "ceiling": "<|begin_of_box|>A<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>A<|end_of_box|>"
+  },
+  {
+   "i": 138,
+   "gold": "A",
+   "prompt_tokens": 4365,
+   "ceiling": "<|begin_of_box|>A<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>A<|end_of_box|>"
+  },
+  {
+   "i": 161,
+   "gold": "A",
+   "prompt_tokens": 4368,
+   "ceiling": "<|begin_of_box|>A<|end_of_box|>",
+   "streaming_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_g1": "<|begin_of_box|>A<|end_of_box|>",
+   "interleaved_staged_g1": "<|begin_of_box|>A<|end_of_box|>"
+  }
+ ],
+ "fails": []
+}

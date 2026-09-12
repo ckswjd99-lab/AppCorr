@@ -57,6 +57,26 @@ from PIL import Image
 from analysis.experiments.qwen35_accuracy import degrade
 
 
+FAMILIES = ("qwen25vl", "qwen35", "glm46v")
+# Pixel-AREA cap of each family's image processor (`size["longest_edge"]`), for the
+# pyramid-direction rule in `degrade`: degrade relative to min(native, what the model samples).
+# Qwen's 16,777,216 is what every qwen number in the table was measured with; GLM-4.6V's
+# `Glm46VImageProcessor` caps at 9,633,792 (preprocessor_config.json), which is why the family
+# has to say so rather than inherit the Qwen constant. Neither cap binds on the table's
+# datasets -- it BINDS first on MME-RealWorld (36 Mpx).
+FAMILY_MAX_PX = {"glm46v": 9_633_792}
+
+
+def clean_text(family: str, text: str) -> str:
+    """Model-family answer normalisation applied before scoring. GLM-4.6V wraps its final answer
+    in `<|begin_of_box|>...<|end_of_box|>`; every MCQ scorer takes the FIRST A-D letter of the
+    upper-cased text, so the 'B' of `<|BEGIN_OF_BOX|>` scored every V*Bench answer as B
+    (2026-09-12 22:37: floor == ceiling == 36.13% = the share of gold B). Free-text scorers would
+    keep the sentinels inside `pred` and fail exact match. Strip them, keep everything else."""
+    if family == "glm46v":
+        text = text.replace("<|begin_of_box|>", "").replace("<|end_of_box|>", "").strip()
+    return text
+
 def make_axis(family: str, model, proc):
     if family == "qwen25vl":
         from appcorr.models.qwen25vl.unified import Qwen25VLAxis
@@ -64,6 +84,9 @@ def make_axis(family: str, model, proc):
     if family == "qwen35":
         from appcorr.models.qwen35.unified import Qwen35Axis
         return Qwen35Axis(model, proc)
+    if family == "glm46v":
+        from appcorr.models.glm46v.axis import Glm46VAxis
+        return Glm46VAxis(model, proc)
     raise ValueError(family)
 
 
@@ -158,7 +181,7 @@ def merge_shards(args) -> None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--family", choices=["qwen25vl", "qwen35"], required=True)
+    ap.add_argument("--family", choices=list(FAMILIES), required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--backend", choices=["vllm", "hf"], default="vllm")
@@ -174,7 +197,10 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=24)
     ap.add_argument("--concurrency", type=int, default=1,
                     help="requests kept in flight on the server (vllm backend only)")
-    ap.add_argument("--think", action="store_true", help="qwen35: enable_thinking in the template")
+    ap.add_argument("--think", action="store_true",
+                    help="qwen35 / glm46v: enable_thinking in the template (both default OFF; "
+                         "GLM's template emits `/nothink` plus an empty <think></think> when it "
+                         "is off, so the answer starts at the first generated token)")
     ap.add_argument("--llm-schedule",
                     choices=["streaming", "interleaved", "interleaved_staged", "unified_staged"],
                     default="streaming",
@@ -283,7 +309,8 @@ def main():
     axis.pscore_defer = args.pscore == "deferred"
     if args.no_open_walk:
         axis.engine_open_walk = False
-    tmpl_kw = {"think": True} if (args.think and args.family == "qwen35") else {}
+    tmpl_kw = {"think": True} if (args.think and args.family in ("qwen35", "glm46v")) else {}
+    family_max_px = FAMILY_MAX_PX.get(args.family)
     spec = get_spec(args.dataset)
     ds = spec.load(load_dataset)
     n = len(ds) if args.samples == 0 else min(args.samples, len(ds))
@@ -346,7 +373,7 @@ def main():
             streaming arm). Runs on the prefetch thread when --prefetch > 0."""
             img, q, gold = build(i)
             t0 = time.perf_counter()
-            base = degrade(img, args.level, args.degrade_filter)
+            base = degrade(img, args.level, args.degrade_filter, max_px=family_max_px)
             if arm == "streaming":
                 inputs = axis.build_inputs(img, q, **tmpl_kw)
                 px_base = axis.build_inputs(base, q, **tmpl_kw)["pixel_values"]
@@ -497,7 +524,7 @@ def main():
                     torch.cuda.empty_cache()
                     skip(i, "oom")
                     continue
-                record(i, proc.tokenizer.decode(toks, skip_special_tokens=True), gold, size, extra)
+                record(i, clean_text(args.family, proc.tokenizer.decode(toks, skip_special_tokens=True)), gold, size, extra)
         else:
             inflight = deque()
 
@@ -579,7 +606,7 @@ def main():
                               "gen_tokens": len(res["token_ids"]),
                               "finish_reason": res["finish_reason"],
                               "t_client_done_ms": (time.perf_counter() - t_start) * 1e3})
-                record(i, res["text"], gold, size, extra)
+                record(i, clean_text(args.family, res["text"]), gold, size, extra)
 
             t_iter = None
             for k, i in enumerate(pending):
