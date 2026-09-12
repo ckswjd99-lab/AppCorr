@@ -381,11 +381,21 @@ def gate_mla(a):
             # be hundreds of MB through the reply queue for a comparison that is exact anyway.
             digests = [{f"{w}:{k}": tuple(v) for w, d in r["digest"].items() for k, v in d.items()}
                        for r in per_rank]
-            agree = agree_across_ranks(digests, sorted(digests[0]))
+            # `appcorr_snapshot` also returns the KDA conv/recurrent state (`snap:/mamba/...`),
+            # which is SHARDED by head across TP ranks (agree_across_ranks' docstring) -- the
+            # ranks are supposed to differ there, and attempt 6 (B200-8, 04:39 KST) tripped on
+            # exactly those keys.  Compare only the replicated caches; the mamba digests are
+            # kept per rank in the row for the KDA gate's use, not asserted.
+            rep_keys = sorted(k for k in digests[0] if "/mamba/" not in k)
+            agree = agree_across_ranks(digests, rep_keys)
             row.setdefault("rank_agreement", {})[key] = {
                 "n_ranks": agree["n_ranks"], "agree": agree["agree"],
+                "n_keys_compared": len(rep_keys),
+                "n_keys_sharded_skipped": len(digests[0]) - len(rep_keys),
                 "n_disagreements": len(agree["disagreements"]),
-                "first": sorted(agree["disagreements"])[:3]}
+                "first": sorted(agree["disagreements"])[:3],
+                "max_abs_diff": max((abs(float(d[0]["value"][1]) - float(d[0]["rank0"][1]))
+                                     for d in agree["disagreements"].values()), default=0.0)}
             assert agree["agree"], (
                 f"ranks disagree on the REPLICATED {key} snapshot: "
                 f"{sorted(agree['disagreements'])[:5]}")
@@ -403,9 +413,17 @@ def gate_mla(a):
             rid = f"{key}-{ii}"
             t0 = time.perf_counter()
             bounds = comp.image_bounds(parts, a.chunks)
-            # pool alignment: `Glm5NextIndexerCache` requires pool-aligned chunk starts
-            assert all(b % 4 == 0 for b in bounds), (
-                f"chunk bounds must be multiples of index_kpool=4, got {bounds}")
+            # pool alignment: the composer cuts on merged-grid ROWS (multiples of the grid width
+            # + the text offset), which are not multiples of index_kpool=4 in general -- attempt 7
+            # died here on [0, 103, 218, 310, 444] (B200-8, 04:56 KST).  The rewrite keys the
+            # pooled cache on COMPLETE pools and the tail cache carries the in-progress one, so
+            # only the chunk STARTS are pool-aligned here (interior cuts floored to a multiple
+            # of 4; 0 and N untouched -- N need not be a multiple of 4, the tail cache owns its
+            # remainder).  This moves a cut by at most 3 tokens inside the image span.
+            kp = 4
+            bounds = [bounds[0]] + [b - (b % kp) for b in bounds[1:-1]] + [bounds[-1]]
+            assert all(b % kp == 0 for b in bounds[:-1]) and len(set(bounds)) == len(bounds), (
+                f"chunk starts must be multiples of index_kpool={kp} and distinct, got {bounds}")
             chunks = emb.chunks(bounds)
             llm.open(rid, chunks[0], sp)
             for ch in chunks[1:]:
@@ -462,10 +480,17 @@ def gate_mla(a):
                 row[key]["visibility_ok"] = all(d["causal"] and d["tail_complete"] for d in inv)
 
         one_shot("one")
+        # Self-repeat control (attempt 8, B200-8 06:36 KST): GLM-5.3 does not reproduce its own
+        # stock generation (leg-1 A2-vs-A 3/8, |dlp0| to 0.4), so `chunk_vs_one` / `rows_vs_one`
+        # cannot be read without the same comparison of the stock arm against ITSELF -- a second
+        # one-shot in the same process, snapshotted the same way.  `one2_vs_one` is the noise
+        # floor every other column is judged against: a latent rel-L2 that climbs with depth
+        # here too is the model, not the correct step.
+        one_shot("one2")
         chunked("chunk")
         rows_step("rows", a.g)
 
-        for key in ("chunk", "rows"):
+        for key in ("one2", "chunk", "rows"):
             if key not in snaps:
                 continue
             row[f"{key}_vs_one"] = (cmp_latent(snaps["one"], snaps[key])
@@ -479,7 +504,7 @@ def gate_mla(a):
                   f"rows_missing_tail={sum(d['rows_missing_tail'] for d in v)} "
                   f"keys/row=[{min(d['keys_per_row_min'] for d in v)}, "
                   f"{max(d['keys_per_row_max'] for d in v)}]", flush=True)
-        for key in ("chunk", "rows"):
+        for key in ("one2", "chunk", "rows"):
             c = row.get(f"{key}_vs_one")
             if c:
                 print(f"    {key:6s} latent_rel_l2={c['latent_rel_l2_max']:.3e} "
