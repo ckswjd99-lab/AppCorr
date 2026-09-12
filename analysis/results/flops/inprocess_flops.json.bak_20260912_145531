@@ -382,7 +382,7 @@
   }
  },
  "qwen35_122b": {
-  "_note": "122B-A10B-FP8, hooked with the FP8Experts fix (routed experts counted), attention term included, n=12, one model load over all datasets (qwen35_122b_flops_fixed.json, 2026-09-10). `_split` = per-arm [vision_total, vision_crit, llm_total, llm_crit]. cvbench and mmvp added 2026-09-12 from qwen35_122b_flops_ext2.json: same hooked driver and FP8Experts fix, n=12, separate model load.",
+  "_note": "122B-A10B-FP8, hooked with the FP8Experts fix (routed experts counted), attention term included, n=12, one model load over all datasets (qwen35_122b_flops_fixed.json, 2026-09-10). `_split` = per-arm [vision_total, vision_crit, llm_total, llm_crit].",
   "vstar": {
    "full": 90607.4,
    "k1.00": 23252.6,
@@ -667,88 +667,6 @@
      123.0,
      8160.5,
      2480.2
-    ]
-   }
-  },
-  "cvbench": {
-   "full": 16264.2,
-   "k1.00": 4851.5,
-   "total_k1.00": 20305.3,
-   "k0.50": 4325.5,
-   "total_k0.50": 18203.8,
-   "k0.25": 4062.4,
-   "total_k0.25": 17153.1,
-   "_split": {
-    "ceiling": [
-     16264.2,
-     16264.2,
-     0.0,
-     0.0
-    ],
-    "floor": [
-     16264.2,
-     16264.2,
-     0.0,
-     0.0
-    ],
-    "streaming_k1.00": [
-     8467.5,
-     1061.5,
-     11837.9,
-     3790.0
-    ],
-    "streaming_k0.50": [
-     6366.0,
-     535.5,
-     11837.9,
-     3790.0
-    ],
-    "streaming_k0.25": [
-     5315.2,
-     272.4,
-     11837.9,
-     3790.0
-    ]
-   }
-  },
-  "mmvp": {
-   "full": 2055.2,
-   "k1.00": 1019.4,
-   "total_k1.00": 2273.3,
-   "k0.50": 992.0,
-   "total_k0.50": 2164.0,
-   "k0.25": 978.4,
-   "total_k0.25": 2109.3,
-   "_split": {
-    "ceiling": [
-     2055.2,
-     2055.2,
-     0.0,
-     0.0
-    ],
-    "floor": [
-     2055.2,
-     2055.2,
-     0.0,
-     0.0
-    ],
-    "streaming_k1.00": [
-     443.6,
-     55.8,
-     1829.7,
-     963.6
-    ],
-    "streaming_k0.50": [
-     334.3,
-     28.5,
-     1829.7,
-     963.6
-    ],
-    "streaming_k0.25": [
-     279.6,
-     14.8,
-     1829.7,
-     963.6
     ]
    }
   }
@@ -1055,100 +973,6 @@
    "total_k0.25": 72861.3,
    "k0.50": 13045.8,
    "total_k0.50": 80728.3
-  }
- },
- "qwen35_4b": {
-  "_note": "Qwen3.5-4B, hooked in-process FLOPs (GFLOPs/instruction), measured on B200-8 2026-09-12 by flops_report_qwen35.py --samples 12 --groups 4. Translated from qwen35_4b_flops.json: crit_g4* -> k*, total_g4* -> total_k*.",
-  "_samples": 12,
-  "vstar": {
-   "full": 49333.3,
-   "k1.00": 12579.9,
-   "total_k1.00": 73103.9,
-   "k0.50": 9549.1,
-   "total_k0.50": 60973.3,
-   "k0.25": 8030.6,
-   "total_k0.25": 54904.9
-  },
-  "realworldqa": {
-   "full": 16917.9,
-   "k1.00": 4480.0,
-   "total_k1.00": 23183.1,
-   "k0.50": 3686.3,
-   "total_k0.50": 20006.6,
-   "k0.25": 3288.3,
-   "total_k0.25": 18420.3
-  },
-  "visdrone_det": {
-   "full": 11614.5,
-   "k1.00": 3189.2,
-   "total_k1.00": 15623.0,
-   "k0.50": 2681.3,
-   "total_k0.50": 13595.3,
-   "k0.25": 2428.3,
-   "total_k0.25": 12581.9
-  },
-  "visdrone_count": {
-   "full": 13174.2,
-   "k1.00": 3414.9,
-   "total_k1.00": 17990.3,
-   "k0.50": 2804.8,
-   "total_k0.50": 15552.9,
-   "k0.25": 2500.2,
-   "total_k0.25": 14334.4
-  },
-  "textvqa": {
-   "full": 8311.6,
-   "k1.00": 2224.5,
-   "total_k1.00": 10964.5,
-   "k0.50": 1890.2,
-   "total_k0.50": 9627.6,
-   "k0.25": 1723.1,
-   "total_k0.25": 8959.2
-  },
-  "mmvp": {
-   "full": 950.5,
-   "k1.00": 454.3,
-   "total_k1.00": 1111.9,
-   "k0.50": 434.2,
-   "total_k0.50": 1031.4,
-   "k0.25": 424.1,
-   "total_k0.25": 991.1
-  },
-  "vsr": {
-   "full": 3209.8,
-   "k1.00": 1022.2,
-   "total_k1.00": 4027.1,
-   "k0.50": 919.0,
-   "total_k0.50": 3617.4,
-   "k0.25": 867.3,
-   "total_k0.25": 3412.6
-  },
-  "cvbench": {
-   "full": 8356.6,
-   "k1.00": 2423.9,
-   "total_k1.00": 11514.0,
-   "k0.50": 2022.6,
-   "total_k0.50": 9910.8,
-   "k0.25": 1821.9,
-   "total_k0.25": 9109.1
-  },
-  "refcoco": {
-   "full": 3431.4,
-   "k1.00": 1157.2,
-   "total_k1.00": 4280.9,
-   "k0.50": 1049.7,
-   "total_k0.50": 3854.8,
-   "k0.25": 996.3,
-   "total_k0.25": 3641.9
-  },
-  "chartqa": {
-   "full": 4933.6,
-   "k1.00": 1415.8,
-   "total_k1.00": 6324.1,
-   "k0.50": 1241.6,
-   "total_k0.50": 5624.3,
-   "k0.25": 1153.4,
-   "total_k0.25": 5275.9
   }
  }
 }

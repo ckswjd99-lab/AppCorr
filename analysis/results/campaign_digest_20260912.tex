@@ -1,0 +1,293 @@
+% Campaign digest, 2026-09-11/12. Standalone: pdflatex campaign_digest_20260912.tex
+% Separate from the three result tables (eval_table_*, latency_table_*, interleaved_table_*);
+% this collects what the two days ESTABLISHED, including the negative results.
+\documentclass[10pt]{article}
+\usepackage[margin=0.9in]{geometry}
+\usepackage{booktabs,amsmath,xcolor}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue]{hyperref}
+\newcommand{\hh}[1]{\textbf{#1}}
+\title{AppCorr campaign digest --- 2026-09-11/12}
+\author{Qwen3.5 (4B / 35B-A3B / 122B-A10B-FP8), served vLLM 0.28 + HF in-process}
+\date{Generated 2026-09-12}
+\begin{document}\maketitle
+
+\section*{1. What was built: the unified (vision $+$ decoder) schedule}
+
+One depth axis of $27$ vision-tower stages followed by $L$ decoder layers, cut into $g$ rounds of
+equal cumulative cost, so the tower's approximate pass is itself spread over the rounds and the LLM
+opens only when the frontier crosses the projector. On 35B V*Bench ($N{=}3341$) the $g{=}4$ bounds
+are $[11,22,41,67]$: tower depths $11/22/27/27$ and decoder depths $0/0/13/40$, i.e.\ only two of
+the four rounds reach the LLM. $k{<}1$ selects each band by the layer-mean attention of the stages
+walked \emph{so far} (progressive), so its $k{<}1$ cells are not a schedule-only comparison.
+
+Three engine changes were needed to make the served form match the schedule. Each is gated and
+each is measured; the ladder below is 35B V*Bench Crit.\ Lat.\ (ms, $d{=}150$ band spacing).
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lccc l}
+\toprule
+engine form & $k{=}1$ & $k{=}0.5$ & $k{=}0.25$ & what changed \\
+\midrule
+unified, as first implemented        & 157 & 110 & 95   & --- \\
+$+$ \texttt{correct\_rows} after the crossing & 153 & 123 & 105 & bitwise-identical messages; no net win \\
+$+$ \texttt{open\_walk}               & 80  & 56  & 36.5 & engine skips its stock full-depth prefill \\
+$+$ \texttt{CONTIG\_ROWS}             & \hh{61.6} & \hh{48.6} & \hh{36.3} & contiguous rows as ONE prefill sequence \\
+\midrule
+depth-staged, same engine            & 62.0 & 48.5 & 36.2 & reference \\
+interleaved (unstaged), same engine  & 61.5 & 49.8 & 36.4 & reference \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Decomposition that drove it.} Crit.\ Lat.\ $=$ (wait for the engine) $+$ (last
+band's vision correct) $+$ (LLM correct step). The first form spent $65$\,ms waiting because the
+engine ran a full-depth prefill of 3341 tokens at the projector crossing and was still busy when
+the last band arrived. \texttt{correct\_rows} shortened the vision correct but the wait grew by the
+same amount --- the two are a \emph{max}, not a sum, which the first decomposition got wrong.
+\texttt{open\_walk} removed the wait; \texttt{CONTIG\_ROWS} cut the engine's 3294-row frontier walk
+from 132\,ms to 42.5\,ms by submitting contiguous rows as one prefill sequence instead of $|P|$
+one-token pseudo-sequences.
+
+\section*{2. What the unified schedule buys}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{llcccc}
+\toprule
+ & $k$ & streaming & interleaved & depth-staged & \hh{unified} \\
+\midrule
+\multicolumn{6}{l}{\emph{Total compute, \% of a full-resolution pass (35B)}}\\
+V*Bench     & 1.00 & 162 & 195 & 183 & \hh{161} \\
+            & 0.50 & 130 & 147 & 141 & \hh{130} \\
+            & 0.25 & 115 & 123 & 120 & \hh{115} \\
+RealWorldQA & 1.00 & 152 & 197 & 181 & \hh{162} \\
+            & 0.50 & 126 & 149 & 141 & \hh{132} \\
+\midrule
+\multicolumn{6}{l}{\emph{122B V*Bench, Crit.\ Lat.\ (ms) and total compute}}\\
+Crit.\ Lat. & 1.00 & 86 & 85 & 202 & 89 \\
+Comp.       & 1.00 & 133\% & 201\% & 177\% & \hh{165\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Baseline provenance (added 2026-09-12, after a correction).} The streaming
+Crit.\ Lat.\ figures above and in Table~\ref{tab:interleaved_results} were originally measured
+2026-09-09, before three engine changes, while the interleaved and unified figures were measured
+after them. Re-probing every streaming cell on the current engine (same server flags, same
+$36$ samples, two passes) moved 35B Crit.\ Lat.\ by $-9.1\%$ on average, $32$ of $33$ cells
+negative; 122B moved $-2.5\%$, $14$ of $18$ negative. The consequence differs by model. Comparing
+interleaved against streaming cell by cell on the $30$ / $24$ cells measurable in both eras:
+
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+ & interleaved faster & streaming faster & tied ($<0.5$\,ms) \\
+\midrule
+35B, stale baseline & 29 & 1 & 0 \\
+35B, one session    & 12 & 14 & 4 \\
+122B, stale baseline & 19 & 3 & 2 \\
+122B, one session    & 17 & 4 & 3 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent So the interleaved schedule's Crit.\ Lat.\ advantage on 35B was an artefact of a stale
+streaming baseline and does not survive one-session measurement; on 122B it survives essentially
+unchanged. The mechanism is the one the table caption already states: the correct step is GPU-bound
+with a floor set by streaming the MoE expert weights once per layer, not by token count, so at the
+35B's $19$--$60$\,ms absolute times the saved tokens are swamped, while at the 122B's
+$32$--$307$\,ms they are not. Crit.\ Comp.\ is a closed form over the same rows and is unaffected
+by any of this.
+
+\noindent\textbf{Reading.} Unified reaches \emph{streaming's} total compute while keeping
+\emph{interleaved's} critical compute ($k/g$ of the last round), at a Crit.\ Lat.\ equal to the
+other interleaved forms. It cannot beat them on Crit.\ Lat.: its critical compute is identical to
+depth-staged by construction. End-to-end it finishes 100--210\,ms earlier on 35B V*Bench because
+the tower's approximate work overlaps the arrival gaps. Accuracy is a tie against depth-staged on
+all six paired cells (every bootstrap CI covers 0); two independent served runs agreed per sample.
+The one place depth-staged loses badly is 122B V*Bench, where each of its four rounds exceeds the
+150\,ms band gap on a 3.3\,k-token prompt and the last band queues behind round three.
+
+\section*{3. Measurement-validity findings (the expensive half of the campaign)}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{p{0.3\textwidth}p{0.62\textwidth}}
+\toprule
+finding & evidence \\
+\midrule
+\hh{The degrade filter was mismatched within table rows.} Bounds measured 2026-08-31 used
+\emph{bicubic}; every arm from 09-09 on used \emph{box}. &
+Re-running ChartQA's floor under bicubic on the new box gives \hh{60.80} vs the archived
+\hh{60.76} (105 discordant, 53/52, $p{=}1.00$); box gives \hh{46.64}. So the $-14.12$\,pp floor
+move is the filter, not a regression. Controls: ceiling never consumes the degraded base and moved
+$+0.16$\,pp (1.1\% discordance); TextVQA, \emph{pyr on both sides}, moved $+0.24$\,pp (2.0\%) ---
+an 11-fold difference in floor discordance between the dataset where the filter was held fixed and
+the one where it was not. \\
+\addlinespace
+\hh{Convention fixed (user decision).} box for realworldqa / chartqa / mmvp / vsr / cvbench;
+pyr for textvqa / vstar / visdrone\_* / refcoco / infovqa. &
+Per-dataset-family \emph{by decision}. All 18 35B bounds arms re-measured on one box with current
+code; superseded files archived with a provenance note. Never pair arms measured under different
+filters. \\
+\addlinespace
+\hh{On-box runs are bit-deterministic; cross-box runs are not.} &
+A fresh run of ChartQA k0.50 reproduced the landed arm \hh{byte-identically} (0/2500 discordant);
+confirmed twice more (RealWorldQA 765, VSR 1222 --- the latter 0 discordant inside the rebounds run
+itself). Across box/env/code with the filter held fixed: $\sim$1--2\% of rows flip with no net
+direction on the simple arms, up to $-1.32$\,pp ($p{=}0.00071$) on the streaming arm, which carries
+the correction machinery. \\
+\addlinespace
+\hh{Four significance verdicts changed once rows shared a box, filter and code.} &
+MMVP k0.50 vs floor $p$ $0.332 \to 0.031$; MMVP k0.25 no longer below floor (that anomaly was the
+artefact); RealWorldQA k0.50/k0.25 $p$ $0.098/0.070 \to 0.033/0.005$; CV-Bench k0.50 $0.037 \to
+0.013$. \hh{VSR stayed null in both directions} --- which is what shows the procedure removed an
+error rather than manufactured significance. \\
+\addlinespace
+\hh{The deferred patch score costs a little accuracy.} It is a throughput knob, not a bug. &
+Same box/env/code, only \texttt{pscore\_defer} varying: ChartQA $-0.28$\,pp ($p{=}0.392$),
+RealWorldQA $-1.44$\,pp ($p{=}0.0127$); pooled 24 better / 42 worse over 66 discordant,
+$p{=}0.0356$. The gate shows the implementation is exact: bands 1--3 select identical groups
+(Jaccard $1.0000$), the attention term is bitwise equal, and $t_{\text{open}}$ drops 21--56\%. \\
+\addlinespace
+\hh{Arms can skip different rows; scoring each on its own survivors biases the row.} &
+122B InfoVQA: all arms share 338 \texttt{prompt\_too\_long} skips, but the $k{<}1$ interleaved arms
+add 194--236 \texttt{oom} skips. Restricting every arm to the common 2227 rows moves floor
+$-1.44$\,pp while the $k{<}1$ arms move $-0.3$ to $-0.4$. Every arm is now scored on the
+intersection of all arms' scored rows, so the table is paired by construction. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{3.1 Saturation is a (model, dataset) property}
+
+A row whose floor and ceiling are statistically indistinguishable carries no information about the
+method. Model size does \emph{not} predict it.
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lccl}
+\toprule
+dataset & 35B span ($p$) & 122B span ($p$) & \\
+\midrule
+VSR            & $+0.82$ (0.268)      & $-0.65$ (0.403)      & \hh{saturated on both} \\
+RealWorldQA    & $+3.40$ (0.0073)     & $+1.05$ (0.434)      & \hh{saturated on 122B only} \\
+MMVP           & $+5.00$ (0.0026)     & $+10.00$ (1.4e-06)   & 122B gap is DOUBLE \\
+CV-Bench       & $+1.10$ (0.0172)     & $+1.44$ (0.00060)    & 122B slightly wider \\
+ChartQA        & $+42.08$ (7e-270)    & $+36.48$ (6e-217)    & 122B \emph{narrower} \\
+V*Bench        & ---                  & $+10.47$ (3.6e-05)   & real headroom \\
+VisDrone Count & ---                  & $+5.62$ (1.4e-17)    & real headroom \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent From 35B to 122B the gap widens on two datasets, narrows on one, and stays saturated on
+one --- non-monotone in both directions. Both shortcuts fail: inheriting saturation from the
+dataset, and predicting it from model scale. \hh{Test the cell.} VSR is excluded from the
+interleaved table on exactly this ground; the remedy for a saturated cell is a harsher degradation
+level (L3).
+
+\section*{4. Results across model scale}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{llccccc}
+\toprule
+ & dataset & floor & Ours 25\% & Ours 50\% & $k{=}1$ & ceiling \\
+\midrule
+\multicolumn{7}{l}{\emph{Recovery of the floor-to-ceiling gap --- the quantity that transfers across scales}}\\
+35B & TextVQA (17.31\,pp) & --- & 77.0\% & 89.4\% & 95.3\% & --- \\
+4B  & TextVQA (19.34\,pp) & --- & 71.3\% & 85.8\% & 94.3\% & --- \\
+\midrule
+\multicolumn{7}{l}{\emph{122B, full split, $k{=}0.5$ recovery}}\\
+    & ChartQA  & 52.04 & 81.52 & 86.72 & 88.52 & 88.52 \quad(95\%) \\
+    & CV-Bench & 84.80 & 85.63 & 86.24 & 86.47 & 86.24 \quad(100\%) \\
+    & MMVP     & 78.00 & 79.67 & 80.00 & 85.33 & 88.00 \quad(20\%) \\
+    & VSR      & 90.75 & 91.33 & 91.90 & 90.75 & 90.10 \quad(saturated) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Two readings that matter.} (i) An $8\times$ model-size difference moves the
+\emph{recovered fraction} by 1 point at $k{=}1$ and 4--6 points at reduced keeps, while the raw
+accuracies differ by 3--5\,pp and only restate that the bigger model is better. Report recovery.
+(ii) On 122B MMVP the keep arms are significantly \emph{below} ceiling ($p{=}7$e-05) and not
+distinguishable from floor --- but at $n{=}300$ that is a failure to \emph{demonstrate} benefit,
+not a demonstration of its absence: CV-Bench's smaller $+1.44$\,pp reached $p{=}4.1$e-05 on 2638
+rows. Every well-powered 122B row recovers 95--100\% at $k{=}0.5$; the one that looks bad is the
+one with the least power. \hh{Always print the recovery \% beside the sample size.}
+
+\section*{5. Hypotheses proposed and falsified (five, all within hours, by design)}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{p{0.27\textwidth}p{0.30\textwidth}p{0.33\textwidth}}
+\toprule
+hypothesis & discriminating test & outcome \\
+\midrule
+The deferred score hurts because band 0 is chosen on residual energy alone, without the attention
+term. &
+Gate on an affected dataset AND a clean control (VSR). &
+\hh{Falsified.} VSR's band-0 selection diverges MORE (Jaccard 0.736/0.594 vs ChartQA's
+0.848/0.668) and it pays no accuracy penalty at all. Magnitude of selection change does not
+predict, and here inversely tracks, the cost. \\
+\addlinespace
+The unstaged interleaved schedule degrades progressively with keep, because unselected rows are
+never revisited while staged/unified carry every row through the next layer band. &
+The deficit must be \emph{monotone}: absent at $k{=}1$, present at $k{=}0.5$, larger at $k{=}0.25$.
+Rows already on disk. &
+\hh{Falsified,} then the effect itself \hh{closed by pre-registration.} Monotonicity: $+0.47$
+(null) / $-1.36$ ($p{=}0.00021$) / $-0.51$ (null) --- the same discordant count (72) either side of
+the significant point, so not a power artefact. The cell was then pre-registered (single cell,
+direction fixed, decision rule fixed, no re-scan) and tested on five further datasets:
+RealWorldQA 30 disc.\ $p{=}0.856$ (adequate); VisDrone Det 19 disc.\ $p{=}0.648$ (borderline);
+InfoVQA 155 disc.\ $p{=}0.148$ (adequate$+$); ChartQA 73 disc.\ $p{=}0.101$ \emph{with the sign
+reversed} (adequate); and the decider, \hh{122B TextVQA, 163 discordant pairs --- more than double
+the originating dataset's 72 --- $-0.26$\,pp, $p{=}0.347$.} Two further attempts (V*Bench 0
+discordant, 35B MMVP 4) had \emph{no power} and are excluded rather than counted.
+\hh{Five non-replications, zero replications. Reported as no effect}, with the original
+significant point left unexplained rather than explained away. \\
+\addlinespace
+The 122B OOMs come from $|P|$ one-token pseudo-sequences exceeding \texttt{max\_num\_seqs}, so
+lowering it to 256 is the fix. &
+$|P|$ scales with keep, so $k{=}0.25$ must OOM on strictly fewer rows than $k{=}0.5$. &
+\hh{Falsified.} The OOM sets are \emph{bit-identical} across keeps (194/194 unstaged, 236/236
+staged on InfoVQA; $\{62,153\}$ both keeps on 122B V*Bench, independently). The failing allocation
+is keep-independent --- the per-token side buffer, plus the frontier walk for staged, which
+explains why staged's set is a strict superset. \hh{\texttt{max\_num\_seqs} is the wrong knob;}
+\texttt{--gpu-mem} is the only one that helps. \\
+\addlinespace
+Bigger models saturate more rows, so the benchmark suite stops being able to measure the method. &
+Enumerate every (model, dataset) span, not only the ones that prompted the sentence. &
+\hh{Falsified} by the table in \S3.1 --- non-monotone in both directions, with MMVP (the 122B gap
+is double the 35B's) as the direct counterexample. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{A fifth, caught by the enumeration rule itself.} ``Grounding tasks separate the
+$k{=}0.5$ and $k{=}0.25$ arms; VQA tasks mostly do not'' --- prompted by RefCOCO ($p{=}0.0064$) and
+VisDrone Count ($p{=}0.0042$). Enumerating all 16 rows across three models kills it: VQA separates
+on 6 of 13 and holds the four strongest separations in the campaign (4B TextVQA $p{=}3.1$e-14, 122B
+ChartQA $1.1$e-20, 35B ChartQA $5.2$e-11, 35B TextVQA $1.8$e-09). Task type was \emph{confounded
+with $n$}: the grounding rows that prompted the sentence are RefCOCO (8811) and VisDrone Count
+(2350), two of the largest in either table, while the one small grounding row (VisDrone Det, 448)
+fails to separate like the small VQA rows. What actually predicts separation is paired evidence:
+every row above ${\sim}100$ discordant pairs separates, every row below ${\sim}30$ does not,
+regardless of task or model. The defensible sentence is therefore about the measurement, not the
+method: \hh{the two keep levels are distinguishable wherever there is enough paired evidence to
+distinguish them.}
+
+\medskip
+\noindent\textbf{The transferable guard.} In every case the disconfirming measurement was already
+on disk when the general sentence was written. A mechanism makes a result \emph{feel} explained,
+and that is exactly when it stops being checked. Write the discriminating prediction down first,
+then run it; two points cannot establish a trend, three can test one; and before any sentence of
+the form ``$X$ tends to $Y$'', enumerate the cases it covers and compute all of them, including the
+ones that did not prompt it.
+
+\section*{6. Campaign state}
+
+Complete: the 35B main-table block (12 keep arms $+$ the missing VSR $k{=}1$, all bounds
+re-measured on one box/filter/code); the interleaved table's original six datasets on both models;
+the 122B interleaved block. In flight: 122B full-split replacement of the strided subsets
+(10.5\% $\to$ 100\% of rows); the interleaved table's extension to ChartQA, CV-Bench, MMVP and
+RefCOCO on both models; the 4B main-table block. Parenthesised cells are reduced-$n$ subsets,
+flagged per row on \emph{scored} coverage rather than file size.
+
+\end{document}

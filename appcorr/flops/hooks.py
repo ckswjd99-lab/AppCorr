@@ -134,6 +134,11 @@ def _qwen35_deltanet_core_flops(mod, inputs) -> int:
 
 _SPECIAL_HOOKS = {
     "Qwen3_5MoeExperts": _qwen35_experts_flops,
+    # transformers >= 5 swaps the experts module for `FP8Experts` on FineGrainedFP8 checkpoints
+    # (Qwen3.5-122B-A10B-FP8): same forward signature and dims, different class name. Without
+    # this entry the 122B hooked runs counted no routed experts at all (7.3 GF/token missing;
+    # found 2026-09-10 when the closed form disagreed by exactly that term).
+    "FP8Experts": _qwen35_experts_flops,
     "Qwen3_5MoeGatedDeltaNet": _qwen35_deltanet_core_flops,
 }
 

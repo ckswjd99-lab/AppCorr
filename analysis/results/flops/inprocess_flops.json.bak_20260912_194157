@@ -382,7 +382,7 @@
   }
  },
  "qwen35_122b": {
-  "_note": "122B-A10B-FP8, hooked with the FP8Experts fix (routed experts counted), attention term included, n=12, one model load over all datasets (qwen35_122b_flops_fixed.json, 2026-09-10). `_split` = per-arm [vision_total, vision_crit, llm_total, llm_crit]. cvbench and mmvp added 2026-09-12 from qwen35_122b_flops_ext2.json: same hooked driver and FP8Experts fix, n=12, separate model load.",
+  "_note": "122B-A10B-FP8, hooked with the FP8Experts fix (routed experts counted), attention term included, n=12, one model load over all datasets (qwen35_122b_flops_fixed.json, 2026-09-10). `_split` = per-arm [vision_total, vision_crit, llm_total, llm_crit].",
   "vstar": {
    "full": 90607.4,
    "k1.00": 23252.6,
@@ -667,88 +667,6 @@
      123.0,
      8160.5,
      2480.2
-    ]
-   }
-  },
-  "cvbench": {
-   "full": 16264.2,
-   "k1.00": 4851.5,
-   "total_k1.00": 20305.3,
-   "k0.50": 4325.5,
-   "total_k0.50": 18203.8,
-   "k0.25": 4062.4,
-   "total_k0.25": 17153.1,
-   "_split": {
-    "ceiling": [
-     16264.2,
-     16264.2,
-     0.0,
-     0.0
-    ],
-    "floor": [
-     16264.2,
-     16264.2,
-     0.0,
-     0.0
-    ],
-    "streaming_k1.00": [
-     8467.5,
-     1061.5,
-     11837.9,
-     3790.0
-    ],
-    "streaming_k0.50": [
-     6366.0,
-     535.5,
-     11837.9,
-     3790.0
-    ],
-    "streaming_k0.25": [
-     5315.2,
-     272.4,
-     11837.9,
-     3790.0
-    ]
-   }
-  },
-  "mmvp": {
-   "full": 2055.2,
-   "k1.00": 1019.4,
-   "total_k1.00": 2273.3,
-   "k0.50": 992.0,
-   "total_k0.50": 2164.0,
-   "k0.25": 978.4,
-   "total_k0.25": 2109.3,
-   "_split": {
-    "ceiling": [
-     2055.2,
-     2055.2,
-     0.0,
-     0.0
-    ],
-    "floor": [
-     2055.2,
-     2055.2,
-     0.0,
-     0.0
-    ],
-    "streaming_k1.00": [
-     443.6,
-     55.8,
-     1829.7,
-     963.6
-    ],
-    "streaming_k0.50": [
-     334.3,
-     28.5,
-     1829.7,
-     963.6
-    ],
-    "streaming_k0.25": [
-     279.6,
-     14.8,
-     1829.7,
-     963.6
     ]
    }
   }
