@@ -1606,6 +1606,12 @@ def il_latency(model_row, dataset: str) -> Dict[str, float]:
     # `<model>_ilu_adaptive` (latency_probe --key), e.g. qwen35_35b_il -> qwen35_35b_ilu_adaptive
     ad_key = (il_key[:-3] if il_key.endswith("_il") else il_key) + "_ilu_adaptive"
     ilu_ad = (lat.get(ad_key) or {}).get(dataset) or {}
+    # Full-resolution TTFT: the denominator of every Crit. Lat. cell.  Normally it comes from the
+    # streaming probe, but a model whose only latency measurement IS the adaptive probe (GLM-4.6V:
+    # `glm46v_cg1024` has never been measured) carries its own ceiling arm inside that probe.  Fall
+    # back to it only when the streaming key has none, so no existing row's denominator moves.
+    if "full" not in out and "full" in ilu_ad:
+        out["full"] = ilu_ad["full"]
     for k, th in adaptive_thetas(model_row[1], dataset).items():
         src = ilu_ad if f"auto{th:g}" in ilu_ad else ilu
         if f"auto{th:g}" in src:                       # latency_probe.py --keeps auto:<theta>
