@@ -432,6 +432,52 @@
     0.9992,
     1.0
    ]
+  },
+  "total_g4_auto0.0171636_ilu": 43839.8,
+  "crit_g4_auto0.0171636_ilu": 3395.4,
+  "_ilu_g4_auto0.0171636": {
+   "decoder_total": 33275.6,
+   "decoder_crit": 2851.3,
+   "vision_total": 10564.2,
+   "vision_crit": 544.1,
+   "basis_keep": 0.5,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 26381.5,
+   "closed_prefill": 23191.8,
+   "closed_total": 29252.4,
+   "closed_crit": 2506.6,
+   "ratio_total": 1.2613,
+   "ratio_crit": 0.1081,
+   "rows": 765,
+   "source": "realworldqa_qwen3.5-122b-a10b-fp8_interleaved_unified_g4_auto0.0171636_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.9987,
+    1.0
+   ]
+  },
+  "total_g4_auto0.0476059_ilu": 38623.0,
+  "crit_g4_auto0.0476059_ilu": 2482.2,
+  "_ilu_g4_auto0.0476059": {
+   "decoder_total": 28055.1,
+   "decoder_crit": 1938.1,
+   "vision_total": 10567.9,
+   "vision_crit": 544.1,
+   "basis_keep": 0.25,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 24294.3,
+   "closed_prefill": 23191.8,
+   "closed_total": 26781.9,
+   "closed_crit": 1850.1,
+   "ratio_total": 1.1548,
+   "ratio_crit": 0.0798,
+   "rows": 765,
+   "source": "realworldqa_qwen3.5-122b-a10b-fp8_interleaved_unified_g4_auto0.0476059_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.999,
+    1.0
+   ]
   }
  },
  "refcoco": {
@@ -864,6 +910,52 @@
    "rows": 4998,
    "source": "textvqa_qwen3.5-122b-a10b-fp8_interleaved_staged_g4_k0.25_c2.jsonl",
    "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (depth-staged: rows priced at their round's depth, approx pass + frontier walks = one full prefill), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples)"
+  },
+  "total_g4_auto0.0338719_ilu": 22217.7,
+  "crit_g4_auto0.0338719_ilu": 2109.3,
+  "_ilu_g4_auto0.0338719": {
+   "decoder_total": 17702.2,
+   "decoder_crit": 1874.1,
+   "vision_total": 4515.5,
+   "vision_crit": 235.2,
+   "basis_keep": 0.5,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 13877.4,
+   "closed_prefill": 13169.6,
+   "closed_total": 16799.3,
+   "closed_crit": 1778.5,
+   "ratio_total": 1.2756,
+   "ratio_crit": 0.135,
+   "rows": 4998,
+   "source": "textvqa_qwen3.5-122b-a10b-fp8_interleaved_unified_g4_auto0.0338719_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.9998,
+    1.0
+   ]
+  },
+  "total_g4_auto0.0764523_ilu": 19589.9,
+  "crit_g4_auto0.0764523_ilu": 1369.9,
+  "_ilu_g4_auto0.0764523": {
+   "decoder_total": 15074.0,
+   "decoder_crit": 1134.7,
+   "vision_total": 4515.9,
+   "vision_crit": 235.2,
+   "basis_keep": 0.25,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 12988.8,
+   "closed_prefill": 13169.6,
+   "closed_total": 15283.9,
+   "closed_crit": 1150.5,
+   "ratio_total": 1.1605,
+   "ratio_crit": 0.0874,
+   "rows": 4998,
+   "source": "textvqa_qwen3.5-122b-a10b-fp8_interleaved_unified_g4_auto0.0764523_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.9999,
+    1.0
+   ]
   }
  },
  "visdrone_count": {
@@ -1507,6 +1599,52 @@
    "ratio_crit": 0.1344,
    "rows": 2500,
    "source": "chartqa_qwen3.5-122b-a10b-fp8_interleaved_unified_g4_k0.25_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    1.0,
+    1.0
+   ]
+  },
+  "total_g4_auto0.0285392_ilu": 13681.2,
+  "crit_g4_auto0.0285392_ilu": 1618.4,
+  "_ilu_g4_auto0.0285392": {
+   "decoder_total": 11299.7,
+   "decoder_crit": 1495.4,
+   "vision_total": 2381.5,
+   "vision_crit": 123.0,
+   "basis_keep": 0.5,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 8627.1,
+   "closed_prefill": 8071.2,
+   "closed_total": 10571.5,
+   "closed_crit": 1399.1,
+   "ratio_total": 1.3098,
+   "ratio_crit": 0.1733,
+   "rows": 2500,
+   "source": "chartqa_qwen3.5-122b-a10b-fp8_interleaved_unified_g4_auto0.0285392_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    1.0,
+    1.0
+   ]
+  },
+  "total_g4_auto0.0855516_ilu": 12199.0,
+  "crit_g4_auto0.0855516_ilu": 1265.2,
+  "_ilu_g4_auto0.0855516": {
+   "decoder_total": 9817.5,
+   "decoder_crit": 1142.2,
+   "vision_total": 2381.5,
+   "vision_crit": 123.0,
+   "basis_keep": 0.25,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 8160.5,
+   "closed_prefill": 8071.2,
+   "closed_total": 9710.1,
+   "closed_crit": 1129.7,
+   "ratio_total": 1.2031,
+   "ratio_crit": 0.14,
+   "rows": 2500,
+   "source": "chartqa_qwen3.5-122b-a10b-fp8_interleaved_unified_g4_auto0.0855516_c2.jsonl",
    "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
    "vision_ratio": [
     1.0,
