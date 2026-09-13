@@ -184,6 +184,52 @@
     0.972,
     1.0
    ]
+  },
+  "total_g4_auto0.0176733_ilu": 20599.5,
+  "crit_g4_auto0.0176733_ilu": 1848.2,
+  "_ilu_g4_auto0.0176733": {
+   "decoder_total": 8537.2,
+   "decoder_crit": 783.7,
+   "vision_total": 12062.3,
+   "vision_crit": 1064.5,
+   "basis_keep": 0.5,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 7270.3,
+   "closed_prefill": 6972.2,
+   "closed_total": 8187.1,
+   "closed_crit": 751.6,
+   "ratio_total": 1.1743,
+   "ratio_crit": 0.1078,
+   "rows": 765,
+   "source": "realworldqa_qwen3.5-35b-a3b_interleaved_unified_g4_auto0.0176733_c4.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.9534,
+    1.0
+   ]
+  },
+  "total_g4_auto0.0501575_ilu": 18304.8,
+  "crit_g4_auto0.0501575_ilu": 1121.3,
+  "_ilu_g4_auto0.0501575": {
+   "decoder_total": 8069.8,
+   "decoder_crit": 580.5,
+   "vision_total": 10235.0,
+   "vision_crit": 540.8,
+   "basis_keep": 0.25,
+   "decoder_basis": "hooked_prefill_x_ratio",
+   "hooked_llm_prefill": 7270.3,
+   "closed_prefill": 6972.2,
+   "closed_total": 7738.9,
+   "closed_crit": 556.7,
+   "ratio_total": 1.11,
+   "ratio_crit": 0.0799,
+   "rows": 765,
+   "source": "realworldqa_qwen3.5-35b-a3b_interleaved_unified_g4_auto0.0501575_c4.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.9687,
+    1.0
+   ]
   }
  }
 }
