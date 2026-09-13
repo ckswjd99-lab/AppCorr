@@ -16,6 +16,27 @@ from PIL import Image
 NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
 STANDALONE_LETTER_RE = re.compile(r"\b([A-Za-z])\b")
 
+# MCQ answers are read by `mcq_extract.extract_choice` (2026-09-13): the first-letter scorers
+# below awarded 'A' for "ASKING" / the article "a" and read 'B' out of "Based" -- a bias toward
+# gold-A rows that is not noise (B200-8 validation 28/28 + regression gate; the letter-inside-word
+# and bare-article cases are the ones that flipped). A pred with no extractable answer scores 0
+# and the spec reports `no_answer(pred) == True` so the rate can be stated per arm.
+try:
+    from .mcq_extract import extract_choice, score_mcq
+except ImportError:                      # imported as a top-level module (sys.path on analysis/)
+    from qwen_vl_prefill.mcq_extract import extract_choice, score_mcq
+
+
+class _MCQMixin:
+    CHOICES = "ABCD"
+
+    def score(self, pred_text, gold):
+        ok, val, _ = score_mcq(pred_text, str(gold).strip().upper(), self.CHOICES)
+        return ok, val
+
+    def no_answer(self, pred_text) -> bool:
+        return extract_choice(pred_text, self.CHOICES) is None
+
 
 def _parse_bbox(text):
     nums = NUM_RE.findall(text)
@@ -82,14 +103,18 @@ class RealWorldQASpec:
     def score(self, pred_text, gold):
         p = pred_text.strip()
         if len(gold) == 1 and gold.isalpha():          # MCQ letter answer
-            m = STANDALONE_LETTER_RE.search(p) or re.search(r"[A-Za-z]", p)
-            pred = m.group(1).upper() if (m and m.lastindex) else (m.group(0).upper() if m else "")
-            ok = int(pred == gold.upper())
+            ok, _, _ = score_mcq(p, gold.upper(), "ABCD")
         else:                                           # free-form word/number
             gnorm = re.sub(r"[^a-z0-9]", "", gold.lower())
             pnorm = re.sub(r"[^a-z0-9]", "", p.lower())
             ok = int(len(gnorm) > 0 and gnorm in pnorm)
         return ok, float(ok)
+
+    def no_answer(self, pred_text, gold=None) -> bool:
+        """Only the MCQ rows can have no answer; free-form rows are scored on substring."""
+        if gold is not None and not (len(str(gold)) == 1 and str(gold).isalpha()):
+            return False
+        return extract_choice(pred_text, "ABCD") is None
 
 
 class GQASpec:
@@ -359,13 +384,19 @@ class CVBenchSpec:
         th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
         image_r = image.resize((tw, th), Image.BILINEAR)
         prompt = ex["prompt"].strip() + "\nAnswer with the option's letter only."
-        gold = re.sub(r"[^A-Da-d]", "", str(ex["answer"])).upper()
+        # A-F, not A-D: 86 of the 2638 answers are (E)/(F) and the old A-D filter turned their
+        # gold into "" so no prediction could ever match (+2.0 pp on every arm, 2026-09-13).
+        gold = re.sub(r"[^A-Fa-f]", "", str(ex["answer"])).upper()
         return image_r, prompt, gold
 
+    CHOICES = "ABCDEF"
+
     def score(self, pred_text, gold):
-        m = re.search(r"\(([A-Da-d])\)", pred_text) or STANDALONE_LETTER_RE.search(pred_text)
-        pred = (m.group(1) if m else "").upper()
-        return int(pred == gold), float(pred == gold)
+        ok, val, _ = score_mcq(pred_text, gold, self.CHOICES)
+        return ok, val
+
+    def no_answer(self, pred_text) -> bool:
+        return extract_choice(pred_text, self.CHOICES) is None
 
 
 class MMVPSpec:
@@ -406,10 +437,14 @@ class MMVPSpec:
         gold = re.sub(r"[^ab]", "", ex["answer"].lower())
         return image_r, prompt, gold
 
+    CHOICES = "AB"
+
     def score(self, pred_text, gold):
-        m = re.search(r"\(([ab])\)", pred_text.lower()) or re.search(r"\b([ab])\b", pred_text.lower())
-        pred = m.group(1) if m else ""
-        return int(pred == gold), float(pred == gold)
+        ok, val, _ = score_mcq(pred_text, str(gold).upper(), self.CHOICES)
+        return ok, val
+
+    def no_answer(self, pred_text) -> bool:
+        return extract_choice(pred_text, self.CHOICES) is None
 
 
 class MMERealWorldSpec:
@@ -605,10 +640,14 @@ class VStarSpec:
         image_r = image.resize((tw, th), Image.BILINEAR) if (tw, th) != image.size else image
         return image_r, ex["text"], ex["label"].strip().upper()
 
+    CHOICES = "ABCD"
+
     def score(self, pred_text, gold):
-        m = re.search(r"[ABCD]", pred_text.upper())
-        ok = int(bool(m) and m.group(0) == gold)
-        return ok, float(ok)
+        ok, val, _ = score_mcq(pred_text, gold, self.CHOICES)
+        return ok, val
+
+    def no_answer(self, pred_text) -> bool:
+        return extract_choice(pred_text, self.CHOICES) is None
 
 
 class SOUDrivingSpec:
