@@ -279,3 +279,35 @@ The 448-row `visdrone_det_glm-5.3-flash_floor.jsonl` is kept as the reproducer.
 `*_adaptive/`, and tagged some arms `_c2` and some not. The table therefore gives that model a
 tuple of candidate suffixes and lets its fixed arms fall back to the `_adaptive` session; every
 other model keeps one suffix and a main session that always wins.
+
+## What the adaptive column supports, per cell (2026-09-14)
+
+The claim the adaptive group carries is a MATCHED-BUDGET one: at the same mean k, a per-band
+threshold beats a uniform quota. It therefore needs the fixed unified pair in the same cell, and
+that pair does not exist everywhere.
+
+**Where the uniform-vs-adaptive contrast exists.** Qwen3.5-35B, Qwen3.5-122B and GLM-4.6V: all
+ten datasets. GLM-5.3-Flash: vstar, mmvp, realworldqa, cvbench ONLY -- those four ran before the
+2026-09-14 00:05 instruction ("unified 는 굳이 안 해도 된다. auto 만 해"), after which the
+remaining GLM-5.3 datasets (textvqa, infovqa, chartqa, visdrone_count) run floor / ceiling /
+auto(θ50) / auto(θ25) and no fixed pair. Those four cells render BLANK in the fixed Unified
+column BY DESIGN, not because a run failed, and they support "adaptive at θ reaches X against a
+floor/ceiling span of Y-Z" -- nothing about uniform vs adaptive.
+
+**The finding, stated per cell.** Adaptive allocation helps where the model still loses accuracy
+under a uniform budget of the same size, and is indistinguishable from uniform where the fixed
+arm already sits near the ceiling. Compute and latency are unchanged either way.
+
+  moves:  ChartQA and VisDrone-count on 35B / 122B / GLM-4.6V (+1.1 to +2.2 pt and +0.6 to
+          +1.5 pt); CV-Bench on GLM-5.3 at the 0.50 target only -- paired on the common 2634
+          rows, 84.9658 -> 86.1807, +1.21 pt, discordant 64/32, McNemar p = 0.0014.  At the 0.25
+          target the same cell is null (+0.27 pt, 51/44, p = 0.54): the budget is then too small
+          for reallocation to buy anything back.
+  null:   RealWorldQA, RefCOCO, TextVQA, InfoVQA, and CV-Bench on the Qwen rows and GLM-4.6V.
+
+The axis is per (MODEL, DATASET) cell, not per dataset -- CV-Bench is null on three models and
+significant on the fourth. The predictor is headroom under the fixed arm, which the reader can
+check directly from the Low-res. / Full-res. bounds already printed under each dataset label:
+GLM-5.3's CV-Bench fixed k0.50 sits at 84.97 against a 84.31 / 86.39 span (near the floor, room
+to reallocate), while the 122B and GLM-4.6V fixed arms on that dataset already sit near their
+ceilings. State it that way rather than asserting a "steep k-response" we did not measure.
