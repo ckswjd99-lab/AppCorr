@@ -73,9 +73,21 @@ def clean_text(family: str, text: str) -> str:
     upper-cased text, so the 'B' of `<|BEGIN_OF_BOX|>` scored every V*Bench answer as B
     (2026-09-12 22:37: floor == ceiling == 36.13% = the share of gold B). Free-text scorers would
     keep the sentinels inside `pred` and fail exact match. Strip them, keep everything else."""
-    if family == "glm46v":
+    if family in ("glm46v", "glm53"):
         text = text.replace("<|begin_of_box|>", "").replace("<|end_of_box|>", "").strip()
+        # GLM answers free-text questions as "The answer is Pinterest." on 52-63% of InfoVQA
+        # rows (2026-09-13); ANLS / exact-match scorers compare the WHOLE string, so the row
+        # scored 37 where the bare answer scores 87, and the k<1 arms (terser) came out above
+        # the ceiling. Keep only what follows the answer prefix, drop one trailing period.
+        m = _ANSWER_PREFIX.match(text)
+        if m:
+            text = m.group(1).strip()
+        text = text.rstrip(".").strip() if "\n" not in text else text
     return text
+
+
+_ANSWER_PREFIX = re.compile(r"^\s*(?:the\s+)?(?:final\s+)?answer\s*(?:is|:)\s*(.+?)\s*$",
+                            re.IGNORECASE | re.DOTALL)
 
 def make_axis(family: str, model, proc):
     if family == "qwen25vl":
