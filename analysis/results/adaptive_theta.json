@@ -930,6 +930,166 @@
    "at_floor_pct": 8,
    "measured_mean_k": null,
    "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "realworldqa",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.0171636,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "realworldqa",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.0476059,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "vstar",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.0478464,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "vstar",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.0894327,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "mmvp",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.0341876,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "mmvp",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.0623163,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "cvbench",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.0338603,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "cvbench",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.0687403,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "visdrone_count",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.038661,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "visdrone_count",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.0732291,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "visdrone_det",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.0380533,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "visdrone_det",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.0758245,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "infovqa",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.0575444,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "infovqa",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.133426,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "refcoco",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.5,
+   "theta": 0.0580875,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
+  },
+  {
+   "dataset": "refcoco",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+   "target_k": 0.25,
+   "theta": 0.0986289,
+   "produced": "2026-09-13 B200-8 (theta parsed from adaptive_122b_*.log; unified-mode dump, sim --pscore eager)"
   }
  ]
 }
