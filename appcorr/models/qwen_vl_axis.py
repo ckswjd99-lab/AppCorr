@@ -50,7 +50,7 @@ gemma3 `interleaved_forward` walk (`appcorr/models/gemma3/unified.py`) on the Qw
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -66,6 +66,34 @@ import torch.nn as nn
 # noise). Repro tensors: analysis/results/vllm_stream/sdpa_cudnn_repro.pt. Every HF-side
 # consumer imports this module, so the switch lives here.
 torch.backends.cuda.enable_cudnn_sdp(False)
+
+
+def bucket_quota(n_over: int, n_band: int, bucket: int) -> int:
+    """Groups band r corrects when `n_over` of its `n_band` groups scored >= theta ("adaptive k").
+
+    Ceiling to a whole 1/`bucket` of the band, clamped to [1/bucket, 1] of it -- never zero rows
+    (a band the threshold rejects entirely still corrects its best 1/bucket), never more than the
+    band holds. Integer arithmetic, so a band whose size is not a multiple of `bucket` still lands
+    on a deterministic count:
+
+        q  = ceil(n_over * bucket / n_band)   buckets, clamped to [1, bucket]
+        m' = ceil(q * n_band / bucket)        rows,    clamped to [1, n_band]
+
+    q = bucket gives exactly n_band (theta -> 0: everything), q = 1 gives ceil(n_band / bucket)
+    (theta -> inf: the floor). Monotone non-increasing in theta, because `n_over` is.
+
+    Bucketing exists for the engine, not for the score: the pseudo-sequence a band's correction
+    forms is padded to a captured CUDA-graph size anyway, so a count off the 1/bucket lattice buys
+    no compute back (docs/memo/adaptive_keep_design.md). `threshold_sim.py` imports THIS function
+    so the offline calibration and the runtime cannot drift apart.
+    """
+    n_band = int(n_band)
+    if n_band <= 0:
+        return 0
+    bucket = max(1, int(bucket))
+    q = -(-max(0, int(n_over)) * bucket // n_band)     # ceil
+    q = min(max(q, 1), bucket)
+    return min(max(-(-q * n_band // bucket), 1), n_band)
 
 
 class QwenVLStreamingAxis(nn.Module):
@@ -125,6 +153,22 @@ class QwenVLStreamingAxis(nn.Module):
         # push (band 0 selects on the residual-energy hint alone), False = the eager score
         # (attention before band 0; the arms measured up to 2026-09-09). See streaming_forward.
         self.pscore_defer = True
+        # keep="auto" (bucketized THRESHOLD selection) knobs. `pscore_threshold` is the global
+        # score cut theta -- one number for every image and dataset, calibrated offline
+        # (analysis/experiments/threshold_sim.py) so the mean realised k hits a target; the
+        # per-image k then floats with content. `pscore_bucket` is the 1/b lattice the per-band
+        # count is ceilinged onto. `pscore_score` picks the ENERGY factor of the score:
+        #   "rms"  RMS residual in RAW [0, 1] pixel units (absolute, model-independent: 0.03 is
+        #          ~8 gray levels) x the mean-1 received attention -- the thresholdable score,
+        #          first-order correct (ProgVFM Eq. 6 weights attention by the residual NORM).
+        #   "mse"  the fixed-k arm's score exactly (per-image mean-1 MSE x mean-1 attention);
+        #          per-image normalised, so a global theta only ever moves k with the SHAPE of
+        #          the image's score distribution, never with how degraded the base is. Kept for
+        #          the A/B and for the identity gate against the fixed-quota path.
+        self.pscore_threshold: Optional[float] = None
+        self.pscore_bucket = 8
+        self.pscore_score = "rms"
+        self._pixel_std_cache: Optional[torch.Tensor] = None
 
     # --- per-model hooks (subclasses) ----------------------------------------------------------- #
 
@@ -151,6 +195,49 @@ class QwenVLStreamingAxis(nn.Module):
     def _attn_layermean_deferred(self, cache: Dict[str, Any], ctx_base: Dict[str, Any]) -> torch.Tensor:
         """The same vector as `_attn_layermean`, computed now from what a deferred base pass left."""
         raise NotImplementedError
+
+    # --- raw-pixel units of the selection score ------------------------------------------------ #
+
+    def _pixel_std(self, dim: int, device, dtype) -> Optional[torch.Tensor]:
+        """Per-ELEMENT scale that turns a `pixel_values` residual back into RAW [0, 1] pixels.
+
+        The processor emits (x/255 - mean)/std per channel and then flattens each patch as
+        (channel, temporal_patch, patch_h, patch_w) -- channel-major (transformers'
+        `Qwen2VLImageProcessor`: permute(0, 2, 5, 3, 6, 1, 4, 7) then reshape), so element d
+        belongs to channel d // (T*P*P) and the scale is `image_std` repeat-interleaved.
+
+        A DIFFERENCE of two images is mean-free, so undoing the normalisation needs std alone:
+        (x_full - x_base)_raw = (x_full - x_base)_norm * std. That is why the raw uint8 patches
+        are not needed on this path -- the axis never sees them (the driver hands it the
+        processor's output), and reading them back would mean a second preprocessing pass.
+
+        The constants come from the LOADED processor, never hard-coded: they are not the same
+        across this family (measured 2026-09-13 -- Qwen3.5-35B/122B/4B: mean = std = 0.5, i.e.
+        one gray level = 0.0078 normalised units; Qwen2.5-VL-7B: the CLIP constants, std
+        0.2686/0.2613/0.2758, one gray level ~ 0.0146). Returns None when no processor is
+        attached (the CPU unit-test axes), and the caller then scores in NORMALISED units and
+        says so in `stats["pscore_rms_units"]`.
+        """
+        cached = self._pixel_std_cache
+        if cached is not None and cached.numel() == dim:
+            return cached.to(device=device, dtype=dtype)
+        proc = self.processor
+        ip = getattr(proc, "image_processor", proc) if proc is not None else None
+        std = getattr(ip, "image_std", None)
+        if ip is None or std is None:
+            return None
+        vec = torch.as_tensor([float(v) for v in std], dtype=torch.float32)
+        if not getattr(ip, "do_normalize", True):
+            vec = torch.ones_like(vec)
+        if not getattr(ip, "do_rescale", True):
+            # pixel_values are in [0, 255] units; `raw` here means [0, 1].
+            vec = vec * float(getattr(ip, "rescale_factor", 1.0 / 255.0))
+        if dim % vec.numel():
+            raise ValueError(f"pixel row of {dim} elements is not a multiple of {vec.numel()} "
+                             "channels -- the channel-major patch layout does not hold")
+        vec = vec.repeat_interleave(dim // vec.numel())
+        self._pixel_std_cache = vec
+        return vec.to(device=device, dtype=dtype)
 
     def _rows_of_groups(self, ctx: Dict[str, Any], group_idx: torch.Tensor) -> torch.Tensor:
         """[G * unit] row indices (tower row order) of the given ORIGINAL merge-group indices,
@@ -363,7 +450,7 @@ class QwenVLStreamingAxis(nn.Module):
 
     @torch.no_grad()
     def streaming_forward(self, inputs: Dict[str, Any], px_base: torch.Tensor,
-                          groups: int, keep: float = 1.0,
+                          groups: int, keep: Union[float, str] = 1.0,
                           sink: Optional[Any] = None,
                           image_run: Optional[Tuple[int, int]] = None,
                           grid_thw: Optional[Tuple[int, int, int]] = None,
@@ -379,8 +466,20 @@ class QwenVLStreamingAxis(nn.Module):
             groups: arrival rounds. groups=1 must reproduce `full_forward` exactly (in exact
                 arithmetic): one band corrected after everything arrived = no staleness anywhere.
             keep: fraction of image tokens corrected in total (the standard 0.25/0.50 arms;
-                1.0 = the original streaming arm and the identity-gate case). Band r selects its
-                quota among arrived-and-uncorrected tokens by residual energy x received
+                1.0 = the original streaming arm and the identity-gate case), or the string
+                "auto" for BUCKETIZED THRESHOLD selection ("adaptive k",
+                docs/memo/adaptive_keep_design.md): there is no budget at all, band r corrects
+                every group whose score clears `axis.pscore_threshold` -- ceilinged onto the
+                1/`axis.pscore_bucket` lattice of the band and clamped to [1/bucket, 1] of it --
+                so k floats with the image's content instead of being a per-request constant.
+                The threshold is only meaningful against an ABSOLUTE energy, which is what
+                `axis.pscore_score="rms"` supplies (RMS residual in raw [0, 1] pixel units x the
+                mean-1 received attention); "mse" reuses the fixed arm's per-image mean-1 score
+                and exists for the A/B and for the identity gate. Everything else -- which
+                signal each band ranks on (deferred / eager / progressive), the top-by-score
+                rule, the merge, the messages -- is unchanged: only the per-band COUNT is
+                computed differently. Rows record `keep_realised` and `theta`.
+                Band r selects its quota among arrived-and-uncorrected tokens by residual energy x received
                 attention; the attention term rides the base approx pass this arm already runs
                 (full depth -- the base approx is not frontier-chunked, so no extra pass exists to
                 duplicate). Unselected tokens enter the LLM at their approximate reconstruction
@@ -426,6 +525,22 @@ class QwenVLStreamingAxis(nn.Module):
         if llm_schedule not in ("streaming", "interleaved", "interleaved_staged",
                                 "unified_staged"):
             raise ValueError(f"llm_schedule {llm_schedule!r}")
+        # `select` = "a per-band subset is chosen" (the keep<1 machinery); `auto` = that subset
+        # comes from the threshold rule rather than from a fixed quota. Every former `keep < 1.0`
+        # test below is `select` and every `keep >= 1.0` is `not select`, so the float path is
+        # a rename and nothing else (gated bitwise: qwen_axis_cpu_unittest.py --ref-root).
+        auto = isinstance(keep, str)
+        if auto:
+            if keep != "auto":
+                raise ValueError(f"keep {keep!r}: the only non-numeric selection mode is 'auto'")
+            theta = self.pscore_threshold
+            if theta is None:
+                raise ValueError("keep='auto' needs axis.pscore_threshold (the global score cut; "
+                                 "calibrate it with analysis/experiments/threshold_sim.py)")
+            theta = float(theta)
+            if self.pscore_score not in ("rms", "mse"):
+                raise ValueError(f"pscore_score {self.pscore_score!r}: 'rms' or 'mse'")
+        select = True if auto else keep < 1.0
         unified = llm_schedule == "unified_staged"
         interleaved = llm_schedule.startswith("interleaved") or unified
         staged = llm_schedule in ("interleaved_staged", "unified_staged")
@@ -472,7 +587,7 @@ class QwenVLStreamingAxis(nn.Module):
             # The deferred score buys nothing on the unified axis: it hides the attention column
             # sum behind the first PUSH, and the unified schedule has not pushed anything when
             # band 0 must be selected (the LLM opens only when the frontier crosses the tower).
-            defer = (keep < 1.0 and self.pscore_defer and self.supports_deferred_pscore
+            defer = (select and self.pscore_defer and self.supports_deferred_pscore
                      and not unified)
             n_vis = len(self.tower.blocks)
             if unified:
@@ -485,12 +600,12 @@ class QwenVLStreamingAxis(nn.Module):
                 v_front = min(bounds[0], n_vis)
                 with self._stage("vision_base"):
                     x_v, cache = self._approx_range(ctx_base, cache, 0, v_front,
-                                                    collect_attn=keep < 1.0)
+                                                    collect_attn=select)
                 x_base_out = x_v          # the frontier stream; becomes the crossing merge below
             else:
                 with self._stage("vision_base"):
                     x_base_out, cache = self._approx_base(
-                        ctx_base, cache, collect_attn=("defer" if defer else keep < 1.0))
+                        ctx_base, cache, collect_attn=("defer" if defer else select))
 
         emb_all = self.lm.embed_tokens(ids)
         bands = self._bands(groups, n_groups_total)
@@ -509,7 +624,8 @@ class QwenVLStreamingAxis(nn.Module):
         all_groups = torch.arange(n_groups_total, device=dev)
         rows_all = self._rows_of_groups(ctx_full, all_groups)   # group-major row order
 
-        if keep < 1.0:
+        rms_units = None
+        if select:
             # Per-merge-group score. Energy is pixel-level (the client hint in deployment): mean
             # squared residual between full and base patch rows, pooled to merge groups.
             # pixel_values rows are in patch_embed's native (group) order; the attention mean is
@@ -517,6 +633,22 @@ class QwenVLStreamingAxis(nn.Module):
             resid = (px_full.float() - px_base.float()).pow(2).mean(dim=-1)      # [n_rows]
             energy = resid.reshape(n_groups_total, unit).mean(dim=1)
             energy = energy / energy.mean().clamp_min(1e-12)
+            # The energy factor the score is built on. `energy` is per-image mean-1 -- scale-free
+            # and therefore blind to HOW degraded the base is, which is exactly what a global
+            # threshold has to see. The "rms" factor is the same residual in absolute raw pixel
+            # units and un-squared: first order, |d out| ~ a_i * ||d v_i||, so attention times
+            # the residual NORM, not times its square (ProgVFM Eq. 6). Both are pooled over the
+            # merge group before the square root, i.e. RMS of the group, not mean of row RMS.
+            base_energy = energy
+            if auto and self.pscore_score == "rms":
+                std = self._pixel_std(int(px_full.shape[-1]), dev, torch.float32)
+                d_raw = px_full.float() - px_base.float()
+                if std is not None:
+                    d_raw = d_raw * std
+                rms_units = "raw" if std is not None else "normalised"
+                base_energy = (d_raw.pow(2).mean(dim=-1)
+                               .reshape(n_groups_total, unit).mean(dim=1)).sqrt()
+                del d_raw
 
             def attn_term(vec: torch.Tensor) -> torch.Tensor:
                 vec = vec.to(energy.device)
@@ -532,11 +664,19 @@ class QwenVLStreamingAxis(nn.Module):
             # selected). Same trade gemma3's `interleaved_forward_progressive` makes, and the
             # alternative -- a full-depth scoring pass before round 0 -- runs the tower twice.
             if unified:
-                score = energy * attn_term(self._attn_layermean_prefix(cache, v_front))
+                score = base_energy * attn_term(self._attn_layermean_prefix(cache, v_front))
             else:
-                score = energy if defer else energy * attn_term(self._attn_layermean(cache))
-            n_sel = max(1, int(round(keep * n_groups_total)))
-            quota = [n_sel // groups + (1 if r_ < n_sel % groups else 0) for r_ in range(groups)]
+                score = base_energy if defer else \
+                    base_energy * attn_term(self._attn_layermean(cache))
+            if auto:
+                # No budget: the per-band count comes from the threshold (see `bucket_quota`).
+                quota = None
+                band_selected: List[int] = []
+                band_over: List[int] = []
+            else:
+                n_sel = max(1, int(round(keep * n_groups_total)))
+                quota = [n_sel // groups + (1 if r_ < n_sel % groups else 0)
+                         for r_ in range(groups)]
             selected = torch.zeros(n_groups_total, dtype=torch.bool, device=score.device)
 
         kv = None if sink is not None else DynamicCache(config=self.cfg.text_config)
@@ -616,7 +756,7 @@ class QwenVLStreamingAxis(nn.Module):
             arrived_rows = torch.zeros(n_rows, dtype=torch.bool, device=dev)
         last_arrival = 0
         last_band = max(r for r, (g0, g1) in enumerate(bands) if g1 > g0)
-        pscore_pending = keep < 1.0 and defer
+        pscore_pending = select and defer
         # Bands whose message has already left. `pos_done > 0` used to stand in for this, but the
         # interleaved branch never advances `pos_done` (its prompt went out whole at t=0), so the
         # deferred score would never have completed there and the two schedules would have
@@ -667,7 +807,7 @@ class QwenVLStreamingAxis(nn.Module):
             if v_front < v_nxt:
                 with self._stage("vision_approx"):
                     x_v, cache = self._approx_range(ctx_base, cache, v_front, v_nxt, x=x_v,
-                                                    collect_attn=keep < 1.0)
+                                                    collect_attn=select)
                 stats["chunks"].append(("vapprox", v_front, v_nxt, int(n_rows)))
                 v_front = v_nxt
             if nxt > n_vis and not opened:
@@ -693,14 +833,21 @@ class QwenVLStreamingAxis(nn.Module):
                     # PSCORE stage = the FLOP counter's excluded scope (a bare column sum the
                     # hooks never saw anyway; the label keeps the split honest if that changes).
                     with self._stage("PSCORE"):
-                        score = energy * attn_term(self._attn_layermean_deferred(cache, ctx_base))
+                        score = base_energy * attn_term(
+                            self._attn_layermean_deferred(cache, ctx_base))
                     pscore_pending = False
-                if unified and keep < 1.0:
+                if unified and select:
                     # Progressive: rank on every tower layer walked SO FAR. Costs nothing extra
                     # -- each layer's received-attention vector was collected inside its own
                     # approximate range (uncounted; see PSCORE above) -- and is the best signal
                     # that exists at the moment this band's groups must be chosen.
-                    score = energy * attn_term(self._attn_layermean_prefix(cache, v_front))
+                    # `base_energy`, not `energy`: for keep=auto with the rms score the factor is
+                    # the RMS residual in raw pixel units (what theta is calibrated on); this
+                    # line used the per-image mean-1 `energy` and silently applied theta to a
+                    # mean-1 score -- the unified auto arms of 2026-09-13 realised k 0.57-0.81
+                    # against 0.25-0.50 targets because of it. For fixed keeps and the "mse"
+                    # score `base_energy is energy`, so nothing else changes.
+                    score = base_energy * attn_term(self._attn_layermean_prefix(cache, v_front))
                 band_groups = torch.arange(g0, g1, device=dev)
                 band_rows_idx = self._rows_of_groups(ctx_full, band_groups)
                 # Unified, after the crossing: the tower frontier is at full depth for good and
@@ -712,7 +859,7 @@ class QwenVLStreamingAxis(nn.Module):
                     arrived_rows[band_rows_idx] = True
                     stream = torch.where(arrived_rows.unsqueeze(-1),
                                          ctx_full["hidden_states"], ctx_base["hidden_states"])
-                if keep < 1.0:
+                if select:
                     band_mask = torch.zeros(n_groups_total, dtype=torch.bool, device=score.device)
                     band_mask[g0:g1] = True
                     cand = band_mask & ~selected
@@ -720,7 +867,21 @@ class QwenVLStreamingAxis(nn.Module):
                     # band, so every group of this band is still a candidate: the count is
                     # g1 - g0 by construction (the former `int(cand.sum())` was a host sync
                     # returning exactly that).
-                    q = min(quota[r], g1 - g0)
+                    if auto:
+                        # THE one difference of the adaptive arm: the count. How many of this
+                        # band's groups clear the global cut, ceilinged onto the 1/bucket
+                        # lattice -- then the SAME top-by-score pick over the SAME candidates,
+                        # so at a theta whose m' equals the fixed quota the selected set is
+                        # bitwise the fixed arm's (gate A, adaptive_keep_gate.py).
+                        # Costs one host sync per band (the count has to reach Python for
+                        # topk); the sync-free form is the standing follow-up item, same as
+                        # the FP4 threshold path's.
+                        n_over = int((score[g0:g1] >= theta).sum())
+                        q = bucket_quota(n_over, g1 - g0, self.pscore_bucket)
+                        band_over.append(n_over)
+                        band_selected.append(q)
+                    else:
+                        q = min(quota[r], g1 - g0)
                     if q > 0:
                         group_idx = score.masked_fill(~cand, float("-inf")).topk(q).indices.sort().values
                         selected[group_idx] = True
@@ -736,7 +897,7 @@ class QwenVLStreamingAxis(nn.Module):
                             unit = self.tower.spatial_merge_unit
                             x_rows, cache = self.tower.correct_rows(
                                 ctx_full["hidden_states"], group_idx, ctx_full, cache, "v",
-                                span=(g0 * unit, g1 * unit) if keep >= 1.0 else None)
+                                span=(g0 * unit, g1 * unit) if not select else None)
                             if unified:
                                 stats["chunks"].append(
                                     ("vcorrect", 0, n_vis, int(group_idx.numel()) * unit))
@@ -752,7 +913,7 @@ class QwenVLStreamingAxis(nn.Module):
                             if unified:
                                 stats["chunks"].append(
                                     ("vcorrect", 0, depth, int(group_idx.numel()) * unit))
-                stats["corrected_groups"] += int(group_idx.numel()) if keep < 1.0 else (g1 - g0)
+                stats["corrected_groups"] += int(group_idx.numel()) if select else (g1 - g0)
                 stats["group_idx"].append(group_idx)  # device tensors, no sync (gates read them)
                 # Merge ONLY this band. The merger is per-merge-group (norm -> reshape(unit) ->
                 # MLP), so slicing at group granularity is exact. Under keep<1, UNCORRECTED rows
@@ -769,7 +930,7 @@ class QwenVLStreamingAxis(nn.Module):
                     continue
                 with self._stage("merge"):
                     if rows_r:
-                        if keep < 1.0:
+                        if select:
                             # Gather is a fresh tensor; the corrected rows (group-major in
                             # group_idx order) overwrite their groups' slots within the band.
                             band_rows = x_base_out[band_rows_idx]
@@ -778,7 +939,7 @@ class QwenVLStreamingAxis(nn.Module):
                                     x_rows.view(-1, unit, x_rows.shape[-1])
                         else:
                             band_rows = x_rows
-                    elif keep < 1.0:
+                    elif select:
                         row_mask = torch.zeros(n_rows, dtype=torch.bool, device=dev)
                         if group_idx.numel():
                             row_mask[self._rows_of_groups(ctx_full, group_idx.to(dev))] = True
@@ -851,8 +1012,21 @@ class QwenVLStreamingAxis(nn.Module):
         stats["llm_schedule"] = llm_schedule
         stats["decode_start_pos"] = stats_decode_pos
         stats["rope_delta"] = rope_delta
-        if keep < 1.0:
+        if select:
             stats["pscore"] = "progressive" if unified else ("deferred" if defer else "eager")
+        if auto:
+            # What the arm actually spent, per sample: the driver writes both into the row file
+            # (`keep_realised`, `theta`) -- a fixed-k row's k is in its file NAME, an adaptive
+            # row's is not knowable without this.
+            stats["keep_mode"] = "auto"
+            stats["theta"] = float(theta)
+            stats["pscore_bucket"] = int(self.pscore_bucket)
+            stats["pscore_score"] = self.pscore_score
+            stats["pscore_rms_units"] = rms_units
+            stats["n_groups"] = int(n_groups_total)
+            stats["band_selected"] = band_selected
+            stats["band_over"] = band_over
+            stats["keep_realised"] = stats["corrected_groups"] / max(1, n_groups_total)
         # The image-row embeddings the LLM actually consumed, for feature-space gating. Task
         # metrics are not monotone in fidelity (the interleaved contract says this in as many
         # words), and Qwen3.5's first generated token is CoT boilerplate that ignores the image

@@ -1358,17 +1358,10 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
                                             "visdrone_count", "visdrone_det", "chartqa",
                                             "cvbench", "mmvp", "refcoco")},
      "glm46v_il", "glm46v_cg1024", "glm46v"),
-    # GLM-5.3-Flash (port started 2026-09-13; docs/memo/glm53_correct_design.md). A 3rd-generation
-    # GLM vision MoE and the first model in this table whose decoder is HYBRID in a new way:
-    # 45 layers = 34 KDA (gated delta-rule linear attention) + 11 sparse-MLA with an fp8 pooled
-    # indexer, mHC 4-stream residuals, 288 routed experts top-8, FP8 checkpoint with a BF16
-    # 24-layer full-attention ViT at hidden 1024. It is also the first row served under TP=2
-    # (B200-8 GPUs 2-3), which our stream server does not support yet -- see
-    # docs/memo/glm53_tp_plan.md and analysis/experiments/glm53_tp_gate.sh.
-    # Slug follows the driver (`args.model.split("/")[-1].lower()`); concurrency 2 like the other
-    # two big rows. Every cell renders "--" until the port lands; n-per-dataset mirrors the
-    # GLM-4.6V row so a finished run is checked against the same expectation.
-    ("GLM-5.3-Flash (FP8)", "_glm-5.3-flash", "_c2",
+    # GLM-5.3-Flash (FP8, 45 layers: 34 KDA + 11 sparse-MLA, 288-expert top-8 MoE; 328 GB, TP=2 on
+    # B200-8), served through the same stream server with --tensor-parallel-size 2, 512-token
+    # budget, single runs (the model does not repeat itself run to run -- table notes).
+    ("GLM-5.3-Flash (FP8, TP=2)", "_glm-5.3-flash", "_c2",
      {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
       "visdrone_count": 2350, "visdrone_det": 448,
       "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
@@ -1396,6 +1389,46 @@ IL_DATASETS = [("vstar", "V*Bench (Acc.)", "ok", "qwen_vllm_accuracy_il_pyr"),
                ("mmvp", "MMVP (Acc.)", "ok", "qwen_vllm_accuracy_il"),
                ("refcoco", "RefCOCO val (Acc.@0.5)", "ok", "qwen_vllm_accuracy_il_pyr")]
 IL_KEEPS = [1.0, 0.5, 0.25]
+# Adaptive-k thresholds per (model slug, dataset): the `--keep auto` theta that realises a target
+# mean k, calibrated per dataset by threshold_sim.py on a 36-image pscore dump (the score is in
+# raw pixel units, so theta is NOT portable across datasets). The interleaved table's rightmost
+# group reads the unified_staged auto arms through this registry.
+ADAPTIVE_THETA_JSON = "adaptive_theta.json"
+
+
+def adaptive_thetas(slug: str, dataset: str, schedule: str = "unified_staged",
+                    bucket: int = 8) -> Dict[float, float]:
+    """{target k: theta} for one (model, dataset, SCHEDULE), from analysis/results/
+    adaptive_theta.json (local tree first, then IL_ROOT); {} when uncalibrated.
+
+    Theta is per schedule too: the unified arm ranks on the per-band PREFIX attention, so the
+    same theta realises a different mean k than under streaming (0.69 vs 0.49 on ChartQA,
+    2026-09-13). Registry entries carry `schedule`; entries without one are streaming."""
+    want = slug.lstrip("_").lower()
+    for root in (RESULTS, IL_ROOT):
+        p = os.path.join(root, ADAPTIVE_THETA_JSON)
+        if not os.path.exists(p):
+            continue
+        d = json.load(open(p))
+        # registry shape (B200-8, 2026-09-13): {"_meta": {"model": ...}, "entries": [{dataset,
+        # filter, target_k, theta, realised_mean_k, measured_mean_k, ...}]}; an entry may carry
+        # its own "model" when the file holds several models.
+        default_model = (d.get("_meta") or {}).get("model", "")
+        out = {}
+        for e in d.get("entries", []):
+            m = str(e.get("model", default_model)).split("/")[-1].lower()
+            if m == want and e.get("dataset") == dataset and \
+                    e.get("schedule", "streaming") == schedule and \
+                    int(e.get("bucket", 8)) == bucket:
+                out[float(e["target_k"])] = float(e["theta"])
+        if out:
+            return out
+    return {}
+# The progressive arm's LLM schedules, as (table key, row-file tag). The adaptive arm exists for
+# each of them; its file tag is `{schedule}_g{groups}_auto{theta:g}` (qwen_vllm_accuracy.
+# keep_suffix) -- a THRESHOLD, not a k, because k is per sample there and lives in the rows.
+IL_SCHEDULES = [("stream", "streaming"), ("il", "interleaved"),
+                ("ils", "interleaved_staged"), ("ilu", "interleaved_unified")]
 # Full split per dataset. A row whose arms carry fewer unique `i` than this is a reduced-n subset
 # and renders parenthesized, unshaded, with no preservation % (the 2026-09-01 probe rule).
 IL_FULL_N = {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
@@ -1407,10 +1440,25 @@ IL_FULL_N = {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
 IL_FLOPS_PENDING: set = set()
 
 
+def _pctl(v, q):
+    v = sorted(v)
+    if not v:
+        return None
+    i = (len(v) - 1) * q / 100.0
+    lo = int(i)
+    return v[lo] if lo >= len(v) - 1 else v[lo] + (v[lo + 1] - v[lo]) * (i - lo)
+
+
 def il_lit(dataset: str, metric: str, slug: str, dir_: str, expected: int,
-           suffix: str) -> Dict[str, float]:
+           suffix: str, thetas=()) -> Dict[str, float]:
     """{floor, ceiling, stream_k*, il_k*, ils_k*, ilu_k*} from one paired served run; complete
-    arms only."""
+    arms only.
+
+    `thetas`: also load the ADAPTIVE arms `{schedule}_g4_auto{theta:g}` under the keys
+    `auto_{schedule-key}_{theta:g}`. They go through the same completeness filter and the same
+    common-subset intersection as every other arm -- an arm that skipped different rows must not
+    be averaged over its own survivors (2026-09-12) -- and their realised k (mean / p95 / min /
+    max of the rows' `keep_realised`, over the SAME common subset) lands in `out["_k"][key]`."""
     out: Dict[str, float] = {}
     # `_n`: the smallest unique-i count among the arms that loaded. The 122B rows were first
     # measured on strided subsets and are being re-run at full split dataset by dataset, so
@@ -1424,6 +1472,9 @@ def il_lit(dataset: str, metric: str, slug: str, dir_: str, expected: int,
                  (f"ils_k{k:.2f}", f"interleaved_staged_g4{kk}"),
                  # `ilu`: the unified vision+decoder axis (memo §7.12), 35B V*/RWQA so far
                  (f"ilu_k{k:.2f}", f"interleaved_unified_g4{kk}")]
+    for th in thetas:
+        tags += [(f"auto_{key}_{th:g}", f"{sched}_g4_auto{th:g}")
+                 for key, sched in IL_SCHEDULES]
     # Pass 1: load every arm's scored rows. Arms can skip DIFFERENT rows -- `prompt_too_long` is
     # the same set for all arms of a model, but `oom` is not: on 122B InfoVQA the keep<1
     # interleaved arms OOM on 194-236 long documents that the bounds arms scored. Averaging each
@@ -1431,6 +1482,7 @@ def il_lit(dataset: str, metric: str, slug: str, dir_: str, expected: int,
     # rows are the long (harder) ones it would flatter exactly the arms that dropped them.
     # Pass 2 therefore scores every arm on the INTERSECTION of all arms' scored rows.
     per_arm: Dict[str, Dict[int, float]] = {}
+    per_k: Dict[str, Dict[int, float]] = {}
     for key, tag in tags:
         p = os.path.join(dir_, f"{dataset}{slug}_{tag}{suffix}.jsonl")
         if not os.path.exists(p):
@@ -1443,12 +1495,23 @@ def il_lit(dataset: str, metric: str, slug: str, dir_: str, expected: int,
             per_arm[key] = sc
             n_i = len({r["i"] for r in rows})
             out["_n"] = min(out.get("_n", n_i), n_i)
+            kk_ = {int(r["i"]): float(r["keep_realised"]) for r in rows
+                   if "skip" not in r and r.get("keep_realised") is not None}
+            if kk_:
+                per_k[key] = kk_
     if per_arm:
         common = set.intersection(*(set(v) for v in per_arm.values()))
         for key, sc in per_arm.items():
             use = {i: sc[i] for i in common} if common else sc
             out[key] = 100.0 * sum(use.values()) / len(use)
         out["_n_scored"] = len(common)
+        ks: Dict[str, Dict[str, float]] = {}
+        for key, kk_ in per_k.items():
+            v = [kk_[i] for i in (common & set(kk_))] or list(kk_.values())
+            ks[key] = {"mean": sum(v) / len(v), "p95": _pctl(v, 95),
+                       "min": min(v), "max": max(v), "n": len(v)}
+        if ks:
+            out["_k"] = ks
     return out
 
 
@@ -1491,6 +1554,12 @@ def il_flops(model_row, dataset: str) -> Dict[str, float]:
                 vt, vc = j35[f"_il_g4{kk}"]["vision_total"], j35[f"_il_g4{kk}"]["vision_crit"]
             out[f"{tag}_total_k{k:.2f}"] = d["decoder_total"] + vt
             out[f"{tag}_crit_k{k:.2f}"] = d["decoder_crit"] + vc
+    # unified_staged + adaptive k: the fold keys the arm by its theta tag (`_ilu_g4_auto<theta>`)
+    for k, th in adaptive_thetas(model_row[1], dataset).items():
+        d = j.get(f"_ilu_g4_auto{th:g}")
+        if d:
+            out[f"ilu_auto_total_k{k:.2f}"] = d["decoder_total"] + d["vision_total"]
+            out[f"ilu_auto_crit_k{k:.2f}"] = d["decoder_crit"] + d["vision_crit"]
     return out
 
 
@@ -1520,6 +1589,12 @@ def il_latency(model_row, dataset: str) -> Dict[str, float]:
             out[f"ils_k{k:.2f}"] = ils[f"k{k:.2f}"]
         if f"k{k:.2f}" in ilu:
             out[f"ilu_k{k:.2f}"] = ilu[f"k{k:.2f}"]
+    for k, th in adaptive_thetas(model_row[1], dataset).items():
+        if f"auto{th:g}" in ilu:                       # latency_probe.py --keeps auto:<theta>
+            out[f"ilu_auto_k{k:.2f}"] = ilu[f"auto{th:g}"]
+            p95 = ilu.get(f"auto{th:g}_ttft_last_band_p95_ms")
+            if p95 is not None:
+                out[f"ilu_auto_p95_k{k:.2f}"] = p95
     return out
 
 
@@ -1544,35 +1619,53 @@ def emit_interleaved_latex() -> str:
              r"\%; the per-row flag compares each row's own $n$ against its full split). VSR is "
              r"deliberately absent: its floor and ceiling are indistinguishable on both models "
              r"(paired $p = 0.27$ / $0.40$), so it carries no signal about the schedule. "
+             r"Unified $+$ adaptive: the unified schedule with a per-band pscore THRESHOLD "
+             r"$\theta$ instead of a fixed budget (score $=$ RMS residual in raw pixel units "
+             r"$\times$ $N\cdot$received attention; the count is ceilinged onto 1/8 buckets), "
+             r"$\theta$ calibrated per dataset so the mean realised $k$ matches the row's $k$; "
+             r"the realised mean $\bar k$ is printed under the accuracy. "
              r"Notes: docs/memo/interleaved\_table\_notes.md.}")
     L.append(r"\label{tab:interleaved_results}")
     L.append(r"\vspace{0.05in}")
     L.append(r"\centering")
     L.append(r"\resizebox{\textwidth}{!}{%")
     L.append(r"\setlength{\tabcolsep}{4pt}")
-    L.append(r"\begin{tabular}{l c | c c c c | c c c c | c c | c c c}")
+    L.append(r"\begin{tabular}{l c | c c c c | c c c c | c c | c c c | c c c c}")
     L.append(r"\toprule")
     L.append(r" & & \multicolumn{4}{c|}{Streaming (LLM prefills once)} & "
              r"\multicolumn{4}{c|}{Interleaved (LLM re-corrects per band)} & "
              r"\multicolumn{2}{c|}{Interleaved, depth-staged} & "
-             r"\multicolumn{3}{c}{Unified (tower $+$ decoder)} \\")
+             r"\multicolumn{3}{c|}{Unified (tower $+$ decoder)} & "
+             r"\multicolumn{4}{c}{Unified $+$ adaptive $k$ (threshold $\theta$)} \\")
     L.append(r"Dataset & $k$ & Acc.\ (\%) & Comp. & Crit.\ Comp. & Crit.\ Lat. & "
              r"Acc.\ (\%) & Comp. & Crit.\ Comp. & Crit.\ Lat. & Acc.\ (\%) & Comp. & "
-             r"Acc.\ (\%) & Comp. & Crit.\ Lat. \\")
+             r"Acc.\ (\%) & Comp. & Crit.\ Lat. & "
+             r"Acc.\ (\%) & Comp. & Crit.\ Comp. & Crit.\ Lat. \\")
     for model_row in IL_MODELS:
         disp, slug, suffix, expected, probe_model, _, lat_key, _, _ = model_row
         probe = probe_model
         dag = r"$^\dagger$" if lat_key in IL_FLOPS_PENDING else ""
         L.append(r"\midrule")
-        L.append(r"\multicolumn{15}{l}{\emph{" + disp + r"}} \\")
+        L.append(r"\multicolumn{19}{l}{\emph{" + disp + r"}} \\")
         first_ds = True
         for ds, label, metric, sub in IL_DATASETS:
             if ds not in expected:
                 continue
             if not first_ds:          # a light rule between datasets (the model rows use \midrule)
-                L.append(r"\cmidrule(lr){1-15}")
+                L.append(r"\cmidrule(lr){1-19}")
             first_ds = False
+            thetas = adaptive_thetas(slug, ds)
             lit = il_lit(ds, metric, slug, os.path.join(IL_ROOT, sub), expected[ds], suffix)
+            # The unified+adaptive arms live in `<dir>_adaptive`: one session per dataset holding
+            # the unified fixed k0.50/k0.25 pair AND the two auto arms (the paired contrast is
+            # same-session there), while the table's original 14-arm session stays untouched.
+            # Only the auto cells come from it; preservation % is against the main session's
+            # ceiling, which the notes must say.
+            lit_ad = il_lit(ds, metric, slug, os.path.join(IL_ROOT, sub + "_adaptive"),
+                            expected[ds], suffix, thetas=tuple(thetas.values())) \
+                if thetas and os.path.isdir(os.path.join(IL_ROOT, sub + "_adaptive")) else {}
+            ks_auto = lit_ad.pop("_k", {})
+            lit_ad.pop("_n", None); lit_ad.pop("_n_scored", None)
             # per-ROW probe flag: reduced n renders parenthesized even when the model's other
             # rows are full-split (and vice versa), which is what the 122B re-run needs
             # Parenthesise on SCORED coverage, not on the file's row count: a row can hold every
@@ -1629,10 +1722,68 @@ def emit_interleaved_latex() -> str:
                          acc(lit.get(f"ilu_{kk}")),
                          fmt_tf(fl.get(f"ilu_total_{kk}"), full_gf) + dag,
                          fmt_ms(lat.get(f"ilu_{kk}"), full_ms)]
+                # unified + adaptive: the k=1 row has no threshold (auto at theta->0 IS k=1)
+                th = thetas.get(k)
+                if k < 1.0 and th is not None:
+                    key = f"auto_ilu_{th:g}"
+                    a_cell = acc(lit_ad.get(key))
+                    kr = ks_auto.get(key)
+                    if kr and lit_ad.get(key) is not None:
+                        a_cell += r" {\footnotesize ($\bar k{=}" + f"{kr['mean']:.2f}" + r"$)}"
+                    cells += [a_cell,
+                              fmt_tf(fl.get(f"ilu_auto_total_{kk}"), full_gf) + dag,
+                              fmt_tf(fl.get(f"ilu_auto_crit_{kk}"), full_gf) + dag,
+                              fmt_ms(lat.get(f"ilu_auto_{kk}"), full_ms)]
+                else:
+                    cells += ["--"] * 4
                 L.append(" & ".join(cells) + r" \\")
     L.append(r"\bottomrule")
     L.append(r"\end{tabular}}")
     L.append(r"\end{table*}")
+    return "\n".join(L)
+
+
+def emit_adaptive_md(thetas, groups: int) -> str:
+    """Adaptive-k ("--keep auto") rows next to the fixed-k arms they are meant to replace.
+
+    Its own table, in markdown: an adaptive arm has no fixed k to sit under, and what it has
+    instead -- the realised-k distribution -- is two columns the LaTeX table has no room for.
+    Accuracies are on the common subset of every arm that loaded for that dataset (il_lit)."""
+    L = [f"| model | dataset | arm | theta | n | Acc. (%) | mean k | p95 k | min | max |",
+         "|" + "---|" * 10]
+    for model_row in IL_MODELS:
+        disp, slug, suffix, expected, _, _, _, _, _ = model_row
+        for ds, label, metric, sub in IL_DATASETS:
+            if ds not in expected:
+                continue
+            lit = il_lit(ds, metric, slug, os.path.join(IL_ROOT, sub), expected[ds], suffix,
+                         thetas=thetas)
+            ks = lit.get("_k", {})
+            ref = [("floor", "low-res.", None), ("ceiling", "full-res.", None)] + \
+                  [(f"{k_}_k{kp:.2f}", f"{sch} k={kp:.2f}", kp)
+                   for k_, sch in IL_SCHEDULES for kp in IL_KEEPS]
+            rows = []
+            for key, name, kp in ref:
+                if key in lit:
+                    rows.append((name, "--", lit[key], kp, kp, kp, kp))
+            for th in thetas:
+                for key, sched in IL_SCHEDULES:
+                    k_ = f"auto_{key}_{th:g}"
+                    if k_ not in lit:
+                        continue
+                    d = ks.get(k_, {})
+                    rows.append((f"{sched} auto", f"{th:g}", lit[k_], d.get("mean"),
+                                 d.get("p95"), d.get("min"), d.get("max")))
+            if not any(r[1] != "--" for r in rows):
+                continue                      # no adaptive row for this cell yet
+            n_s = lit.get("_n_scored", lit.get("_n", 0))
+            for name, th_, acc_, m_, p_, lo_, hi_ in rows:
+                f = lambda v: "--" if v is None else f"{v:.3f}"
+                L.append(f"| {disp} | {label} | {name} | {th_} | {n_s} | "
+                         f"{'--' if acc_ is None else f'{acc_:.2f}'} | "
+                         f"{f(m_)} | {f(p_)} | {f(lo_)} | {f(hi_)} |")
+    if len(L) == 2:
+        L.append("| _no adaptive rows found_ | | | | | | | | | |")
     return "\n".join(L)
 
 
@@ -1673,7 +1824,11 @@ def main():
     ap.add_argument("--keeps", type=float, nargs="+", default=[0.25, 0.50])
     ap.add_argument("--groups", type=int, default=4)
     ap.add_argument("--format", choices=["latex", "md"], default="latex")
-    ap.add_argument("--table", choices=["eval", "latency", "interleaved"], default="eval",
+    ap.add_argument("--thetas", type=float, nargs="*", default=[],
+                    help="--table adaptive: the `--keep auto` thresholds to look for "
+                         "(row files `..._{schedule}_g{groups}_auto{theta:g}.jsonl`)")
+    ap.add_argument("--table", choices=["eval", "latency", "interleaved", "adaptive"],
+                    default="eval",
                     help="eval: accuracy + compute (eval_table_*.tex); latency: the served-path "
                          "latency table (latency_table_*.tex); interleaved: streaming vs "
                          "interleaved LLM correction on Qwen3.5 (interleaved_table_*.tex)")
@@ -1695,6 +1850,9 @@ def main():
         return
     if a.table == "interleaved":
         print(emit_interleaved_latex())
+        return
+    if a.table == "adaptive":
+        print(emit_adaptive_md(a.thetas, a.groups))
         return
     table = build_rows(a.keeps, a.groups, latency=a.with_latency)
     print(emit_latex(table, a.keeps, a.with_latency) if a.format == "latex"
