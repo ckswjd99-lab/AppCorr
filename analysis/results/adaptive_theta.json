@@ -112,7 +112,7 @@
    "p95": 0.82,
    "at_floor_pct": 3,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "mmvp",
@@ -127,7 +127,7 @@
    "p95": 0.477,
    "at_floor_pct": 22,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "cvbench",
@@ -142,7 +142,7 @@
    "p95": 0.822,
    "at_floor_pct": 3,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "cvbench",
@@ -157,7 +157,7 @@
    "p95": 0.494,
    "at_floor_pct": 14,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "visdrone_det",
@@ -172,7 +172,7 @@
    "p95": 0.713,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "visdrone_det",
@@ -187,7 +187,7 @@
    "p95": 0.384,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "visdrone_count",
@@ -202,7 +202,7 @@
    "p95": 0.737,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "visdrone_count",
@@ -217,7 +217,7 @@
    "p95": 0.361,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "infovqa",
@@ -231,7 +231,7 @@
    "p95": 0.716,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -246,7 +246,7 @@
    "p95": 0.345,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -493,7 +493,7 @@
    "p95": 0.708,
    "at_floor_pct": 3,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -508,7 +508,7 @@
    "p95": 0.688,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -523,7 +523,7 @@
    "p95": 0.69,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -538,7 +538,7 @@
    "p95": 0.829,
    "at_floor_pct": 8,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -553,7 +553,7 @@
    "p95": 0.828,
    "at_floor_pct": 8,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -568,7 +568,7 @@
    "p95": 0.25,
    "at_floor_pct": 100,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]",
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager",
    "model": "Qwen/Qwen3.5-35B-A3B"
   },
   {
@@ -584,7 +584,7 @@
    "p95": 0.835,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "chartqa",
@@ -599,7 +599,7 @@
    "p95": 0.458,
    "at_floor_pct": 3,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "textvqa",
@@ -614,7 +614,7 @@
    "p95": 0.797,
    "at_floor_pct": 0,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   },
   {
    "dataset": "textvqa",
@@ -629,7 +629,127 @@
    "p95": 0.406,
    "at_floor_pct": 11,
    "measured_mean_k": null,
-   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager [B200-8]"
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "chartqa",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.5,
+   "theta": 0.0124917,
+   "realised_mean_k": 0.5005,
+   "p05": 0.316,
+   "p95": 0.812,
+   "at_floor_pct": 0,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "chartqa",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.25,
+   "theta": 0.0776204,
+   "realised_mean_k": 0.2503,
+   "p05": 0.161,
+   "p95": 0.476,
+   "at_floor_pct": 0,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "vstar",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.5,
+   "theta": 0.0457199,
+   "realised_mean_k": 0.5001,
+   "p05": 0.274,
+   "p95": 0.696,
+   "at_floor_pct": 0,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "vstar",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.25,
+   "theta": 0.0887158,
+   "realised_mean_k": 0.2501,
+   "p05": 0.125,
+   "p95": 0.414,
+   "at_floor_pct": 3,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "textvqa",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.5,
+   "theta": 0.0311573,
+   "realised_mean_k": 0.5007,
+   "p05": 0.221,
+   "p95": 0.76,
+   "at_floor_pct": 3,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "textvqa",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.25,
+   "theta": 0.0726753,
+   "realised_mean_k": 0.2502,
+   "p05": 0.126,
+   "p95": 0.393,
+   "at_floor_pct": 11,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "mmvp",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.5,
+   "theta": 0.0340704,
+   "realised_mean_k": 0.5,
+   "p05": 0.211,
+   "p95": 0.812,
+   "at_floor_pct": 3,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
+  },
+  {
+   "dataset": "mmvp",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "model": "zai-org/GLM-4.6V-FP8",
+   "target_k": 0.25,
+   "theta": 0.062538,
+   "realised_mean_k": 0.25,
+   "p05": 0.125,
+   "p95": 0.484,
+   "at_floor_pct": 22,
+   "measured_mean_k": null,
+   "produced": "2026-09-13 unified-mode dump (per-band prefix attention), sim --pscore eager"
   }
  ]
 }
