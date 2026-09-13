@@ -1589,10 +1589,15 @@ def il_latency(model_row, dataset: str) -> Dict[str, float]:
             out[f"ils_k{k:.2f}"] = ils[f"k{k:.2f}"]
         if f"k{k:.2f}" in ilu:
             out[f"ilu_k{k:.2f}"] = ilu[f"k{k:.2f}"]
+    # the adaptive arms' own probe key (`--key <model>_ilu_adaptive`), then the model's main key
+    # `<model>_ilu_adaptive` (latency_probe --key), e.g. qwen35_35b_il -> qwen35_35b_ilu_adaptive
+    ad_key = (il_key[:-3] if il_key.endswith("_il") else il_key) + "_ilu_adaptive"
+    ilu_ad = (lat.get(ad_key) or {}).get(dataset) or {}
     for k, th in adaptive_thetas(model_row[1], dataset).items():
-        if f"auto{th:g}" in ilu:                       # latency_probe.py --keeps auto:<theta>
-            out[f"ilu_auto_k{k:.2f}"] = ilu[f"auto{th:g}"]
-            p95 = ilu.get(f"auto{th:g}_ttft_last_band_p95_ms")
+        src = ilu_ad if f"auto{th:g}" in ilu_ad else ilu
+        if f"auto{th:g}" in src:                       # latency_probe.py --keeps auto:<theta>
+            out[f"ilu_auto_k{k:.2f}"] = src[f"auto{th:g}"]
+            p95 = src.get(f"auto{th:g}_ttft_last_band_p95_ms")
             if p95 is not None:
                 out[f"ilu_auto_p95_k{k:.2f}"] = p95
     return out
