@@ -1385,9 +1385,13 @@ IL_KEEPS = [1.0, 0.5, 0.25]
 ADAPTIVE_THETA_JSON = "adaptive_theta.json"
 
 
-def adaptive_thetas(slug: str, dataset: str) -> Dict[float, float]:
-    """{target k: theta} for one (model, dataset), from analysis/results/adaptive_theta.json
-    (local tree first, then IL_ROOT); {} when uncalibrated."""
+def adaptive_thetas(slug: str, dataset: str, schedule: str = "unified_staged") -> Dict[float, float]:
+    """{target k: theta} for one (model, dataset, SCHEDULE), from analysis/results/
+    adaptive_theta.json (local tree first, then IL_ROOT); {} when uncalibrated.
+
+    Theta is per schedule too: the unified arm ranks on the per-band PREFIX attention, so the
+    same theta realises a different mean k than under streaming (0.69 vs 0.49 on ChartQA,
+    2026-09-13). Registry entries carry `schedule`; entries without one are streaming."""
     want = slug.lstrip("_").lower()
     for root in (RESULTS, IL_ROOT):
         p = os.path.join(root, ADAPTIVE_THETA_JSON)
@@ -1401,7 +1405,8 @@ def adaptive_thetas(slug: str, dataset: str) -> Dict[float, float]:
         out = {}
         for e in d.get("entries", []):
             m = str(e.get("model", default_model)).split("/")[-1].lower()
-            if m == want and e.get("dataset") == dataset:
+            if m == want and e.get("dataset") == dataset and \
+                    e.get("schedule", "streaming") == schedule:
                 out[float(e["target_k"])] = float(e["theta"])
         if out:
             return out

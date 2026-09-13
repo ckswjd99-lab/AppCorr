@@ -76,8 +76,68 @@ def score_one(axis, inputs, px_base, groups):
             band.numpy(), std is not None)
 
 
+@torch.no_grad()
+def score_one_unified(axis, inputs, px_base, groups):
+    """(rms, mse, mse_raw, attn, band) per merge group as the UNIFIED schedule computes them.
+
+    The unified arm's attention factor is not the full-tower mean: band r ranks on the
+    received-attention mean over the tower layers walked so far (`_attn_layermean_prefix(cache,
+    v_front)`, recomputed at the top of every round while the frontier advances along
+    `unified_bounds`), so each group's `attn` here is its OWN band's prefix mean, normalised to
+    mean 1 over the image like the arm does.  A theta calibrated on the streaming signal does
+    not transfer (2026-09-13: same theta, realised k 0.49 streaming vs 0.69 unified), which is
+    why the dump has a schedule.  The energy factors are schedule-independent."""
+    dev = px_base.device
+    grid = inputs["image_grid_thw"]
+    unit = axis.tower.spatial_merge_unit
+    px_full = inputs["pixel_values"].to(device=dev, dtype=axis.model.dtype)
+    px_base = px_base.to(device=dev, dtype=px_full.dtype)
+    gctx = axis.tower.prepare_grid(grid, dev)
+    ctx_full = axis.tower.prepare_full_tokens(px_full, grid, gctx)
+    ctx_base = axis.tower.prepare_full_tokens(px_base, grid, gctx)
+    n_rows = ctx_full["seq_len"]
+    n_groups = n_rows // unit
+    n_vis = len(axis.tower.blocks)
+    seq = int(inputs["input_ids"].shape[1])
+    bounds = axis.unified_bounds(groups, int(n_rows), seq)
+    rows_all = axis._rows_of_groups(ctx_full, torch.arange(n_groups, device=dev))
+    bands = axis._bands(groups, n_groups)
+
+    v_front = min(bounds[0], n_vis)
+    x_v, cache = axis._approx_range(ctx_base, {}, 0, v_front, collect_attn=True)
+    attn = torch.zeros(n_groups, dtype=torch.float32)
+    band = torch.zeros(n_groups, dtype=torch.int16)
+    for r, (g0, g1) in enumerate(bands):
+        a = axis._attn_layermean_prefix(cache, v_front).to(torch.float32)
+        a = a[rows_all.to(a.device)].reshape(n_groups, unit).mean(dim=1)
+        a = a / a.mean().clamp_min(1e-12)
+        attn[g0:g1] = a[g0:g1].cpu()
+        band[g0:g1] = r
+        nxt = bounds[r + 1] if r + 1 < groups else bounds[-1]
+        v_nxt = min(nxt, n_vis)
+        if v_front < v_nxt:
+            x_v, cache = axis._approx_range(ctx_base, cache, v_front, v_nxt, x=x_v,
+                                            collect_attn=True)
+            v_front = v_nxt
+
+    d = px_full.float() - px_base.float()
+    mse_raw = d.pow(2).mean(dim=-1).reshape(n_groups, unit).mean(dim=1)
+    mse = mse_raw / mse_raw.mean().clamp_min(1e-12)
+    std = axis._pixel_std(int(px_full.shape[-1]), dev, torch.float32)
+    d = d if std is None else d * std
+    rms = d.pow(2).mean(dim=-1).reshape(n_groups, unit).mean(dim=1).sqrt()
+    return (rms.cpu().numpy().astype(np.float32), mse.cpu().numpy().astype(np.float32),
+            mse_raw.cpu().numpy().astype(np.float32), attn.numpy().astype(np.float32),
+            band.numpy(), std is not None)
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--llm-schedule", choices=["streaming", "unified_staged"], default="streaming",
+                    help="whose selection signal to dump: streaming (full-tower attention mean, "
+                         "band 0 deferred in the sim) or unified_staged (per-band PREFIX "
+                         "attention along unified_bounds; sim with --pscore eager). Theta is "
+                         "per schedule as well as per dataset.")
     ap.add_argument("--family", choices=["qwen25vl", "qwen35"], required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--dataset", required=True)
@@ -126,7 +186,8 @@ def main():
         base = degrade(img, a.level, a.degrade_filter)
         inputs = axis.build_inputs(img, q, **tmpl_kw).to(a.device)
         px_base = axis.build_inputs(base, q, **tmpl_kw)["pixel_values"].to(a.device)
-        rms, mse, mse_raw, attn, band, ru = score_one(axis, inputs, px_base, a.groups)
+        rms, mse, mse_raw, attn, band, ru = (score_one_unified if a.llm_schedule == "unified_staged"
+                                              else score_one)(axis, inputs, px_base, a.groups)
         raw_units = raw_units and ru
         for k, v in zip(("rms", "mse", "mse_raw", "attn", "band"),
                         (rms, mse, mse_raw, attn, band)):
@@ -141,10 +202,12 @@ def main():
 
     slug = a.model.split("/")[-1].lower()
     os.makedirs(os.path.join(ROOT, a.out), exist_ok=True)
-    name = (f"{a.dataset}_{slug}_g{a.groups}_l{a.level}{a.degrade_filter}"
+    sched_tag = "" if a.llm_schedule == "streaming" else "_ilu"
+    name = (f"{a.dataset}_{slug}_g{a.groups}_l{a.level}{a.degrade_filter}{sched_tag}"
             f"_n{len(idxs)}.npz")
     path = os.path.join(ROOT, a.out, name)
     meta = {"dataset": a.dataset, "model": a.model, "family": a.family, "groups": a.groups,
+            "llm_schedule": a.llm_schedule,
             "level": a.level, "degrade_filter": a.degrade_filter, "n_images": len(idxs),
             "image_mean": [float(v) for v in ip.image_mean],
             "image_std": [float(v) for v in ip.image_std],

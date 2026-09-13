@@ -819,7 +819,13 @@ class QwenVLStreamingAxis(nn.Module):
                     # -- each layer's received-attention vector was collected inside its own
                     # approximate range (uncounted; see PSCORE above) -- and is the best signal
                     # that exists at the moment this band's groups must be chosen.
-                    score = energy * attn_term(self._attn_layermean_prefix(cache, v_front))
+                    # `base_energy`, not `energy`: for keep=auto with the rms score the factor is
+                    # the RMS residual in raw pixel units (what theta is calibrated on); this
+                    # line used the per-image mean-1 `energy` and silently applied theta to a
+                    # mean-1 score -- the unified auto arms of 2026-09-13 realised k 0.57-0.81
+                    # against 0.25-0.50 targets because of it. For fixed keeps and the "mse"
+                    # score `base_energy is energy`, so nothing else changes.
+                    score = base_energy * attn_term(self._attn_layermean_prefix(cache, v_front))
                 band_groups = torch.arange(g0, g1, device=dev)
                 band_rows_idx = self._rows_of_groups(ctx_full, band_groups)
                 # Unified, after the crossing: the tower frontier is at full depth for good and
