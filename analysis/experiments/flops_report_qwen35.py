@@ -100,7 +100,7 @@ def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=Fal
         # `_k0.50` fixed budgets, or `_auto<theta>` adaptive arms (keep=auto, 2026-09-13): the
         # closed form prices the per-row `chunks` either way -- an adaptive row simply carries
         # its own |P_r| -- so the arm is keyed by its tag string instead of a float.
-        m = re.search(rf"_{arm}_g(\d+)(?:_k(\d+\.\d+)|_auto([0-9.eE+-]+))?(?:_c\d+)?\.jsonl$",
+        m = re.search(rf"_{arm}_g(\d+)(?:_k(\d+\.\d+)|_auto([0-9.eE+-]+(?:b\d+)?))?(?:_c\d+)?\.jsonl$",
                       os.path.basename(path))
         if m is None or int(m.group(1)) != groups:
             continue

@@ -112,7 +112,10 @@ def keep_suffix(args) -> str:
     "0.02" and 2e-05 is "2e-05" (no trailing zeros to drift between runs).
     """
     if args.keep == "auto":
-        return f"_auto{args.pscore_threshold:g}"
+        # bucket 8 is the default lattice and keeps the bare tag; a coarser lattice (user
+        # 2026-09-13: "1/4로 올려서도 해봐라") is a different arm and says so in the name
+        b = int(args.pscore_bucket)
+        return f"_auto{args.pscore_threshold:g}" + ("" if b == 8 else f"b{b}")
     return f"_k{args.keep:.2f}" if args.keep < 1.0 else ""
 
 

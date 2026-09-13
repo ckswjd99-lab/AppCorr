@@ -1385,7 +1385,8 @@ IL_KEEPS = [1.0, 0.5, 0.25]
 ADAPTIVE_THETA_JSON = "adaptive_theta.json"
 
 
-def adaptive_thetas(slug: str, dataset: str, schedule: str = "unified_staged") -> Dict[float, float]:
+def adaptive_thetas(slug: str, dataset: str, schedule: str = "unified_staged",
+                    bucket: int = 8) -> Dict[float, float]:
     """{target k: theta} for one (model, dataset, SCHEDULE), from analysis/results/
     adaptive_theta.json (local tree first, then IL_ROOT); {} when uncalibrated.
 
@@ -1406,7 +1407,8 @@ def adaptive_thetas(slug: str, dataset: str, schedule: str = "unified_staged") -
         for e in d.get("entries", []):
             m = str(e.get("model", default_model)).split("/")[-1].lower()
             if m == want and e.get("dataset") == dataset and \
-                    e.get("schedule", "streaming") == schedule:
+                    e.get("schedule", "streaming") == schedule and \
+                    int(e.get("bucket", 8)) == bucket:
                 out[float(e["target_k"])] = float(e["theta"])
         if out:
             return out
