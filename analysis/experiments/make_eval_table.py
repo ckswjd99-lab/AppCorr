@@ -1358,6 +1358,17 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
                                             "visdrone_count", "visdrone_det", "chartqa",
                                             "cvbench", "mmvp", "refcoco")},
      "glm46v_il", "glm46v_cg1024", "glm46v"),
+    # GLM-5.3-Flash (FP8, 45 layers: 34 KDA + 11 sparse-MLA, 288-expert top-8 MoE; 328 GB, TP=2 on
+    # B200-8), served through the same stream server with --tensor-parallel-size 2, 512-token
+    # budget, single runs (the model does not repeat itself run to run -- table notes).
+    ("GLM-5.3-Flash (FP8, TP=2)", "_glm-5.3-flash", "_c2",
+     {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
+      "visdrone_count": 2350, "visdrone_det": 448,
+      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
+     {ds: "glm53_flops_il.json" for ds in ("vstar", "realworldqa", "textvqa", "infovqa",
+                                           "visdrone_count", "visdrone_det", "chartqa",
+                                           "cvbench", "mmvp", "refcoco")},
+     "glm53_il", "glm53_cg1024", "glm53"),
 ]
 IL_DATASETS = [("vstar", "V*Bench (Acc.)", "ok", "qwen_vllm_accuracy_il_pyr"),
                ("realworldqa", "RealWorldQA (Acc.)", "ok", "qwen_vllm_accuracy_il"),
