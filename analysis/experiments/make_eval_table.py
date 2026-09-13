@@ -1361,7 +1361,7 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
     # GLM-5.3-Flash (FP8, 45 layers: 34 KDA + 11 sparse-MLA, 288-expert top-8 MoE; 328 GB, TP=2 on
     # B200-8), served through the same stream server with --tensor-parallel-size 2, 512-token
     # budget, single runs (the model does not repeat itself run to run -- table notes).
-    ("GLM-5.3-Flash (FP8, TP=2)", "_glm-5.3-flash", "_c2",
+    ("GLM-5.3-Flash (FP8, TP=2)", "_glm-5.3-flash", ("_c2", ""),
      {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
       "visdrone_count": 2350, "visdrone_det": 448,
       "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
@@ -1483,9 +1483,15 @@ def il_lit(dataset: str, metric: str, slug: str, dir_: str, expected: int,
     # Pass 2 therefore scores every arm on the INTERSECTION of all arms' scored rows.
     per_arm: Dict[str, Dict[int, float]] = {}
     per_k: Dict[str, Dict[int, float]] = {}
+    # `suffix` may be a tuple of candidates, tried in order per arm.  GLM-5.3 needs one: its
+    # chain wrote some arms with the `_c2` concurrency tag and some without, and a single fixed
+    # suffix drops half the row.  Every other model keeps a single suffix, so a missing `_c4`
+    # file can never be silently served by a `_c1` one (concurrency flips preds on 122B FP8).
+    sufs = (suffix,) if isinstance(suffix, str) else tuple(suffix)
     for key, tag in tags:
-        p = os.path.join(dir_, f"{dataset}{slug}_{tag}{suffix}.jsonl")
-        if not os.path.exists(p):
+        p = next((q for q in (os.path.join(dir_, f"{dataset}{slug}_{tag}{sf}.jsonl")
+                              for sf in sufs) if os.path.exists(q)), None)
+        if p is None:
             continue
         rows = [json.loads(l) for l in open(p) if l.strip()]
         if len({r["i"] for r in rows}) < expected:
@@ -1629,6 +1635,13 @@ def emit_interleaved_latex() -> str:
              r"$\times$ $N\cdot$received attention; the count is ceilinged onto 1/8 buckets), "
              r"$\theta$ calibrated per dataset so the mean realised $k$ matches the row's $k$; "
              r"the realised mean $\bar k$ is printed under the accuracy. "
+             r"GLM rows: the FLOPs hooks never ran on either GLM, so both halves of every GLM "
+             r"Comp.\ cell and its full-resolution reference are CLOSED FORMS "
+             r"(flops\_analytic, replayed from each row's chunk records) rather than hooked "
+             r"measurements; the Qwen3.5 rows keep their hooked basis. GLM-5.3-Flash box-metric "
+             r"cells (RefCOCO, VisDrone Det) are withheld: the model emits box coordinates in a "
+             r"frame the scorer does not share (x $\approx 1.95\times$ the three other "
+             r"families' agreeing boxes), so those arms would measure the mismatch. "
              r"Notes: docs/memo/interleaved\_table\_notes.md.}")
     L.append(r"\label{tab:interleaved_results}")
     L.append(r"\vspace{0.05in}")
@@ -1711,20 +1724,29 @@ def emit_interleaved_latex() -> str:
             if ref:
                 sub.append(r"{\footnotesize Full-res.\ " + ", ".join(ref) + "}")
             heads = [label] + sub + [""] * len(IL_KEEPS)
+            def lit_get(key):
+                """The main session's arm, falling back to the `_adaptive` session's.  Only
+                GLM-5.3 needs the fallback: its single chain wrote the fixed unified pair and the
+                two auto arms into the same `_adaptive` dir, so there is no main-session copy to
+                protect.  Where a main-session arm exists it always wins, so no other model's
+                cell can be served by the adaptive session."""
+                v = lit.get(key)
+                return lit_ad.get(key) if v is None else v
+
             for i, k in enumerate(IL_KEEPS):
                 kk = f"k{k:.2f}"
                 cells = [heads[i], f"{k:.2f}",
-                         acc(lit.get(f"stream_{kk}")),
+                         acc(lit_get(f"stream_{kk}")),
                          fmt_tf(fl.get(f"stream_total_{kk}"), full_gf) + dag,
                          fmt_tf(fl.get(f"stream_crit_{kk}"), full_gf) + dag,
                          fmt_ms(lat.get(f"stream_{kk}"), full_ms),
-                         acc(lit.get(f"il_{kk}")),
+                         acc(lit_get(f"il_{kk}")),
                          fmt_tf(fl.get(f"il_total_{kk}"), full_gf) + dag,
                          fmt_tf(fl.get(f"il_crit_{kk}"), full_gf) + dag,
                          fmt_ms(lat.get(f"il_{kk}"), full_ms),
-                         acc(lit.get(f"ils_{kk}")),
+                         acc(lit_get(f"ils_{kk}")),
                          fmt_tf(fl.get(f"ils_total_{kk}"), full_gf) + dag,
-                         acc(lit.get(f"ilu_{kk}")),
+                         acc(lit_get(f"ilu_{kk}")),
                          fmt_tf(fl.get(f"ilu_total_{kk}"), full_gf) + dag,
                          fmt_ms(lat.get(f"ilu_{kk}"), full_ms)]
                 # unified + adaptive: the k=1 row has no threshold (auto at theta->0 IS k=1)

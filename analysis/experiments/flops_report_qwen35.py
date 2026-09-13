@@ -91,8 +91,17 @@ def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=Fal
     closed-form stock prefill of the same rows (the "1" of the schedule), so a caller can turn
     total/crit into ratios and apply them to a hooked prefill of a different sample."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from flops_analytic import MODELS35, QWEN35_VISION
-    dec = MODELS35[model_key]
+    from flops_analytic import DECODERS, VISIONS
+    # `model_key` names a decoder in exactly one family registry ("qwen35_35b", "glm46v",
+    # "glm53"), so the family -- and with it the vision tower's closed form -- is implied by the
+    # key and no caller has to pass it.  GLM rows are priced entirely from these closed forms
+    # (there is no hooked GLM measurement); the Qwen3.5 path is unchanged.
+    fam = next((f for f, reg in DECODERS.items() if model_key in reg), None)
+    if fam is None:
+        raise KeyError(f"{model_key!r} is in no family of flops_analytic.DECODERS "
+                       f"({ {f: sorted(r) for f, r in DECODERS.items()} })")
+    dec = DECODERS[fam][model_key]
+    vision = VISIONS[fam]
     out = {}
     arm = "interleaved_unified" if unified else ("interleaved_staged" if staged else "interleaved")
     for path in sorted(glob.glob(os.path.join(
@@ -107,6 +116,7 @@ def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=Fal
         keep = float(m.group(2)) if m.group(2) else (f"auto{m.group(3)}" if m.group(3) else 1.0)
         tot = crit = pre = 0.0
         v_tot = v_crit = v_ref_tot = v_ref_crit = 0.0
+        cv_tot = cv_crit = cv_tower = 0.0
         n = 0
         for line in open(path):
             if not line.strip():
@@ -121,29 +131,51 @@ def interleaved_from_rows(rows_dir, ds_name, slug, groups, model_key, staged=Fal
             tot += c["total"] / 1e9
             crit += c["crit"] / 1e9
             pre += dec.prefill_flops(int(r["prompt_tokens"]) - 1) / 1e9
+            # Closed-form vision half of THIS row, for every arm.  A hooked run supplies the
+            # measured half and this is only the ratio's denominator; a family with no hooked
+            # measurement at all (GLM-4.6V, GLM-5.3 -- the tower never ran under the FLOPs hooks)
+            # falls back to it as an absolute under --il-closed-vision.  The unified arm reads the
+            # per-band `vcorrect` records (partial tower depth); the other arms have no vcorrect,
+            # so their vision half is the standard progressive one: one full tower pass plus every
+            # corrected LLM row's `merge_size**2` vision rows at FULL depth.
+            mf = getattr(vision, "merge_size", 2) ** 2
+            nr_row = n_img * mf
+            rowl_row = vision.row_layer_flops(nr_row)
+            corr_llm = [int(x[3]) for x in chunks if x[0] == "correct" and len(x) > 3]
+            cv_tower += vision.tower_flops(nr_row) / 1e9
+            cv_tot += (vision.tower_flops(nr_row)
+                       + sum(corr_llm) * mf * vision.layers * rowl_row) / 1e9
+            cv_crit += ((corr_llm[-1] if corr_llm else 0) * mf
+                        * vision.layers * rowl_row) / 1e9
             if unified:
-                v = QWEN35_VISION.unified_cost(chunks)
+                v = vision.unified_cost(chunks)
                 nr = v["n_rows"]
-                rowl = QWEN35_VISION.row_layer_flops(nr)
+                rowl = vision.row_layer_flops(nr)
                 # Reference = the SAME corrections at full tower depth on top of one full
                 # approximate pass: the vision half every other arm runs, so the ratio is what
                 # the staging changed and nothing else.
                 corr = [int(x[3]) for x in chunks if x[0] == "vcorrect"]
                 v_tot += v["total"] / 1e9
                 v_crit += v["crit"] / 1e9
-                v_ref_tot += (QWEN35_VISION.tower_flops(nr)
-                              + sum(corr) * QWEN35_VISION.layers * rowl) / 1e9
-                v_ref_crit += ((corr[-1] if corr else 0) * QWEN35_VISION.layers * rowl) / 1e9
+                v_ref_tot += (vision.tower_flops(nr)
+                              + sum(corr) * vision.layers * rowl) / 1e9
+                v_ref_crit += ((corr[-1] if corr else 0) * vision.layers * rowl) / 1e9
             n += 1
         if n:
             vis = None
+            closed_vis = (cv_tot / n, cv_crit / n)
+            # the full-res stock pass on THESE rows: one tower over every vision row plus one
+            # prefill of the full-res prompt -- the denominator every Comp. percentage uses
+            closed_full = cv_tower / n + pre / n
             if unified:
+                # the unified arm's own closed-form half supersedes the full-depth one
+                closed_vis = (v_tot / n, v_crit / n)
                 vis = {"ratio_total": v_tot / max(v_ref_tot, 1e-12),
                        "ratio_crit": v_crit / max(v_ref_crit, 1e-12),
                        "closed_vision_total": v_tot / n, "closed_vision_crit": v_crit / n,
                        "closed_vision_ref_total": v_ref_tot / n,
                        "closed_vision_ref_crit": v_ref_crit / n}
-            out[keep] = (tot / n, crit / n, n, path, pre / n, vis)
+            out[keep] = (tot / n, crit / n, n, path, pre / n, vis, closed_vis, closed_full)
     return out
 
 
@@ -160,7 +192,8 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
                                  (False, True, "ilu")):
         il = interleaved_from_rows(args.il_rows, ds_name, slug, args.groups, args.il_model,
                                    staged=staged, unified=unified)
-        for keep, (tot, crit, n, path, pre, vscale) in sorted(il.items(), key=lambda kv: str(kv[0])):
+        for keep, (tot, crit, n, path, pre, vscale, closed_vis, closed_full) in sorted(
+                il.items(), key=lambda kv: str(kv[0])):
             vis = vis_arg
             adaptive = isinstance(keep, str)          # "auto<theta>"
             if keeps is not None and not adaptive and not any(abs(keep - k) < 1e-9 for k in keeps):
@@ -189,6 +222,23 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
             prev = row.get(f"_il{bsuf}") or row.get(f"_ils{bsuf}") or {}
             if vis == (0.0, 0.0) and prev.get("vision_total"):
                 vis = (prev["vision_total"], prev["vision_crit"])
+            # A family the FLOPs hooks never ran on (GLM-4.6V, GLM-5.3) has no measured vision
+            # half anywhere in the json, and a zero here makes the table silently borrow the
+            # Qwen3.5-35B tower.  --il-closed-vision fills it from this arm's own closed form
+            # instead; `vision_basis` records which of the two a cell came from.
+            vision_basis = "hooked" if vis != (0.0, 0.0) else "none"
+            if vis == (0.0, 0.0) and getattr(args, "il_closed_vision", False):
+                vis, vision_basis = closed_vis, "closed_form"
+                vscale = None      # the closed half is already the unified one, not a rescale
+            if vision_basis == "hooked" and prev.get("vision_basis") == "closed_form":
+                vision_basis = "closed_form_inherited"   # `prev` was itself a closed half
+            # The table's Comp. percentages need a full-res reference.  A hooked run measures it
+            # ("full"); a closed-form-only family gets it from the same rows, so the numerator and
+            # the denominator are means over one sample.  Never overwrite a measured "full".
+            if getattr(args, "il_closed_vision", False) and not row.get("full"):
+                row["full"] = round(closed_full, 1)
+                row["_full_basis"] = "closed_form: tower(all vision rows) + prefill(N-1)"
+
             # The closed form is a mean over ALL accuracy rows (hundreds), the vision half a mean
             # over this run's --samples hooked rows (12, different prompts, different mean N).
             # Adding the two mixes samples: on V* it put the 35B unstaged k=0.50 total 5 pp of
@@ -221,7 +271,7 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
             row[f"_{tag}{suffix}"] = {
                 "decoder_total": round(dec_t, 1), "decoder_crit": round(dec_c, 1),
                 "vision_total": round(vis[0], 1), "vision_crit": round(vis[1], 1),
-                "basis_keep": basis_keep,
+                "basis_keep": basis_keep, "vision_basis": vision_basis,
                 "decoder_basis": basis, "hooked_llm_prefill": round(llm, 1),
                 "closed_prefill": round(pre, 1), "closed_total": round(tot, 1),
                 "closed_crit": round(crit, 1),
@@ -265,7 +315,13 @@ def main():
                          "schedule's cost replayed from each row's `chunks` (closed form, "
                          "flops_analytic.Qwen35Decoder) on top of THIS run's measured vision half")
     ap.add_argument("--il-model", default="qwen35_35b",
-                    help="flops_analytic.MODELS35 key for the --il-rows replay")
+                    help="flops_analytic decoder key for the --il-rows replay; any family registered in "
+                         "DECODERS (qwen35_35b / qwen35_122b / glm46v / glm53) -- the family, "
+                         "and with it the vision tower closed form, follows from the key")
+    ap.add_argument("--il-closed-vision", action="store_true",
+                    help="when the json carries no hooked vision half for an arm (a family the "
+                         "FLOPs hooks never ran on: GLM-4.6V, GLM-5.3), use the closed-form "
+                         "vision half from flops_analytic.VISIONS instead of leaving it 0")
     ap.add_argument("--il-auto-only", action="store_true",
                     help="with --il-rows pointing at an _adaptive session dir: fold ONLY the "
                          "keep=auto arms (the dir's fixed k0.50/k0.25 pair exists for paired "
