@@ -1331,7 +1331,10 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
     # user go) runs 122B on 240-row strided subsets (--samples 240), parenthesized like the V*
     # probe; their FLOPs fold (--il-only) into the fixed json's own hooked rows, InfoVQA being
     # a separate hooked run (it was not in the 2026-09-10 re-measure).
-    ("Qwen3.5-MoE (122B-A10B FP8)", "_qwen3.5-122b-a10b-fp8", "_c2",
+    # Suffix is a candidate list: the 2026-09-14 InfoVQA adaptive re-run wrote its 0.25-target arm
+    # without the _c2 tag (a 0-byte _c2 stub from the aborted first attempt is parked under
+    # _empty_artifacts_20260914/).  Main-session files still carry _c2 and are tried first.
+    ("Qwen3.5-MoE (122B-A10B FP8)", "_qwen3.5-122b-a10b-fp8", ("_c2", ""),
      {"vstar": 40, "realworldqa": 240, "textvqa": 240, "infovqa": 240, "visdrone_count": 240,
       "visdrone_det": 240, "chartqa": 240, "cvbench": 240, "mmvp": 240, "refcoco": 240},
      True,

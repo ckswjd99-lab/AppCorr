@@ -1294,6 +1294,84 @@
    "p05": 0.127,
    "p95": 0.534,
    "source": "realised on the arm's own rows (B200-8 chain); theta from the filename -- the calibration ran on B200-8"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "infovqa",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.5,
+   "theta": 0.0669845,
+   "realised_mean_k": 0.5301,
+   "p05": 0.345,
+   "p95": 0.751,
+   "source": "realised on the arm's own rows (B200-8 chain); theta from the filename"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "infovqa",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.25,
+   "theta": 0.146415,
+   "realised_mean_k": 0.2673,
+   "p05": 0.128,
+   "p95": 0.438,
+   "source": "realised on the arm's own rows (B200-8 chain); theta from the filename"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "visdrone_count",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.5,
+   "theta": 0.0444106,
+   "realised_mean_k": 0.4912,
+   "p05": 0.251,
+   "p95": 0.723,
+   "source": "realised on the arm's own rows (B200-8 chain); theta from the filename"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "visdrone_count",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.25,
+   "theta": 0.0829471,
+   "realised_mean_k": 0.2587,
+   "p05": 0.125,
+   "p95": 0.409,
+   "source": "realised on the arm's own rows (B200-8 chain); theta from the filename"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "chartqa",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.5,
+   "theta": 0.018935,
+   "realised_mean_k": 0.4948,
+   "p05": 0.316,
+   "p95": 0.812,
+   "source": "realised on the arm's own rows (B200-8 chain); theta from the filename"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "chartqa",
+   "filter": "box",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.25,
+   "theta": 0.104678,
+   "realised_mean_k": 0.2526,
+   "p05": 0.162,
+   "p95": 0.472,
+   "source": "realised on the arm's own rows (B200-8 chain); theta from the filename"
   }
  ]
 }
