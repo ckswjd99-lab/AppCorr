@@ -280,11 +280,38 @@ The 448-row `visdrone_det_glm-5.3-flash_floor.jsonl` is kept as the reproducer.
 tuple of candidate suffixes and lets its fixed arms fall back to the `_adaptive` session; every
 other model keeps one suffix and a main session that always wins.
 
-## What the adaptive column supports, per cell (2026-09-14)
+## How to read this table (2026-09-14, user's standing rule)
 
-The claim the adaptive group carries is a MATCHED-BUDGET one: at the same mean k, a per-band
-threshold beats a uniform quota. It therefore needs the fixed unified pair in the same cell, and
-that pair does not exist everywhere.
+**The objective is preservation against the ceiling, not a ranking of our schedules.** User,
+2026-09-14: "내 목표는 무슨 기법이던 ceiling 에 가깝게 붙으면 장땡이야. 기법들 사이의 비교에서 교훈을
+얻을 생각은 추호도 없다." So the number that matters in every cell is `best arm / ceiling` at the
+operating point, and which of streaming / interleaved / staged / unified / adaptive produced it is
+bookkeeping. Do not queue arms whose only purpose is to separate two of our own schedules, and do
+not write analysis about the separation.
+
+### Best preservation per cell, at the two cheap operating points (2026-09-14 00:30)
+
+At k=0.50 every cell except VisDrone is at or above 93.6% of ceiling, and 26 of 34 are above 97%.
+The cells that are NOT near ceiling, and so are the only ones where more work can pay:
+
+  VisDrone Det     35B 90.1 / 122B 88.7 / GLM-4.6V 95.2 %   (k=0.50);  77.8-90.9 % at k=0.25
+  VisDrone Count   35B 86.0 / 122B 97.0 / GLM-4.6V 98.7 %   (k=0.50);  78.1-94.7 % at k=0.25
+  InfoVQA          96.9-97.6 % at k=0.50;  88.2-90.7 % at k=0.25   -- the steepest k-response
+  ChartQA          97.6-100.3 % at k=0.50;  93.9-98.0 % at k=0.25
+  TextVQA          97.9-98.9 % at k=0.50;  95.3-96.2 % at k=0.25
+  122B MMVP        93.6 % at k=0.50  (n=300, underpowered -- see the 122B MMVP memo)
+
+Everything else (V*, RealWorldQA, CV-Bench, RefCOCO on every model; GLM-5.3 on all four of its
+finished datasets) sits at 97-101 % of ceiling at k=0.50 and 95-101 % at k=0.25. Those cells are
+DONE: no schedule can be meaningfully better than the ceiling it already matches.
+
+Note VisDrone Count's ceiling is 15.8-18.9 absolute, so its percentages move on a few questions
+and should be read with the raw numbers next to them.
+
+## Bookkeeping: which cells have a matched-budget fixed arm
+
+Kept only so nobody later reads a blank cell as a failed run. Per the rule above, the
+adaptive-vs-uniform contrast is NOT the point of the table; it is recorded here and nowhere else.
 
 **Where the uniform-vs-adaptive contrast exists.** Qwen3.5-35B, Qwen3.5-122B and GLM-4.6V: all
 ten datasets. GLM-5.3-Flash: vstar, mmvp, realworldqa, cvbench ONLY -- those four ran before the
