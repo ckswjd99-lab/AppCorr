@@ -224,7 +224,7 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
                 row[f"_{tag}{suffix}"]["vision_ratio"] = [round(vscale["ratio_total"], 4),
                                                           round(vscale["ratio_crit"], 4)]
             name = "unified" if unified else ("interleaved-staged" if staged else "interleaved")
-            print(f"{ds_name:<14} k={keep:.2f} {name:<18} crit "
+            print(f"{ds_name:<14} k={(keep if adaptive else f'{keep:.2f}')} {name:<18} crit "
                   f"{row[f'crit{suffix}_{tag}']:8.1f} total {row[f'total{suffix}_{tag}']:9.1f}  "
                   f"(decoder {dec_c:.1f}/{dec_t:.1f} = x{ratio_c:.3f}/x{ratio_t:.3f} of the "
                   f"{basis} {llm if llm > 0 else pre:.1f}; closed form over {n} rows"
