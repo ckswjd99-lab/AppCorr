@@ -184,6 +184,50 @@
     0.96,
     1.0
    ]
+  },
+  "total_g4_auto0.0503627_ilu": 21994.1,
+  "crit_g4_auto0.0503627_ilu": 2077.3,
+  "_ilu_g4_auto0.0503627": {
+   "decoder_total": 21994.1,
+   "decoder_crit": 2077.3,
+   "vision_total": 0.0,
+   "vision_crit": 0.0,
+   "decoder_basis": "closed_form_absolute",
+   "hooked_llm_prefill": 0.0,
+   "closed_prefill": 19083.4,
+   "closed_total": 21994.1,
+   "closed_crit": 2077.3,
+   "ratio_total": 1.1525,
+   "ratio_crit": 0.1089,
+   "rows": 191,
+   "source": "vstar_qwen3.5-35b-a3b_interleaved_unified_g4_auto0.0503627_c4.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.945,
+    1.0
+   ]
+  },
+  "total_g4_auto0.0931652_ilu": 20697.4,
+  "crit_g4_auto0.0931652_ilu": 1182.9,
+  "_ilu_g4_auto0.0931652": {
+   "decoder_total": 20697.4,
+   "decoder_crit": 1182.9,
+   "vision_total": 0.0,
+   "vision_crit": 0.0,
+   "decoder_basis": "closed_form_absolute",
+   "hooked_llm_prefill": 0.0,
+   "closed_prefill": 19083.4,
+   "closed_total": 20697.4,
+   "closed_crit": 1182.9,
+   "ratio_total": 1.0846,
+   "ratio_crit": 0.062,
+   "rows": 191,
+   "source": "vstar_qwen3.5-35b-a3b_interleaved_unified_g4_auto0.0931652_c4.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks` (unified axis: rows priced at their round's EXPLICIT depth over the joint vision+decoder cost split), as a ratio to the stock prefill applied to the hooked LLM prefill of this run's streaming arm; vision half is this run's hooked streaming arm (same samples), rescaled by the closed-form unified/full-depth vision ratio",
+   "vision_ratio": [
+    0.9602,
+    1.0
+   ]
   }
  }
 }
