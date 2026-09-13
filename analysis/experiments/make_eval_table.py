@@ -1389,6 +1389,13 @@ IL_DATASETS = [("vstar", "V*Bench (Acc.)", "ok", "qwen_vllm_accuracy_il_pyr"),
                ("mmvp", "MMVP (Acc.)", "ok", "qwen_vllm_accuracy_il"),
                ("refcoco", "RefCOCO val (Acc.@0.5)", "ok", "qwen_vllm_accuracy_il_pyr")]
 IL_KEEPS = [1.0, 0.5, 0.25]
+# (model slug, dataset) cells WITHHELD: arms whose numbers measure a known defect rather than the
+# schedule.  GLM-5.3-Flash emits box coordinates in a frame the scorer does not share -- on the
+# same VisDrone row GLM-4.6V / 122B / 35B agree within a few pixels while GLM-5.3 returns
+# x ~1.95x, y ~1.09x theirs, and the arm scores 0.22 -- so every box-metric arm of that model
+# scores ~0 whatever the schedule does.  The rows stay but render empty: an empty row says "not
+# measured", a 0.22 floor says "this model cannot detect", and only the first is true.
+IL_WITHHELD = {("_glm-5.3-flash", "visdrone_det"), ("_glm-5.3-flash", "refcoco")}
 # Adaptive-k thresholds per (model slug, dataset): the `--keep auto` theta that realises a target
 # mean k, calibrated per dataset by threshold_sim.py on a 36-image pscore dump (the score is in
 # raw pixel units, so theta is NOT portable across datasets). The interleaved table's rightmost
@@ -1678,6 +1685,8 @@ def emit_interleaved_latex() -> str:
             probe = min(n_file, n_scored) < 0.95 * IL_FULL_N.get(ds, 0) if lit else probe_model
             fl = il_flops(model_row, ds)
             lat = il_latency(model_row, ds)
+            if (slug, ds) in IL_WITHHELD:
+                lit, lit_ad, ks_auto, fl, lat = {}, {}, {}, {}, {}
             ceil = lit.get("ceiling")
             full_gf, full_ms = fl.get("full"), lat.get("full")
 
