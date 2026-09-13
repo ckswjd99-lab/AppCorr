@@ -97,7 +97,19 @@ def clean_text(family: str, text: str) -> str:
         # no-op when they are absent and saves the whole family from the V*Bench failure mode
         # (the 'B' of `<|BEGIN_OF_BOX|>` scoring every MCQ answer as B).
         text = text.replace("<|begin_of_box|>", "").replace("<|end_of_box|>", "").strip()
+        # GLM answers free-text questions as "The answer is Pinterest." on 52-63% of InfoVQA
+        # rows (GLM-4.6V, 2026-09-13); ANLS / exact-match compare the WHOLE string, so the row
+        # scored 37 where the bare answer scores 87. Keep what follows the answer prefix, drop
+        # one trailing period.
+        m = _ANSWER_PREFIX.match(text)
+        if m:
+            text = m.group(1).strip()
+        text = text.rstrip(".").strip() if "\n" not in text else text
     return text
+
+
+_ANSWER_PREFIX = re.compile(r"^\s*(?:the\s+)?(?:final\s+)?answer\s*(?:is|:)\s*(.+?)\s*$",
+                            re.IGNORECASE | re.DOTALL)
 
 def make_axis(family: str, model, proc):
     if family == "qwen25vl":
