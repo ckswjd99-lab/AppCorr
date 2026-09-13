@@ -1642,9 +1642,17 @@ def emit_interleaved_latex() -> str:
                 L.append(r"\cmidrule(lr){1-19}")
             first_ds = False
             thetas = adaptive_thetas(slug, ds)
-            lit = il_lit(ds, metric, slug, os.path.join(IL_ROOT, sub), expected[ds], suffix,
-                         thetas=tuple(thetas.values()))
-            ks_auto = lit.pop("_k", {})
+            lit = il_lit(ds, metric, slug, os.path.join(IL_ROOT, sub), expected[ds], suffix)
+            # The unified+adaptive arms live in `<dir>_adaptive`: one session per dataset holding
+            # the unified fixed k0.50/k0.25 pair AND the two auto arms (the paired contrast is
+            # same-session there), while the table's original 14-arm session stays untouched.
+            # Only the auto cells come from it; preservation % is against the main session's
+            # ceiling, which the notes must say.
+            lit_ad = il_lit(ds, metric, slug, os.path.join(IL_ROOT, sub + "_adaptive"),
+                            expected[ds], suffix, thetas=tuple(thetas.values())) \
+                if thetas and os.path.isdir(os.path.join(IL_ROOT, sub + "_adaptive")) else {}
+            ks_auto = lit_ad.pop("_k", {})
+            lit_ad.pop("_n", None); lit_ad.pop("_n_scored", None)
             # per-ROW probe flag: reduced n renders parenthesized even when the model's other
             # rows are full-split (and vice versa), which is what the 122B re-run needs
             # Parenthesise on SCORED coverage, not on the file's row count: a row can hold every
@@ -1705,9 +1713,9 @@ def emit_interleaved_latex() -> str:
                 th = thetas.get(k)
                 if k < 1.0 and th is not None:
                     key = f"auto_ilu_{th:g}"
-                    a_cell = acc(lit.get(key))
+                    a_cell = acc(lit_ad.get(key))
                     kr = ks_auto.get(key)
-                    if kr and lit.get(key) is not None:
+                    if kr and lit_ad.get(key) is not None:
                         a_cell += r" {\footnotesize ($\bar k{=}" + f"{kr['mean']:.2f}" + r"$)}"
                     cells += [a_cell,
                               fmt_tf(fl.get(f"ilu_auto_total_{kk}"), full_gf) + dag,

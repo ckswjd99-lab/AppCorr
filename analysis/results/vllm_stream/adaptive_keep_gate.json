@@ -395,51 +395,6 @@
    ],
    "rms_selection_differs_from_mse": false,
    "PASS": true
-  },
-  {
-   "case": "D_processor",
-   "model": "Qwen/Qwen3.5-35B-A3B",
-   "processor": "Qwen2VLImageProcessor",
-   "image_mean": [
-    0.5,
-    0.5,
-    0.5
-   ],
-   "image_std": [
-    0.5,
-    0.5,
-    0.5
-   ],
-   "rescale_factor": 0.00392156862745098,
-   "do_rescale": true,
-   "do_normalize": true,
-   "patch_size": 16,
-   "temporal_patch_size": 2,
-   "row_dim": 1536,
-   "channel_block": 512,
-   "one_gray_level_in_normalised_units": [
-    0.00784313725490196,
-    0.00784313725490196,
-    0.00784313725490196
-   ],
-   "flat_image_levels": [
-    10,
-    120,
-    240
-   ],
-   "per_channel_block_mean": [
-    -0.9215688109397888,
-    -0.05882352963089943,
-    0.882352888584137
-   ],
-   "per_channel_expected": [
-    -0.9215686274509804,
-    -0.05882352941176472,
-    0.8823529411764706
-   ],
-   "max_abs_layout_error": 1.834888083696029e-07,
-   "pixel_std_vector_ok": true,
-   "PASS": true
   }
  ],
  "PASS": true
