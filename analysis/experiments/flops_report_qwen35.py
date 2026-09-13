@@ -165,11 +165,28 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
             adaptive = isinstance(keep, str)          # "auto<theta>"
             if keeps is not None and not adaptive and not any(abs(keep - k) < 1e-9 for k in keeps):
                 continue
+            if getattr(args, "il_auto_only", False) and not adaptive:
+                continue                      # an _adaptive session dir: its fixed pair is for pairing only
             suffix = (f"_g{args.groups}_{keep}" if adaptive else
                       f"_g{args.groups}" if keep == 1.0 else f"_g{args.groups}_k{keep:.2f}")
+            # Measured basis. A fixed arm takes the hooked run's vision half / LLM prefill at its
+            # own keep. An ADAPTIVE arm has no hooked run of its own (keep=auto is not a hooked
+            # configuration), so it takes the basis of the fixed keep it was calibrated to --
+            # the nearest of 0.50 / 0.25 to its rows' mean `keep_realised` -- and applies its own
+            # closed-form ratios on top, exactly as the fixed arm does with its ratios. Without
+            # this the auto arm's vision half was 0 (V*Bench Comp. < 100 %) or a stale entry
+            # (InfoVQA 0.25-target above 0.50-target), 2026-09-13.
+            bsuf = suffix
+            basis_keep = None
+            if adaptive:
+                kr = [json.loads(l).get("keep_realised") for l in open(path) if l.strip()]
+                kr = [float(x) for x in kr if x is not None]
+                km = sum(kr) / max(1, len(kr))
+                basis_keep = min((0.50, 0.25), key=lambda k: abs(k - km))
+                bsuf = f"_g{args.groups}_k{basis_keep:.2f}"
             # --il-only re-fold: keep the vision half an earlier hooked run stored for this
             # (or the sibling) arm rather than zeroing it
-            prev = row.get(f"_il{suffix}") or row.get(f"_ils{suffix}") or {}
+            prev = row.get(f"_il{bsuf}") or row.get(f"_ils{bsuf}") or {}
             if vis == (0.0, 0.0) and prev.get("vision_total"):
                 vis = (prev["vision_total"], prev["vision_crit"])
             # The closed form is a mean over ALL accuracy rows (hundreds), the vision half a mean
@@ -182,7 +199,7 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
             # half). The ratio is what the schedule fixes (1 + k f_img + f_text); it moved by
             # 0.002 between the 12 and the 191 V* rows. A decoder-only fold (--il-only with no
             # streaming arm in the json) has no hooked prefill and keeps the absolute closed form.
-            llm = row.get(f"total{suffix}", 0.0) - vis[0] if vis[0] else 0.0
+            llm = row.get(f"total{bsuf}", 0.0) - vis[0] if vis[0] else 0.0
             if vscale is not None:
                 # The unified arm's vision half is NOT the streaming arm's: its per-band
                 # corrections run only over the tower layers the frontier had reached. The
@@ -204,6 +221,7 @@ def add_interleaved(row, args, ds_name, slug, vis, keeps=None):
             row[f"_{tag}{suffix}"] = {
                 "decoder_total": round(dec_t, 1), "decoder_crit": round(dec_c, 1),
                 "vision_total": round(vis[0], 1), "vision_crit": round(vis[1], 1),
+                "basis_keep": basis_keep,
                 "decoder_basis": basis, "hooked_llm_prefill": round(llm, 1),
                 "closed_prefill": round(pre, 1), "closed_total": round(tot, 1),
                 "closed_crit": round(crit, 1),
@@ -248,6 +266,10 @@ def main():
                          "flops_analytic.Qwen35Decoder) on top of THIS run's measured vision half")
     ap.add_argument("--il-model", default="qwen35_35b",
                     help="flops_analytic.MODELS35 key for the --il-rows replay")
+    ap.add_argument("--il-auto-only", action="store_true",
+                    help="with --il-rows pointing at an _adaptive session dir: fold ONLY the "
+                         "keep=auto arms (the dir's fixed k0.50/k0.25 pair exists for paired "
+                         "accuracy and must not overwrite the table's original entries)")
     ap.add_argument("--il-only", action="store_true",
                     help="no GPU: only fold the --il-rows keys into an existing --out-json "
                          "(vision half from the stored _split when the json has one, else decoder-side only)")
