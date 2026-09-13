@@ -90,7 +90,7 @@ class Glm53Axis(Glm46VAxis):
     # depth-staged correct path. Neither exists for this model yet (`_llm_stage_costs` below says
     # what the terms are; the engine half is `docs/memo/glm53_correct_design.md` items 1-3, owned
     # elsewhere), so the unified arm is refused rather than run on a guessed cost model.
-    supports_unified_axis = False
+    supports_unified_axis = True     # the two cost hooks exist (2026-09-13)
 
     IMAGE_START_ID = IMAGE_START_TOKEN_ID
     IMAGE_END_ID = IMAGE_END_TOKEN_ID
@@ -203,15 +203,72 @@ class Glm53Axis(Glm46VAxis):
                      + 3 * 2 * n_rows * h * ffn)                       # gate + up + down
 
     def _llm_stage_costs(self, n_prompt: int) -> list:
-        raise NotImplementedError(
-            "GLM-5.3-Flash has no decoder FLOP closed form yet. It needs per-layer terms for "
-            "three things this family is the first to have all at once: (a) 34 KDA layers "
-            "(merged qkvbfg_a projection, three depthwise convs of kernel 4, the chunked "
-            "delta-rule scan, o_norm + o_proj), (b) 11 sparse-MLA layers (q_a/q_b, kv_a/kv_b "
-            "with kv_lora_rank 512 and NO rope part, the fp8 pooled indexer at "
-            "index_kpool 4 / index_topk 2048 / index_n_heads 32, and top-k attention rather "
-            "than dense), and (c) the mHC mix (4 residual streams, hc_attn_fn/hc_ffn_fn "
-            "[24, 16384] fp32 per layer, 20 Sinkhorn iterations). Terms (a) and (b) are the "
-            "engine-side agents' survey (docs/memo/glm53_vllm_survey.md B, C, D); write this "
-            "against their measured hooks, not against a reading, and flip "
-            "`supports_unified_axis` when it is gated (feedback: FLOPs before accuracy).")
+        """Per decoder layer over an `n_prompt`-token prefill, from the text config alone -- the
+        same convention as the Qwen3.5 / GLM-4.6V axes (2 FLOPs per MAC; norms, activations,
+        softmax, the top-k select, the Sinkhorn iterations and biases excluded). Three layer
+        kinds, read from `linear_attn_config` (2026-09-13):
+
+          * **KDA** (34 layers): the merged qkv projection [H x 3K] with K = heads*head_dim,
+            the per-channel forget gate f [H x K] and output gate g [H x V], the per-head
+            beta and decay a [H x 2*heads], three depthwise causal convs of kernel 4 over
+            q/k/v, the chunked delta-rule scan (2 * dk * dv MACs per value head per token --
+            `hooks._qwen35_deltanet_core_flops`' convention) and o_proj [V x H].
+          * **sparse MLA** (11 layers, NoPE): q_a [H x q_lora] + q_b [q_lora x heads*qk_dim],
+            kv_a [H x kv_lora] + kv_b [kv_lora x heads*(qk_dim + v_dim)], the attention at the
+            query heads against min(index_topk, i+1) keys for row i (top-k, so the quadratic
+            term saturates at 2048 keys), o_proj [heads*v_dim x H]; the fp8 indexer: its q/k
+            projections [H x index_n_heads*index_head_dim] and [H x index_head_dim], and the
+            scoring of every query against the pooled keys (one per index_kpool positions).
+          * **MoE / dense MLP** on every layer: the first `first_k_dense_replace` layers a dense
+            SwiGLU at `intermediate_size`, the rest 288 routed experts top-8 at
+            `moe_intermediate_size` + the shared expert + the 288-way router.
+          * **mHC**: the two [24, 4H] fp32 coefficient projections per layer (attn + ffn mix);
+            the 4x4 mixing itself and the 20 Sinkhorn iterations are adds/scalars and excluded.
+
+        Not measured against hooks (no HF decoder for this checkpoint runs on a GPU here), so
+        this is the closed form the Comp. column is stated on, and it is said so in the notes.
+        """
+        t = self.cfg.text_config
+        L, H = int(t.num_hidden_layers), int(t.hidden_size)
+        la = dict(getattr(t, "linear_attn_config", {}) or {})
+        kda_layers = set(int(x) for x in la.get("kda_layers", []))
+        heads_l, dh_l = int(la.get("num_heads", 64)), int(la.get("head_dim", 128))
+        conv_k = int(la.get("short_conv_kernel_size", 4))
+        K = V = heads_l * dh_l
+        heads = int(t.num_attention_heads)
+        qk, vd = int(t.qk_head_dim), int(t.v_head_dim)
+        q_lora, kv_lora = int(t.q_lora_rank), int(t.kv_lora_rank)
+        topk, kpool = int(t.index_topk), int(t.index_kpool)
+        ih, idim = int(t.index_n_heads), int(t.index_head_dim)
+        n_exp = int(t.n_routed_experts)
+        moe_i = int(t.moe_intermediate_size)
+        shared = moe_i * int(getattr(t, "n_shared_experts", 0) or 0)
+        dense_first = int(getattr(t, "first_k_dense_replace", 0) or 0)
+        dense = 3 * 2 * H * int(t.intermediate_size)
+        moe = (2 * int(t.num_experts_per_tok) * 3 * moe_i * H     # routed top-k experts
+               + 2 * H * n_exp                                   # router
+               + 3 * 2 * H * shared)                             # shared expert
+        mhc = 2 * 2 * (4 * H) * 24 if getattr(t, "mhc", False) else 0
+        kda = (2 * H * (3 * K + K + V + 2 * heads_l)             # qkv, f, g, beta + a
+               + 2 * V * H                                       # o_proj
+               + 2 * (3 * K) * conv_k                            # three depthwise convs
+               + 2 * heads_l * 2 * dh_l * dh_l)                  # delta-rule scan
+        mla_proj = (2 * H * q_lora + 2 * q_lora * heads * qk
+                    + 2 * H * kv_lora + 2 * kv_lora * heads * (qk + vd)
+                    + 2 * (heads * vd) * H
+                    + 2 * H * (ih * idim) + 2 * H * idim + 2 * H * ih)   # indexer q, k, gate
+        n = int(n_prompt)
+        # top-k attention: row i attends min(topk, i + 1) keys -> sum over the prefill
+        keys = sum(min(topk, i + 1) for i in range(n))
+        quad = 2 * heads * keys * (qk + vd)
+        # indexer scoring: every query against the pooled keys before it (one per kpool rows)
+        pooled = sum((i + 1 + kpool - 1) // kpool for i in range(n))
+        index_score = 2 * ih * idim * pooled
+        out = []
+        for i in range(L):
+            mlp = dense if i < dense_first else moe
+            if i in kda_layers:
+                out.append(float(n * (mlp + kda + mhc)))
+            else:
+                out.append(float(n * (mlp + mla_proj + mhc) + quad + index_score))
+        return out
