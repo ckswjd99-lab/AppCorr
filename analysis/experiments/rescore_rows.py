@@ -31,9 +31,22 @@ def main() -> None:
     ap.add_argument("--family", required=True)
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--regold", action="store_true",
+                    help="re-derive each row's gold from the dataset by index (CV-Bench: the "
+                         "stored gold of the 86 (E)/(F) rows is '' because prepare() filtered "
+                         "A-D at run time; the row's own gold cannot be trusted there)")
     ap.add_argument("files", nargs="+")
     a = ap.parse_args()
     spec = get_spec(a.dataset)
+    regold = None
+    if a.regold:
+        from datasets import load_dataset
+        ds = spec.load(load_dataset)
+        if a.dataset == "cvbench":
+            import re as _re
+            regold = {i: _re.sub(r"[^A-Fa-f]", "", str(ds[i]["answer"])).upper() for i in range(len(ds))}
+        else:
+            raise SystemExit("--regold is implemented for cvbench only (the other MCQ golds are stored intact)")
     stamp = time.strftime("%Y%m%d")
     for f in a.files:
         rows = [json.loads(l) for l in open(f) if l.strip()]
@@ -44,20 +57,31 @@ def main() -> None:
             if "skip" in r:
                 continue
             pred = clean_text(a.family, str(r["pred"]))
+            if regold is not None:
+                r["gold"] = regold[int(r["i"])]
             try:
                 ok, val = spec.score(pred, r["gold"])
             except NotImplementedError:
                 ok, val = 0, None
             new = (int(ok), float(val) if val is not None else None)
-            if (int(r.get("ok", 0)), r.get("val")) != new:
+            na = None
+            if hasattr(spec, "no_answer"):
+                try:
+                    na = bool(spec.no_answer(pred, r["gold"]))
+                except TypeError:
+                    na = bool(spec.no_answer(pred))
+            if (int(r.get("ok", 0)), r.get("val"), r.get("no_answer")) != (new[0], new[1], na):
                 changed += 1
             r["ok"], r["val"] = new
+            if na is not None:
+                r["no_answer"] = na
         new_ok = sum(int(r["ok"]) for r in rows if "skip" not in r)
         new_val = [float(r["val"]) for r in rows if "skip" not in r and r.get("val") is not None]
         n = max(1, len([r for r in rows if "skip" not in r]))
         mv = lambda v: 100 * sum(v) / max(1, len(v))
+        na_n = sum(1 for r in rows if r.get("no_answer"))
         print(f"{os.path.basename(f):64s} n={n} ok {100*old_ok/n:.2f} -> {100*new_ok/n:.2f}  "
-              f"val {mv(old_val):.2f} -> {mv(new_val):.2f}  rows changed {changed}", flush=True)
+              f"val {mv(old_val):.2f} -> {mv(new_val):.2f}  rows changed {changed}  no_answer {100*na_n/n:.1f}%", flush=True)
         if a.dry_run or changed == 0:
             continue
         park = os.path.join(os.path.dirname(f), f"_prescore_{stamp}")
