@@ -244,5 +244,5 @@ columns carry no signal (rows_vs_one 0.151 < one2_vs_one 0.180). Criterion that 
 `rows_vs_one` tracks `chunk_vs_one` at every layer, and at layer 3 (bitwise self-repeat) both
 are 1.0e-2 above stock, the chunk-boundary cost of the KDA/FP8 stack that the streaming baseline
 pays too. **Verdict: PASS on that criterion.** The raw 0.35 is never quoted as a correct-step
-number. Consequence for the campaign: the first GLM-5.3 dataset runs the ceiling arm twice to
-size the run-to-run accuracy drift.
+number. Campaign rule (user, 2026-09-13 11:20 KST): single runs only -- the number one run produces is
+the number; no repeated ceiling arm. The self-repeat facts above go in the table notes.
