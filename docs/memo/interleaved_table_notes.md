@@ -338,3 +338,37 @@ check directly from the Low-res. / Full-res. bounds already printed under each d
 GLM-5.3's CV-Bench fixed k0.50 sits at 84.97 against a 84.31 / 86.39 span (near the floor, room
 to reallocate), while the 122B and GLM-4.6V fixed arms on that dataset already sit near their
 ceilings. State it that way rather than asserting a "steep k-response" we did not measure.
+
+## The 122B V* adaptive Crit. Lat. cell is withheld (cap artefact, 2026-09-14)
+
+Measured at the server's default pseudo-sequence cap, the 122B V*Bench adaptive arm at the 0.50
+target read 101.1 ms against the fixed k=0.50 arm's 65.5 ms -- adaptive apparently 55% SLOWER,
+against every other cell in the table where it is equal or faster. It is an engine artefact.
+
+**Mechanism.** Adaptive holds the MEAN k (0.501 measured against a 0.50 target) but reallocates,
+which raises the per-band MAXIMUM: max |P_r| median 589 against the fixed arm's 457. The server
+runs a correct round as at most `max_num_seqs` 1-token pseudo-sequences, so a band above the cap
+splits into two scheduler passes and pays a second round of prefill overhead. Matching the mean
+says nothing about the max, and the cap bites on the max.
+
+**Ladder, same 36 images, same thetas, rows still crossing the cap in brackets:**
+
+    cap 512 [25/36]   adaptive  101.1 ms   fixed  65.5 ms    gap +35.6
+    cap 602 [18/36]   adaptive   72.7 ms   fixed  66.5 ms    gap  +6.2
+    cap 788 [ 3/36]   adaptive   69.9 ms   fixed  69.0 ms    gap  +0.9   <- cap-free: EQUAL
+
+Only the arm that crossed the cap ever moved. The three arms that never crossed (fixed 0.50,
+fixed 0.25, adaptive 0.25) are flat across all three caps, which is what makes this a controlled
+result rather than a story. 788 is the engine's own ceiling at gpu-mem 0.90 (vLLM refuses a cap
+above the available Mamba cache blocks and names the number: 602 at 0.85, 788 at 0.90).
+
+**Why the cell is withheld rather than corrected in place.** The table's whole 122B latency column
+is measured at cap 512 / gpu-mem 0.85, the engine that produced every other 122B latency cell.
+Printing the 788 value in one cell would mix two engines inside one row. Printing the 512 value
+would print an artefact, and a reader takes a printed number, not its footnote. So the cell is
+empty and this section is the record: at a cap where it does not bind, the arm equals the fixed one.
+
+**Carry this as a deployment note, next to the cap and not in the method's latency column**:
+wherever `max_num_seqs` is near the per-band size, adaptive allocation pays sub-batches a uniform
+budget of the same mean size avoids. It is invisible on ChartQA / TextVQA / VisDrone-count, whose
+bands are far below any of these caps.

@@ -10947,5 +10947,201 @@
    "auto0.0732291_ttft_last_band_p95_ms": 33.43216408669946,
    "auto0.0732291_push_delay_ms": 150.0
   }
+ },
+ "qwen35_122b_ilu_adaptive_ns602": {
+  "_note": "Qwen/Qwen3.5-122B-A10B-FP8 via the vLLM stream server on port 5597, --samples 36 evenly spaced, --warmup 4 dropped, concurrency 1, groups 4, L2; per-dataset degrade filter as listed in each entry. Measured 2026-09-14.",
+  "vstar": {
+   "filter": "pyr",
+   "detail": {
+    "streaming_k0.50_d150": {
+     "t_vision_ms": 922.3,
+     "t_open_ms": 317.2,
+     "t_last_push_ms": 790.0,
+     "ttft_open_ms": 416.2,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 66.5,
+     "last_correct_step_ms": 41.2,
+     "ttft_start_ms": 850.0,
+     "t_client_done_ms": 940.5,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 22.8,
+     "last_chunk_wait_ms": 0.6,
+     "last_chunk_to_ft_ms": 1.8,
+     "max_chunk_wait_ms": null
+    },
+    "streaming_auto0.0478464_d150": {
+     "t_vision_ms": 927.5,
+     "t_open_ms": 318.6,
+     "t_last_push_ms": 795.8,
+     "ttft_open_ms": 442.4,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 72.7,
+     "last_correct_step_ms": 37.7,
+     "ttft_start_ms": 879.7,
+     "t_client_done_ms": 946.4,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 30.3,
+     "last_chunk_wait_ms": 0.5,
+     "last_chunk_to_ft_ms": 1.7,
+     "max_chunk_wait_ms": null
+    },
+    "streaming_k0.25_d150": {
+     "t_vision_ms": 916.8,
+     "t_open_ms": 312.8,
+     "t_last_push_ms": 783.6,
+     "ttft_open_ms": 402.8,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 49.7,
+     "last_correct_step_ms": 34.3,
+     "ttft_start_ms": 827.0,
+     "t_client_done_ms": 934.1,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 13.1,
+     "last_chunk_wait_ms": 0.3,
+     "last_chunk_to_ft_ms": 1.7,
+     "max_chunk_wait_ms": null
+    },
+    "streaming_auto0.0894327_d150": {
+     "t_vision_ms": 920.6,
+     "t_open_ms": 318.0,
+     "t_last_push_ms": 791.4,
+     "ttft_open_ms": 401.6,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 43.0,
+     "last_correct_step_ms": 31.9,
+     "ttft_start_ms": 834.4,
+     "t_client_done_ms": 942.1,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 9.5,
+     "last_chunk_wait_ms": 0.3,
+     "last_chunk_to_ft_ms": 1.7,
+     "max_chunk_wait_ms": null
+    }
+   },
+   "k0.50": 66.5,
+   "k0.50_push_delay_ms": 150.0,
+   "auto0.0478464": 72.7,
+   "auto0.0478464_keep_realised": {
+    "mean": 0.4947174157216076,
+    "p05": 0.21943474118767864,
+    "p50": 0.5006079027355623,
+    "p95": 0.6881458966565349
+   },
+   "auto0.0478464_ttft_last_band_p95_ms": 181.4798223549128,
+   "auto0.0478464_push_delay_ms": 150.0,
+   "k0.25": 49.7,
+   "k0.25_push_delay_ms": 150.0,
+   "auto0.0894327": 43.0,
+   "auto0.0894327_keep_realised": {
+    "mean": 0.2465922128276892,
+    "p05": 0.12586155229247828,
+    "p50": 0.25045592705167175,
+    "p95": 0.4379939209726444
+   },
+   "auto0.0894327_ttft_last_band_p95_ms": 73.74581113517286,
+   "auto0.0894327_push_delay_ms": 150.0
+  }
+ },
+ "qwen35_122b_ilu_adaptive_ns788": {
+  "_note": "Qwen/Qwen3.5-122B-A10B-FP8 via the vLLM stream server on port 5598, --samples 36 evenly spaced, --warmup 4 dropped, concurrency 1, groups 4, L2; per-dataset degrade filter as listed in each entry. Measured 2026-09-14.",
+  "vstar": {
+   "filter": "pyr",
+   "detail": {
+    "streaming_k0.50_d150": {
+     "t_vision_ms": 921.4,
+     "t_open_ms": 323.5,
+     "t_last_push_ms": 795.7,
+     "ttft_open_ms": 414.2,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 69.0,
+     "last_correct_step_ms": 43.1,
+     "ttft_start_ms": 857.4,
+     "t_client_done_ms": 946.2,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 23.1,
+     "last_chunk_wait_ms": 0.6,
+     "last_chunk_to_ft_ms": 2.1,
+     "max_chunk_wait_ms": null
+    },
+    "streaming_auto0.0478464_d150": {
+     "t_vision_ms": 926.6,
+     "t_open_ms": 324.3,
+     "t_last_push_ms": 801.0,
+     "ttft_open_ms": 423.6,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 69.9,
+     "last_correct_step_ms": 39.9,
+     "ttft_start_ms": 865.6,
+     "t_client_done_ms": 951.5,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 23.8,
+     "last_chunk_wait_ms": 0.7,
+     "last_chunk_to_ft_ms": 1.9,
+     "max_chunk_wait_ms": null
+    },
+    "streaming_k0.25_d150": {
+     "t_vision_ms": 917.5,
+     "t_open_ms": 319.4,
+     "t_last_push_ms": 790.2,
+     "ttft_open_ms": 401.0,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 50.7,
+     "last_correct_step_ms": 35.3,
+     "ttft_start_ms": 835.9,
+     "t_client_done_ms": 940.7,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 13.2,
+     "last_chunk_wait_ms": 0.3,
+     "last_chunk_to_ft_ms": 1.8,
+     "max_chunk_wait_ms": null
+    },
+    "streaming_auto0.0894327_d150": {
+     "t_vision_ms": 921.7,
+     "t_open_ms": 319.6,
+     "t_last_push_ms": 793.0,
+     "ttft_open_ms": 400.3,
+     "ttft_last_chunk_ms": -0.0,
+     "ttft_last_band_ms": 44.8,
+     "last_correct_step_ms": 33.4,
+     "ttft_start_ms": 835.9,
+     "t_client_done_ms": 943.6,
+     "prompt_tokens": 3341.0,
+     "gen_tokens": 2.0,
+     "last_band_correct_ms": 9.6,
+     "last_chunk_wait_ms": 0.3,
+     "last_chunk_to_ft_ms": 1.7,
+     "max_chunk_wait_ms": null
+    }
+   },
+   "k0.50": 69.0,
+   "k0.50_push_delay_ms": 150.0,
+   "auto0.0478464": 69.9,
+   "auto0.0478464_keep_realised": {
+    "mean": 0.4947174157216076,
+    "p05": 0.21943474118767864,
+    "p50": 0.5006079027355623,
+    "p95": 0.6881458966565349
+   },
+   "auto0.0478464_ttft_last_band_p95_ms": 120.2559685611725,
+   "auto0.0478464_push_delay_ms": 150.0,
+   "k0.25": 50.7,
+   "k0.25_push_delay_ms": 150.0,
+   "auto0.0894327": 44.8,
+   "auto0.0894327_keep_realised": {
+    "mean": 0.2465922128276892,
+    "p05": 0.12586155229247828,
+    "p50": 0.25045592705167175,
+    "p95": 0.4379939209726444
+   },
+   "auto0.0894327_ttft_last_band_p95_ms": 74.07254093348979,
+   "auto0.0894327_push_delay_ms": 150.0
+  }
  }
 }

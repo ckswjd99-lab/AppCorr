@@ -1399,6 +1399,19 @@ IL_KEEPS = [1.0, 0.5, 0.25]
 # scores ~0 whatever the schedule does.  The rows stay but render empty: an empty row says "not
 # measured", a 0.22 floor says "this model cannot detect", and only the first is true.
 IL_WITHHELD = {("_glm-5.3-flash", "visdrone_det"), ("_glm-5.3-flash", "refcoco")}
+# Single CELLS withheld: (model slug, dataset, cell key, k).  The 122B V* adaptive Crit. Lat. at
+# the 0.50 target is produced by the server's pseudo-sequence cap, not by the schedule.  Adaptive
+# holds the mean k (0.501 measured) but raises the per-band MAXIMUM -- max |P_r| median 589 vs the
+# fixed arm's 457 -- so the widest bands split into two sub-batches and pay a second round of
+# prefill.  Measured ladder on the same 36 images (rows still crossing the cap in brackets):
+#     cap 512 [25/36]: adaptive 101.1 ms vs fixed  65.5      cap 602 [18/36]:  72.7 vs 66.5
+#     cap 788 [ 3/36]: adaptive  69.9 ms vs fixed  69.0   <- cap-free: the two arms are EQUAL
+# Only the arm that crossed ever moved; the three that never crossed are flat across all three
+# caps.  The table's 122B latency column is measured at cap 512 (the engine every other 122B
+# latency cell came from, gpu-mem 0.85 -- 788 needs 0.90 and would mix engines within one row), so
+# this one cell would print an artefact.  It is withheld rather than footnoted: a reader takes a
+# printed number, not its footnote.  docs/memo/interleaved_table_notes.md carries the ladder.
+IL_WITHHELD_CELLS = {("_qwen3.5-122b-a10b-fp8", "vstar", "ilu_auto_lat", 0.50)}
 # Adaptive-k thresholds per (model slug, dataset): the `--keep auto` theta that realises a target
 # mean k, calibrated per dataset by threshold_sim.py on a 36-image pscore dump (the score is in
 # raw pixel units, so theta is NOT portable across datasets). The interleaved table's rightmost
@@ -1759,10 +1772,12 @@ def emit_interleaved_latex() -> str:
                     kr = ks_auto.get(key)
                     if kr and lit_ad.get(key) is not None:
                         a_cell += r" {\footnotesize ($\bar k{=}" + f"{kr['mean']:.2f}" + r"$)}"
+                    ad_lat = (None if (slug, ds, "ilu_auto_lat", k) in IL_WITHHELD_CELLS
+                              else lat.get(f"ilu_auto_{kk}"))
                     cells += [a_cell,
                               fmt_tf(fl.get(f"ilu_auto_total_{kk}"), full_gf) + dag,
                               fmt_tf(fl.get(f"ilu_auto_crit_{kk}"), full_gf) + dag,
-                              fmt_ms(lat.get(f"ilu_auto_{kk}"), full_ms)]
+                              fmt_ms(ad_lat, full_ms)]
                 else:
                     cells += ["--"] * 4
                 L.append(" & ".join(cells) + r" \\")
