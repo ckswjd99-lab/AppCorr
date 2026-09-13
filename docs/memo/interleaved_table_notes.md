@@ -228,3 +228,54 @@ Recovering those rows needed a server with more free memory; the only config tha
 numerically neutral on 122B FP8 -- same phenomenon as the chunked-prefill first-token flips. The six
 files were restored byte-for-byte from backup. Details and the rule in the memory file
 `reference_122b_interleaved_infovqa_oom_and_batching_gate`.
+
+## What the 2026-09-13 caption trim moved here
+
+The tex caption was cut to three typeset lines because at 19 columns and ~120 body rows the
+float no longer fit a page (user, 2026-09-13). The sentences it dropped, in full:
+
+**Schedule definitions.** *Streaming*: the vision tower is corrected progressively and the LLM
+prefills each band's final rows exactly once (chunked causal prefill). *Interleaved*: the LLM
+prefills the whole base-resolution prompt once, then per band re-runs only the rows the tower
+corrected in that band, plus the trailing text in the last round; every round runs at full depth,
+so Comp. = 1 + k·f_img + f_text of a full-resolution pass while Crit. Comp. is the last round
+alone (≈ k·f_img/g + f_text). *Depth-staged*: round r corrects its rows over the first
+b_r = L(r+1)/g decoder layers only and every image row is then carried through [b_r, b_{r+1}).
+*Unified*: one depth axis of tower + decoder stages cut into g rounds of equal cumulative cost;
+k<1 selects each band by the layer-mean attention of the stages walked so far (progressive), not
+by the full-tower score of the other arms, so its k<1 cells are not a schedule-only comparison.
+
+**Adaptive k.** The unified schedule with a per-band pscore THRESHOLD θ instead of a fixed
+budget. Score = RMS residual in raw pixel units × N·received attention; the per-band count is
+ceilinged onto 1/8 buckets. θ is calibrated per (model, dataset, schedule) so the mean realised k
+matches the row's k -- it is NOT portable across datasets (the score is in raw pixel units) and
+not across schedules (the unified arm ranks on prefix attention). Registry:
+`analysis/results/adaptive_theta.json`. The realised mean k̄ is printed under the accuracy.
+
+**Pairing and coverage.** All arms of a model come from one served engine with paired rows, same
+driver, same vision tower, greedy. Every cell is the full split unless PARENTHESISED, which marks
+a reduced-n strided subset (rendered unshaded and without a preservation %); the flag is per ROW,
+comparing each row's own n against its full split, not per model.
+
+**VSR is deliberately absent**: its floor and ceiling are indistinguishable on both Qwen models
+(paired p = 0.27 / 0.40), so it carries no signal about the schedule.
+
+**GLM rows are closed form.** The FLOPs hooks never ran on GLM-4.6V or GLM-5.3, so both halves of
+every GLM Comp. cell AND its full-resolution reference come from `flops_analytic`
+(Glm46VDecoder / Glm53Decoder + GLM46V_VISION / GLM53_VISION) replayed from each row's `chunks`
+records, not from a hooked measurement. The Qwen3.5 rows keep their hooked basis. Each entry in
+the GLM flops jsons records which basis it used (`vision_basis`, `decoder_basis`, `_full_basis`).
+Regenerate with `scratchpad/glm_flops_fold.sh` (CPU only): `--il-closed-vision` is what turns the
+closed forms on, and without it the table falls back to the Qwen3.5-35B tower for the vision half.
+
+**GLM-5.3-Flash box-metric cells are withheld** (RefCOCO, VisDrone Det). The model emits box
+coordinates in a frame the scorer does not share: on the same VisDrone row, GLM-4.6V / 122B / 35B
+agree within a few pixels (616, 274-280, 737-741, 347-350) while GLM-5.3 returns
+(1200.0, 303.5, 1430.4, 376.9) -- x ≈ 1.95×, y ≈ 1.09× -- and the arm scores 0.22. Running those
+datasets measures the mismatch, not the schedule, so they stay empty until the frame is fixed.
+The 448-row `visdrone_det_glm-5.3-flash_floor.jsonl` is kept as the reproducer.
+
+**GLM-5.3 file layout.** Its single chain wrote the fixed unified pair AND the two auto arms into
+`*_adaptive/`, and tagged some arms `_c2` and some not. The table therefore gives that model a
+tuple of candidate suffixes and lets its fixed arms fall back to the `_adaptive` session; every
+other model keeps one suffix and a main session that always wins.

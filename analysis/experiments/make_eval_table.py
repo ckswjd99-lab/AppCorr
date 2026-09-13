@@ -1613,41 +1613,25 @@ def emit_interleaved_latex() -> str:
     L = []
     L.append(r"\begin{table*}[t]")
     L.append(r"\vspace{-0.1in}")
-    # The long measurement caption moved to docs/memo/interleaved_table_notes.md (2026-09-11):
-    # this table is a working view, so the caption only names the arms and the columns.
-    L.append(r"\caption{Streaming vs.\ interleaved LLM correction, served Qwen3.5 (vLLM, one "
-             r"B200; FP8 for 122B). Streaming: LLM prefills each band's final rows once. "
-             r"Interleaved: LLM prefills the base-resolution prompt, then re-runs each band's "
-             r"corrected rows (full depth). Depth-staged: round $r$ corrects over the first $b_r$ "
-             r"decoder layers and carries every row through $[b_r, b_{r+1})$. Unified: one depth "
-             r"axis of tower $+$ decoder stages split by equal cost; $k{<}1$ selects by the "
-             r"prefix layer-mean attention (progressive). Acc.\ (preservation vs.\ Full-res.); "
-             r"Comp.\ / Crit.\ Comp.: total / last-round FLOPs (share of the full-resolution "
-             r"pass); Crit.\ Lat.: TTFT from the last band's arrival, bands 150\,ms apart, "
-             r"median of 36 (share of the full-res TTFT). All arms of a model from one served "
-             r"engine, paired rows. Every cell is the full split unless PARENTHESIZED, which "
-             r"marks a reduced-$n$ strided subset (rendered unshaded and without a preservation "
-             r"\%; the per-row flag compares each row's own $n$ against its full split). VSR is "
-             r"deliberately absent: its floor and ceiling are indistinguishable on both models "
-             r"(paired $p = 0.27$ / $0.40$), so it carries no signal about the schedule. "
-             r"Unified $+$ adaptive: the unified schedule with a per-band pscore THRESHOLD "
-             r"$\theta$ instead of a fixed budget (score $=$ RMS residual in raw pixel units "
-             r"$\times$ $N\cdot$received attention; the count is ceilinged onto 1/8 buckets), "
-             r"$\theta$ calibrated per dataset so the mean realised $k$ matches the row's $k$; "
-             r"the realised mean $\bar k$ is printed under the accuracy. "
-             r"GLM rows: the FLOPs hooks never ran on either GLM, so both halves of every GLM "
-             r"Comp.\ cell and its full-resolution reference are CLOSED FORMS "
-             r"(flops\_analytic, replayed from each row's chunk records) rather than hooked "
-             r"measurements; the Qwen3.5 rows keep their hooked basis. GLM-5.3-Flash box-metric "
-             r"cells (RefCOCO, VisDrone Det) are withheld: the model emits box coordinates in a "
-             r"frame the scorer does not share (x $\approx 1.95\times$ the three other "
-             r"families' agreeing boxes), so those arms would measure the mismatch. "
-             r"Notes: docs/memo/interleaved\_table\_notes.md.}")
+    # Caption kept to three typeset lines on purpose: at 19 columns and ~120 body rows the float
+    # only fits a page when the caption does not eat it (user, 2026-09-13).  Everything the
+    # caption used to spell out -- schedule definitions, the adaptive-theta rule, per-model
+    # measurement bases, the withheld cells -- lives in docs/memo/interleaved_table_notes.md.
+    L.append(r"\caption{Streaming vs.\ interleaved LLM correction, one served engine per model "
+             r"(vLLM, one B200; GLM-5.3-Flash TP$=$2). Acc.: preservation vs.\ Full-res.; "
+             r"Comp.\ / Crit.\ Comp.: total / last-round FLOPs as a share of the full-resolution "
+             r"pass; Crit.\ Lat.: TTFT from the last band's arrival, bands 150\,ms apart. "
+             r"\emph{Unified $+$ adaptive $k$}: a per-band pscore threshold $\theta$ replaces the "
+             r"fixed budget; the realised mean $\bar k$ is printed under the accuracy. "
+             r"Parenthesised cells are reduced-$n$ subsets. Schedule definitions, measurement "
+             r"bases and withheld cells: docs/memo/interleaved\_table\_notes.md.}")
     L.append(r"\label{tab:interleaved_results}")
-    L.append(r"\vspace{0.05in}")
     L.append(r"\centering")
     L.append(r"\resizebox{\textwidth}{!}{%")
     L.append(r"\setlength{\tabcolsep}{4pt}")
+    # ~120 body rows: the float's height is the binding constraint, so the rows are set tight
+    # (\resizebox scales height with width, so a shorter natural table is a shorter float).
+    L.append(r"\renewcommand{\arraystretch}{0.88}")
     L.append(r"\begin{tabular}{l c | c c c c | c c c c | c c | c c c | c c c c}")
     L.append(r"\toprule")
     L.append(r" & & \multicolumn{4}{c|}{Streaming (LLM prefills once)} & "
