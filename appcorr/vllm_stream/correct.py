@@ -1737,7 +1737,10 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
                 pos_buf[:, P:n_pad].zero_()
                 positions_gpu = pos_buf[:, :n_pad]
             else:                                    # GLM-5.3: flat [N] positions
-                pos_buf = self.positions.gpu
+                # `positions` is a plain GPU tensor in this nightly (gpu_model_runner.py:819),
+                # not a CpuGpuBuffer like inputs_embeds / mrope_positions -- AttributeError on
+                # the first pad-eager gate arm, 2026-09-14 13:1x (B200-8).
+                pos_buf = getattr(self.positions, "gpu", self.positions)
                 pos_buf[:P].copy_(positions_gpu)
                 pos_buf[P:n_pad].zero_()
                 positions_gpu = pos_buf[:n_pad]
