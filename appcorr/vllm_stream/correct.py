@@ -226,6 +226,7 @@ class SideBuffer:
     skip_prefill: bool = False
     walk_lo: int = 0                                # first walked row: 0 when the prefill is skipped
     open_walk_info: Optional[dict] = None
+    blk_idx: dict = field(default_factory=dict)     # mamba block id -> int32[1] device tensor
 
     def _alloc(self, key: str, qkv: torch.Tensor, b: torch.Tensor, a: torch.Tensor) -> None:
         if key in self.qkv:
@@ -774,11 +775,16 @@ def _rescan_kda_impl(layer, sb: SideBuffer, key: str, start: int, end: int, *, c
     recurrent_state = layer.kv_cache[1]
     width = int(layer.conv_size)
     c0 = max(0, start - (width - 1))
-    conv_out = _conv_window(layer, sb.qkv[key][c0:end].contiguous(), sb.conv_scratch[key],
+    with torch.profiler.record_function("appcorr.rescan.slice"):
+        x = sb.qkv[key][c0:end].contiguous()
+    _rf = torch.profiler.record_function("appcorr.rescan.conv"); _rf.__enter__()
+    conv_out = _conv_window(layer, x, sb.conv_scratch[key],
                             weight=_kda_conv_weight(layer), bias=layer.q_conv1d.bias,
                             activation="silu")
     conv_out = conv_out[start - c0:].contiguous()
+    _rf.__exit__(None, None, None)
 
+    _rf = torch.profiler.record_function("appcorr.rescan.prep"); _rf.__enter__()
     q, k, v = _kda_split_qkv(layer, conv_out)
     raw_g = _kda_raw_g(layer, sb, key, start, end)
     beta = _kda_beta(sb, key, start, end)
@@ -788,9 +794,11 @@ def _rescan_kda_impl(layer, sb: SideBuffer, key: str, start: int, end: int, *, c
     init = sb.ckpt.get(key)
     if init is None:
         init = torch.zeros_like(recurrent_state[:1])
+    _rf.__exit__(None, None, None)
     # NB `chunk_kda_with_fused_gate` derives chunk_indices from cu_seqlens itself
     # (kernels.py:1135) -- unlike the Qwen chunk kernel it takes no precomputed index tensors,
     # so `_win_consts`' chunk_indices/chunk_offsets are unused on this path.
+    _rf = torch.profiler.record_function("appcorr.rescan.chunk"); _rf.__enter__()
     out, last = chunk_kda_with_fused_gate(
         q=q, k=k, v=v,
         raw_g=raw_g,
@@ -800,13 +808,19 @@ def _rescan_kda_impl(layer, sb: SideBuffer, key: str, start: int, end: int, *, c
         initial_state=init,
         output_final_state=True,
         use_qk_l2norm_in_kernel=True,
-        cu_seqlens=wc["cu"],
+        # ONE sequence [1, L, H, D] in the dense batch-of-1 form: bitwise identical to
+        # cu_seqlens=[0, L] (checked at L=44/101/585/1192, B200-8 2026-09-14) and it skips the
+        # wrapper's prepare_chunk_indices -- a .tolist() host sync + an H2D per KDA layer.
+        cu_seqlens=None,
         safe_gate=layer.kda_safe_gate,
         lower_bound=layer.kda_lower_bound,
     )
+    _rf.__exit__(None, None, None)
+    _rf = torch.profiler.record_function("appcorr.rescan.commit"); _rf.__enter__()
     if commit:
         sb.ckpt[key] = last.to(recurrent_state.dtype)
         sb.ckpt_end[key] = end
+    _rf.__exit__(None, None, None)
     return out.squeeze(0)
 
 
@@ -826,7 +840,9 @@ def _kda_write_back(layer, sb: SideBuffer, key: str, blk: int) -> None:
     tail = sb.conv_scratch[key][1:2]
     if state.is_cuda:
         from vllm.model_executor.layers.mamba.ops.scatter_states import scatter_states
-        idx = torch.tensor([blk], dtype=torch.int32, device=state.device)
+        idx = sb.blk_idx.get(blk)                 # one H2D per (request, block), not per layer
+        if idx is None:
+            idx = sb.blk_idx[blk] = torch.tensor([blk], dtype=torch.int32, device=state.device)
         scatter_states(state, ckpt, idx)
         scatter_states(conv_state, tail.to(conv_state.dtype), idx)
     else:                                   # CPU tests: the triton kernel is CUDA-only
@@ -873,7 +889,8 @@ def _kda_forward_patch(self, qkv_proj_states, g1, beta, core_attn_out):
     sb, pos = ctx.sb, ctx.positions
     P = pos.numel()
     # (1) write first: the corrected rows replace their captured pre-conv / pre-gate inputs
-    sb.scatter(key, pos, qkv2[:P], b2[:P], a2[:P])
+    with torch.profiler.record_function("appcorr.kda.scatter"):
+        sb.scatter(key, pos, qkv2[:P], b2[:P], a2[:P])
 
     if ctx.replay:
         core_attn_out[0, :P] = sb.out[key][pos].to(core_attn_out.dtype)
@@ -897,9 +914,11 @@ def _kda_forward_patch(self, qkv_proj_states, g1, beta, core_attn_out):
             sb.ckpt_end[key] = start
         parts.append(_rescan(self, sb, key, ce, e, commit=False))
         out_w = torch.cat(parts, 0) if len(parts) > 1 else parts[0]
-    core_attn_out[0, :P] = out_w[pos - start].to(core_attn_out.dtype)
+    with torch.profiler.record_function("appcorr.kda.write"):
+        core_attn_out[0, :P] = out_w[pos - start].to(core_attn_out.dtype)
 
     if ctx.final:
+        _rf_final = torch.profiler.record_function("appcorr.kda.final"); _rf_final.__enter__()
         blk = ctx.mamba_blocks[key]
         if _DEBUG_STATE:
             ssm_stock, conv_stock = self.kv_cache[1][blk], self.kv_cache[0][blk]
@@ -915,6 +934,7 @@ def _kda_forward_patch(self, qkv_proj_states, g1, beta, core_attn_out):
                 "qkv_norm": float(qkv.float().norm()),
             }
         _kda_write_back(self, sb, key, blk)
+        _rf_final.__exit__(None, None, None)
     return None
 
 
@@ -1004,7 +1024,7 @@ _ORIG_EXECUTE_MODEL = None
 _ORIG_CAPTURE_MODEL = None
 
 
-try:                                     # the value the cache kernels skip
+try:                                       # the value the cache kernels skip
     from vllm.v1.attention.backends.utils import PAD_SLOT_ID as _PAD_SLOT_ID
 except ImportError:                        # older vLLM: the constant has always been -1
     _PAD_SLOT_ID = -1
