@@ -87,7 +87,6 @@ class Glm53Axis(Glm46VAxis):
     uses_mrope = False
 
     # The unified vision+decoder axis needs a per-decoder-layer FLOP closed form and the engine's
-    # depth-staged correct path. Neither exists for this model yet (`_llm_stage_costs` below says
     # what the terms are; the engine half is `docs/memo/glm53_correct_design.md` items 1-3, owned
     # elsewhere), so the unified arm is refused rather than run on a guessed cost model.
     supports_unified_axis = True     # the two cost hooks exist (2026-09-13)

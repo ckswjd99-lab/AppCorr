@@ -755,6 +755,190 @@ MODELS46: Dict[str, Glm46VDecoder] = {
 }
 
 
+@dataclass
+class Glm53Decoder:
+    """One GLM-5.3-Flash text decoder, priced per token and per corrected row -- the closed form
+    `Glm53Axis._llm_stage_costs` states, split into the pieces the schedule replay needs.  Same
+    conventions as the other entries (2 FLOPs per MAC; no norms / activations / softmax / top-k
+    select / Sinkhorn / bias; attention at the query heads; experts on the routed count plus the
+    router; lm_head outside).  NOT hook-measured: no HF decoder for this FP8 checkpoint runs on a
+    GPU here, so every GLM-5.3 compute cell is closed form and the table notes say so.
+
+    Layer kinds, by index: `kda_layers` (34) = KDA linear attention (merged qkv + f/g gates +
+    beta/a, three depthwise convs of `conv_kernel`, the chunked delta-rule scan, o_proj);
+    the rest (11) = NoPE sparse MLA (q_a/q_b, kv_a/kv_b, top-`index_topk` attention, the fp8
+    pooled indexer); the first `n_dense` layers use a dense SwiGLU, the others the 288-expert MoE.
+    """
+    layers: int
+    hidden: int
+    kda_layers: tuple
+    lin_heads: int
+    lin_head_dim: int
+    conv_kernel: int
+    heads: int
+    qk_dim: int
+    v_dim: int
+    q_lora: int
+    kv_lora: int
+    index_topk: int
+    index_kpool: int
+    index_heads: int
+    index_head_dim: int
+    n_dense: int
+    dense_inter: int
+    num_experts: int
+    top_k: int
+    moe_inter: int
+    shared_inter: int
+    mhc: bool = True
+    vocab: int = 154880
+
+    @property
+    def K(self) -> int:
+        return self.lin_heads * self.lin_head_dim
+
+    def dense_tok(self) -> float:
+        return 3 * 2 * self.hidden * self.dense_inter
+
+    def moe_tok(self) -> float:
+        return (2 * self.top_k * 3 * self.moe_inter * self.hidden
+                + 2 * self.hidden * self.num_experts
+                + 3 * 2 * self.hidden * self.shared_inter)
+
+    def mlp_tok(self, layer: int) -> float:
+        return self.dense_tok() if layer < self.n_dense else self.moe_tok()
+
+    def mhc_tok(self) -> float:
+        """The two [24, 4H] fp32 coefficient projections (attn mix + ffn mix) per layer."""
+        return 2 * 2 * (4 * self.hidden) * 24 if self.mhc else 0.0
+
+    def kda_proj_tok(self) -> float:
+        K = self.K
+        return 2 * self.hidden * (3 * K + K + K + 2 * self.lin_heads) + 2 * K * self.hidden
+
+    def kda_conv_tok(self) -> float:
+        return 2 * (3 * self.K) * self.conv_kernel
+
+    def kda_scan_tok(self) -> float:
+        return 2 * self.lin_heads * 2 * self.lin_head_dim * self.lin_head_dim
+
+    def mla_proj_tok(self) -> float:
+        h, H = self.heads, self.hidden
+        return (2 * H * self.q_lora + 2 * self.q_lora * h * self.qk_dim
+                + 2 * H * self.kv_lora + 2 * self.kv_lora * h * (self.qk_dim + self.v_dim)
+                + 2 * (h * self.v_dim) * H
+                + 2 * H * (self.index_heads * self.index_head_dim) + 2 * H * self.index_head_dim
+                + 2 * H * self.index_heads)
+
+    def attn(self, q_tokens: float, keys: float) -> float:
+        """QK^T + AV at the query heads against `keys` (top-k-capped by the caller)."""
+        return 2 * self.heads * q_tokens * keys * (self.qk_dim + self.v_dim)
+
+    def index_score(self, pooled_keys: float) -> float:
+        return 2 * self.index_heads * self.index_head_dim * pooled_keys
+
+    def is_kda(self, layer: int) -> bool:
+        return layer in self.kda_layers
+
+    def _layers(self, depth: Optional[int] = None):
+        d = self.layers if depth is None or depth >= self.layers else depth
+        assert d > 0, d
+        return range(d)
+
+    def prefill_flops(self, n: float) -> float:
+        n = int(n)
+        keys = sum(min(self.index_topk, i + 1) for i in range(n))
+        pooled = sum((i + self.index_kpool) // self.index_kpool for i in range(n))
+        tot = 0.0
+        for i in self._layers():
+            tot += n * (self.mlp_tok(i) + self.mhc_tok())
+            if self.is_kda(i):
+                tot += n * (self.kda_proj_tok() + self.kda_conv_tok() + self.kda_scan_tok())
+            else:
+                tot += n * self.mla_proj_tok() + self.attn(1, keys) + self.index_score(pooled)
+        return tot
+
+    def corrected_row_flops(self, p: float, depth: Optional[int] = None) -> float:
+        """One rewritten row at position p through the first `depth` layers: MLP + projections,
+        attention against min(topk, p+1) keys on the MLA layers (the KDA conv/scan is charged
+        per round by `rescan_flops`)."""
+        keys = min(self.index_topk, p + 1)
+        pooled = (p + self.index_kpool) // self.index_kpool
+        tot = 0.0
+        for i in self._layers(depth):
+            tot += self.mlp_tok(i) + self.mhc_tok()
+            if self.is_kda(i):
+                tot += self.kda_proj_tok()
+            else:
+                tot += self.mla_proj_tok() + self.attn(1, keys) + self.index_score(pooled)
+        return tot
+
+    def rescan_flops(self, window_len: float, depth: Optional[int] = None) -> float:
+        """The round's KDA re-scan of its window on every KDA layer within `depth`."""
+        nl = sum(1 for i in self._layers(depth) if self.is_kda(i))
+        return nl * window_len * (self.kda_conv_tok() + self.kda_scan_tok())
+
+    def lm_head_flops(self, rows: float = 1) -> float:
+        return 2 * rows * self.hidden * self.vocab
+
+    def interleaved_cost(self, n: int, lo: int, n_groups: int, chunks) -> Dict[str, float]:
+        return _interleaved_replay(self, n, lo, n_groups, chunks)
+
+
+def glm53_from_config(path: str) -> Glm53Decoder:
+    import json as _json
+    cfg = _json.load(open(path))
+    t = cfg.get("text_config", cfg)
+    la = t.get("linear_attn_config", {})
+    moe_i = int(t["moe_intermediate_size"])
+    return Glm53Decoder(
+        layers=int(t["num_hidden_layers"]), hidden=int(t["hidden_size"]),
+        kda_layers=tuple(int(x) for x in la.get("kda_layers", [])),
+        lin_heads=int(la.get("num_heads", 64)), lin_head_dim=int(la.get("head_dim", 128)),
+        conv_kernel=int(la.get("short_conv_kernel_size", 4)),
+        heads=int(t["num_attention_heads"]), qk_dim=int(t["qk_head_dim"]), v_dim=int(t["v_head_dim"]),
+        q_lora=int(t["q_lora_rank"]), kv_lora=int(t["kv_lora_rank"]),
+        index_topk=int(t["index_topk"]), index_kpool=int(t["index_kpool"]),
+        index_heads=int(t["index_n_heads"]), index_head_dim=int(t["index_head_dim"]),
+        n_dense=int(t.get("first_k_dense_replace", 0)), dense_inter=int(t["intermediate_size"]),
+        num_experts=int(t["n_routed_experts"]), top_k=int(t["num_experts_per_tok"]),
+        moe_inter=moe_i, shared_inter=moe_i * int(t.get("n_shared_experts", 0) or 0),
+        mhc=bool(t.get("mhc", False)), vocab=int(t["vocab_size"]))
+
+
+# Read off models--zai-org--GLM-5.3-Flash config.json (2026-09-13); frozen like the others.
+MODELS53: Dict[str, Glm53Decoder] = {
+    "glm53": Glm53Decoder(layers=45, hidden=4096,
+                          kda_layers=(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22,
+                                      24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44),
+                          lin_heads=64, lin_head_dim=128, conv_kernel=4, heads=64, qk_dim=256,
+                          v_dim=256, q_lora=1536, kv_lora=512, index_topk=2048, index_kpool=4,
+                          index_heads=32, index_head_dim=128, n_dense=3, dense_inter=12288,
+                          num_experts=288, top_k=8, moe_inter=2048, shared_inter=2048, mhc=True,
+                          vocab=154880),
+}
+
+
+@dataclass
+class Glm53Vision(Glm46VVision):
+    """The GLM-5.3-Flash vision tower: `Glm46VVision`'s shape with the GLM-5.3 widths (hidden
+    1024, 16 heads, block MLP 4096 = `vision_config.intermediate_size`, merger context
+    `projection_intermediate_size` 10240, out 4096) -- the two fields `Glm53Axis._vision_stage_cost`
+    warns are no longer aliased."""
+    layers: int = 24
+    hidden: int = 1024
+    heads: int = 16
+    ffn: int = 4096
+    out_hidden: int = 4096
+    merger_ctx: int = 10240
+
+
+GLM53_VISION = Glm53Vision()
+
+DECODERS: Dict[str, Dict[str, object]] = {"qwen35": MODELS35, "glm46v": MODELS46, "glm53": MODELS53}
+VISIONS: Dict[str, object] = {"qwen35": QWEN35_VISION, "glm46v": GLM46V_VISION, "glm53": GLM53_VISION}
+
+
 # --- model registry ------------------------------------------------------------------------------- #
 
 MODELS: Dict[str, Axis] = {

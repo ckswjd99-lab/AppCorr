@@ -3,7 +3,7 @@ pickler (standard pickle). A nested closure does not survive that (GLM-5.3 TP ga
 `functools.partial` of a module-level function must."""
 import functools, pickle, types, torch
 import pytest
-pytest.importorskip("vllm")  # client.py imports vllm; run this file under the appcorr-vllm env
+pytest.importorskip("vllm.v1.request")   # the appcorr env carries a vllm stub without v1  # client.py imports vllm; run this file under the appcorr-vllm env
 from appcorr.vllm_stream import client as C
 
 
