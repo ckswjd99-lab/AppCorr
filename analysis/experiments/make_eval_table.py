@@ -1479,6 +1479,11 @@ IL_FLOPS_PENDING: set = set()
 # cells fell 35-43%, from above its own full-resolution pass to 48-66% of it.
 IL_LAT_EAGER: set = set()
 
+# Adaptive-probe latency key to print, when it is not the bare `<model>_ilu_adaptive`.
+# glm53: the graph-mode re-measure (see il_latency). Keys are one coherent run each and are
+# deliberately NOT merged; switching here switches the whole row, never a single cell.
+IL_LAT_KEY_OVERRIDE = {"glm53_ilu_adaptive": "glm53_ilu_adaptive_tp2graph_fixed"}
+
 
 def _pctl(v, q):
     v = sorted(v)
@@ -1638,6 +1643,13 @@ def il_latency(model_row, dataset: str) -> Dict[str, float]:
     # the adaptive arms' own probe key (`--key <model>_ilu_adaptive`), then the model's main key
     # `<model>_ilu_adaptive` (latency_probe --key), e.g. qwen35_35b_il -> qwen35_35b_ilu_adaptive
     ad_key = (il_key[:-3] if il_key.endswith("_il") else il_key) + "_ilu_adaptive"
+    # A model whose adaptive probe was re-measured on a faster engine keeps BOTH keys (one run per
+    # key, never merged), so the bare `<model>_ilu_adaptive` name is not always the one to print.
+    # GLM-5.3: `glm53_ilu_adaptive` is the EAGER correct step (ChartQA auto0.018935 = 105.4 ms,
+    # 106 % of full). `_tp2graph_fixed` is the same probe after the CUDA-graph path and the hook
+    # host-cost pass landed -- 54.2 ms, 54 % -- and it is what the engine now does. Printing the
+    # eager key made the row read as if the optimisation had never happened.
+    ad_key = IL_LAT_KEY_OVERRIDE.get(ad_key, ad_key)
     ilu_ad = (lat.get(ad_key) or {}).get(dataset) or {}
     # Full-resolution TTFT: the denominator of every Crit. Lat. cell.  Normally it comes from the
     # streaming probe, but a model whose only latency measurement IS the adaptive probe (GLM-4.6V:
