@@ -21,7 +21,9 @@ def test_pin_refuses_explicit_v2(monkeypatch):
 
 def test_config_honours_pin(monkeypatch):
     vllm = pytest.importorskip("vllm")
-    if vllm.__version__ != "0.1.1.dev65+g658c8131c":
+    # `importorskip` can hand back a partially-initialised module when an earlier test in the
+    # session imported vllm lazily -- `__version__` is then absent and this read used to raise.
+    if getattr(vllm, "__version__", None) != "0.1.1.dev65+g658c8131c":
         pytest.skip("V1/V2 runner split exists on the main nightly only")
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
     vs._pin_v1_model_runner()

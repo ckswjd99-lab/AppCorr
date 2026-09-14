@@ -175,8 +175,29 @@ def greedy_tokens(axis, logits, cache, start_pos, n=24):
     return toks
 
 
-def rescale_box(pred: str, size) -> str:
-    """Qwen3-generation grounding emits 0-1000 relative coords; gold is pixels."""
+# Grounding coordinate convention per family. `GROUNDING_PROMPT` asks for "pixel coordinates in
+# this image" and the families do not agree on what that means: the Qwen3 generation and GLM-4.6V
+# answer in a 0-1000 relative frame, GLM-5.3-Flash answers in native pixels. Rescaling the wrong
+# family destroys the row -- it is a multiply by W/1000, H/1000, so on a 1920x1080 VisDrone image
+# it inflates x by 1.92 and y by 1.08 (and by 0.96 / 0.54 on the 960x540 half of the split, which
+# is why the error does not look like a single scale factor).
+#
+# Measured on all 448 VisDrone Det rows of every arm on disk (2026-09-14), scoring each file both
+# ways -- Acc@0.5 as scored / with the rescale undone:
+#     Qwen3.5-35B     28.6-49.8  /  0.45-0.67      <- relative, rescale is correct
+#     Qwen3.5-122B    30.1-51.3  /  0.45
+#     GLM-4.6V        23.7-38.4  /  0.22-0.67
+#     GLM-5.3-Flash    0.22      /  20.54          <- pixels, rescale was destroying it
+# The split is total: no file is ambiguous. GLM-5.3's box cells were withheld from the table as a
+# model defect ("emits boxes in a frame the scorer does not share"); they were this bug.
+GROUNDING_COORDS = {"qwen25vl": "rel1000", "qwen35": "rel1000",
+                    "glm46v": "rel1000", "glm53": "pixel"}
+
+
+def rescale_box(pred: str, size, family: str) -> str:
+    """Map a grounding answer onto native pixels, per `GROUNDING_COORDS[family]`."""
+    if GROUNDING_COORDS.get(family, "rel1000") == "pixel":
+        return pred
     nums = re.findall(r"-?\d+\.?\d*", pred)[:4]
     if len(nums) != 4:
         return pred
@@ -463,7 +484,7 @@ def main():
         def record(i, pred, gold, size, extra):
             nonlocal correct, scored
             if args.dataset in ("refcoco", "visdrone_det"):
-                pred = rescale_box(pred, size)
+                pred = rescale_box(pred, size, args.family)
             try:
                 ok, val = spec.score(pred, gold)
             except NotImplementedError:
