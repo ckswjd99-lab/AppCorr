@@ -771,7 +771,16 @@ def _hook(op, orig):
                         compress_ape=compress_ape, index_kpool=index_kpool, positions=positions)
         key = _op_prefix(op)
         assert positions is not None, "the kpool indexer needs positions; got None"
-        n = int(hidden_states.shape[0])
+        # Under the CUDA-graph path the op sees the PADDED batch (n_pad rows; the pad rows carry
+        # position 0 and garbage activations); only the round's |P| rows are real.  Using the
+        # padded count rewrote pool entries for position 0 with pad-row k/gate every sparse layer
+        # (B200-8, 2026-09-14).  Bound by the round's rows; the batch may be padded but never
+        # shorter than them.
+        n_batch = int(hidden_states.shape[0])
+        n = n_batch
+        if ctx.positions is not None:
+            n = min(n, int(ctx.positions.numel()))
+        assert n_batch >= n, (n_batch, n)
         pos = positions[:n]
         if ctx.capture_only:
             # approx pass: record the stock inputs, let the stock op write the caches.
@@ -790,6 +799,7 @@ def _hook(op, orig):
         op.skip_k_cache_insert = True
         try:
             stats = rewrite_rows(ctx.buf, key, pos, caches, k=k[:n], gate=gate_score[:n])
+            stats = dict(stats, rows_real=n, rows_batch=n_batch)   # tripwire, recorded per round
             ctx.debug.setdefault(key, {}).update(stats)
             if ctx.dense:
                 # Exactly what `_fill_short_decode_causal_indices` would have produced, without

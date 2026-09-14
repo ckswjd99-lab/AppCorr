@@ -1004,13 +1004,39 @@ _ORIG_EXECUTE_MODEL = None
 _ORIG_CAPTURE_MODEL = None
 
 
+try:                                     # the value the cache kernels skip
+    from vllm.v1.attention.backends.utils import PAD_SLOT_ID as _PAD_SLOT_ID
+except ImportError:                        # older vLLM: the constant has always been -1
+    _PAD_SLOT_ID = -1
+
+
 def _capture_model(self: GPUModelRunner, *args, **kwargs):
     """`GPUModelRunner.capture_model` with the AppCorr seams installed FIRST, so that the
     breakable-cudagraph capture records our KDA patch / indexer hook as the break callables
     (see `install`).  Both installs are idempotent and pass-through outside a correct context."""
-    if _SIDE:
-        _ensure_gdn(self)
-        _glm53_sparse(self)
+    # Unconditional: `_SIDE` (a correcting request's side buffer) does not exist yet when the
+    # worker captures at init, so a `_SIDE` guard here re-creates the very defect this wrap
+    # fixes -- the capture records the stock decorated methods and every replay skips the
+    # patch/hook (11 ms round, '!' rows; reproduced on the rebased tree, B200-8 16:52).  Both
+    # installs are idempotent and pass-throughs outside a correct context, and the detection is
+    # by module structure, so this is safe on every decoder.
+    has_gdn = _ensure_gdn(self)
+    sparse = _glm53_sparse(self)
+    # Observable, and loud when it no-ops: two earlier fixes of this seam silently did nothing
+    # (break-callable wrap while the seams were still installed late; the `_SIDE` guard).  A
+    # graph run that misbehaves must be one grep away from "were the seams there at capture?".
+    n_hooked = 0
+    if sparse:
+        from appcorr.vllm_stream import glm53_indexer as _gi
+        n_hooked = len(_gi._HOOKED)
+    print(f"[appcorr] capture_model: recurrent seam={_GDN_FLAVOR if has_gdn else None} "
+          f"indexer ops hooked={n_hooked}", flush=True)
+    if has_gdn and _GDN_FLAVOR is None:
+        raise RuntimeError("appcorr: decoder has recurrent layers but no seam was installed "
+                           "before CUDA-graph capture")
+    if sparse and n_hooked == 0:
+        raise RuntimeError("appcorr: decoder has kpool-sparse MLA layers but no indexer hook was "
+                           "installed before CUDA-graph capture")
     return _ORIG_CAPTURE_MODEL(self, *args, **kwargs)
 _ORIG_MODEL_FORWARD = None
 
@@ -1687,6 +1713,8 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
         is_pref = torch.zeros(P, dtype=torch.bool)
     attn_metadata: dict = {}
     slot_by_layer: dict[str, torch.Tensor] = {}
+    _gid_of_layer: dict[str, int] = {}          # graph path: which KV group each layer's slots belong to
+    _slots_of_gid: dict[int, torch.Tensor] = {}
     kv_group_shapes = {}
     # >>> AppCorr/M (version shim, NOT MLA-specific -- flagged to K/V) >>>
     # `_seq_lens_cpu` / `_num_computed_tokens_cpu` were fields of `CommonAttentionMetadata` in
@@ -1732,6 +1760,8 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
             for ln in ag.layer_names:
                 attn_metadata[ln] = md
                 slot_by_layer[ln] = slots
+                _gid_of_layer[ln] = gid
+        _slots_of_gid[gid] = slots
         kv_group_shapes[gid] = tuple(blk.shape)
 
     ctx = _CorrectCtx(sb=sb, positions=positions, window=(s, e), final=final,
@@ -1780,6 +1810,36 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
                 pos_buf[P:n_pad].zero_()
                 positions_gpu = pos_buf[:n_pad]
             inputs_embeds = emb_buf[:n_pad]
+            # The slot mapping is the third persistent buffer the captured graph reads, after
+            # inputs_embeds and positions above -- and the one this path missed.  The KV-cache
+            # write (`unified_kv_cache_update` / `unified_mla_kv_cache_update` -> the cache op) is
+            # a registered custom op WITHOUT @eager_break_during_capture; under compilation mode
+            # NONE (no splitting ops) it sits inside the captured segment, so its kernel keeps the
+            # slot-mapping pointer it saw at capture: the runner's
+            # `input_batch.block_table[gid].slot_mapping.gpu[:n_pad]` (gpu_model_runner
+            # `_get_slot_mappings`).  At replay it writes ALL n_pad rows to whatever that buffer
+            # holds -- the last stock step's slots -- and the fresh per-layer tensors handed to
+            # the forward context are never read.  Seen on GLM-5.3 (B200-8, 2026-09-14): right
+            # after the first sparse-MLA layer the request's own KV held exactly n_pad-P NaN rows
+            # (the zero-embedding pad rows) at n_pad 64, none before the op; n_pad 128 only
+            # escaped because the stale buffer tail was -1-padded.  (Under VLLM_COMPILE the KV
+            # write is a splitting op and runs eagerly between the pieces, which is why the
+            # Qwen-family graph path never saw this.)  Do what the runner does: write this
+            # round's slots into the persistent buffer, PAD_SLOT_ID (-1, skipped by the cache
+            # kernels) for the pad rows, and hand the same views to the forward context so the
+            # eager-break ops see the same mapping.  Unconditional: a no-op wherever the write
+            # is a splitting op, and the only correct form wherever it is captured.
+            for gid_, sl in _slots_of_gid.items():
+                if not (torch.is_tensor(sl) and sl.dim() == 1 and sl.numel() == P):
+                    continue
+                buf = self.input_batch.block_table[gid_].slot_mapping.gpu
+                assert buf.numel() >= n_pad, (buf.numel(), n_pad)
+                buf[:P].copy_(sl)
+                buf[P:n_pad].fill_(_PAD_SLOT_ID)
+                view = buf[:n_pad]
+                for ln, g in _gid_of_layer.items():
+                    if g == gid_:
+                        slot_by_layer[ln] = view
             if PAD_EAGER:   # diagnostic: same padding, eager execution
                 cg_mode, cg_desc = CUDAGraphMode.NONE, None
         else:
