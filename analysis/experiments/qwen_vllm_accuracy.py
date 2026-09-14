@@ -687,7 +687,9 @@ def main():
                     torch.cuda.empty_cache()
                     skip(i, "oom")
                     continue
-                record(i, clean_text(args.family, proc.tokenizer.decode(toks, skip_special_tokens=True), args.dataset), gold, size, extra)
+                raw = proc.tokenizer.decode(toks, skip_special_tokens=True)
+                extra["raw"] = raw   # the generated text BEFORE clean_text, so rows can be re-scored offline
+                record(i, clean_text(args.family, raw, args.dataset), gold, size, extra)
         else:
             inflight = deque()
 
@@ -769,6 +771,7 @@ def main():
                               "gen_tokens": len(res["token_ids"]),
                               "finish_reason": res["finish_reason"],
                               "t_client_done_ms": (time.perf_counter() - t_start) * 1e3})
+                extra["raw"] = res["text"]   # raw generated text, kept so a scorer fix can re-score rows offline
                 record(i, clean_text(args.family, res["text"], args.dataset), gold, size, extra)
 
             t_iter = None
