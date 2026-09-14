@@ -237,3 +237,10 @@ analysis/results/coco_retrieval/*.pt
 # (make_eval_table.py::vfm_accuracy regexes the last `Final Summary: {...}`),
 # so they are provenance, not scratch output. Kept despite the `*.log` rule above.
 !analysis/results/vfm_accuracy/*.log
+
+# Raw served-accuracy rows (2.5 GB) live on shared storage, never in git (user, 2026-09-14).
+# What they are, where, and their sha256: analysis/results/RAW_ROWS_MANIFEST.tsv
+analysis/results/qwen_vllm_accuracy_il/
+analysis/results/qwen_vllm_accuracy_il_pyr/
+analysis/results/qwen_vllm_accuracy_il_adaptive/
+analysis/results/qwen_vllm_accuracy_il_pyr_adaptive/
