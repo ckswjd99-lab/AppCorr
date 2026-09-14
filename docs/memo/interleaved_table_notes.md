@@ -372,3 +372,47 @@ empty and this section is the record: at a cap where it does not bind, the arm e
 wherever `max_num_seqs` is near the per-band size, adaptive allocation pays sub-batches a uniform
 budget of the same mean size avoids. It is invisible on ChartQA / TextVQA / VisDrone-count, whose
 bands are far below any of these caps.
+
+## GLM-5.3's latency row is EAGER-only (2026-09-14)
+
+Marked with $^\ddagger$ in the table. GLM-5.3-Flash must run `--enforce-eager` at TP=2, so it is
+the one model whose Crit. Lat. does NOT carry the CUDA-graph correct step -- the single largest
+latency optimisation in this system (on 35B that step went 45.9 -> 24.5 ms, and served Crit. Lat.
+fell by a constant 11-13 ms per round on every cell).
+
+**Evidence that it is the eager step and not the model or the images.** `last_correct_step_ms` is
+~93 ms on EVERY dataset and EVERY arm, moving only ~15% across a 7x range of prompt length:
+
+    chartqa         620 tok    91.1 - 93.9 ms
+    textvqa        1067 tok    92.2 - 94.7
+    visdrone_count 1401 tok    92.8 - 94.6
+    vstar          4425 tok   102.2 - 110.7
+
+That is the fixed CPU-launch cost measured at 45-55 ms on 35B, roughly doubled: 45 KDA + 11
+sparse-MLA layers launch far more kernels per round than a dense decoder. It is the numerator of
+every cell, which is why three of the four sit at 102-107 ms whatever the image is, and why
+ChartQA reads 104-106% of its own full-resolution pass. V* is the only cell whose ratio looks
+normal (30-36%) and it does so because its DENOMINATOR is large (full 386.5 ms), not because its
+tail is smaller.
+
+**The graph attempt failed, once, as agreed.** `--max-model-len 8192` without `--enforce-eager` at
+gpu-mem 0.90: `torch.OutOfMemoryError: Tried to allocate 24.13 GiB` during capture. Halving the
+context does not free enough on top of 328 GB of weights across the pair, and 0.88 already yields
+negative KV, so the window is narrow -- this needs a third card for KV or a smaller capture set,
+not a flag change. Not retried.
+
+**What the row still supports, and what it does not.** WITHIN the row both arms pay the same
+numerator, so the adaptive-vs-fixed comparison is sound and is the answer this column exists for:
+at matched mean k the two are within 3.0 ms on all four datasets (chartqa 106.5/105.4 and
+102.2/104.2; textvqa 103.9/106.9 and 105.2/103.6; visdrone 106.3/105.0 and 105.6/105.4; vstar
+135.7/137.8 and 120.8/117.8), and `ttft_last_band_p95` stays near the median, so no band crossed
+max-num-seqs 1024 -- none of the 122B V* cap artefact here. ACROSS rows it is not comparable: the
+other three models carry graph numbers.
+
+Measurement: B200-8 GPU0+1 (TP=2) with the driver's vision tower on GPU7, gpu-mem 0.90,
+max-model-len 16384, max-num-seqs 1024, d150 anchor, 36 samples / 4 warmup dropped, concurrency 1,
+n=32 per cell. Two passes: unified arms on one server, the ceiling on a second fresh one (the
+GLM-5.3 server dies on its first unified request after any non-unified one -- six occurrences,
+always `Inplace update to inference tensor`). `VLLM_GDN_DECODE_KERNEL=triton` was NOT set for this
+run, unlike the accuracy chains. Numbers here were re-aggregated from the shared probe rows under
+b200-8_logs/probe_glm53_ilu_adaptive/, not transcribed from a log; they match the run's report.

@@ -1461,6 +1461,20 @@ IL_FULL_N = {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
 # dagger until the reference is re-measured. Empty since the 2026-09-10 122B re-measure (the
 # FP8Experts hook fix; gate F on the ceiling: closed form within 0.05% of full - tower).
 IL_FLOPS_PENDING: set = set()
+# Models whose latency row was measured with the CUDA-graph correct step DISABLED.  GLM-5.3 must
+# run --enforce-eager (capture OOMs: a graph attempt at max-model-len 8192 asked for 24.13 GiB on
+# top of 328 GB of weights across the TP=2 pair), so it loses the single largest latency
+# optimisation we have -- on 35B that step went 45.9 -> 24.5 ms, and served Crit. Lat. fell by a
+# constant 11-13 ms per round on every cell.  Here `last_correct_step_ms` is ~93 ms on EVERY
+# dataset and arm, moving only ~15% across a 7x range of prompt length (620 -> 4425 tokens):
+# the fixed CPU-launch cost, roughly double the 35B figure because 45 KDA + 11 sparse-MLA layers
+# launch far more kernels per round than a dense decoder.  That cost is the numerator of every
+# cell, which is why three of the four sit at 102-107 ms whatever the image is, and why ChartQA
+# reads above 100% of its own full-resolution pass.
+# WITHIN the row the comparison is still sound -- both arms pay the same numerator, and adaptive
+# vs fixed comes out within 3.0 ms everywhere, which is what this column is for.  ACROSS rows it
+# is not: the other three models carry graph numbers.  Hence a marker, not a withhold.
+IL_LAT_EAGER = {"glm53_il"}
 
 
 def _pctl(v, q):
@@ -1652,8 +1666,12 @@ def emit_interleaved_latex() -> str:
              r"pass; Crit.\ Lat.: TTFT from the last band's arrival, bands 150\,ms apart. "
              r"\emph{Unified $+$ adaptive $k$}: a per-band pscore threshold $\theta$ replaces the "
              r"fixed budget; the realised mean $\bar k$ is printed under the accuracy. "
-             r"Parenthesised cells are reduced-$n$ subsets. Schedule definitions, measurement "
-             r"bases and withheld cells: docs/memo/interleaved\_table\_notes.md.}")
+             r"Parenthesised cells are reduced-$n$ subsets. $^\ddagger$ marks a latency row "
+             r"measured with the CUDA-graph correct step disabled (GLM-5.3 must run eager: "
+             r"capture OOMs at TP$=$2), which inflates every cell of that row by a fixed "
+             r"per-round cost -- comparable WITHIN the row, not against the other models. "
+             r"Schedule definitions, measurement bases and withheld cells: "
+             r"docs/memo/interleaved\_table\_notes.md.}")
     L.append(r"\label{tab:interleaved_results}")
     L.append(r"\centering")
     L.append(r"\resizebox{\textwidth}{!}{%")
@@ -1676,6 +1694,7 @@ def emit_interleaved_latex() -> str:
         disp, slug, suffix, expected, probe_model, _, lat_key, _, _ = model_row
         probe = probe_model
         dag = r"$^\dagger$" if lat_key in IL_FLOPS_PENDING else ""
+        eag = r"$^\ddagger$" if lat_key in IL_LAT_EAGER else ""
         L.append(r"\midrule")
         L.append(r"\multicolumn{19}{l}{\emph{" + disp + r"}} \\")
         first_ds = True
@@ -1754,16 +1773,16 @@ def emit_interleaved_latex() -> str:
                          acc(lit_get(f"stream_{kk}")),
                          fmt_tf(fl.get(f"stream_total_{kk}"), full_gf) + dag,
                          fmt_tf(fl.get(f"stream_crit_{kk}"), full_gf) + dag,
-                         fmt_ms(lat.get(f"stream_{kk}"), full_ms),
+                         fmt_ms(lat.get(f"stream_{kk}"), full_ms) + eag,
                          acc(lit_get(f"il_{kk}")),
                          fmt_tf(fl.get(f"il_total_{kk}"), full_gf) + dag,
                          fmt_tf(fl.get(f"il_crit_{kk}"), full_gf) + dag,
-                         fmt_ms(lat.get(f"il_{kk}"), full_ms),
+                         fmt_ms(lat.get(f"il_{kk}"), full_ms) + eag,
                          acc(lit_get(f"ils_{kk}")),
                          fmt_tf(fl.get(f"ils_total_{kk}"), full_gf) + dag,
                          acc(lit_get(f"ilu_{kk}")),
                          fmt_tf(fl.get(f"ilu_total_{kk}"), full_gf) + dag,
-                         fmt_ms(lat.get(f"ilu_{kk}"), full_ms)]
+                         fmt_ms(lat.get(f"ilu_{kk}"), full_ms) + eag]
                 # unified + adaptive: the k=1 row has no threshold (auto at theta->0 IS k=1)
                 th = thetas.get(k)
                 if k < 1.0 and th is not None:
@@ -1777,7 +1796,7 @@ def emit_interleaved_latex() -> str:
                     cells += [a_cell,
                               fmt_tf(fl.get(f"ilu_auto_total_{kk}"), full_gf) + dag,
                               fmt_tf(fl.get(f"ilu_auto_crit_{kk}"), full_gf) + dag,
-                              fmt_ms(ad_lat, full_ms)]
+                              fmt_ms(ad_lat, full_ms) + eag]
                 else:
                     cells += ["--"] * 4
                 L.append(" & ".join(cells) + r" \\")
