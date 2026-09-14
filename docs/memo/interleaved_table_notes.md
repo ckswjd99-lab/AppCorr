@@ -21,6 +21,20 @@ in the tex. Update this file when a convention changes, not the caption.
 - Latency: `latency/inprocess_latency.json` keys `qwen35_35b_il{,_staged,_unified}` (canonical =
   the open-walk + contiguous-row engine; `*_v1_pseudo` = before), 122B `qwen35_122b_il{,_unified}`.
 
+## Which tree generates which table (SUPERSEDED 2026-09-14)
+
+**The interleaved table is now generated from AppCorr-adaptive**, not AppCorr-il-engine. That
+worktree is the consolidated branch (develop/adaptive-keep): it holds the GLM engine + ports, the
+adaptive columns, and the only `latency/inprocess_latency.json` carrying every GLM-5.3 key
+(_tp2graph, _tp2graph_fixed = the table's source, _tp2graph_lat, _tp2graph_rerun5871, _tp4graph).
+Every `interleaved_table_20260914_*.tex` in docs/tables came from it.
+
+Keep the two trees' `analysis/results/` in step by hand when a run writes to only one of them:
+they are separate copies, not links. This bit us on 2026-09-14 -- the GLM-5.3 VisDrone Det floor
+was re-scored for the pixel-frame fix in the adaptive tree while il-engine kept the 0.22
+bad-frame copy, and the note below would have sent a reader to the stale one. Both now carry the
+re-scored file with the original parked under `_badframe_20260914/`.
+
 ## Which tree generates which table (2026-09-11)
 
 - `interleaved_table_*.tex`: generate from **AppCorr-il-engine** (its `latency/inprocess_latency.json`
