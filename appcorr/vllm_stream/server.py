@@ -491,6 +491,12 @@ def main():
                          "flashinfer_cutlass | batched_triton). The auto pick on B200 for "
                          "Qwen3.5 bf16 is FlashInfer TRTLLM, whose prefill step costs ~35 ms "
                          "flat from ~130 to ~1400 tokens (2026-09-09 critical-latency probe)")
+    ap.add_argument("--cudagraph-capture-sizes", type=int, nargs="+", default=None,
+                    help="explicit CUDA-graph capture sizes (token counts). The correct step pads "
+                         "|P| UP to the nearest captured size, so a coarse ladder such as "
+                         "8 16 32 64 128 256 384 512 serves it at a fraction of the capture memory "
+                         "of vLLM's default ~83-size table (GLM-5.3 TP=2: capture OOMs at the "
+                         "default, 2026-09-14)")
     ap.add_argument("--max-cudagraph-capture-size", type=int, default=None,
                     help="largest token count a captured CUDA graph covers. vLLM defaults it to "
                          "2 x max_num_seqs (128 at --max-num-seqs 64), so every chunk prefill step "
@@ -519,8 +525,13 @@ def main():
         kw["max_num_batched_tokens"] = a.max_num_batched_tokens
     if a.moe_backend:
         kw["moe_backend"] = a.moe_backend
-    if a.max_cudagraph_capture_size:
-        kw["compilation_config"] = {"max_cudagraph_capture_size": a.max_cudagraph_capture_size}
+    if a.max_cudagraph_capture_size or a.cudagraph_capture_sizes:
+        cc = {}
+        if a.max_cudagraph_capture_size:
+            cc["max_cudagraph_capture_size"] = a.max_cudagraph_capture_size
+        if a.cudagraph_capture_sizes:
+            cc["cudagraph_capture_sizes"] = sorted(set(a.cudagraph_capture_sizes))
+        kw["compilation_config"] = cc
     llm = StreamingLLM(a.model, gpu_memory_utilization=a.gpu_mem, max_model_len=a.max_model_len,
                        enforce_eager=a.enforce_eager,
                        tensor_parallel_size=a.tensor_parallel_size, **kw)
