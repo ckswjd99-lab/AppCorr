@@ -453,6 +453,8 @@ class Patch:
     num_correction_groups: int = 0
     # The prompt a VLM request carries alongside its pixels. Empty for vision-only models.
     text_payload: str = ""
+    # VLA workloads: natural-language task instruction, carried on group-0 (base-layer) patches.
+    text: str = ""
 
 class OpType(Enum):
     # --- Computation Ops ---

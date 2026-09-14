@@ -14,6 +14,7 @@ from .scheduling import (
     GroupTriggerPolicy,
     NYUApproxCorrectPolicy,
     VGGTInterleavedPolicy,
+    VLAInterleavedStaticPolicy,
 )
 from .transmission import (
     RawTransmissionPolicy,
@@ -35,6 +36,7 @@ from .transmission import (
     FourierLaplacianProgressivePolicy,
     NYUAppCorrFourierLaplacianHybridPolicy,
     VGGTLaplacianPolicy,
+    VLAPatchCanvasPolicy,
 )
 
 # Registry for dynamic instantiation
@@ -50,6 +52,7 @@ SCHEDULER_REGISTRY = {
     "COCOWindowInterleaved": COCOWindowInterleavedPolicy,
     "COCOWindowDynamic": COCOWindowDynamicPolicy,
     "ADE20KWindowInterleaved": ADE20KWindowInterleavedPolicy,
+    "VLAInterleavedStatic": VLAInterleavedStaticPolicy,
 }
 
 TRANSMISSION_REGISTRY = {
@@ -76,6 +79,7 @@ TRANSMISSION_REGISTRY = {
     "FourierLaplacianProgressive": FourierLaplacianProgressivePolicy,
     "NYUAppCorrFourierLaplacianHybrid": NYUAppCorrFourierLaplacianHybridPolicy,
     "VGGTLaplacian": VGGTLaplacianPolicy,
+    "VLAPatchCanvas": VLAPatchCanvasPolicy,
 }
 
 def get_scheduler(name: str, config: Optional[ExperimentConfig] = None) -> ISchedulingPolicy:

@@ -8,3 +8,4 @@ from .ade20k_sequential import ADE20KSequentialPolicy
 from .ade20k_window_trigger import ADE20KWindowInterleavedPolicy
 from .nyu_approx_correct import NYUApproxCorrectPolicy
 from .vggt_interleaved import VGGTInterleavedPolicy
+from .vla_interleaved_static import VLAInterleavedStaticPolicy
