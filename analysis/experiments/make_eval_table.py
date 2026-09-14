@@ -1411,7 +1411,13 @@ IL_WITHHELD = {("_glm-5.3-flash", "visdrone_det"), ("_glm-5.3-flash", "refcoco")
 # latency cell came from, gpu-mem 0.85 -- 788 needs 0.90 and would mix engines within one row), so
 # this one cell would print an artefact.  It is withheld rather than footnoted: a reader takes a
 # printed number, not its footnote.  docs/memo/interleaved_table_notes.md carries the ladder.
-IL_WITHHELD_CELLS = {("_qwen3.5-122b-a10b-fp8", "vstar", "ilu_auto_lat", 0.50)}
+IL_WITHHELD_CELLS = {("_qwen3.5-122b-a10b-fp8", "vstar", "ilu_auto_lat", 0.50),
+                     # GLM-5.3's graph row runs max-num-seqs 512 while its eager predecessor ran
+                     # 1024; V* bands are ~585 rows, so the 0.50 arms split into sub-batches at
+                     # 512 and did not at 1024.  That cell measures the cap, not the schedule --
+                     # the other three datasets (~101-108 rows) are far below both and carry the
+                     # comparison.  Lifts when the capture ladder gains a 640 point.
+                     ("_glm-5.3-flash", "vstar", "ilu_auto_lat", 0.50)}
 # Adaptive-k thresholds per (model slug, dataset): the `--keep auto` theta that realises a target
 # mean k, calibrated per dataset by threshold_sim.py on a 36-image pscore dump (the score is in
 # raw pixel units, so theta is NOT portable across datasets). The interleaved table's rightmost
@@ -1461,20 +1467,13 @@ IL_FULL_N = {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
 # dagger until the reference is re-measured. Empty since the 2026-09-10 122B re-measure (the
 # FP8Experts hook fix; gate F on the ceiling: closed form within 0.05% of full - tower).
 IL_FLOPS_PENDING: set = set()
-# Models whose latency row was measured with the CUDA-graph correct step DISABLED.  GLM-5.3 must
-# run --enforce-eager (capture OOMs: a graph attempt at max-model-len 8192 asked for 24.13 GiB on
-# top of 328 GB of weights across the TP=2 pair), so it loses the single largest latency
-# optimisation we have -- on 35B that step went 45.9 -> 24.5 ms, and served Crit. Lat. fell by a
-# constant 11-13 ms per round on every cell.  Here `last_correct_step_ms` is ~93 ms on EVERY
-# dataset and arm, moving only ~15% across a 7x range of prompt length (620 -> 4425 tokens):
-# the fixed CPU-launch cost, roughly double the 35B figure because 45 KDA + 11 sparse-MLA layers
-# launch far more kernels per round than a dense decoder.  That cost is the numerator of every
-# cell, which is why three of the four sit at 102-107 ms whatever the image is, and why ChartQA
-# reads above 100% of its own full-resolution pass.
-# WITHIN the row the comparison is still sound -- both arms pay the same numerator, and adaptive
-# vs fixed comes out within 3.0 ms everywhere, which is what this column is for.  ACROSS rows it
-# is not: the other three models carry graph numbers.  Hence a marker, not a withhold.
-IL_LAT_EAGER = {"glm53_il"}
+# Models whose latency row was measured with the CUDA-graph correct step DISABLED.  Empty since
+# 2026-09-14: GLM-5.3 was the only entry, and its correct step now replays a PIECEWISE graph
+# (three defects fixed -- the seams were not the recorded break callables, they were installed
+# after capture, and the captured KV write replayed a stale slot-mapping pointer; see
+# docs/memo/glm53_graph_path_fix.md).  Its full-depth round went 88-91 -> 41 ms and its Crit. Lat.
+# cells fell 35-43%, from above its own full-resolution pass to 48-66% of it.
+IL_LAT_EAGER: set = set()
 
 
 def _pctl(v, q):
@@ -1666,10 +1665,8 @@ def emit_interleaved_latex() -> str:
              r"pass; Crit.\ Lat.: TTFT from the last band's arrival, bands 150\,ms apart. "
              r"\emph{Unified $+$ adaptive $k$}: a per-band pscore threshold $\theta$ replaces the "
              r"fixed budget; the realised mean $\bar k$ is printed under the accuracy. "
-             r"Parenthesised cells are reduced-$n$ subsets. $^\ddagger$ marks a latency row "
-             r"measured with the CUDA-graph correct step disabled (GLM-5.3 must run eager: "
-             r"capture OOMs at TP$=$2), which inflates every cell of that row by a fixed "
-             r"per-round cost -- comparable WITHIN the row, not against the other models. "
+             r"Parenthesised cells are reduced-$n$ subsets. GLM-5.3-Flash is served at "
+             r"TP$=$2 (328\,GB); its Crit.\ Lat.\ row is measured in graph mode like the others. "
              r"Schedule definitions, measurement bases and withheld cells: "
              r"docs/memo/interleaved\_table\_notes.md.}")
     L.append(r"\label{tab:interleaved_results}")
