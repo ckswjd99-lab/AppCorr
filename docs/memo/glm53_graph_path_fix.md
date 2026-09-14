@@ -335,3 +335,50 @@ re-run); land the opt-in code and the thetas for the record; ADOPT the denser la
 point and --max-num-seqs 640 for GLM-5.3 servers -- it costs 0.26 GiB of capture memory (3.18 ->
 3.44 GiB), buys 1-5 ms on the fixed keeps, and makes the withheld V* fixed-k0.50 cell measurable
 (103.6 ms; the auto50 band ~820 rows still exceeds 640 and stays withheld).
+
+
+# LATTICE, powered re-test (2026-09-14 night, B200-6): the payoff is the slope times the lift
+
+The first lattice test ran on GLM-5.3 MMVP -- floor 81.33 / ceiling 84.67, a 3.33 pt gap at
+p=0.099 on n=300. The whole dynamic range there is smaller than what 300 rows can resolve, so
+that experiment could not have answered the question either way. Re-ran it on the cell with the
+most headroom of the 40 in the table, ranked by gap x n:
+
+    35B ChartQA: floor 47.52 / ceiling 89.08 = 41.56 pt, n=2500, 1070 floor->ceiling flips.
+
+Design: SAME theta (0.027817) in both arms, one server session, arm A standing 1/8-bucket rule
+then arm B lattice, ladder 8..1024 at --max-num-seqs 1024. Images whose count does not move are
+the internal control.
+
+CONTROLS (both clean):
+  run-to-run, same theta, different box/engine/date: 87.72 -> 87.68, net -1 flip, p=1.00,
+      realised k identical to 4 decimals (0.4914). 35B is repeatable; GLM-5.3 TP=2 is not.
+  k-unchanged subset (205 images): 0 flips, 0 differing predictions.
+
+MONOTONICITY holds exactly as designed: 2500/2500 images have lattice k >= standing-rule k,
+2295 strictly greater, none lower. Recomputing MORE is what the rule does.
+
+RESULT: mean k 0.4914 -> 0.5077 (+1.64 points of k). Accuracy 87.68 -> 87.64, net -1 flip,
+p=1.00, d = -0.04 pt -- exactly the run-to-run noise. Both arms sit 1.40 / 1.44 pt under the
+ceiling (p=0.0014), so 35 net flips of headroom were available and the lattice took none.
+
+WHY, quantitatively. Accuracy against realised k on this cell:
+    k 0.000  47.52        slope over the interval to the next point
+    k 0.255  83.64          +141.7 pt per unit k
+    k 0.491  87.72           +17.3 pt per unit k
+    k 1.000  89.08            +2.67 pt per unit k
+At the k the adaptive arm operates at, the curve has saturated to 2.67 pt per unit k. The lattice
+grants 0.0164 of k. Expected payoff 2.67 x 0.0164 = +0.044 pt = ONE flip in 2500. Measured
+-0.04 +- 0.04 pt. Prediction and measurement agree; there is no missing effect to find.
+
+So the lattice's payoff is (local slope) x (extra k it grants), and the two factors are
+anti-correlated across cells. The lift is large only where the last round is dominated by the
+text suffix and the band is small (GLM-5.3 MMVP: +9 points of k) -- which is also where the
+accuracy curve is flat. Where the curve is steep (low k), the round is large and the lift is
+proportionally tiny. A DENSER ladder, which is what we built to cut padding waste, makes the
+lift smaller still: the two goals are in direct tension, and the efficiency one won by
+construction. Raising k itself is the only lever that moves this cell (k 0.49 -> 1.0 is worth
+1.40 pt); the lattice reaches 1.6 % of the way there.
+
+Default unchanged (`pscore_lattice = None`). Rows: analysis/results/
+qwen_vllm_accuracy_il_pyr_adaptive/lattice_ab/ (gitignored).
