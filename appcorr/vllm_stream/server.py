@@ -497,6 +497,13 @@ def main():
                          "8 16 32 64 128 256 384 512 serves it at a fraction of the capture memory "
                          "of vLLM's default ~83-size table (GLM-5.3 TP=2: capture OOMs at the "
                          "default, 2026-09-14)")
+    ap.add_argument("--cudagraph-mode", default=None,
+                    choices=["NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"],
+                    help="vLLM CUDAGraphMode. The correct step dispatches PIECEWISE only (it "
+                         "excludes FULL itself), so PIECEWISE is all it needs -- and vLLM's "
+                         "'max_num_seqs exceeds available Mamba cache blocks' refusal is raised "
+                         "only when FULL (decode) graphs are on. On GLM-5.3 TP=2 at gpu-mem 0.92 "
+                         "that check caps max-num-seqs at 156; PIECEWISE lifts it (2026-09-14)")
     ap.add_argument("--max-cudagraph-capture-size", type=int, default=None,
                     help="largest token count a captured CUDA graph covers. vLLM defaults it to "
                          "2 x max_num_seqs (128 at --max-num-seqs 64), so every chunk prefill step "
@@ -525,8 +532,10 @@ def main():
         kw["max_num_batched_tokens"] = a.max_num_batched_tokens
     if a.moe_backend:
         kw["moe_backend"] = a.moe_backend
-    if a.max_cudagraph_capture_size or a.cudagraph_capture_sizes:
+    if a.max_cudagraph_capture_size or a.cudagraph_capture_sizes or a.cudagraph_mode:
         cc = {}
+        if a.cudagraph_mode:
+            cc["cudagraph_mode"] = a.cudagraph_mode
         if a.max_cudagraph_capture_size:
             cc["max_cudagraph_capture_size"] = a.max_cudagraph_capture_size
         if a.cudagraph_capture_sizes:
