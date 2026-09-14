@@ -138,3 +138,107 @@ Result json: /home/nxclab/glm53_lat/analysis/results/latency/inprocess_latency.j
 Evidence dirs (b200-8_logs): glm53_t6/server_SSLOTS.log ([nan-probe-slots]), glm53_nan_probe_attempt3/
 (deep probe), glm53_size_test/, glm53_stock_batch64/, glm53_sync_bisect/, glm53_twoshot_test/,
 glm53_trtllm_test/, glm53_nofiar_test/, glm53_contig0_test/, glm53_t2_zerows/, graph_gate_*/.
+
+
+# STEP 2 (2026-09-14 evening): host-bound cost of the correct step's hooks
+
+Per-region profile (worker-side, graph arm, chartqa P=101 / n_pad 128, final full-depth round;
+launches = kernels launched from the host under the range, CUDA ms their device time, CPU ms the
+range's host time incl. children):
+
+| region | STEP 1 launches / CUDA / CPU | after (A) | after all levers |
+|---|---|---|---|
+| indexer.rewrite (11 layers) | 1,397 / 3.33 / 21.6 | 1,192 / 2.71 / 18.3 | 918 / 2.00 / 17.7 |
+| indexer.topk               | 66 / 0.14 / 1.1      | 66 / 0.14 / 1.0    | 66 / 0.13 / 1.1 |
+| rescan (34 KDA layers)     | 321 / 0.81 / 19.4    | 321 / 0.81 / 19.1  | 306 / 0.76 / 18.9 |
+|   rescan.chunk             | 219 / 0.54 / 13.5    | 219 / 0.54 / 13.1  | 204 / 0.51 / 12.6 |
+| kda.scatter / write / final | 102 / 0.65 / 1.8 ; 102 / 0.20 / 1.8 ; 34 / 0.05 / 4.4 | same ; same ; 34 / 0.06 / 6.1 | same ; same ; 4 / 0.00 / 2.8 |
+| appcorr.layers (whole round) | 2,143 host launches / 58.9 CPU (profiled wall 62.6) | 1,938 / 56.4 (60.0) | 1,619 / 53.2 (57.0) |
+
+Levers, each checked before adoption:
+(A) per-round index plan: pools / rows / tail positions / tail j computed once on the host from
+    the round's positions and uploaded once (`round_plan`), `n_valid` from `max_seq_len` (no
+    per-layer `.item()`), `slots` and the k_cache page/off/idx cached per LAYER-CACHE identity
+    (block_row ptr, num_states, bt_block_size) -- never on the assumption the sparse layers share
+    a KV group.  Pure caching, no numerics change.
+(B) `cu_seqlens=None` for the single-sequence KDA re-scan: the fla wrapper recomputed
+    prepare_chunk_indices (a .tolist() host sync + H2D) on every call.  Bitwise identical to
+    cu_seqlens=[0, L] on identical random inputs at the real shapes (H=32 local, D=128; L = 44,
+    101, 585, 1192; outputs and final state) -- standalone check, not the accuracy gate.
+(C) `pool_compress` exact-order vectorisation: elementwise work for all kpool slots at once, the
+    two fp32 accumulations keep the loop's chain ((x0+x1)+x2)+x3, max is order-free.  Bitwise
+    identical to the loop form on random inputs (P = 1/7/31/146, round_scale both), fp8 entry
+    and scale.  Loop form kept as `_pool_compress_loop` (reference).
+(D) tail `j` and k_cache index math cached in the plan (part of A).
+(E) `_kda_write_back` scatter index cached per (request, block): 34 H2D per round -> 1.
+
+Gate after levers (A)-(E) (v2; same E6 server config; rows graph_gate_*_v2):
+
+| arm | MMVP unified k0.50 (300) | chartqa (36) | full-depth correct t_ms MMVP / chartqa |
+|---|---|---|---|
+| eager reference (v1 → v2) | 81.00 → 80.67 | 97.22 → 97.22 | 88.4 → 83.7 / 90.7 → 86.8 |
+| graph (v1 → v2)           | 79.67 → 79.33 | 97.22 → 97.22 | 41.3 → 36.1 / 50.6 → 43.7 |
+
+Accuracy unchanged within the arm's eager spread (80.0-81.0 across the day's eager runs; graph
+arms 79.33-79.67); the levers took ~5 ms (MMVP) / ~7 ms (chartqa) off the graphed final round and
+~4-5 ms off the eager one.
+
+(F) stock kpool kernels for the rewrite (v3): `kpool_compress_and_write_cache` (softmax pool +
+Hadamard-128 + ue8m0 fp8 + scale + cache write in ONE launch) and `kpool_seed_tail_cache` replace
+the torch mirror (`pool_compress` + `k_cache_write` + `tail_write`, ~60 launches/layer).  The
+torch mirror was written to match these kernels; on 20 x 146 random pools (2.9M fp8 entries) they
+agree except ONE fp8 rounding tie (scales identical), so the kernel path is the stock prefill's own
+numerics.  Flag `USE_STOCK_KPOOL_KERNELS` (CUDA + plan only; the torch path stays for CPU/tests).
+Per-region profile with (F) (v3, same request set):
+
+| region | STEP 1 | v2 (A-E) | v3 (A-F) |
+|---|---|---|---|
+| indexer.rewrite (11 layers) launches / CUDA ms / CPU ms | 1,397 / 3.33 / 21.6 | 918 / 2.00 / 17.7 | **304 / 0.71 / 10.2** |
+| rescan (34 layers)            | 321 / 0.81 / 19.4 | 306 / 0.76 / 18.9 | 306 / 0.76 / 17.7 |
+| kda.final                     | 34 / 0.05 / 4.4   | 4 / 0.00 / 2.8    | 4 / 0.00 / 2.6 |
+| whole round: host launches / host ms (profiled wall) | 2,143 / 58.9 (62.6) | 1,619 / 53.2 (57.0) | **1,005 / 43.2 (46.8)** |
+
+Remaining host cost is the fla KDA re-scan wrapper (34 calls x ~6 Triton launches at ~60 us each
+= ~12 ms) and the KDA scatter/write index work; the re-scan cannot be batched across layers
+because each layer's re-scan needs THAT layer's live activations of the round (scattered into
+the side buffer just before), so the floor without kernel work is ~40 ms of host time per round.
+Gate with (F) (v3; rows graph_gate_*_v3):
+
+| arm | MMVP unified k0.50 (300) | chartqa (36) | full-depth correct t_ms MMVP / chartqa |
+|---|---|---|---|
+| eager reference (v1 → v2 → v3) | 81.00 → 80.67 → 80.67 | 97.22 → 97.22 → 94.44 | 88.4 → 83.7 → 80.3 / 90.7 → 86.8 → 82.6 |
+| graph (v1 → v2 → v3)           | 79.67 → 79.33 → 78.67 | 97.22 → 97.22 → 94.44 | 41.3 → 36.1 → 32.3 / 50.6 → 43.7 → 40.3 |
+
+v3 graph MMVP 78.67 is 2.0 pt under its eager run (2 rows of 300; the arm's run-to-run spread on
+this model is ~1 pt eager-vs-eager and the graph arms have sat 1.3-2.0 pt under eager all day),
+and chartqa equals eager.  Two more MMVP samples of the v3 graph arm on a fresh server
+(graph_gate_graph_resample/rows, rows2): 79.33, 79.33 -> v3 graph arm 78.67 / 79.33 / 79.33 (mean
+79.1) against v1 79.67 and v2 79.33: the ~1.3-1.7 pt offset of the graph arm under the eager
+reference is a property of the graph path present since v1, not of (F).  (F) adopted.
+Four-dataset probe with (A)-(F) (v3; key glm53_ilu_adaptive_tp2graph_fixed, E6, d150, n=32):
+
+| dataset | full | eager crit k0.50 / auto50 / k0.25 / auto25 | graph v1 (fix only) | **graph v3 (fix + hooks)** |
+|---|---|---|---|---|
+| chartqa        | 100.4 | 106.5 / 105.4 / 102.2 / 104.2 | 65.6 / 64.1 / 65.1 / 64.3 | **55.2 / 54.2 / 54.9 / 55.8** |
+| textvqa        | 116.4 | 103.9 / 106.9 / 105.2 / 103.6 | 71.8 / 68.7 / 65.7 / 61.9 | **62.1 / 59.5 / 58.0 / 55.0** |
+| visdrone_count | 119.2 | 106.3 / 105.0 / 105.6 / 105.4 | 73.0 / 68.4 / 66.9 / 59.9 | **62.0 / 60.0 / 57.7 / 51.9** |
+| vstar          | 388.5 | [withheld] / 120.8 / 117.8 | [withheld] / 99.5 / 86.6 | [162.5 / 142.9 withheld, cap 512] / **88.7 / 87.1** |
+
+On the three clean datasets crit is now 45-51% below the eager row and ~45-55% of the full-image
+path; the hook levers added 9-11 ms on top of the graph-path fix.  Ceiling pass 20:15-20:22 (full: chartqa 100.6, vstar 406.7, textvqa 117.4, visdrone_count 123.1;
+k1.00 crit 102.8 / 253.5 / 126.1 / 127.0).  Result json copies: b200-8_logs/inprocess_latency.v1.json
+(graph-path fix only), .v3.json (fix + hooks); private working json
+/home/nxclab/glm53_lat/analysis/results/latency/inprocess_latency.json.
+
+Deliverable (STEP 2): diffs of the working copy against the shared tree AS OF 17:01 (which
+already carries the graph-path fix and the capture observability landed from the first hand-over)
+-- b200-8_logs/glm53_step2_hooks.correct.py.diff (+26 lines: regions, cu_seqlens=None, cached
+scatter index; one line of the landed slot-mapping block differs textually from mine,
+`buf[P:n_pad].fill_(-1)`, reconcile on landing) and glm53_step2_hooks.glm53_indexer.py.diff
+(+133 lines: round_plan, plan-aware rewrite_rows, store(hi), pool_compress v2 + loop reference,
+k_cache_index/write_at, tail_write(j), stock-kernel path + flag); server.py untouched.  The record_function regions
+(appcorr.rescan.*, appcorr.kda.*, appcorr.indexer.*) stay in as permanent, no-op-without-profiler
+instrumentation; the env-gated profiler call-site wrap and the hook module are stripped (kept as
+b200-8_logs/correct.py.v3_with_profiler, _correct_profile_hook.py.step2).  Final sanity on the
+stripped files: MMVP 4/4 (34.4 ms), chartqa 4/4 (41.0 ms), server log
+"[appcorr] capture_model: recurrent seam=kda indexer ops hooked=11" (glm53_final_sanity/, 20:22).

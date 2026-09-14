@@ -198,6 +198,38 @@ def hadamard128(x: torch.Tensor) -> torch.Tensor:
 
 def pool_compress(slot_k: torch.Tensor, slot_gate: torch.Tensor, ape: torch.Tensor,
                   *, round_scale: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
+    """Exact-order vectorised form of `_pool_compress_loop` (bitwise identical, checked on
+    random inputs at kpool=4 / head_dim=128, B200-8 2026-09-14): the per-slot elementwise work
+    (score, exp, k*prob) is done for all slots at once -- elementwise ops do not care about the
+    slot loop -- while the two fp32 accumulations keep the loop's chain
+    ((x0 + x1) + x2) + x3 (the loop's ``0 + x0`` is exact), and max is order-free.  ~20 launches
+    per call instead of ~45; the launch count was the whole cost of the indexer rewrite."""
+    assert slot_k.shape == slot_gate.shape and slot_k.ndim == 3, (slot_k.shape, slot_gate.shape)
+    assert ape.shape == slot_k.shape[1:], (ape.shape, slot_k.shape)
+    assert ape.dtype == torch.float32, ape.dtype
+    kpool = slot_k.shape[1]
+    score = slot_gate.float() + ape[None]                       # [P, kpool, hd]
+    mx = score.amax(dim=1)                                      # exact, order-free
+    prob = torch.exp(score - mx[:, None, :])
+    kw = slot_k.float() * prob
+    den = prob[:, 0, :]
+    acc = kw[:, 0, :]
+    for s in range(1, kpool):
+        den = den + prob[:, s, :]
+        acc = acc + kw[:, s, :]
+    x = (acc / den).to(torch.bfloat16).float()
+    x = hadamard128(x).to(torch.bfloat16).float()
+    absmax = x.abs().amax(dim=-1).clamp_min(1e-4)
+    if round_scale:
+        scale = torch.exp2(torch.ceil(torch.log2(absmax * (1.0 / FP8_MAX))))
+    else:
+        scale = absmax * (1.0 / FP8_MAX)
+    q = (x / scale[:, None]).clamp(-FP8_MAX, FP8_MAX)
+    return q.to(FP8_DTYPE), scale.float()
+
+
+def _pool_compress_loop(slot_k: torch.Tensor, slot_gate: torch.Tensor, ape: torch.Tensor,
+                  *, round_scale: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
     """``_kpool_softmax_rotate_write_cache_kernel`` (kpool_compress.py:137-250) in torch.
 
     Args:
@@ -304,6 +336,25 @@ def pool_slots(block_row: torch.Tensor, pools: torch.Tensor, num_states: int,
     return abs_tok // kpool
 
 
+def k_cache_index(slots: torch.Tensor, num_states: int, head_dim: int) -> tuple:
+    """(page, off, idx) of `k_cache_write` for ``slots`` -- position-only, cacheable per round."""
+    page, off = (slots // num_states).to(torch.int64), (slots % num_states).to(torch.int64)
+    idx = off[:, None] * head_dim + torch.arange(head_dim, device=slots.device)
+    return page, off, idx
+
+
+def k_cache_write_at(k_cache: torch.Tensor, index: tuple, entry: torch.Tensor,
+                     scale: torch.Tensor, head_dim: int = INDEX_HEAD_DIM) -> None:
+    """`k_cache_write` with the index math precomputed by `k_cache_index`."""
+    assert entry.dtype == FP8_DTYPE and scale.dtype == torch.float32
+    ns = num_states_of(k_cache)
+    page, off, idx = index
+    buf8 = k_cache.view(FP8_DTYPE).reshape(k_cache.shape[0], -1)
+    buf32 = k_cache.view(torch.float32).reshape(k_cache.shape[0], -1)
+    buf8[page[:, None], idx] = entry
+    buf32[page, (ns * head_dim) // 4 + off] = scale
+
+
 def k_cache_write(k_cache: torch.Tensor, slots: torch.Tensor,
                   entry: torch.Tensor, scale: torch.Tensor, head_dim: int = INDEX_HEAD_DIM) -> None:
     """Write ``entry``/``scale`` at the given pooled slots (the kernel's byte layout)."""
@@ -339,10 +390,11 @@ def tail_view(tail_cache: torch.Tensor, kpool: int, head_dim: int = INDEX_HEAD_D
 
 def tail_write(tail_cache: torch.Tensor, tail_block: int, positions: torch.Tensor,
                k: torch.Tensor, gate: torch.Tensor, kpool: int,
-               head_dim: int = INDEX_HEAD_DIM) -> None:
+               head_dim: int = INDEX_HEAD_DIM, j: Optional[torch.Tensor] = None) -> None:
     """Seed the request's tail block from ``positions`` (slot ``pos % kpool``)."""
     t = tail_view(tail_cache, kpool, head_dim)
-    j = (positions.to(t.device, torch.int64) % kpool)
+    if j is None:
+        j = (positions.to(t.device, torch.int64) % kpool)
     t[tail_block, 0, j] = k.to(torch.bfloat16)
     t[tail_block, 1, j] = gate.to(torch.bfloat16)
 
@@ -398,14 +450,17 @@ class IndexerSideBuffer:
             self.filled[key] = torch.zeros((self.n,), dtype=torch.bool, device=self.device)
 
     def store(self, key: str, positions: torch.Tensor,
-              k: torch.Tensor, gate: torch.Tensor) -> None:
-        """Scatter rows ``positions`` (capture during the approx pass, overwrite at correct)."""
+              k: torch.Tensor, gate: torch.Tensor, *, hi: Optional[int] = None) -> None:
+        """Scatter rows ``positions`` (capture during the approx pass, overwrite at correct).
+        ``hi`` = last position + 1 when the caller already knows it (the correct round does:
+        `CorrectContext.max_seq_len`); otherwise one host sync per call."""
         self._alloc(key)
         pos = positions.to(self.k[key].device, torch.int64)
         self.k[key][pos] = k.to(self.dtype)
         self.gate[key][pos] = gate.to(self.dtype)
         self.filled[key][pos] = True
-        hi = int(pos.max().item()) + 1 if pos.numel() else 0
+        if hi is None:
+            hi = int(pos.max().item()) + 1 if pos.numel() else 0
         self.n_valid = max(self.n_valid, hi)
 
     def rows(self, key: str, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -465,9 +520,12 @@ def affected_pools(positions: torch.Tensor, kpool: int, n_valid: int) -> torch.T
     return pools[(pools + 1) * kpool <= n_valid]
 
 
+USE_STOCK_KPOOL_KERNELS = True     # correct-step rewrite through the stock Triton kernels (CUDA)
+
+
 def rewrite_rows(buf: IndexerSideBuffer, key: str, positions: torch.Tensor,
                  caches: LayerCaches, *, k: Optional[torch.Tensor] = None,
-                 gate: Optional[torch.Tensor] = None) -> dict:
+                 gate: Optional[torch.Tensor] = None, plan: Optional[dict] = None) -> dict:
     """Rewrite the pooled ``k_cache`` and the ``tail_cache`` after correcting ``positions``.
 
     ``k``/``gate`` are the corrected rows' indexer inputs; when given they are stored into the
@@ -481,23 +539,84 @@ def rewrite_rows(buf: IndexerSideBuffer, key: str, positions: torch.Tensor,
     Returns a dict of counters for the engine's ``info``/gate output."""
     if k is not None:
         assert gate is not None, "k without gate"
-        buf.store(key, positions, k, gate)
+        buf.store(key, positions, k, gate, hi=None if plan is None else plan["hi"])
     kp = caches.kpool
-    pools = affected_pools(positions, kp, buf.n_valid)
-    n_pools = int(pools.numel())
+    if plan is None:
+        pools = affected_pools(positions, kp, buf.n_valid)
+        n_pools = int(pools.numel())
+        rows = (pools[:, None] * kp + torch.arange(kp, device=pools.device)).reshape(-1) if n_pools else None
+        tpos = stock_tail_positions(buf.n_valid, kp).to(positions.device)
+        slots = caches.slots_of(pools) if n_pools else None
+    else:                                    # the round's index math, built once (`round_plan`)
+        assert kp == plan["kpool"], (kp, plan["kpool"])
+        pools, n_pools, rows, tpos = plan["pools"], plan["n_pools"], plan["rows"], plan["tpos"]
+        # `slots` depends on the LAYER's caches (block_row / num_states / bt_block_size): cache
+        # per that identity, never on the assumption that the sparse layers share a KV group.
+        skey = (caches.block_row.data_ptr(), caches.num_states, caches.bt_block_size)
+        ent = plan["slots"].get(skey)
+        if ent is None and n_pools:
+            slots = caches.slots_of(pools)
+            ent = plan["slots"][skey] = (slots, k_cache_index(slots, caches.num_states, caches.head_dim))
+    use_kernels = USE_STOCK_KPOOL_KERNELS and caches.k_cache.is_cuda and plan is not None
     if n_pools:
-        rows = (pools[:, None] * kp + torch.arange(kp, device=pools.device)).reshape(-1)
         sk, sg = buf.rows(key, rows)
         sk = sk.reshape(n_pools, kp, caches.head_dim)
         sg = sg.reshape(n_pools, kp, caches.head_dim)
-        entry, scale = pool_compress(sk, sg, caches.ape, round_scale=caches.round_scale)
-        slots = caches.slots_of(pools)
-        k_cache_write(caches.k_cache, slots, entry, scale, caches.head_dim)
-    tpos = stock_tail_positions(buf.n_valid, kp).to(positions.device)
+        if use_kernels:
+            # The stock prefill's own compress-and-write kernel (softmax pool, Hadamard-128, ue8m0
+            # fp8, scale) on the gathered siblings: ONE launch for what the torch mirror below
+            # spends ~60 on (B200-8 2026-09-14).  The torch mirror was written butterfly-for-
+            # butterfly to match this kernel; on 2.9M random entries they agree except one fp8
+            # rounding tie in ~400k (scales identical) -- the kernel is the reference.
+            from vllm.models.glm5next.nvidia.ops.kpool_compress import kpool_compress_and_write_cache
+            kpool_compress_and_write_cache(caches.k_cache, sk, sg, caches.ape, ent[0], kp,
+                                           caches.head_dim, round_scale=caches.round_scale)
+        else:
+            entry, scale = pool_compress(sk, sg, caches.ape, round_scale=caches.round_scale)
+            if plan is None:
+                k_cache_write(caches.k_cache, slots, entry, scale, caches.head_dim)
+            else:
+                k_cache_write_at(caches.k_cache, ent[1], entry, scale, caches.head_dim)
     tk, tg = buf.rows(key, tpos)
-    tail_write(caches.tail_cache, caches.tail_block, tpos, tk, tg, kp, caches.head_dim)
+    if use_kernels:
+        from vllm.models.glm5next.nvidia.ops.kpool_compress import kpool_seed_tail_cache
+        # tslot = block * kpool + pos % kpool; the last <= kpool rows always qualify (kernel doc)
+        kpool_seed_tail_cache(caches.tail_cache, tk, tg, plan["tslot_of"](caches.tail_block), kp,
+                              caches.head_dim)
+    else:
+        tail_write(caches.tail_cache, caches.tail_block, tpos, tk, tg, kp, caches.head_dim,
+                   j=None if plan is None else plan["tail_j"])
     return {"pools_rewritten": n_pools, "tail_rows": int(tpos.numel()),
             "n_valid": int(buf.n_valid)}
+
+
+def round_plan(positions: torch.Tensor, kpool: int, n_valid: int, hi: int) -> dict:
+    """The position-only index math of one correct round, computed ONCE on the host and
+    uploaded once, instead of per sparse layer (each layer paid a torch.unique host sync, an
+    arange and an H2D of the tail positions -- 11x per round; B200-8 2026-09-14).  ``hi`` is the
+    round's last corrected position + 1 (`CorrectContext.max_seq_len`), so the buffer's
+    ``n_valid`` after this round's stores is known without a sync.  ``slots`` are filled lazily
+    per layer-cache identity by `rewrite_rows`."""
+    n_valid = max(int(n_valid), int(hi))
+    pos = positions.tolist()                       # one D2H for the round
+    pools_l = sorted({int(p) // kpool for p in pos})
+    pools_l = [j for j in pools_l if (j + 1) * kpool <= n_valid]
+    dev = positions.device
+    pools = torch.tensor(pools_l, dtype=torch.int64, device=dev)
+    rows = (torch.tensor([j * kpool + s for j in pools_l for s in range(kpool)],
+                         dtype=torch.int64, device=dev) if pools_l else None)
+    lo = max(0, n_valid - kpool)
+    tpos = torch.arange(lo, n_valid, dtype=torch.int64, device=dev)
+    tail_j = tpos % kpool
+    tslots: dict = {}
+
+    def tslot_of(tail_block: int) -> torch.Tensor:       # int32 [n_tail], cached per block
+        v = tslots.get(tail_block)
+        if v is None:
+            v = tslots[tail_block] = (tail_j + tail_block * kpool).to(torch.int32)
+        return v
+    return {"pools": pools, "n_pools": len(pools_l), "rows": rows, "tpos": tpos,
+            "tail_j": tail_j, "tslot_of": tslot_of, "hi": int(hi), "kpool": int(kpool), "slots": {}}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -732,6 +851,7 @@ class CorrectContext:
     topk_tokens: int
     capture_only: bool = False            # approx pass: store k/gate, touch no cache
     debug: dict = field(default_factory=dict)
+    plan: Optional[dict] = None           # `round_plan`, built by the hook on its first call
 
     @property
     def dense(self) -> bool:
@@ -798,16 +918,21 @@ def _hook(op, orig):
         prev_skip = op.skip_k_cache_insert
         op.skip_k_cache_insert = True
         try:
-            stats = rewrite_rows(ctx.buf, key, pos, caches, k=k[:n], gate=gate_score[:n])
+            with torch.profiler.record_function("appcorr.indexer.rewrite"):
+                if ctx.plan is None:
+                    ctx.plan = round_plan(pos, caches.kpool, ctx.buf.n_valid, ctx.max_seq_len)
+                stats = rewrite_rows(ctx.buf, key, pos, caches, k=k[:n], gate=gate_score[:n],
+                                     plan=ctx.plan)
             stats = dict(stats, rows_real=n, rows_batch=n_batch)   # tripwire, recorded per round
             ctx.debug.setdefault(key, {}).update(stats)
             if ctx.dense:
                 # Exactly what `_fill_short_decode_causal_indices` would have produced, without
                 # reading the pooled cache at all.  Returning here also skips the paged-MQA
                 # logits + top-k, which is the whole cost of the indexer.
-                buf = op.topk_indices_buffer
-                buf[:n] = -1
-                fill_causal_topk(buf[:n], pos)
+                with torch.profiler.record_function("appcorr.indexer.topk"):
+                    buf = op.topk_indices_buffer
+                    buf[:n] = -1
+                    fill_causal_topk(buf[:n], pos)
                 return buf
             # ---- sparse regime (max_seq_len > topk_tokens; every real prompt) ----------
             # Nothing more has to be computed here: the round's scoring reads ONLY the pooled
