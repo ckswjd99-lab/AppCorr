@@ -1001,6 +1001,17 @@ def _forward_core_patch(self, mixed_qkv, b, a, core_attn_out):
 
 _ORIG_PREPARE_INPUTS = None
 _ORIG_EXECUTE_MODEL = None
+_ORIG_CAPTURE_MODEL = None
+
+
+def _capture_model(self: GPUModelRunner, *args, **kwargs):
+    """`GPUModelRunner.capture_model` with the AppCorr seams installed FIRST, so that the
+    breakable-cudagraph capture records our KDA patch / indexer hook as the break callables
+    (see `install`).  Both installs are idempotent and pass-through outside a correct context."""
+    if _SIDE:
+        _ensure_gdn(self)
+        _glm53_sparse(self)
+    return _ORIG_CAPTURE_MODEL(self, *args, **kwargs)
 _ORIG_MODEL_FORWARD = None
 
 
@@ -1913,7 +1924,7 @@ def install() -> None:
         `check_gdn_path` / `execute_model` that sees a model WITH recurrent layers.  A
         pure-softmax decoder (GLM-4.6V: 46 softmax GQA layers) never imports it.
     """
-    global _ORIG_PREPARE_INPUTS, _ORIG_EXECUTE_MODEL, _ORIG_MODEL_FORWARD
+    global _ORIG_PREPARE_INPUTS, _ORIG_EXECUTE_MODEL, _ORIG_MODEL_FORWARD, _ORIG_CAPTURE_MODEL
     if getattr(GPUModelRunner, "_appcorr_correct_patched", False):
         return
 
@@ -1923,6 +1934,16 @@ def install() -> None:
     GPUModelRunner._prepare_inputs = _prepare_inputs
     GPUModelRunner.execute_model = _execute_model
     GPUModelRunner._model_forward = _model_forward
+    # The recurrent / indexer seams were installed lazily by the first `execute_model`, but the
+    # worker captures its CUDA graphs at init (gpu_worker.py: `model_runner.capture_model()`),
+    # before any request -- so under breakable graphs the capture recorded the STOCK decorated
+    # methods and every replay skipped our patch/hook even after 08c97ce made them the break
+    # callables (gate attempt 2, 2026-09-14 13:5x: identical '!' rows, 11 ms round).  Install
+    # the seams before capture.  Outside a correct context both are pass-throughs, so the
+    # captured dummy run is still the stock forward; only the recorded callables change.
+    if getattr(GPUModelRunner, "capture_model", None) is not None and _ORIG_CAPTURE_MODEL is None:
+        _ORIG_CAPTURE_MODEL = GPUModelRunner.capture_model
+        GPUModelRunner.capture_model = _capture_model
     GPUModelRunner.appcorr_arm_final = appcorr_arm_final
     GPUModelRunner.appcorr_take_final_info = appcorr_take_final_info
     GPUModelRunner.appcorr_correct_step = appcorr_correct_step
