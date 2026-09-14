@@ -9,7 +9,8 @@ then rewrites individual prompt rows in place as their corrected embeddings arri
     ``seq_len`` is ``pos+1``; the stock kernels write their K/V into the request's own slots
     (write-before-read inside the round is what ``unified_kv_cache_update`` before the attention
     call gives us) and read every key at ``key_pos <= query_pos``;
-  * Gated DeltaNet layers cannot be rewritten in place (the recurrent state is a running product),
+  * recurrent layers (Qwen3.5 Gated DeltaNet, GLM-5.3-Flash KDA) cannot be rewritten in place
+    (the recurrent state is a running product),
     so the layer's *pre-conv* inputs (``mixed_qkv``, ``b``, ``a``) are captured for every prompt row
     during the approx pass into a per-request side buffer, the corrected rows overwrite their side
     buffer entries, and the round re-scans the window ``[ckpt_end, window_end)`` from a checkpoint
@@ -17,6 +18,14 @@ then rewrites individual prompt rows in place as their corrected embeddings arri
 
 Semantics follow ``docs/memo/interleaved_correction_contract.md`` (round r corrects P_r only; rows
 outside P_r keep their captured value; the checkpoint chain is what persists earlier rounds).
+
+The whole second half -- side buffer, capture, re-scan, recurrent write-back -- is CONDITIONAL on
+the served decoder actually having Gated DeltaNet layers (``has_gdn`` / ``install_gdn_patch``,
+2026-09-12).  A pure-softmax decoder (GLM-4.6V: 46 x ``Glm4MoeDecoderLayer``, all GQA) leaves
+``_SIDE``'s qkv/b/a dicts empty, has no mamba KV-cache group, never reaches
+``_forward_core_patch`` (so the re-scan window is a no-op) and runs ``appcorr_rows_step`` as the
+pseudo-sequence softmax path alone.  Detection walks ``_decoder_module(model).layers`` and looks
+at layer classes -- never at the model name.
 
 Depth staging (``appcorr_staged_correct``, 2026-09-10): round r corrects its rows over layers
 ``[0, b_r)`` only and a *frontier walk* then carries every image row -- corrected input or not --
@@ -154,19 +163,39 @@ def set_debug_state(on: bool) -> None:
 
 @dataclass
 class SideBuffer:
-    """Per-request store of every GDN layer's pre-conv inputs for every prompt row.
+    """Per-request store of every recurrent layer's pre-conv inputs for every prompt row.
 
     Keyed by the layer's ``prefix`` (its name in ``static_forward_context``).  Rows are prompt
     positions ``[0, n)``; row ``n-1`` is only filled when the hold-back is released.
+
+    The three slots are the seam's inputs, and their meaning is per flavour (``_gdn_flavor``):
+
+    ==========  ==================================  ==========================================
+    slot        qwen (`_forward_core`)              kda (`_forward`, GLM-5.3)
+    ==========  ==================================  ==========================================
+    ``qkv``     ``mixed_qkv``  [n, 2*Dk + Dv]       ``qkv_proj_states`` [n, 3*P] (merged q|k|v)
+    ``b``       ``b``          [n, Hv]              ``beta[0]``         [n, H]  (RAW, presigmoid)
+    ``a``       ``a``          [n, Hv]              ``g1[0]``           [n, H*128]
+    ==========  ==================================  ==========================================
+
+    On a pure-softmax decoder the ``qkv``/``b``/``a``/``ckpt`` dicts stay empty (nothing captures
+    into them) and the object degenerates to the request's bookkeeping: ``n``/``lo``/``hi``, the
+    frontier buffers of the depth-staged walks, and ``committed_end``/``n_corrected``.
+    ``nbytes()`` is then the frontier buffers alone.
     """
     n: int
     device: torch.device
     lo: int = 0                                     # first image row
     hi: int = 0                                     # one past the last image row (0: unknown)
     capture_out: bool = False                       # also store the GDN layer output (G1 replay)
-    # depth staging: residual stream of every image row at the walk frontier, and where it is
+    # depth staging: residual stream of every image row at the walk frontier, and where it is.
+    # ``fr_h``/``fr_r`` are the 2-tuple contract (Qwen3.5 / GLM-4.6V: hidden + residual);
+    # ``fr_post``/``fr_comb`` are the two extra mHC streams a GLM-5.3 walk carries (they stay
+    # None on a 2-tuple decoder, and ``frontier_rows`` then returns a 2-tuple as it always did).
     fr_h: Optional[torch.Tensor] = None
     fr_r: Optional[torch.Tensor] = None
+    fr_post: Optional[torch.Tensor] = None
+    fr_comb: Optional[torch.Tensor] = None
     frontier: int = 0                               # layers [0, frontier) walked for [lo, hi)
     committed_end: int = 0                          # window end of the last correction
     n_corrected: int = 0
@@ -219,39 +248,198 @@ class SideBuffer:
         tot = 0
         for d in (self.qkv, self.b, self.a, self.out):
             tot += sum(t.numel() * t.element_size() for t in d.values())
-        for t in (self.fr_h, self.fr_r):
+        for t in (self.fr_h, self.fr_r, self.fr_post, self.fr_comb):
             if t is not None:
                 tot += t.numel() * t.element_size()
         return tot
 
     def frontier_rows(self, positions: torch.Tensor):
+        """The walk state of ``positions`` at the frontier: 2 tensors, or 4 on an mHC decoder."""
         assert self.fr_h is not None, "frontier buffers not initialised"
-        return self.fr_h[positions], self.fr_r[positions]
+        if self.fr_post is None:
+            return self.fr_h[positions], self.fr_r[positions]
+        return (self.fr_h[positions], self.fr_r[positions],
+                self.fr_post[positions], self.fr_comb[positions])
 
-    def store_frontier(self, positions: torch.Tensor, hs: torch.Tensor, res: torch.Tensor) -> None:
+    def store_frontier(self, positions: torch.Tensor, *state: Optional[torch.Tensor]) -> None:
+        """Store the walk state of ``positions``: ``(hidden, residual)`` on a 2-tuple decoder,
+        ``(hidden, residual, post, comb)`` on an mHC one.  A trailing ``None`` (the last mHC
+        layer contracts and returns None for the three stream tensors) is rejected -- the
+        frontier is only ever stored below full depth, where all four are live."""
+        assert len(state) in (2, 4), len(state)
+        assert all(t is not None for t in state), "frontier state carries a None"
+        hs, res = state[0], state[1]
         if self.fr_h is None:
-            self.fr_h = torch.zeros((self.n, hs.shape[1]), dtype=hs.dtype, device=self.device)
-            self.fr_r = torch.zeros((self.n, res.shape[1]), dtype=res.dtype, device=self.device)
+            self.fr_h = torch.zeros((self.n, *hs.shape[1:]), dtype=hs.dtype, device=self.device)
+            self.fr_r = torch.zeros((self.n, *res.shape[1:]), dtype=res.dtype, device=self.device)
+            if len(state) == 4:
+                self.fr_post = torch.zeros((self.n, *state[2].shape[1:]),
+                                           dtype=state[2].dtype, device=self.device)
+                self.fr_comb = torch.zeros((self.n, *state[3].shape[1:]),
+                                           dtype=state[3].dtype, device=self.device)
+        assert (self.fr_post is not None) == (len(state) == 4), "walk arity changed mid-request"
         self.fr_h[positions] = hs.to(self.fr_h.dtype)
         self.fr_r[positions] = res.to(self.fr_r.dtype)
+        if len(state) == 4:
+            self.fr_post[positions] = state[2].to(self.fr_post.dtype)
+            self.fr_comb[positions] = state[3].to(self.fr_comb.dtype)
+
+
+# --------------------------------------------------------------------------------------------
+# Gated-DeltaNet detection.  Everything above (the side buffer) and the ``_rescan`` machinery
+# below exists for models whose decoder carries recurrent layers.  A pure-softmax decoder
+# (GLM-4.6V: 46 x ``Glm4MoeDecoderLayer``, all GQA) has nothing to capture, nothing to re-scan
+# and no recurrent block to write back, so the correct step is the pseudo-sequence softmax path
+# alone -- and ``install()`` must not even import the Qwen GDN class.  Detection walks the served
+# model's decoder layers (NOT the model name): a layer is recurrent iff any module under it has
+# ``GatedDeltaNet`` in its class MRO.
+# --------------------------------------------------------------------------------------------
+
+_GDN_MRO_MARKER = "GatedDeltaNet"
+_GDN: Optional[bool] = None                    # None = not determined yet for this process
+_GDN_FLAVOR: Optional[str] = None              # "qwen" (GDN) | "kda" (GLM-5.3), with _GDN True
+
+
+def _is_gdn_module(mod) -> bool:
+    return any(_GDN_MRO_MARKER in c.__name__ for c in type(mod).__mro__)
+
+
+# >>> AppCorr/K (GLM-5.3 KDA): which recurrent seam a layer exposes >>>
+def _gdn_flavor(mod) -> str:
+    """Which recurrent seam this module exposes -- by STRUCTURE, never by model name.
+
+    Both flavours are ``GatedDeltaNetAttention`` subclasses (so ``_is_gdn_module`` finds both),
+    and they are told apart by the method the core runs behind:
+
+      * ``qwen``: ``QwenGatedDeltaNetAttention._forward_core(mixed_qkv, b, a, core_attn_out)``
+        (qwen_gdn_linear_attn.py:1268) -- conv + ``fused_post_conv_prep`` + chunk_gated_delta_rule;
+      * ``kda``:  ``Glm5NextLinearAttention._forward(qkv_proj_states, g1, beta, core_attn_out)``
+        (glm5next/nvidia/kda.py:333) -- merged q|k|v conv + ``chunk_kda_with_fused_gate``.
+
+    The shared base (``mamba/gdn/base.py:22``) defines NEITHER, so the two names are disjoint
+    discriminators on the concrete class.
+    """
+    cls = type(mod)
+    if hasattr(cls, "_forward_core"):
+        return "qwen"
+    if hasattr(cls, "_forward"):
+        return "kda"
+    raise RuntimeError(
+        f"{cls.__name__}: a Gated-DeltaNet layer with neither a `_forward_core` (Qwen) nor a "
+        "`_forward` (GLM-5.3 KDA) seam -- the side buffer has nothing to patch")
+# <<< AppCorr/K <<<
+
+
+def gdn_modules(model) -> list:
+    """Every Gated-DeltaNet module under the served model's decoder layers, in layer order."""
+    out = []
+    for layer in _decoder_module(model).layers:
+        for _, sub in layer.named_modules():
+            if _is_gdn_module(sub):
+                out.append(sub)
+    return out
+
+
+def has_gdn(model) -> bool:
+    """True iff the served model's decoder has recurrent (Gated DeltaNet) layers."""
+    return bool(gdn_modules(model))
+
+
+def _patch_gdn_class(mods: list) -> bool:
+    """Install the capture/correct patch for the (non-empty) recurrent modules ``mods``.
+
+    Idempotent, and the answer is cached in ``_GDN`` -- one engine process serves one model.
+    Deferred from ``install()`` (which runs as a vLLM plugin, before any model exists) to the
+    first moment a model is in hand: ``check_gdn_path`` at ``open(correct=True)`` and, as a
+    backstop, the first ``execute_model`` that carries a side buffer.  Both are before any
+    capture, and the patch is a pure pass-through while ``_ST.mode is MODE_NONE``, so the
+    deferral is invisible: a Qwen3.5 run behaves exactly as it did when the patch went on at
+    import time.
+    """
+    global _GDN, _GDN_FLAVOR, _ORIG_FORWARD_CORE, _ORIG_KDA_FORWARD
+    if not mods:
+        if _GDN is None:
+            _GDN = False
+        return bool(_GDN)
+    flavors = sorted({_gdn_flavor(m) for m in mods})
+    assert len(flavors) == 1, f"mixed recurrent seams in one decoder: {flavors}"
+    flavor = flavors[0]
+    if flavor == "qwen":
+        from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
+            QwenGatedDeltaNetAttention)
+        bad = [type(m).__name__ for m in mods if not isinstance(m, QwenGatedDeltaNetAttention)]
+        assert not bad, (
+            f"recurrent decoder layers of an unknown class {sorted(set(bad))}: the side-buffer "
+            "capture patches QwenGatedDeltaNetAttention._forward_core only")
+        if _ORIG_FORWARD_CORE is None:
+            _ORIG_FORWARD_CORE = QwenGatedDeltaNetAttention._forward_core
+            QwenGatedDeltaNetAttention._forward_core = _forward_core_patch
+    else:
+        cls = type(mods[0])
+        bad = [type(m).__name__ for m in mods if type(m) is not cls]
+        assert not bad, (
+            f"recurrent decoder layers of several KDA classes {sorted(set(bad) | {cls.__name__})}")
+        # patch the class METHOD by attribute: `forward` calls `self._forward(...)`, so the
+        # bound lookup goes through the class and every instance follows.  The stock method is
+        # `@eager_break_during_capture`-decorated; keeping the decorated original as the
+        # pass-through target preserves the eager break in MODE_NONE.
+        if _ORIG_KDA_FORWARD is None:
+            _ORIG_KDA_FORWARD = cls._forward
+            cls._forward = _kda_forward_patch
+            _KDA_PATCHED.append(cls)
+    _GDN, _GDN_FLAVOR = True, flavor
+    return True
+
+
+def install_gdn_patch(model) -> bool:
+    """Patch ``_forward_core`` iff the served ``model`` has GDN layers; returns whether it does."""
+    if _GDN is not None:
+        return _GDN
+    return _patch_gdn_class(gdn_modules(model))
+
+
+def _ensure_gdn(self: GPUModelRunner) -> bool:
+    """Does this runner's decoder have recurrent layers?  Resolved once, then cached."""
+    return install_gdn_patch(self.model)
+
+
+def reset_gdn_cache() -> None:
+    """Forget the detection (tests only: one process serves one model in production)."""
+    global _GDN, _GDN_FLAVOR
+    _GDN, _GDN_FLAVOR = None, None
+
+
+def gdn_flavor() -> Optional[str]:
+    """"qwen" / "kda" / None -- which recurrent seam this process patched (diagnostics)."""
+    return _GDN_FLAVOR
 
 
 def check_gdn_path(vllm_config) -> list[str]:
-    """The GDN layers must route through ``_forward_core`` (the method this module patches).
+    """The GDN layers, if any, must route through ``_forward_core`` (the method this patches).
+
+    Qwen3.5 only: the GLM-5.3 KDA layer has no ``enable_fused_gdn_decode`` flag (its decode path
+    is always ``fused_recurrent_kda``), so ``getattr(..., False)`` passes it through untouched.
 
     ``VLLM_GDN_DECODE_KERNEL`` defaults to ``cuda`` in vllm 0.28.0, which makes ``forward_cuda``
     call ``qwen_gdn_attention_core_fused_norm_packed`` -> ``_forward_core_fused_norm_packed``
     instead -- the capture and correct hooks would silently never fire.  (The design memo says
     this path "is not patched -- assert it is off"; it is ON by default, so every run of the
-    interleaved path must set ``VLLM_GDN_DECODE_KERNEL=triton``.)"""
-    from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
+    interleaved path must set ``VLLM_GDN_DECODE_KERNEL=triton``.)
+
+    Returns [] for a pure-softmax decoder -- which is NOT an error: GLM-4.6V's 46 layers are all
+    softmax GQA, so there is no side-buffer machinery to check and `appcorr_rows_step` runs the
+    pseudo-sequence path alone.  Detection here is by class MRO on the forward context's layer
+    modules, so nothing GDN-specific is imported when the model has none.
+    """
     ctx = vllm_config.compilation_config.static_forward_context
-    gdn = [ln for ln, m in ctx.items() if isinstance(m, GatedDeltaNetAttention)]
-    assert gdn, "no Gated DeltaNet layers in this model"
+    gdn = [ln for ln, m in ctx.items() if _is_gdn_module(m)]
+    if not gdn:
+        return []
     for ln in gdn:
         assert not getattr(ctx[ln], "enable_fused_gdn_decode", False), (
             f"{ln}: VLLM_GDN_DECODE_KERNEL=cuda bypasses _forward_core "
             "(qwen_gdn_linear_attn.py:1781); run with VLLM_GDN_DECODE_KERNEL=triton")
+    _patch_gdn_class([ctx[ln] for ln in gdn])
     return gdn
 
 
@@ -286,7 +474,9 @@ def active() -> bool:
 # GDN patch
 # ---------------------------------------------------------------------------------------------
 
-_ORIG_FORWARD_CORE = None
+_ORIG_FORWARD_CORE = None       # QwenGatedDeltaNetAttention._forward_core
+_ORIG_KDA_FORWARD = None        # Glm5NextLinearAttention._forward
+_KDA_PATCHED: list = []         # the classes whose `_forward` we replaced (tests restore them)
 
 
 _WIN_CONSTS: "OrderedDict[tuple, dict]" = OrderedDict()
@@ -339,8 +529,15 @@ def _win_consts(dev: torch.device, conv_len: int, scan_len: int) -> dict:
     return c
 
 
-def _conv_window(layer, x: torch.Tensor, scratch: torch.Tensor) -> torch.Tensor:
+def _conv_window(layer, x: torch.Tensor, scratch: torch.Tensor, *,
+                 weight: Optional[torch.Tensor] = None, bias=None,
+                 activation=None) -> torch.Tensor:
     """Stock ``causal_conv1d_fn`` over a [L, C] slice with a zero initial state.
+
+    ``weight``/``bias``/``activation`` default to the Qwen3.5 layer's single ``conv1d`` (the
+    path this function has always run); the GLM-5.3 KDA layer passes its MERGED q|k|v weight
+    (``_kda_conv_weight``), ``q_conv1d.bias`` and ``"silu"`` instead -- same kernel, same
+    scratch layout, one conv over the concatenated channels (kda.py:388-399).
 
     ``scratch`` is a (2, *conv_state_shape) buffer shaped like two blocks of the layer's real conv
     cache; the kernel leaves the trailing ``width-1`` inputs in row 1, in exactly the layout the
@@ -360,14 +557,16 @@ def _conv_window(layer, x: torch.Tensor, scratch: torch.Tensor) -> torch.Tensor:
     wc = _win_consts(x.device, L, L)
     scratch.zero_()
     cs = scratch if is_conv_state_dim_first() else scratch.transpose(-1, -2)
-    conv_weights = layer.conv1d.weight.view(
-        layer.conv1d.weight.size(0), layer.conv1d.weight.size(2)
-    )
+    if weight is None:
+        weight = layer.conv1d.weight.view(
+            layer.conv1d.weight.size(0), layer.conv1d.weight.size(2)
+        )
+        bias, activation = layer.conv1d.bias, layer.activation
     out = causal_conv1d_fn(
         x.transpose(0, 1),
-        conv_weights,
-        layer.conv1d.bias,
-        activation=layer.activation,
+        weight,
+        bias,
+        activation=activation,
         conv_states=cs,
         has_initial_state=wc["has_initial_state"],
         cache_indices=wc["cache_indices"],
@@ -384,11 +583,18 @@ def _rescan(layer, sb: SideBuffer, key: str, start: int, end: int, *,
     ``commit=False`` leaves the checkpoint where it was (a round split into sub-batches re-scans
     the same window once per sub-batch; only the last one advances it).
 
-    Mirrors the stock prefill branch of ``_forward_core`` (qwen_gdn_linear_attn.py:1345-1520):
-    causal conv with the layer's activation -> ``fused_post_conv_prep`` -> ``chunk_gated_delta_rule``
-    with ``use_qk_l2norm_in_kernel=False``.  Returns the window output [end-start, HV, V].
+    Mirrors the stock prefill branch of the layer's own core:
+
+      * ``qwen``: ``_forward_core`` (qwen_gdn_linear_attn.py:1345-1520) -- causal conv with the
+        layer's activation -> ``fused_post_conv_prep`` -> ``chunk_gated_delta_rule`` with
+        ``use_qk_l2norm_in_kernel=False``.  Returns [end-start, HV, V].
+      * ``kda``: ``_forward`` (kda.py:433-546) -- merged q|k|v causal conv (silu) ->
+        ``chunk_kda_with_fused_gate`` with ``use_qk_l2norm_in_kernel=True`` and the gate computed
+        in-kernel from ``A_log``/``dt_bias``.  Returns [end-start, H, D].
     """
     with torch.profiler.record_function("appcorr.rescan"):
+        if _gdn_flavor(layer) == "kda":
+            return _rescan_kda_impl(layer, sb, key, start, end, commit=commit)
         return _rescan_impl(layer, sb, key, start, end, commit=commit)
 
 
@@ -437,6 +643,247 @@ def _rescan_impl(layer, sb: SideBuffer, key: str, start: int, end: int, *, commi
         sb.ckpt[key] = last.to(ssm_state.dtype)
         sb.ckpt_end[key] = end
     return out.squeeze(0)
+
+
+# >>> AppCorr/K (GLM-5.3 KDA side buffer: the `_forward` seam, the re-scan, the write-back) >>>
+# ---------------------------------------------------------------------------------------------
+# GLM-5.3-Flash KDA (`Glm5NextLinearAttention`): the same side buffer at a different seam
+#
+# Seam: `_forward(qkv_proj_states, g1, beta, core_attn_out)` (kda.py:333), the eager break the
+# stock `forward` calls after its merged qkvbfg_a GEMM and the two gate projections.  What the
+# seam hands us, per token:
+#
+#   qkv_proj_states  [T, 3*P]      merged q|k|v, PRE-conv, bf16   (P = 64*128/tp)
+#   g1               [1, T, H, 128] f_b_proj(f_a), bf16           (H = 64/tp)
+#   beta             [1, T, H]      RAW b, pre-sigmoid, bf16
+#
+# so the SideBuffer's three slots carry `qkv <- qkv_proj_states`, `b <- beta[0]` and
+# `a <- g1[0]` flattened to [T, H*128].
+#
+# g1, not f_a: the design memo's cheaper option (store the replicated 128-wide `f_a` and
+# recompute `g1 = f_b_proj(f_a)` in the re-scan) is NOT available at this seam -- `_forward`
+# never sees f_a/g_a, they die inside `forward`.  Reaching them would mean patching `forward`
+# itself (reimplementing the merged GEMM + o_norm + o_proj, which is inside the piecewise
+# compiled region) or hanging a module hook on `f_b_proj` (inside that region too).  Both trade
+# a ~24% side-buffer saving for the one property that makes this seam safe: it is an explicit
+# eager break, so what we see is what the kernels get.  `g_a`/`g2` are not stored at all and are
+# not needed: `o_norm(core_attn_out, g2)` is applied by the stock `forward` AFTER `_forward`
+# returns, for exactly the rows in the correct batch, from their corrected hidden states.
+#
+# Per token per KDA layer (bf16 side buffer, 64 heads x 128, conv dim 3*8192 = 24576):
+#   TP=1: qkv 24576*2 = 49152 B + b 64*2 = 128 B + g1 8192*2 = 16384 B  =  65664 B (64.1 KiB)
+#   TP=2: qkv 12288*2 = 24576 B + b 32*2 =  64 B + g1 4096*2 =  8192 B  =  32832 B (32.1 KiB)
+# x 34 KDA layers: 2.13 MiB/token at TP=1, 1.06 MiB/token per rank at TP=2 (a 2048-row prompt
+# is 4.3 GiB / 2.2 GiB per rank).  Storing f_a+g_a instead of g1 would be 48.6 / 24.6 KiB.
+#
+# Under TP everything at this seam is ALREADY rank-local (in_proj q/k/v/b are column-sharded,
+# f_b_proj is ColumnParallel so g1 carries the rank's head slice), the recurrent state is
+# head-sharded (`is_kv_cache_tp_replicated=False`, abstract.py:59) and `o_proj`'s all-reduce
+# happens after the seam.  So the re-scan is rank-local and needs no index remapping: each rank
+# captures and re-scans its own heads.  f_a/g_a are the replicated parts and we store neither.
+# ---------------------------------------------------------------------------------------------
+
+
+def _kda_conv_weight(layer) -> torch.Tensor:
+    """The layer's merged q|k|v conv weight [3*P, width], built exactly as the stock
+    `_forward` builds it (kda.py:388-399) and cached on the layer for both to use."""
+    w = getattr(layer, "_merged_conv_weight", None)
+    if w is None:
+        def _w(m):
+            return m.weight.view(m.weight.size(0), m.weight.size(2))
+        w = torch.cat([_w(layer.q_conv1d), _w(layer.k_conv1d), _w(layer.v_conv1d)],
+                      dim=0).contiguous()
+        layer._merged_conv_weight = w
+    return w
+
+
+def _kda_split_qkv(layer, conv_out: torch.Tensor):
+    """Post-conv [L, 3*P] -> q, k, v as [1, L, H, D] (kda.py:`_rearr`)."""
+    q, k, v = conv_out.split(layer.local_projection_size, dim=-1)
+    h, d = layer.local_num_heads, layer.head_dim
+    return (q.reshape(1, -1, h, d), k.reshape(1, -1, h, d), v.reshape(1, -1, h, d))
+
+
+def _kda_raw_g(layer, sb: SideBuffer, key: str, start: int, end: int) -> torch.Tensor:
+    """The captured g1 rows as the kernel's ``raw_g`` [1, L, H, D]."""
+    return sb.a[key][start:end].reshape(1, end - start, layer.local_num_heads, layer.head_dim)
+
+
+def _kda_beta(sb: SideBuffer, key: str, start: int, end: int) -> torch.Tensor:
+    """The captured RAW b rows as the chunk kernel's ``beta`` [1, L, H] fp32.
+
+    WHICH FORM DOES WHICH KERNEL TAKE (read off the code, not the memo):
+
+      * ``chunk_kda_with_fused_gate`` takes beta ALREADY SIGMOIDED, in fp32.  Its own
+        docstring-free body passes ``beta`` straight through ``chunk_kda_with_fused_gate_fwd`` ->
+        ``_chunk_kda_fwd_with_cumulative_g`` (kernels.py:1199-1228, 1119-1162), which never
+        sigmoids; and the stock prefill call site does the sigmoid itself:
+        ``beta=_cast_sigmoid(beta_ns.squeeze(0)).unsqueeze(0)`` with
+        ``_cast_sigmoid(x) = x.float().sigmoid()`` (kda.py:546, :121).
+      * ``fused_recurrent_kda`` (decode/spec) takes the RAW bf16 b and sigmoids it in-kernel
+        (``sigmoid_beta=True``, kda.py:504/571).
+
+    The design memo (`glm53_correct_design.md`, item 2) says the opposite -- "pass the PRE-sigmoid
+    fp32 value the chunk kernel expects; never the sigmoided bf16 the recurrent kernel takes".
+    The code wins: the chunk kernel gets sigmoid(b) as fp32, the recurrent kernel gets raw b.
+    """
+    beta = sb.b[key][start:end].float().sigmoid().unsqueeze(0)
+    assert beta.dtype is torch.float32 and beta.dim() == 3, (beta.dtype, beta.shape)
+    return beta
+
+
+def _rescan_kda_impl(layer, sb: SideBuffer, key: str, start: int, end: int, *, commit: bool):
+    from vllm.models.glm5next.nvidia.ops.third_party.kda import chunk_kda_with_fused_gate
+
+    dev = sb.device
+    recurrent_state = layer.kv_cache[1]
+    width = int(layer.conv_size)
+    c0 = max(0, start - (width - 1))
+    conv_out = _conv_window(layer, sb.qkv[key][c0:end].contiguous(), sb.conv_scratch[key],
+                            weight=_kda_conv_weight(layer), bias=layer.q_conv1d.bias,
+                            activation="silu")
+    conv_out = conv_out[start - c0:].contiguous()
+
+    q, k, v = _kda_split_qkv(layer, conv_out)
+    raw_g = _kda_raw_g(layer, sb, key, start, end)
+    beta = _kda_beta(sb, key, start, end)
+
+    L = end - start
+    wc = _win_consts(dev, end - c0, L)
+    init = sb.ckpt.get(key)
+    if init is None:
+        init = torch.zeros_like(recurrent_state[:1])
+    # NB `chunk_kda_with_fused_gate` derives chunk_indices from cu_seqlens itself
+    # (kernels.py:1135) -- unlike the Qwen chunk kernel it takes no precomputed index tensors,
+    # so `_win_consts`' chunk_indices/chunk_offsets are unused on this path.
+    out, last = chunk_kda_with_fused_gate(
+        q=q, k=k, v=v,
+        raw_g=raw_g,
+        beta=beta,
+        A_log=layer.A_log,
+        g_bias=layer.dt_bias,
+        initial_state=init,
+        output_final_state=True,
+        use_qk_l2norm_in_kernel=True,
+        cu_seqlens=wc["cu"],
+        safe_gate=layer.kda_safe_gate,
+        lower_bound=layer.kda_lower_bound,
+    )
+    if commit:
+        sb.ckpt[key] = last.to(recurrent_state.dtype)
+        sb.ckpt_end[key] = end
+    return out.squeeze(0)
+
+
+def _kda_write_back(layer, sb: SideBuffer, key: str, blk: int) -> None:
+    """Final round: publish the re-scan's recurrent state and the merged conv tail into the
+    request's own state block, so the decode that follows continues from CORRECTED state.
+
+    * recurrent: ``scatter_states(recurrent_state, ckpt, [blk])`` -- the write-side counterpart
+      of the ``gather_initial_states`` the stock prefill reads with (kda.py:533/557).
+    * conv: the kernel already left the trailing ``width-1`` pre-conv inputs of the window --
+      i.e. ``SB[end-3:end]``, rows N-4..N-2 for a window ending at the hold-back row -- in row 1
+      of the conv scratch, in the layout ``causal_conv1d_update`` expects (DS: [C, width-1];
+      SD: transposed, which is how the scratch was allocated, so the copy is layout-agnostic).
+    """
+    conv_state, state = layer.kv_cache[0], layer.kv_cache[1]
+    ckpt = sb.ckpt[key].to(state.dtype)
+    tail = sb.conv_scratch[key][1:2]
+    if state.is_cuda:
+        from vllm.model_executor.layers.mamba.ops.scatter_states import scatter_states
+        idx = torch.tensor([blk], dtype=torch.int32, device=state.device)
+        scatter_states(state, ckpt, idx)
+        scatter_states(conv_state, tail.to(conv_state.dtype), idx)
+    else:                                   # CPU tests: the triton kernel is CUDA-only
+        state[blk] = ckpt[0]
+        conv_state[blk] = tail[0].to(conv_state.dtype)
+
+
+def _kda_forward_patch(self, qkv_proj_states, g1, beta, core_attn_out):
+    """``Glm5NextLinearAttention._forward`` with the side buffer spliced in.
+
+    MODE_NONE is a pure pass-through to the stock (decorated) method, so a served model that
+    never opens a correcting request behaves exactly as it did unpatched -- including the
+    `@eager_break_during_capture` behaviour, which lives in the ORIGINAL callable we delegate to
+    (breakable_cudagraph.py:96-119: outside a capture it just calls through; inside one it
+    DEFERS the call via `add_eager`).  That deferral is why capture/correct must never run under
+    an active breakable capture: `store_out` reads `core_attn_out` right after the stock call,
+    which a deferred call would not have written yet.  They cannot -- a capture only runs during
+    the runner's warmup, before any request exists -- but if `VLLM_USE_BREAKABLE_CUDAGRAPH`
+    ever starts capturing mid-serving, this is the line that breaks.
+    """
+    mode = _ST.mode
+    if mode is MODE_NONE:
+        return _ORIG_KDA_FORWARD(self, qkv_proj_states=qkv_proj_states, g1=g1, beta=beta,
+                                 core_attn_out=core_attn_out)
+
+    key = self.prefix
+    T = g1.shape[1]
+    qkv2, b2, a2 = qkv_proj_states, beta[0], g1[0].reshape(T, -1)
+
+    if mode == MODE_CAPTURE:
+        for cap in _ST.captures:
+            s = slice(cap.tok0, cap.tok0 + cap.ntok)
+            cap.sb.store(key, qkv2[s], b2[s], a2[s], cap.pos0)
+        ret = _ORIG_KDA_FORWARD(self, qkv_proj_states=qkv_proj_states, g1=g1, beta=beta,
+                                core_attn_out=core_attn_out)
+        for cap in _ST.captures:
+            if cap.sb.capture_out:
+                s = slice(cap.tok0, cap.tok0 + cap.ntok)
+                cap.sb.store_out(key, core_attn_out[0][s], cap.pos0)
+        return ret
+
+    assert mode == MODE_CORRECT
+    ctx = _ST.ctx
+    sb, pos = ctx.sb, ctx.positions
+    P = pos.numel()
+    # (1) write first: the corrected rows replace their captured pre-conv / pre-gate inputs
+    sb.scatter(key, pos, qkv2[:P], b2[:P], a2[:P])
+
+    if ctx.replay:
+        core_attn_out[0, :P] = sb.out[key][pos].to(core_attn_out.dtype)
+        return None
+
+    if key not in sb.conv_scratch:
+        sb.conv_scratch[key] = torch.zeros_like(self.kv_cache[0][:2])
+
+    s, e = ctx.window
+    start = sb.ckpt_end.get(key, 0)
+    assert start <= s, f"{key}: checkpoint {start} is past the window start {s}"
+    ce = e if ctx.commit_end < 0 else int(ctx.commit_end)
+    if not ctx.commit or ce >= e:
+        out_w = _rescan(self, sb, key, start, e, commit=ctx.commit)
+    else:
+        assert start <= ce, (key, start, ce)
+        parts = []
+        if ce > start:
+            parts.append(_rescan(self, sb, key, start, ce, commit=True))
+        else:
+            sb.ckpt_end[key] = start
+        parts.append(_rescan(self, sb, key, ce, e, commit=False))
+        out_w = torch.cat(parts, 0) if len(parts) > 1 else parts[0]
+    core_attn_out[0, :P] = out_w[pos - start].to(core_attn_out.dtype)
+
+    if ctx.final:
+        blk = ctx.mamba_blocks[key]
+        if _DEBUG_STATE:
+            ssm_stock, conv_stock = self.kv_cache[1][blk], self.kv_cache[0][blk]
+            qkv = sb.qkv[key]
+            ctx.debug[key] = {
+                "ssm_rel": float((sb.ckpt[key][0].float() - ssm_stock.float()).norm()
+                                 / max(ssm_stock.float().norm().item(), 1e-30)),
+                "conv_rel": float((sb.conv_scratch[key][1].float() - conv_stock.float()).norm()
+                                  / max(conv_stock.float().norm().item(), 1e-30)),
+                "ssm_stock_norm": float(ssm_stock.float().norm()),
+                "ssm_ours_norm": float(sb.ckpt[key].float().norm()),
+                "qkv_zero_rows": int((qkv.float().abs().sum(1) == 0).sum()),
+                "qkv_norm": float(qkv.float().norm()),
+            }
+        _kda_write_back(self, sb, key, blk)
+    return None
+
+
+# <<< AppCorr/K <<<
 
 
 def _forward_core_patch(self, mixed_qkv, b, a, core_attn_out):
@@ -631,6 +1078,9 @@ def _prepare_inputs(self: GPUModelRunner, scheduler_output, num_scheduled_tokens
             pos0 = int(self.input_batch.num_computed_tokens_cpu[idx])
             if pos0 + ntok > sb.n:      # decode steps: nothing left to capture
                 continue
+            # on a softmax-only decoder nothing consumes these (`_forward_core_patch` is never
+            # reached); they are kept because `skip_forward` / `n_capture_steps` below are about
+            # the request's scheduling, not about recurrent state
             caps.append(_Capture(sb=sb, tok0=int(starts[idx]), ntok=ntok, pos0=pos0))
             sb.n_capture_steps += 1
         total = int(starts[-1])
@@ -651,6 +1101,10 @@ def _prepare_inputs(self: GPUModelRunner, scheduler_output, num_scheduled_tokens
 def _execute_model(self: GPUModelRunner, scheduler_output, intermediate_tensors=None):
     if not _SIDE:
         return _ORIG_EXECUTE_MODEL(self, scheduler_output, intermediate_tensors)
+    # backstop for the deferred GDN patch (`check_gdn_path` at open is the normal entry): this
+    # runs before the stock call, so before any capture. One walk of the decoder, then cached.
+    _ensure_gdn(self)
+    _glm53_sparse(self)     # AppCorr/M: install the kpool-indexer hook before the first capture
     prev, _ST.mode = _ST.mode, MODE_CAPTURE
     try:
         return _ORIG_EXECUTE_MODEL(self, scheduler_output, intermediate_tensors)
@@ -661,10 +1115,31 @@ def _execute_model(self: GPUModelRunner, scheduler_output, intermediate_tensors=
         _ST.skip_forward = False
 
 
+def _leaf_spec(spec, layer_name: str | None = None):
+    """The per-layer KV-cache spec behind a group's spec.
+
+    vLLM main wraps same-type layers in `UniformTypeKVCacheSpecs` -- a CONTAINER whose
+    `.kv_cache_specs` maps layer name -> leaf spec -- so `isinstance(group.kv_cache_spec, X)`
+    is False for every leaf class X and a dispatch on the group's spec sees only the wrapper
+    (leg 3 of the TP gate, third failure: `AssertionError: <class '...UniformTypeKVCacheSpecs'>`
+    in `glm53_indexer.layer_caches`, B200-8 2026-09-13 04:10 KST).  Descend to the named
+    layer's spec, or to the first one when the question is about the group as a whole (all
+    members are uniform by construction)."""
+    try:
+        from vllm.v1.kv_cache_interface import UniformTypeKVCacheSpecs
+    except ImportError:                      # 0.28 and earlier: groups carry leaf specs
+        return spec
+    if isinstance(spec, UniformTypeKVCacheSpecs):
+        return spec.kv_cache_specs[layer_name] if layer_name is not None else spec.first_spec
+    return spec
+
+
 def _mamba_group_ids(self: GPUModelRunner) -> list[int]:
+    """KV-cache groups holding recurrent state.  EMPTY for a pure-softmax decoder (GLM-4.6V),
+    where every group is an attention group and the correct step touches nothing else."""
     from vllm.v1.kv_cache_interface import MambaSpec
     return [gid for gid, g in enumerate(self.kv_cache_config.kv_cache_groups)
-            if isinstance(g.kv_cache_spec, MambaSpec)]
+            if isinstance(_leaf_spec(g.kv_cache_spec), MambaSpec)]
 
 
 def _block_row(self: GPUModelRunner, req_id: str, gid: int) -> torch.Tensor:
@@ -698,11 +1173,46 @@ def _slot_mapping(self: GPUModelRunner, gid: int, req_id: str, positions: torch.
     return row, slots
 
 
+# >>> AppCorr/M (GLM-5.3 sparse MLA): the kpool indexer's paged tail cache >>>
+
+def _is_kpool_tail_group(self: GPUModelRunner, gid: int) -> bool:
+    """Is kv-cache group ``gid`` a ``KpoolTailSpec`` group (the sparse indexer's tail buffer)?
+
+    Structural, not model-keyed: the spec class exists only for the kpool indexer.  Imported
+    lazily because vLLM builds without GLM-5.3 do not define it."""
+    try:
+        from vllm.v1.kv_cache_interface import KpoolTailSpec
+    except ImportError:
+        return False
+    return isinstance(_leaf_spec(self.kv_cache_config.kv_cache_groups[gid].kv_cache_spec),
+                      KpoolTailSpec)
+
+
+def _kpool_tail_slot_mapping(self: GPUModelRunner, gid: int, req_id: str,
+                             positions: torch.Tensor):
+    """``compute_kpool_tail_slot_mapping`` (mla/indexer.py:520-545) for one request.
+
+    ``KpoolTailSpec`` allocates exactly ONE block of ``index_kpool`` slots per request
+    (`kv_cache_interface.py:974-980`), used as a circular buffer keyed on ``pos % kpool``.  The
+    generic ``_slot_mapping`` cannot build this: it evaluates ``block_row[pos // block_size]``
+    into a row that is ONE entry wide, so every position >= kpool reads out of bounds (garbage
+    slot on CPU, an illegal access or a silent wrong write on GPU).  The tail builder recomputes
+    the mapping itself when ``positions`` is set, so this value only has to be in-bounds and
+    correct for `set_forward_context`'s per-layer slot map."""
+    bt = self.input_batch.block_table[gid]
+    row = _block_row(self, req_id, gid)
+    kp = int(bt.block_size)
+    slots = row[0].to(torch.int64) * kp + (positions % kp)
+    return row, slots
+
+# <<< AppCorr/M <<<
+
+
 def _mamba_blocks(self: GPUModelRunner, req_id: str, mamba_gids: list[int]) -> dict[str, int]:
     """GDN layer prefix -> the request's recurrent-state block, per mamba KV-cache group.
 
     Qwen3.5 splits its GDN layers over several mamba groups (4B: 3 groups + 1 attention group),
-    so a single block id is not enough."""
+    so a single block id is not enough.  Returns {} when `mamba_gids` is empty (GLM-4.6V)."""
     out: dict[str, int] = {}
     for gid in mamba_gids:
         blk = int(_block_row(self, req_id, gid)[0])
@@ -711,14 +1221,23 @@ def _mamba_blocks(self: GPUModelRunner, req_id: str, mamba_gids: list[int]) -> d
     return out
 
 
-def _decoder(self: GPUModelRunner):
-    """The text decoder (`Qwen3_5Model`): its `layers` are what a partial-depth step walks."""
-    m = self.model
+def _decoder_module(model):
+    """The text decoder of a served model (`Qwen3_5Model`, `Glm4MoeModel`, ...): its `layers`
+    are what a partial-depth step walks and what the GDN detection inspects.  Structural walk
+    (`.unwrap()` -> `.language_model` -> `.model`), no model-name or class-name keying: GLM-4.6V's
+    `Glm4vMoeForConditionalGeneration.language_model` is a `Glm4MoeForCausalLM` whose `.model`
+    holds the 46 `Glm4MoeDecoderLayer`s, so the same walk resolves it (checked on the vLLM
+    sources, glm4_1v.py:1803 + glm4_moe.py:402/524)."""
+    m = model
     m = m.unwrap() if hasattr(m, "unwrap") else m
     lm = getattr(m, "language_model", m)
     lm = getattr(lm, "model", lm)
     assert hasattr(lm, "layers"), type(lm)
     return lm
+
+
+def _decoder(self: GPUModelRunner):
+    return _decoder_module(self.model)
 
 
 def num_layers(self: GPUModelRunner) -> int:
@@ -799,6 +1318,9 @@ def appcorr_rows_step(self: GPUModelRunner, req_id: str, positions: torch.Tensor
     assert (a == 0) == (not from_frontier), "from_frontier iff the step starts above layer 0"
     if final:
         assert b == L, "the final round (state write-back) runs at full depth"
+    assert not replay or _ensure_gdn(self), (
+        "replay mode (gate g1) isolates the softmax rewrite from the DeltaNet re-scan; on a "
+        "pure-softmax decoder there is nothing to replay and the correct step IS the softmax path")
     pos_cpu = positions.detach().cpu()
     assert bool((pos_cpu[1:] > pos_cpu[:-1]).all()) if P > 1 else True, "positions must be sorted"
     assert int(pos_cpu[0]) >= s and int(pos_cpu[-1]) < e, (int(pos_cpu[0]), int(pos_cpu[-1]), s, e)
@@ -931,17 +1453,64 @@ def appcorr_open_walk(self: GPUModelRunner, req_id: str) -> dict:
     return inf
 
 
+# >>> AppCorr/K (GLM-5.3 mHC): the layer walk's state arity >>>
+_WALK_KIND: dict = {}            # decoder-layer class -> "res2" | "mhc4"
+
+
+def _walk_kind(layer) -> str:
+    """The layer's inter-layer state contract, read off its SIGNATURE (never a model name).
+
+      * ``res2``  ``layer(positions, hidden_states, residual) -> (hidden, residual)``
+        -- Qwen3.5 / GLM-4.6V and every other stock vLLM decoder layer.
+      * ``mhc4``  ``layer(positions, hidden_states, residual, post, comb)
+        -> (hidden, residual, post, comb)`` -- GLM-5.3-Flash's ``Glm5NextDecoderLayer``
+        (model.py:401-509): four mHC residual streams, ``residual`` [T, 4, H] bf16, ``post``
+        [T, 4] fp32, ``comb`` [T, 4, 4] fp32.  Layer 0 expands (``hc_expand``), the LAST layer
+        materialises its ``hc_post`` and contracts, and every layer in between DEFERS its
+        ``hc_post`` into the next layer's ``hc_fused_post_pre`` -- which is exactly why the
+        walk has to carry ``post``/``comb`` and cannot call a layer in isolation.
+
+    Cached per class: one process serves one model, and the signature cannot change under us.
+    """
+    cls = type(layer)
+    kind = _WALK_KIND.get(cls)
+    if kind is None:
+        import inspect
+        params = inspect.signature(cls.forward).parameters
+        kind = "mhc4" if ("post" in params and "comb" in params) else "res2"
+        _WALK_KIND[cls] = kind
+    return kind
+# <<< AppCorr/K <<<
+
+
 def _run_layers(self: GPUModelRunner, layers, positions_gpu, inputs_embeds, hidden_in):
     """Decoder layers ``[a, b)`` on the batch: the compiled model for the full depth (the MVP's
     path, bit-for-bit what it ran before), an eager loop over the layer modules otherwise.
-    Returns the residual stream at layer ``b``; at full depth the model's output (the normed
-    final hidden states, read by the fused hold-back only)."""
+    Returns the walk state at layer ``b`` -- ``(hidden, residual)``, or the mHC 4-tuple
+    ``(hidden, residual, post, comb)`` on a ``mhc4`` decoder; at full depth the model's output
+    (the normed final hidden states, read by the fused hold-back only).
+
+    Entry at ``a == 0`` starts from ``inputs_embeds`` with every carried stream None, so the
+    layer does its own expand; entry at ``a > 0`` resumes from ``hidden_in``, which must be the
+    same arity (the frontier buffers store what this returned).  A partial walk that ends at
+    ``b == L`` runs the last layer's contract and returns None: its purpose is the K/V and
+    recurrent state it leaves behind, not a value."""
     a, b = layers
     lm = _decoder(self)
     L = len(lm.layers)
     if a == 0 and b == L:
         return self.model(input_ids=None, positions=positions_gpu,
                           intermediate_tensors=None, inputs_embeds=inputs_embeds)
+    if _walk_kind(lm.layers[a]) == "mhc4":          # >>> AppCorr/K (GLM-5.3 mHC 4-tuple walk)
+        if a == 0:
+            state = (inputs_embeds, None, None, None)
+        else:
+            state = tuple(hidden_in)
+            assert len(state) == 4, f"an mHC walk resumed from {len(state)} tensors"
+        for layer in lm.layers[a:b]:
+            state = layer(positions=positions_gpu, hidden_states=state[0], residual=state[1],
+                          post=state[2], comb=state[3])
+        return None if b == L else tuple(state)     # <<< AppCorr/K
     if a == 0:
         hs, res = inputs_embeds, None
     else:
@@ -949,6 +1518,55 @@ def _run_layers(self: GPUModelRunner, layers, positions_gpu, inputs_embeds, hidd
     for layer in lm.layers[a:b]:
         hs, res = layer(positions=positions_gpu, hidden_states=hs, residual=res)
     return None if b == L else (hs, res)
+
+
+# >>> AppCorr/M (GLM-5.3 sparse MLA) >>>
+
+_GLM53_SPARSE: Optional[bool] = None
+
+
+def _glm53_sparse(self: GPUModelRunner) -> bool:
+    """Does the served decoder have kpool-sparse MLA layers?  Resolved once, then cached.
+
+    Detection is by module structure (`glm53_indexer.sparse_layers`: a
+    ``MultiHeadLatentAttentionWrapper`` with a non-None indexer whose ``index_kpool > 1``), never
+    by model name -- a dense-MLA DeepSeek and a GQA decoder both answer False."""
+    global _GLM53_SPARSE
+    if _GLM53_SPARSE is None:
+        from appcorr.vllm_stream import glm53_indexer as _gi
+        # `sparse_layers` only touches attributes, so it is safe on any decoder and needs no
+        # try/except: a vLLM without the GLM-5.3 tree simply has no module with an `.indexer`.
+        # An install failure on a decoder that DOES have them must raise, not silently disable
+        # the rewrite -- that would corrupt the pooled cache with no signal.
+        _GLM53_SPARSE = bool(_gi.sparse_layers(_decoder(self)))
+        if _GLM53_SPARSE:
+            n = _gi.install(self.model)
+            assert n == len(_gi.sparse_layers(_decoder(self))), (n,)
+    return _GLM53_SPARSE
+
+
+def _glm53_correct_context(self: GPUModelRunner, req_id: str, sb: SideBuffer,
+                           positions: torch.Tensor, max_seq_len: int):
+    """The round's indexer rewrite context, or None on every non-sparse-MLA decoder."""
+    if not _glm53_sparse(self):
+        return None
+    from appcorr.vllm_stream import glm53_indexer as _gi
+    return _gi.CorrectContext(
+        buf=_gi.buffer_for(sb),
+        caches=_gi.layer_caches(self, req_id),
+        positions=positions,
+        max_seq_len=int(max_seq_len),
+        topk_tokens=_gi.topk_tokens_of(self.model),
+    )
+
+
+def _glm53_set_context(ctx):
+    if ctx is None and _GLM53_SPARSE is not True:
+        return None
+    from appcorr.vllm_stream import glm53_indexer as _gi
+    return _gi.set_context(ctx)
+
+# <<< AppCorr/M <<<
 
 
 def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: torch.Tensor,
@@ -983,14 +1601,28 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
     else:
         inputs_embeds = inputs_embeds.to(dev, self.model_config.dtype)
 
-    # M-RoPE positions of exactly these rows (mirrors _prepare_inputs' mrope path)
-    assert self.uses_mrope, "non-M-RoPE models not handled"
-    mrope = req_state.mrope_positions
-    assert mrope is not None and mrope.shape[1] >= sb.n, (None if mrope is None else mrope.shape)
-    positions_gpu = mrope[:, pos_cpu].to(dev, torch.int64)
+    # >>> AppCorr/M (GLM-5.3): positions of exactly these rows.  GLM-5.3-Flash has NO M-RoPE
+    # (`Glm5NextTextConfig` ships no `mrope_section`, so `uses_mrope` is False and the runner
+    # passes flat `[num_tokens]` positions -- survey §A).  The decoder has no rotary at all
+    # (KDA ignores `positions`, MLA's `rotary_emb` is None under `mla_nope`), but `positions` is
+    # NOT dead: the sparse indexer consumes it for the tail slot (`pos % kpool`) and the
+    # short-prefill causal fill, so the 1-D form must be the row's true prompt position.
+    if self.uses_mrope:
+        mrope = req_state.mrope_positions
+        assert mrope is not None and mrope.shape[1] >= sb.n, (
+            None if mrope is None else mrope.shape)
+        positions_gpu = mrope[:, pos_cpu].to(dev, torch.int64)
+    else:
+        positions_gpu = positions
+    # <<< AppCorr/M <<<
 
+    # A pure-softmax decoder has no mamba group and no side-buffer state: `mamba_gids` is empty,
+    # `mamba_blocks` is {}, the `gid in mamba_gids` skip below never fires (every group is an
+    # attention group) and `_forward_core_patch` is never reached, so the re-scan window is a
+    # no-op and this step is the pseudo-sequence softmax path alone.
     mamba_gids = _mamba_group_ids(self)
-    assert mamba_gids, "no mamba/GDN kv cache group found"
+    assert mamba_gids or not _ensure_gdn(self), (
+        "the decoder has Gated DeltaNet layers but no mamba kv-cache group")
     mamba_blocks = _mamba_blocks(self, req_id, mamba_gids)
 
     _rf_meta = torch.profiler.record_function("appcorr.metadata")
@@ -1010,17 +1642,34 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
     attn_metadata: dict = {}
     slot_by_layer: dict[str, torch.Tensor] = {}
     kv_group_shapes = {}
+    # >>> AppCorr/M (version shim, NOT MLA-specific -- flagged to K/V) >>>
+    # `_seq_lens_cpu` / `_num_computed_tokens_cpu` were fields of `CommonAttentionMetadata` in
+    # vLLM 0.28.0 and are GONE in main @658c813 (the build B200-8 serves GLM-5.3 with): grepping
+    # the whole tree finds neither name.  Passing them unconditionally is a TypeError at the
+    # first correct step on that build, for every model, so they are passed only when the
+    # dataclass still declares them.  Nothing is lost: the builders read `seq_lens` /
+    # `seq_lens_cpu_upper_bound` and derive num_computed from `query_start_loc`.
+    import dataclasses as _dc
+    _cm_fields = {f.name for f in _dc.fields(CommonAttentionMetadata)}
+    _cm_compat = {k: v for k, v in (("_seq_lens_cpu", seq_cpu),
+                                    ("_num_computed_tokens_cpu", ncomp_cpu))
+                  if k in _cm_fields}
+    # <<< AppCorr/M <<<
     for gid, group in enumerate(self.kv_cache_config.kv_cache_groups):
         if gid in mamba_gids:
             continue
-        row, slots = _slot_mapping(self, gid, req_id, positions)
+        # >>> AppCorr/M (GLM-5.3): the kpool indexer's tail group is 1 block/request >>>
+        if _is_kpool_tail_group(self, gid):
+            row, slots = _kpool_tail_slot_mapping(self, gid, req_id, positions)
+        else:
+            row, slots = _slot_mapping(self, gid, req_id, positions)
+        # <<< AppCorr/M <<<
         blk = row.unsqueeze(0).expand(n_reqs, -1).contiguous()
         cm = CommonAttentionMetadata(
             query_start_loc=qsl_cpu.to(dev),
             query_start_loc_cpu=qsl_cpu,
             seq_lens=seq_cpu.to(dev),
-            _seq_lens_cpu=seq_cpu,
-            _num_computed_tokens_cpu=ncomp_cpu,
+            **_cm_compat,                                        # AppCorr/M version shim
             seq_lens_cpu_upper_bound=seq_cpu,
             num_reqs=n_reqs,
             num_actual_tokens=P,
@@ -1043,9 +1692,23 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
                       replay=replay, mamba_blocks=mamba_blocks, commit=commit,
                       commit_end=int(commit_end))
 
+    # >>> AppCorr/M (GLM-5.3 sparse MLA): rewrite the indexer's pooled K + tail caches >>>
+    # The 11 `Glm5NextMLAAttention` layers own two more caches than the MLA latent, and the stock
+    # write path is wrong for a pseudo-sequence batch (see `glm53_indexer._hook`).  `_glm53_ctx`
+    # is a no-op context on every other model.
+    glm53_ctx = _glm53_correct_context(self, req_id, sb, positions, p1 + 1)
+    # <<< AppCorr/M <<<
+
     # CUDA-graph dispatch (full depth only: the partial-depth walks run the eager layer loop)
     cg_mode, cg_desc, n_pad = CUDAGraphMode.NONE, None, P
-    if CUDAGRAPH and not from_frontier and tuple(layers) == (0, num_layers(self)):
+    if glm53_ctx is not None:
+        # AppCorr/M: no CUDA graph on a sparse-MLA decoder.  Two reasons, both hard: (i) the
+        # indexer rewrite runs per round and writes two caches from Python, which a captured
+        # graph cannot replay; (ii) the graph path pads through `self.mrope_positions.gpu`, and
+        # GLM-5.3 has no M-RoPE, so that buffer is not the one the model reads.  The stock op is
+        # `@eager_break_during_capture` for the same reason on the engine's own path.
+        pass
+    elif CUDAGRAPH and not from_frontier and tuple(layers) == (0, num_layers(self)):
         cg_mode, cg_desc = self.cudagraph_dispatcher.dispatch(
             num_tokens=P, uniform_decode=False, invalid_modes={CUDAGraphMode.FULL})
         if cg_mode == CUDAGraphMode.PIECEWISE:
@@ -1065,6 +1728,7 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
     _rf_meta.__exit__(None, None, None)
     prev_mode, prev_ctx = _ST.mode, _ST.ctx
     _ST.mode, _ST.ctx = MODE_CORRECT, ctx
+    glm53_prev = _glm53_set_context(glm53_ctx)          # AppCorr/M
     try:
         with torch.inference_mode(), torch.profiler.record_function("appcorr.layers"), \
                 set_forward_context(
@@ -1075,14 +1739,20 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
             out = _run_layers(self, layers, positions_gpu, inputs_embeds, hidden_in)
     finally:
         _ST.mode, _ST.ctx = prev_mode, prev_ctx
+        _glm53_set_context(glm53_prev)                  # AppCorr/M
     if store_frontier:
         assert isinstance(out, tuple), "store_frontier at full depth"
-        sb.store_frontier(positions, out[0], out[1])
+        sb.store_frontier(positions, *out)
     if fuse:
         assert torch.is_tensor(out) and final, (type(out), final)
         sb.hold_hidden = out[P - 1].clone()      # row N-1 (last of the batch, before padding)
-    return {"mamba_blocks": mamba_blocks, "debug": ctx.debug,
+    info = {"mamba_blocks": mamba_blocks, "debug": ctx.debug,
             "cudagraph": n_pad if (cg_mode == CUDAGraphMode.PIECEWISE or PAD_EAGER) else 0}
+    if glm53_ctx is not None:                          # AppCorr/M
+        info["glm53_indexer"] = dict(glm53_ctx.debug)
+        info["glm53_indexer_dense"] = bool(glm53_ctx.dense)
+        info["glm53_indexer_mb"] = glm53_ctx.buf.nbytes() / 2 ** 20
+    return info
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1098,28 +1768,65 @@ def appcorr_snapshot(self: GPUModelRunner, req_id: str, positions: torch.Tensor)
     kv: dict[str, torch.Tensor] = {}
     layouts: dict[str, str] = {}
     for gid, group in enumerate(self.kv_cache_config.kv_cache_groups):
-        if gid in mamba_gids:
+        if gid in mamba_gids or _is_kpool_tail_group(self, gid):
             continue
-        _, slots = _slot_mapping(self, gid, req_id, positions)
-        bs = self.input_batch.block_table[gid].block_size
-        blk_i, off_i = slots // bs, slots % bs
-        backend = self.attn_groups[gid][0].backend.__name__
-        for ln in group.layer_names:
-            cache = ctx[ln].kv_cache
-            if isinstance(cache, (list, tuple)):
-                cache = cache[0]
-            if cache.dim() == 4 and "FlashInfer" in backend:
-                # (num_blocks, num_kv_heads, block_size, 2*head_size)  -- flashinfer.py:2528
-                rows = cache[blk_i, :, off_i, :]
-                layouts[ln] = "flashinfer_bhn2d"
-            elif cache.dim() == 5 and cache.shape[0] == 2:
-                # (2, num_blocks, block_size, num_kv_heads, head_size)  -- FlashAttention
-                rows = cache[:, blk_i, off_i]
-                layouts[ln] = "fa_2bnhd"
-            else:
-                raise RuntimeError(
-                    f"unrecognised kv cache layout {tuple(cache.shape)} ({backend}) for {ln}")
-            kv[ln] = rows.float().cpu()
+        slots = None
+        # One kv-cache group can carry several attention groups with DIFFERENT backends, so the
+        # backend is read per attention group, not from `attn_groups[gid][0]`.
+        for ag in self.attn_groups[gid]:
+            backend = ag.backend.__name__
+            if "Indexer" in backend or "KpoolTail" in backend:
+                # GLM-5.3 sparse layers own three caches: the MLA latent (an ordinary attention
+                # group, read below) plus the kpool indexer's fp8 k_cache (`[num_blocks,
+                # num_states, head_dim + 4]` uint8, ONE entry per kpool positions) and its tail
+                # buffer (one block per request).  Neither is addressable per token position, so
+                # they are read through `glm53_indexer`'s own accessors (the MLA gate's
+                # `snapshot_indexer`), never here.  Leg 3 of the TP gate died on exactly this
+                # entry (B200-8, 2026-09-13 02:31 KST).  `_slot_mapping` is NOT evaluated for
+                # them: their block tables are pool-granular and the token formula reads past
+                # the row.
+                for ln in ag.layer_names:
+                    layouts[ln] = f"skipped:{backend}"
+                continue
+            if slots is None:
+                _, slots = _slot_mapping(self, gid, req_id, positions)
+            for ln in ag.layer_names:
+                cache = ctx[ln].kv_cache
+                if isinstance(cache, (list, tuple)):
+                    cache = cache[0]
+                if cache.dim() == 3 and "MLA" in backend:
+                    # (num_kernel_blocks, kernel_block_size, kv_lora_rank): the MLA latent has
+                    # no head axis at all -- GLM-5.3 sparse layers show (4930, 64, 512) under
+                    # FlashInferMLASparseTRTLLMBackend (B200-8, 2026-09-13 02:50 KST), paged
+                    # at 64 while the same layer's indexer k_cache is paged at 32.  `slots`
+                    # are ABSOLUTE token slots (block * block_size + offset, `_slot_mapping`),
+                    # so they are re-split at THIS view's own page width, not the block
+                    # table's: a kernel-block split is a uniform unflatten of the manager
+                    # block (`kv_cache_interface.py` "grouping is a pure view").
+                    kb = cache.shape[1]
+                    rows = cache[slots // kb, slots % kb]
+                    layouts[ln] = f"mla_bnc@{kb}"
+                elif cache.dim() == 4 and ("FlashInfer" in backend or "MLA" in backend):
+                    # [B, H, N, C] = (num_blocks, num_kv_heads, block_size, 2*head_size) for
+                    # FlashInfer (flashinfer.py:2528); on main every attention layer is this
+                    # logical view (`create_kv_cache_views`), the MLA latent as H=1, C=head.
+                    # Same absolute-slot re-split at the view's own page width (== bs today).
+                    kb = cache.shape[2]
+                    rows = cache[slots // kb, :, slots % kb, :]
+                    layouts[ln] = f"bhnc@{kb}"
+                elif cache.dim() == 5 and cache.shape[0] == 2:
+                    # (2, num_blocks, block_size, num_kv_heads, head_size)  -- FlashAttention
+                    kb = cache.shape[2]
+                    rows = cache[:, slots // kb, slots % kb]
+                    layouts[ln] = f"fa_2bnhd@{kb}"
+                else:
+                    raise RuntimeError(
+                        f"unrecognised kv cache layout {tuple(cache.shape)} ({backend}) for {ln}")
+                # int8/uint8 views (fp8 caches on main) are kept as bytes: the gate compares
+                # them bitwise; a float cast of raw bytes would be neither a value nor a byte.
+                kv[ln] = (rows.cpu().clone() if rows.dtype in (torch.int8, torch.uint8)
+                          else rows.float().cpu())
+                layouts[ln] += f":{str(rows.dtype).replace('torch.', '')}"
     mamba: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
     blocks = _mamba_blocks(self, req_id, mamba_gids)
     for ln, blk in blocks.items():
@@ -1145,16 +1852,22 @@ def install() -> None:
       * the G1 "passthrough" mode of the memo is a *replay* mode: the approx pass also captures the
         GDN layer output, and the correct step replays it for the corrected rows.  Writing nothing
         (as the memo says) would leave ``core_attn_out`` zero and corrupt the residual stream, so
-        the softmax path could not be isolated at all.
+        the softmax path could not be isolated at all;
+      * the recurrent half has TWO seams, chosen by `_gdn_flavor` (structure, not model name):
+        `QwenGatedDeltaNetAttention._forward_core` and, for GLM-5.3-Flash,
+        `Glm5NextLinearAttention._forward` (`_kda_forward_patch`).  Same side buffer, same
+        checkpoint chain, same write-back; the KDA re-scan runs one MERGED q|k|v conv and
+        `chunk_kda_with_fused_gate` (gate in-kernel from A_log/dt_bias, beta SIGMOIDED fp32);
+      * the GDN side-buffer half is installed LAZILY (`install_gdn_patch`, 2026-09-12).  This
+        function is a vLLM general plugin: it runs before a model exists, so it cannot know
+        whether the served decoder is hybrid.  It therefore patches the runner only, and the
+        `QwenGatedDeltaNetAttention` import + `_forward_core` patch happen at the first
+        `check_gdn_path` / `execute_model` that sees a model WITH recurrent layers.  A
+        pure-softmax decoder (GLM-4.6V: 46 softmax GQA layers) never imports it.
     """
-    global _ORIG_FORWARD_CORE, _ORIG_PREPARE_INPUTS, _ORIG_EXECUTE_MODEL, _ORIG_MODEL_FORWARD
+    global _ORIG_PREPARE_INPUTS, _ORIG_EXECUTE_MODEL, _ORIG_MODEL_FORWARD
     if getattr(GPUModelRunner, "_appcorr_correct_patched", False):
         return
-    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
-        QwenGatedDeltaNetAttention)
-
-    _ORIG_FORWARD_CORE = QwenGatedDeltaNetAttention._forward_core
-    QwenGatedDeltaNetAttention._forward_core = _forward_core_patch
 
     _ORIG_PREPARE_INPUTS = GPUModelRunner._prepare_inputs
     _ORIG_EXECUTE_MODEL = GPUModelRunner.execute_model

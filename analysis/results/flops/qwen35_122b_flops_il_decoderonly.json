@@ -1,0 +1,37 @@
+{
+ "vstar": {
+  "total_g4_k0.25_il": 76039.6,
+  "crit_g4_k0.25_il": 4609.2,
+  "_il_g4_k0.25": {
+   "decoder_total": 76039.6,
+   "decoder_crit": 4609.2,
+   "vision_total": 0.0,
+   "vision_crit": 0.0,
+   "rows": 40,
+   "source": "vstar_qwen3.5-122b-a10b-fp8_interleaved_g4_k0.25_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks`; vision half is this run's hooked streaming arm"
+  },
+  "total_g4_k0.50_il": 90258.3,
+  "crit_g4_k0.50_il": 8271.3,
+  "_il_g4_k0.50": {
+   "decoder_total": 90258.3,
+   "decoder_crit": 8271.3,
+   "vision_total": 0.0,
+   "vision_crit": 0.0,
+   "rows": 40,
+   "source": "vstar_qwen3.5-122b-a10b-fp8_interleaved_g4_k0.50_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks`; vision half is this run's hooked streaming arm"
+  },
+  "total_g4_il": 118682.5,
+  "crit_g4_il": 15581.0,
+  "_il_g4": {
+   "decoder_total": 118682.5,
+   "decoder_crit": 15581.0,
+   "vision_total": 0.0,
+   "vision_crit": 0.0,
+   "rows": 40,
+   "source": "vstar_qwen3.5-122b-a10b-fp8_interleaved_g4_c2.jsonl",
+   "note": "decoder half is the closed form of flops_analytic.Qwen35Decoder replayed from the rows' `chunks`; vision half is this run's hooked streaming arm"
+  }
+ }
+}

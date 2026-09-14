@@ -138,7 +138,7 @@ def main():
                          "band 0 deferred in the sim) or unified_staged (per-band PREFIX "
                          "attention along unified_bounds; sim with --pscore eager). Theta is "
                          "per schedule as well as per dataset.")
-    ap.add_argument("--family", choices=["qwen25vl", "qwen35"], required=True)
+    ap.add_argument("--family", choices=["qwen25vl", "qwen35", "glm46v", "glm53"], required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--groups", type=int, default=4)
