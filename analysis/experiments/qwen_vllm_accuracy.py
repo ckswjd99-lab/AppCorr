@@ -135,7 +135,16 @@ def clean_text(family: str, text: str, dataset: str = "") -> str:
         # whose old score came from matching a list index, not an answer), and GLM-4.6V moves by
         # one row in 9,000 -- it does not use this format, so the rule must not disturb it.
         if dataset in GROUNDING_DATASETS:
-            return text          # the box may sit on any line; let _parse_bbox see all of them
+            # Two things the markdown rule must not touch on a grounding answer.
+            # (a) The box may sit on any line, so never select one line.
+            # (b) GLM-5.3 emits its OWN `</think>` on sharp frames even though build_inputs
+            #     already appends one, and the answer follows it:
+            #         "...x1: 735\ny1: 355\nx2: 810\ny2: 410</think>735, 355, 810, 410"
+            #     `_parse_bbox` takes the FIRST four numbers, which are the reasoning's
+            #     intermediate coordinates, so the row scored its scratch work. Keeping only
+            #     what follows the LAST `</think>` moved the 448-row visdrone_det ceiling from
+            #     22.32 to 30.13 and the floor from 20.31 to 21.21 (2026-09-15, re-run rows).
+            return text.rsplit("</think>", 1)[-1].strip() if "</think>" in text else text
         lines = [l for l in text.split("\n") if l.strip()]
         solo = [m.group(1).strip() for m in (_ONLY_BOLD.fullmatch(l) for l in lines) if m]
         if len(lines) > 1 and len(solo) == 1:
