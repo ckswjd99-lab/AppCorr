@@ -1,0 +1,394 @@
+{
+ "_meta": {
+  "model": "Qwen/Qwen3.5-35B-A3B",
+  "N": 2379,
+  "lo": 4,
+  "G": 2352,
+  "g": 4,
+  "keep": 0.5,
+  "staged": false,
+  "cudagraph": true,
+  "fuse_holdback": true,
+  "defer_final": true,
+  "max_num_seqs": 1024
+ },
+ "rounds": [
+  {
+   "it": 0,
+   "rounds": [
+    {
+     "r": 0,
+     "P": 294,
+     "window": [
+      4,
+      592
+     ],
+     "t_step_ms": 22.09,
+     "wall_ms": 298.02,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 1,
+     "P": 294,
+     "window": [
+      592,
+      1180
+     ],
+     "t_step_ms": 18.37,
+     "wall_ms": 18.6,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 2,
+     "P": 294,
+     "window": [
+      1180,
+      1768
+     ],
+     "t_step_ms": 17.23,
+     "wall_ms": 17.42,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 3,
+     "P": 316,
+     "window": [
+      1768,
+      2378
+     ],
+     "t_step_ms": 22.74,
+     "wall_ms": 232.34,
+     "cudagraph": [
+      320
+     ],
+     "fused": true
+    }
+   ],
+   "first_token_ms": 0.02,
+   "final_to_first_token_ms": 232.36
+  },
+  {
+   "it": 1,
+   "rounds": [
+    {
+     "r": 0,
+     "P": 294,
+     "window": [
+      4,
+      592
+     ],
+     "t_step_ms": 17.14,
+     "wall_ms": 53.2,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 1,
+     "P": 294,
+     "window": [
+      592,
+      1180
+     ],
+     "t_step_ms": 16.91,
+     "wall_ms": 17.1,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 2,
+     "P": 294,
+     "window": [
+      1180,
+      1768
+     ],
+     "t_step_ms": 17.14,
+     "wall_ms": 17.32,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 3,
+     "P": 316,
+     "window": [
+      1768,
+      2378
+     ],
+     "t_step_ms": 19.03,
+     "wall_ms": 22.58,
+     "cudagraph": [
+      320
+     ],
+     "fused": true
+    }
+   ],
+   "first_token_ms": 0.01,
+   "final_to_first_token_ms": 22.59
+  },
+  {
+   "it": 2,
+   "rounds": [
+    {
+     "r": 0,
+     "P": 294,
+     "window": [
+      4,
+      592
+     ],
+     "t_step_ms": 17.06,
+     "wall_ms": 52.06,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 1,
+     "P": 294,
+     "window": [
+      592,
+      1180
+     ],
+     "t_step_ms": 16.95,
+     "wall_ms": 17.12,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 2,
+     "P": 294,
+     "window": [
+      1180,
+      1768
+     ],
+     "t_step_ms": 17.05,
+     "wall_ms": 17.22,
+     "cudagraph": [
+      304
+     ],
+     "fused": false
+    },
+    {
+     "r": 3,
+     "P": 316,
+     "window": [
+      1768,
+      2378
+     ],
+     "t_step_ms": 19.89,
+     "wall_ms": 26.45,
+     "cudagraph": [
+      320
+     ],
+     "fused": true
+    }
+   ],
+   "first_token_ms": 0.03,
+   "final_to_first_token_ms": 26.48
+  }
+ ],
+ "profile": {
+  "wall_ms": 26.44677273929119,
+  "gpu_kernel_ms": 41.69058999999998,
+  "gpu_idle_ms": -15.243817260708788,
+  "families": {
+   "other": {
+    "ms": 21.32,
+    "launches": 263
+   },
+   "gemm": {
+    "ms": 10.99,
+    "launches": 421
+   },
+   "attention": {
+    "ms": 3.38,
+    "launches": 50
+   },
+   "elementwise": {
+    "ms": 3.03,
+    "launches": 843
+   },
+   "gdn": {
+    "ms": 1.85,
+    "launches": 110
+   },
+   "moe": {
+    "ms": 0.86,
+    "launches": 180
+   },
+   "copy": {
+    "ms": 0.27,
+    "launches": 140
+   }
+  },
+  "copies": {
+   "h2d": 25,
+   "d2h": 7,
+   "d2d": 105
+  },
+  "scopes": {
+   "appcorr.metadata": {
+    "cpu_ms": 0.0,
+    "count": 1
+   },
+   "appcorr.layers": {
+    "cpu_ms": 0.0,
+    "count": 1
+   },
+   "appcorr.rescan": {
+    "cpu_ms": 0.0,
+    "count": 30
+   }
+  },
+  "top_kernels": [
+   {
+    "ms": 17.703,
+    "n": 1,
+    "name": "appcorr.layers"
+   },
+   {
+    "ms": 5.735,
+    "n": 40,
+    "name": "bmm_Bfloat16_Bfloat16Bfloat16_Fp32_t128x16x128u2_s4_et128x16_m128x16x16_c1x1x1_rM_BN_trans"
+   },
+   {
+    "ms": 2.937,
+    "n": 40,
+    "name": "bmm_Bfloat16_Bfloat16Bfloat16_Fp32_t128x16x128_s5_et128x16_m128x16x16_c1x1x1_rM_BN_transOu"
+   },
+   {
+    "ms": 2.518,
+    "n": 30,
+    "name": "appcorr.rescan"
+   },
+   {
+    "ms": 1.774,
+    "n": 30,
+    "name": "vllm::qwen_gdn_attention_core"
+   },
+   {
+    "ms": 1.285,
+    "n": 30,
+    "name": "kernel_cutlass_kernel_flashinfergdn_kernelsblackwellgated_delta_net_chunkedGatedDeltaNetCh"
+   },
+   {
+    "ms": 0.803,
+    "n": 10,
+    "name": "vllm::unified_attention_with_output"
+   },
+   {
+    "ms": 0.803,
+    "n": 10,
+    "name": "fmhaSm100fKernel_QkvBfloat16OBfloat16H256PagedKvCausalP32VarSeqQ8Kv128PersistentSwapsAbFor"
+   },
+   {
+    "ms": 0.746,
+    "n": 90,
+    "name": "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native:"
+   },
+   {
+    "ms": 0.746,
+    "n": 90,
+    "name": "aten::_index_put_impl_"
+   },
+   {
+    "ms": 0.497,
+    "n": 30,
+    "name": "nvjet_sm100_tst_256x128_64x5_2x1_2cta_v_bz_TNT"
+   },
+   {
+    "ms": 0.47,
+    "n": 1,
+    "name": "appcorr.metadata"
+   },
+   {
+    "ms": 0.437,
+    "n": 40,
+    "name": "nvjet_sm100_tst_128x40_64x10_1x4_h_bz_TNT"
+   },
+   {
+    "ms": 0.369,
+    "n": 30,
+    "name": "_causal_conv1d_fwd_kernel"
+   },
+   {
+    "ms": 0.291,
+    "n": 156,
+    "name": "aten::copy_"
+   },
+   {
+    "ms": 0.246,
+    "n": 40,
+    "name": "void moe::dev::routing::routingIndicesCoopKernel<moe::dev::routing::routingCustom::KernelP"
+   },
+   {
+    "ms": 0.239,
+    "n": 40,
+    "name": "nvjet_sm100_tst_64x40_64x16_1x4_h_bz_TNT"
+   },
+   {
+    "ms": 0.212,
+    "n": 40,
+    "name": "nvjet_sm100_tst_64x16_64x16_2x4_2cta_h_bz_TNT"
+   },
+   {
+    "ms": 0.199,
+    "n": 105,
+    "name": "Memcpy DtoD (Device -> Device)"
+   },
+   {
+    "ms": 0.191,
+    "n": 40,
+    "name": "void moe::dev::finalize::finalizeKernelVecLoad<moe::dev::finalize::KernelParams<cutlass::b"
+   },
+   {
+    "ms": 0.183,
+    "n": 40,
+    "name": "nvjet_sm100_tst_32x64_64x16_4x1_v_bz_splitK_TNN"
+   },
+   {
+    "ms": 0.18,
+    "n": 40,
+    "name": "nvjet_sm100_tst_64x80_64x16_2x2_2cta_h_bz_TNT"
+   },
+   {
+    "ms": 0.166,
+    "n": 70,
+    "name": "void cublasLt::splitKreduce_kernel<32, 16, int, float, __nv_bfloat16, float, __nv_bfloat16"
+   },
+   {
+    "ms": 0.149,
+    "n": 1,
+    "name": "nvjet_sm100_tst_192x8_64x8_2x1_v_bz_TNT"
+   },
+   {
+    "ms": 0.149,
+    "n": 1,
+    "name": "aten::mm"
+   }
+  ],
+  "n_launches": 2007,
+  "P": 316,
+  "window": [
+   1768,
+   2378
+  ],
+  "t_step_ms": 19.885849207639694
+ }
+}

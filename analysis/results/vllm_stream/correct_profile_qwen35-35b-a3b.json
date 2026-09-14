@@ -1,0 +1,377 @@
+{
+ "_meta": {
+  "model": "Qwen/Qwen3.5-35B-A3B",
+  "N": 2379,
+  "lo": 4,
+  "G": 2352,
+  "g": 4,
+  "keep": 0.5,
+  "staged": false,
+  "cudagraph": true,
+  "max_num_seqs": 1024
+ },
+ "rounds": [
+  {
+   "it": 0,
+   "rounds": [
+    {
+     "r": 0,
+     "P": 294,
+     "window": [
+      4,
+      592
+     ],
+     "t_step_ms": 23.35,
+     "wall_ms": 266.89,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 1,
+     "P": 294,
+     "window": [
+      592,
+      1180
+     ],
+     "t_step_ms": 17.78,
+     "wall_ms": 18.5,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 2,
+     "P": 294,
+     "window": [
+      1180,
+      1768
+     ],
+     "t_step_ms": 16.98,
+     "wall_ms": 17.66,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 3,
+     "P": 316,
+     "window": [
+      1768,
+      2378
+     ],
+     "t_step_ms": 29.6,
+     "wall_ms": 30.83,
+     "cudagraph": [
+      320
+     ]
+    }
+   ],
+   "first_token_ms": 221.57
+  },
+  {
+   "it": 1,
+   "rounds": [
+    {
+     "r": 0,
+     "P": 294,
+     "window": [
+      4,
+      592
+     ],
+     "t_step_ms": 17.0,
+     "wall_ms": 53.46,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 1,
+     "P": 294,
+     "window": [
+      592,
+      1180
+     ],
+     "t_step_ms": 16.77,
+     "wall_ms": 17.48,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 2,
+     "P": 294,
+     "window": [
+      1180,
+      1768
+     ],
+     "t_step_ms": 16.97,
+     "wall_ms": 17.68,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 3,
+     "P": 316,
+     "window": [
+      1768,
+      2378
+     ],
+     "t_step_ms": 17.74,
+     "wall_ms": 18.88,
+     "cudagraph": [
+      320
+     ]
+    }
+   ],
+   "first_token_ms": 5.73
+  },
+  {
+   "it": 2,
+   "rounds": [
+    {
+     "r": 0,
+     "P": 294,
+     "window": [
+      4,
+      592
+     ],
+     "t_step_ms": 16.96,
+     "wall_ms": 52.78,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 1,
+     "P": 294,
+     "window": [
+      592,
+      1180
+     ],
+     "t_step_ms": 16.72,
+     "wall_ms": 17.4,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 2,
+     "P": 294,
+     "window": [
+      1180,
+      1768
+     ],
+     "t_step_ms": 16.9,
+     "wall_ms": 17.57,
+     "cudagraph": [
+      304
+     ]
+    },
+    {
+     "r": 3,
+     "P": 316,
+     "window": [
+      1768,
+      2378
+     ],
+     "t_step_ms": 19.41,
+     "wall_ms": 20.98,
+     "cudagraph": [
+      320
+     ]
+    }
+   ],
+   "first_token_ms": 7.12
+  }
+ ],
+ "profile": {
+  "wall_ms": 20.984144881367683,
+  "gpu_kernel_ms": 40.589845999999916,
+  "gpu_idle_ms": -19.605701118632233,
+  "families": {
+   "other": {
+    "ms": 20.84,
+    "launches": 254
+   },
+   "gemm": {
+    "ms": 10.85,
+    "launches": 420
+   },
+   "attention": {
+    "ms": 3.38,
+    "launches": 50
+   },
+   "elementwise": {
+    "ms": 2.74,
+    "launches": 740
+   },
+   "gdn": {
+    "ms": 1.85,
+    "launches": 110
+   },
+   "moe": {
+    "ms": 0.7,
+    "launches": 160
+   },
+   "copy": {
+    "ms": 0.22,
+    "launches": 106
+   }
+  },
+  "copies": {
+   "h2d": 9,
+   "d2h": 3,
+   "d2d": 94
+  },
+  "scopes": {
+   "appcorr.metadata": {
+    "cpu_ms": 0.0,
+    "count": 1
+   },
+   "appcorr.layers": {
+    "cpu_ms": 0.0,
+    "count": 1
+   },
+   "appcorr.rescan": {
+    "cpu_ms": 0.0,
+    "count": 30
+   }
+  },
+  "top_kernels": [
+   {
+    "ms": 17.609,
+    "n": 1,
+    "name": "appcorr.layers"
+   },
+   {
+    "ms": 5.738,
+    "n": 40,
+    "name": "bmm_Bfloat16_Bfloat16Bfloat16_Fp32_t128x16x128u2_s4_et128x16_m128x16x16_c1x1x1_rM_BN_trans"
+   },
+   {
+    "ms": 2.943,
+    "n": 40,
+    "name": "bmm_Bfloat16_Bfloat16Bfloat16_Fp32_t128x16x128_s5_et128x16_m128x16x16_c1x1x1_rM_BN_transOu"
+   },
+   {
+    "ms": 2.465,
+    "n": 30,
+    "name": "appcorr.rescan"
+   },
+   {
+    "ms": 1.775,
+    "n": 30,
+    "name": "vllm::qwen_gdn_attention_core"
+   },
+   {
+    "ms": 1.288,
+    "n": 30,
+    "name": "kernel_cutlass_kernel_flashinfergdn_kernelsblackwellgated_delta_net_chunkedGatedDeltaNetCh"
+   },
+   {
+    "ms": 0.802,
+    "n": 10,
+    "name": "vllm::unified_attention_with_output"
+   },
+   {
+    "ms": 0.802,
+    "n": 10,
+    "name": "fmhaSm100fKernel_QkvBfloat16OBfloat16H256PagedKvCausalP32VarSeqQ8Kv128PersistentSwapsAbFor"
+   },
+   {
+    "ms": 0.742,
+    "n": 92,
+    "name": "aten::_index_put_impl_"
+   },
+   {
+    "ms": 0.742,
+    "n": 90,
+    "name": "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native:"
+   },
+   {
+    "ms": 0.498,
+    "n": 30,
+    "name": "nvjet_sm100_tst_256x128_64x5_2x1_2cta_v_bz_TNT"
+   },
+   {
+    "ms": 0.436,
+    "n": 40,
+    "name": "nvjet_sm100_tst_128x40_64x10_1x4_h_bz_TNT"
+   },
+   {
+    "ms": 0.41,
+    "n": 1,
+    "name": "appcorr.metadata"
+   },
+   {
+    "ms": 0.368,
+    "n": 30,
+    "name": "_causal_conv1d_fwd_kernel"
+   },
+   {
+    "ms": 0.25,
+    "n": 40,
+    "name": "void moe::dev::routing::routingIndicesCoopKernel<moe::dev::routing::routingCustom::KernelP"
+   },
+   {
+    "ms": 0.238,
+    "n": 40,
+    "name": "nvjet_sm100_tst_64x40_64x16_1x4_h_bz_TNT"
+   },
+   {
+    "ms": 0.226,
+    "n": 110,
+    "name": "aten::copy_"
+   },
+   {
+    "ms": 0.213,
+    "n": 40,
+    "name": "nvjet_sm100_tst_64x16_64x16_2x4_2cta_h_bz_TNT"
+   },
+   {
+    "ms": 0.191,
+    "n": 40,
+    "name": "void moe::dev::finalize::finalizeKernelVecLoad<moe::dev::finalize::KernelParams<cutlass::b"
+   },
+   {
+    "ms": 0.183,
+    "n": 40,
+    "name": "nvjet_sm100_tst_32x64_64x16_4x1_v_bz_splitK_TNN"
+   },
+   {
+    "ms": 0.18,
+    "n": 94,
+    "name": "Memcpy DtoD (Device -> Device)"
+   },
+   {
+    "ms": 0.179,
+    "n": 40,
+    "name": "nvjet_sm100_tst_64x80_64x16_2x2_2cta_h_bz_TNT"
+   },
+   {
+    "ms": 0.168,
+    "n": 70,
+    "name": "void cublasLt::splitKreduce_kernel<32, 16, int, float, __nv_bfloat16, float, __nv_bfloat16"
+   },
+   {
+    "ms": 0.141,
+    "n": 30,
+    "name": "nvjet_sm100_tst_32x64_64x16_2x2_2cta_h_bz_splitK_TNN"
+   },
+   {
+    "ms": 0.128,
+    "n": 40,
+    "name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:"
+   }
+  ],
+  "n_launches": 1840,
+  "P": 316,
+  "window": [
+   1768,
+   2378
+  ],
+  "t_step_ms": 19.41010169684887
+ }
+}
