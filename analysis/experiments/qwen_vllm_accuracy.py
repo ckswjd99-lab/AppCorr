@@ -86,7 +86,22 @@ FAMILIES = ("qwen25vl", "qwen35", "glm46v", "glm53")
 FAMILY_MAX_PX = {"glm46v": 9_633_792, "glm53": 6_272_000}
 
 
-def clean_text(family: str, text: str) -> str:
+# Datasets whose answer is a bounding box, not prose. `clean_text`'s markdown line-selection
+# rule must not run on them: a GLM-5.3 grounding answer often opens with a preamble line
+# ("The user wants to find the bounding box for "the truck" in the image") and the rule keeps
+# that line and throws the box away. Measured 2026-09-15 on the stored rows -- box-less rate vs
+# the "gen_tokens > 100 but pred < 150 chars" truncation signature: refcoco ceiling 43.2 / 40.6 %,
+# refcoco floor 14.7 / 12.9 %, visdrone_det ceiling 52.9 / 51.3 %. They track each other, so the
+# box-less rows are our truncation, not the model failing to answer; row i=0 of the visdrone_det
+# ceiling has finish_reason=stop, gen_tokens=370 and a 62-character pred. It sank GLM-5.3's
+# refcoco ceiling to 39.33 BELOW its own floor at 66.49, and inflated the adaptive arms over the
+# ceiling on visdrone_det (on the 173 rows where every arm did emit a box the ordering is the
+# ordinary floor 37.57 < adaptive 48.55 < ceiling 50.29). Qwen3.5 and GLM-4.6V are untouched:
+# 0.0 % on all 36 of their box arms -- they do not open with a preamble on grounding.
+GROUNDING_DATASETS = ("refcoco", "visdrone_det")
+
+
+def clean_text(family: str, text: str, dataset: str = "") -> str:
     """Model-family answer normalisation applied before scoring. GLM-4.6V wraps its final answer
     in `<|begin_of_box|>...<|end_of_box|>`; every MCQ scorer takes the FIRST A-D letter of the
     upper-cased text, so the 'B' of `<|BEGIN_OF_BOX|>` scored every V*Bench answer as B
@@ -119,6 +134,8 @@ def clean_text(family: str, text: str) -> str:
         # +202/-0, ChartQA +30/-2, VisDrone Count +50/-34 (the losses are counting narratives
         # whose old score came from matching a list index, not an answer), and GLM-4.6V moves by
         # one row in 9,000 -- it does not use this format, so the rule must not disturb it.
+        if dataset in GROUNDING_DATASETS:
+            return text          # the box may sit on any line; let _parse_bbox see all of them
         lines = [l for l in text.split("\n") if l.strip()]
         solo = [m.group(1).strip() for m in (_ONLY_BOLD.fullmatch(l) for l in lines) if m]
         if len(lines) > 1 and len(solo) == 1:
@@ -670,7 +687,7 @@ def main():
                     torch.cuda.empty_cache()
                     skip(i, "oom")
                     continue
-                record(i, clean_text(args.family, proc.tokenizer.decode(toks, skip_special_tokens=True)), gold, size, extra)
+                record(i, clean_text(args.family, proc.tokenizer.decode(toks, skip_special_tokens=True), args.dataset), gold, size, extra)
         else:
             inflight = deque()
 
@@ -752,7 +769,7 @@ def main():
                               "gen_tokens": len(res["token_ids"]),
                               "finish_reason": res["finish_reason"],
                               "t_client_done_ms": (time.perf_counter() - t_start) * 1e3})
-                record(i, clean_text(args.family, res["text"]), gold, size, extra)
+                record(i, clean_text(args.family, res["text"], args.dataset), gold, size, extra)
 
             t_iter = None
             for k, i in enumerate(pending):
