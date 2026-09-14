@@ -1398,7 +1398,11 @@ IL_KEEPS = [1.0, 0.5, 0.25]
 # x ~1.95x, y ~1.09x theirs, and the arm scores 0.22 -- so every box-metric arm of that model
 # scores ~0 whatever the schedule does.  The rows stay but render empty: an empty row says "not
 # measured", a 0.22 floor says "this model cannot detect", and only the first is true.
-IL_WITHHELD = {("_glm-5.3-flash", "visdrone_det"), ("_glm-5.3-flash", "refcoco")}
+# GLM-5.3 VisDrone Det came back 2026-09-14: its "boxes in a frame the scorer does not share"
+# was our own unconditional 0-1000 rescale (GROUNDING_COORDS, qwen_vllm_accuracy.py). Floor
+# 20.54, ceiling 21.43, adaptive 27.01/25.67 -- in family range, so the cell prints.
+# RefCOCO stays withheld only until its four arms finish (running, due ~08:00).
+IL_WITHHELD = {("_glm-5.3-flash", "refcoco")}
 # Single CELLS withheld: (model slug, dataset, cell key, k).  The 122B V* adaptive Crit. Lat. at
 # the 0.50 target is produced by the server's pseudo-sequence cap, not by the schedule.  Adaptive
 # holds the mean k (0.501 measured) but raises the per-band MAXIMUM -- max |P_r| median 589 vs the

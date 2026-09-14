@@ -1398,6 +1398,32 @@
    "p05": 0.125,
    "p95": 0.471,
    "source": "realised on the arm's own rows (B200-8 chain); theta confirmed against glm53_adapt_pA5/<ds>_sim.log"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "visdrone_det",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.5,
+   "theta": 0.0434163,
+   "realised_mean_k": 0.4987,
+   "p05": 0.251,
+   "p95": 0.754,
+   "source": "realised on the arm's own rows (B200-8, 2026-09-14 night, after the GROUNDING_COORDS pixel-frame fix); theta from the 36-image unified_staged dump"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash",
+   "dataset": "visdrone_det",
+   "filter": "pyr",
+   "schedule": "unified_staged",
+   "bucket": 8,
+   "target_k": 0.25,
+   "theta": 0.0848246,
+   "realised_mean_k": 0.2492,
+   "p05": 0.125,
+   "p95": 0.407,
+   "source": "realised on the arm's own rows (B200-8, 2026-09-14 night, after the GROUNDING_COORDS pixel-frame fix); theta from the 36-image unified_staged dump"
   }
  ]
 }
