@@ -99,6 +99,17 @@ CUDAGRAPH = _os.environ.get("APPCORR_CORRECT_CUDAGRAPH", "1") == "1"   # gate g7
 # Diagnostic: pad |P| to the capture size exactly as the graph path does, but run eager
 # (isolates the padded-M kernel selection from the graph replay itself). Gate g7 only.
 PAD_EAGER = _os.environ.get("APPCORR_CORRECT_PAD_EAGER", "0") == "1"
+# GLM-5.3 (sparse-MLA + KDA): let the full-depth correct step dispatch a PIECEWISE graph too.
+# OFF by default -- the family has never been gated on the graph path.  Under this nightly's
+# breakable cudagraphs (VLLM_USE_BREAKABLE_CUDAGRAPH defaults ON, compilation mode NONE) the
+# `@eager_break_during_capture` ops -- KDA `_forward`, the sparse indexer, MLA attention -- are
+# re-invoked eagerly on every replay, so the side-buffer / indexer hooks patched onto them run
+# with the live `_ST` / indexer context exactly as in eager mode; capture itself happens only at
+# warmup (MODE_NONE), never under a correcting request.  What differs from the Qwen graph path
+# is only the positions buffer (1-D `positions`, no M-RoPE).  Gate before trusting: graph vs
+# padded-eager (APPCORR_CORRECT_PAD_EAGER=1) judged against this model's own A-vs-A band --
+# it is not repeatable run to run, so a bitwise gate is void here (2026-09-14).
+GLM53_CUDAGRAPH = _os.environ.get("APPCORR_GLM53_CUDAGRAPH", "0") == "1"
 # Fused hold-back (memo §7 item 14). The final round's correct step also computes the held-back
 # row N-1 -- one more pseudo-sequence at the end of the batch, fed the request's stored
 # embedding -- and commits the DeltaNet state past it, so the engine step that releases the
@@ -1701,12 +1712,14 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
 
     # CUDA-graph dispatch (full depth only: the partial-depth walks run the eager layer loop)
     cg_mode, cg_desc, n_pad = CUDAGraphMode.NONE, None, P
-    if glm53_ctx is not None:
-        # AppCorr/M: no CUDA graph on a sparse-MLA decoder.  Two reasons, both hard: (i) the
-        # indexer rewrite runs per round and writes two caches from Python, which a captured
-        # graph cannot replay; (ii) the graph path pads through `self.mrope_positions.gpu`, and
-        # GLM-5.3 has no M-RoPE, so that buffer is not the one the model reads.  The stock op is
-        # `@eager_break_during_capture` for the same reason on the engine's own path.
+    if glm53_ctx is not None and not GLM53_CUDAGRAPH:
+        # AppCorr/M: no CUDA graph on a sparse-MLA decoder by default.  The two reasons first
+        # recorded here were (i) the per-round indexer rewrite writes two caches from Python and
+        # (ii) the graph path pads through `self.mrope_positions.gpu`, which this model does not
+        # read.  Re-read 2026-09-14: (ii) is a buffer choice (handled below by `uses_mrope`), and
+        # (i) does not bind under breakable-cudagraph replay, where the decorated ops -- and the
+        # hooks patched onto them -- run eagerly every replay (see GLM53_CUDAGRAPH).  Kept OFF
+        # until the graph path is gated on this family; APPCORR_GLM53_CUDAGRAPH=1 opts in.
         pass
     elif CUDAGRAPH and not from_frontier and tuple(layers) == (0, num_layers(self)):
         cg_mode, cg_desc = self.cudagraph_dispatcher.dispatch(
@@ -1715,12 +1728,20 @@ def _correct_sub(self: GPUModelRunner, req_id: str, sb: SideBuffer, positions: t
             n_pad = int(cg_desc.num_tokens)
             # the captured graphs read the runner's persistent input buffers (the same ones
             # `execute_model` refreshes for every scheduled step, so nothing leaks)
-            emb_buf, pos_buf = self.inputs_embeds.gpu, self.mrope_positions.gpu
+            emb_buf = self.inputs_embeds.gpu
             emb_buf[:P].copy_(inputs_embeds)
             emb_buf[P:n_pad].zero_()
-            pos_buf[:, :P].copy_(positions_gpu)
-            pos_buf[:, P:n_pad].zero_()
-            inputs_embeds, positions_gpu = emb_buf[:n_pad], pos_buf[:, :n_pad]
+            if self.uses_mrope:                      # Qwen: [3, N] M-RoPE positions
+                pos_buf = self.mrope_positions.gpu
+                pos_buf[:, :P].copy_(positions_gpu)
+                pos_buf[:, P:n_pad].zero_()
+                positions_gpu = pos_buf[:, :n_pad]
+            else:                                    # GLM-5.3: flat [N] positions
+                pos_buf = self.positions.gpu
+                pos_buf[:P].copy_(positions_gpu)
+                pos_buf[P:n_pad].zero_()
+                positions_gpu = pos_buf[:n_pad]
+            inputs_embeds = emb_buf[:n_pad]
             if PAD_EAGER:   # diagnostic: same padding, eager execution
                 cg_mode, cg_desc = CUDAGraphMode.NONE, None
         else:
