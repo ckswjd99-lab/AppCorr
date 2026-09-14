@@ -396,7 +396,25 @@ def _patch_gdn_class(mods: list) -> bool:
         # pass-through target preserves the eager break in MODE_NONE.
         if _ORIG_KDA_FORWARD is None:
             _ORIG_KDA_FORWARD = cls._forward
-            cls._forward = _kda_forward_patch
+            # Install OUR patch as the breakable-cudagraph break callable.  The stock
+            # `_forward` is `@eager_break_during_capture`; at capture the decorator records the
+            # function it wraps -- i.e. whatever is called at that seam -- as the callable that
+            # is re-invoked eagerly on every replay.  With the plain patch installed, the seam
+            # reached the decorated ORIGINAL through our pass-through, so the original was
+            # recorded and the patch was skipped on every replay: no side-buffer capture on a
+            # replayed approx pass, no re-scan on a replayed correct round (graph arm of the
+            # 2026-09-14 gate: every row '!', final round 11 ms -- the graph replayed the
+            # dummy-run work).  Wrapping the patch itself makes it the recorded callable, and
+            # `_kda_raw()` below calls the undecorated original inside it.  `add_eager` runs the
+            # break with `_capturing` False, so a nested decorated call could not double-register
+            # anyway; the raw call is just cheaper.  On an eager server (no capture context) the
+            # wrapper is a pass-through, and when breakable graphs are off the decorator returns
+            # the function unchanged.
+            try:
+                from vllm.compilation.breakable_cudagraph import eager_break_during_capture
+                cls._forward = eager_break_during_capture(_kda_forward_patch)
+            except ImportError:            # older vLLM: no breakable graphs, plain patch
+                cls._forward = _kda_forward_patch
             _KDA_PATCHED.append(cls)
     _GDN, _GDN_FLAVOR = True, flavor
     return True
@@ -486,7 +504,13 @@ def active() -> bool:
 # ---------------------------------------------------------------------------------------------
 
 _ORIG_FORWARD_CORE = None       # QwenGatedDeltaNetAttention._forward_core
-_ORIG_KDA_FORWARD = None        # Glm5NextLinearAttention._forward
+_ORIG_KDA_FORWARD = None        # Glm5NextLinearAttention._forward (the decorated method)
+
+
+def _kda_raw(self, **kw):
+    """The stock KDA `_forward` with its `@eager_break_during_capture` layer removed (the
+    decorator keeps the original under `__wrapped__`); our patch is the break callable now."""
+    return getattr(_ORIG_KDA_FORWARD, "__wrapped__", _ORIG_KDA_FORWARD)(self, **kw)
 _KDA_PATCHED: list = []         # the classes whose `_forward` we replaced (tests restore them)
 
 
@@ -825,7 +849,7 @@ def _kda_forward_patch(self, qkv_proj_states, g1, beta, core_attn_out):
     """
     mode = _ST.mode
     if mode is MODE_NONE:
-        return _ORIG_KDA_FORWARD(self, qkv_proj_states=qkv_proj_states, g1=g1, beta=beta,
+        return _kda_raw(self, qkv_proj_states=qkv_proj_states, g1=g1, beta=beta,
                                  core_attn_out=core_attn_out)
 
     key = self.prefix
@@ -836,7 +860,7 @@ def _kda_forward_patch(self, qkv_proj_states, g1, beta, core_attn_out):
         for cap in _ST.captures:
             s = slice(cap.tok0, cap.tok0 + cap.ntok)
             cap.sb.store(key, qkv2[s], b2[s], a2[s], cap.pos0)
-        ret = _ORIG_KDA_FORWARD(self, qkv_proj_states=qkv_proj_states, g1=g1, beta=beta,
+        ret = _kda_raw(self, qkv_proj_states=qkv_proj_states, g1=g1, beta=beta,
                                 core_attn_out=core_attn_out)
         for cap in _ST.captures:
             if cap.sb.capture_out:

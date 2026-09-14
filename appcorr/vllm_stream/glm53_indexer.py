@@ -845,7 +845,19 @@ def install(model) -> int:
     for _, _mod, ix in sparse_layers(_decoder_module(model)):
         op = ix.indexer_op
         orig = op._forward_method
-        op._forward_method = _hook(op, orig)
+        # Same reason as the KDA seam in correct.py: `forward_cuda` calls the module-level
+        # `sparse_attn_indexer_kpool`, which is `@eager_break_during_capture`, so with a plain
+        # swap the capture recorded that inner op and skipped this hook on every replay -- no
+        # cache rewrite for the corrected rows under a replayed round.  Wrapping the hook makes
+        # IT the recorded callable; the inner decorated op then runs plainly inside it (a break
+        # executes with `_capturing` False).  Its return is `op.topk_indices_buffer` (or the
+        # stock op's view of it) in every branch, so the address is stable across replays as the
+        # decorator requires.
+        try:
+            from vllm.compilation.breakable_cudagraph import eager_break_during_capture
+            op._forward_method = eager_break_during_capture(_hook(op, orig))
+        except ImportError:
+            op._forward_method = _hook(op, orig)
         _HOOKED.append((op, orig))
     return len(_HOOKED)
 
