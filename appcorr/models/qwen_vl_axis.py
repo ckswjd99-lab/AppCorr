@@ -96,6 +96,35 @@ def bucket_quota(n_over: int, n_band: int, bucket: int) -> int:
     return min(max(-(-q * n_band // bucket), 1), n_band)
 
 
+def bucket_quota_lattice(n_over: int, n_band: int, bucket: int, lattice, extra: int) -> int:
+    """`bucket_quota`, then lifted so the round it feeds lands ON a captured CUDA-graph size.
+
+    The engine pads a correct round to the next captured size and runs the padded rows for
+    free, so the rows between the bucketed count and that size are compute already paid for:
+    fill them with the next-highest-scoring groups instead of zeros.  ``extra`` is the number
+    of rows the round carries besides this band's groups (the last band's text suffix), so the
+    lattice applies to the ROUND size ``q + extra``, not to ``q`` alone:
+
+        q0 = bucket_quota(n_over, n_band, bucket)          the standing rule (never below it)
+        L  = min{l in lattice : l >= q0 + extra}           the size the round would pad to
+        q  = min(n_band, L - extra)                        fill the pad with real groups
+
+    No lattice point at or above ``q0 + extra`` (the round exceeds the ladder and sub-batches
+    anyway) -> ``q0``.  Monotone non-increasing in theta like `bucket_quota`, and >= it, so
+    accuracy can only go up; opt-in (``axis.pscore_lattice``), because a different count is a
+    different selected set and every calibrated theta is tied to the rule it was solved under.
+    """
+    q0 = bucket_quota(n_over, n_band, bucket)
+    if not lattice or n_band <= 0:
+        return q0
+    extra = max(0, int(extra))
+    target = q0 + extra
+    fits = [int(l) for l in lattice if int(l) >= target]
+    if not fits:
+        return q0
+    return max(q0, min(int(n_band), min(fits) - extra))
+
+
 class QwenVLStreamingAxis(nn.Module):
     # Family default: the text model consumes M-RoPE (3, T) positions. GLM-5.3-Flash sets
     # this False (see the instance attribute's comment in `__init__`).
@@ -168,6 +197,10 @@ class QwenVLStreamingAxis(nn.Module):
         self.pscore_threshold: Optional[float] = None
         self.pscore_bucket = 8
         self.pscore_score = "rms"
+        # Opt-in: the captured CUDA-graph sizes; the LAST band's count is lifted so its round
+        # (groups + text suffix) lands exactly on one of them (`bucket_quota_lattice`).  None =
+        # the standing 1/bucket rule for every band (every calibrated theta in the table).
+        self.pscore_lattice: Optional[Tuple[int, ...]] = None
         self._pixel_std_cache: Optional[torch.Tensor] = None
 
     # --- per-model hooks (subclasses) ----------------------------------------------------------- #
@@ -877,7 +910,13 @@ class QwenVLStreamingAxis(nn.Module):
                         # topk); the sync-free form is the standing follow-up item, same as
                         # the FP4 threshold path's.
                         n_over = int((score[g0:g1] >= theta).sum())
-                        q = bucket_quota(n_over, g1 - g0, self.pscore_bucket)
+                        if self.pscore_lattice and r == last_band:
+                            # the final round carries the text suffix [lo+G, seq-1) too
+                            extra = max(0, (seq - 1) - (lo + n_groups_total))
+                            q = bucket_quota_lattice(n_over, g1 - g0, self.pscore_bucket,
+                                                     self.pscore_lattice, extra)
+                        else:
+                            q = bucket_quota(n_over, g1 - g0, self.pscore_bucket)
                         band_over.append(n_over)
                         band_selected.append(q)
                     else:
@@ -1021,6 +1060,7 @@ class QwenVLStreamingAxis(nn.Module):
             stats["keep_mode"] = "auto"
             stats["theta"] = float(theta)
             stats["pscore_bucket"] = int(self.pscore_bucket)
+            stats["pscore_lattice"] = (list(self.pscore_lattice) if self.pscore_lattice else None)
             stats["pscore_score"] = self.pscore_score
             stats["pscore_rms_units"] = rms_units
             stats["n_groups"] = int(n_groups_total)

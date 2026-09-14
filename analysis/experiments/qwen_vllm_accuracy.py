@@ -203,7 +203,8 @@ def keep_suffix(args) -> str:
         # bucket 8 is the default lattice and keeps the bare tag; a coarser lattice (user
         # 2026-09-13: "1/4로 올려서도 해봐라") is a different arm and says so in the name
         b = int(args.pscore_bucket)
-        return f"_auto{args.pscore_threshold:g}" + ("" if b == 8 else f"b{b}")
+        lat = "_lat" if getattr(args, "pscore_lattice", None) else ""
+        return f"_auto{args.pscore_threshold:g}" + ("" if b == 8 else f"b{b}") + lat
     return f"_k{args.keep:.2f}" if args.keep < 1.0 else ""
 
 
@@ -282,6 +283,12 @@ def main():
                     help="--keep auto: the GLOBAL score cut theta (one number for every image "
                          "and dataset). Calibrate it offline against a target mean k with "
                          "analysis/experiments/threshold_sim.py on a pscore_dump.py npz")
+    ap.add_argument("--pscore-lattice", type=str, default=None,
+                    help="opt-in: comma-separated captured CUDA-graph sizes; the last band's "
+                         "adaptive count is lifted so its round (groups + text suffix) lands on "
+                         "one of them (appcorr.models.qwen_vl_axis.bucket_quota_lattice). Arm "
+                         "tag gains `_lat`. Thetas must be calibrated with the same lattice "
+                         "(threshold_sim.py --lattice)")
     ap.add_argument("--pscore-bucket", type=int, default=8,
                     help="--keep auto: the 1/b lattice each band's corrected count is ceilinged "
                          "onto (and its floor: a band never corrects fewer than ceil(G_r/b))")
@@ -416,6 +423,8 @@ def main():
         axis.pscore_threshold = args.pscore_threshold
         axis.pscore_bucket = args.pscore_bucket
         axis.pscore_score = args.pscore_score
+        if args.pscore_lattice:
+            axis.pscore_lattice = tuple(sorted({int(v) for v in args.pscore_lattice.split(",") if v.strip()}))
     if args.no_open_walk:
         axis.engine_open_walk = False
     tmpl_kw = {"think": True} if (args.think and args.family in ("qwen35", "glm46v", "glm53")) else {}
@@ -596,7 +605,7 @@ def main():
                 # Adaptive arm: the per-sample k is a RESULT, not a setting -- without these two
                 # a row file says nothing about what the arm spent (make_eval_table reads
                 # `keep_realised` for the mean/p95 column).
-                for f_ in ("keep_realised", "theta", "pscore_score", "pscore_bucket",
+                for f_ in ("keep_realised", "theta", "pscore_score", "pscore_bucket", "pscore_lattice",
                            "pscore_rms_units", "band_selected", "n_groups"):
                     if f_ in st:
                         extra[f_] = st[f_]

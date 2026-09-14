@@ -1,0 +1,55 @@
+{
+ "lattice": [
+  8,
+  16,
+  32,
+  48,
+  64,
+  80,
+  96,
+  112,
+  128,
+  160,
+  192,
+  224,
+  256,
+  320,
+  384,
+  448,
+  512,
+  640
+ ],
+ "bucket": 8,
+ "score": "rms",
+ "pscore": "eager",
+ "theta50_lat": {
+  "chartqa": 0.0203064,
+  "vstar": 0.0575774,
+  "textvqa": 0.0402505,
+  "visdrone_count": 0.0453187,
+  "mmvp": 0.053443
+ },
+ "theta25_lat": {
+  "chartqa": 0.111496,
+  "vstar": 0.106838,
+  "textvqa": 0.0871182,
+  "visdrone_count": 0.0849944,
+  "mmvp": 0.102235
+ },
+ "theta50_old": {
+  "chartqa": 0.018935,
+  "vstar": 0.057005,
+  "textvqa": 0.039308,
+  "visdrone_count": 0.0444106,
+  "mmvp": 0.043362
+ },
+ "theta25_old": {
+  "chartqa": 0.104678,
+  "vstar": 0.105332,
+  "textvqa": 0.0858648,
+  "visdrone_count": 0.0829471,
+  "mmvp": 0.075766
+ },
+ "suffix_table": "b200-8_logs/glm53_text_suffix_by_image.json",
+ "npz": "b200-8_logs/pscore_dump_glm53/"
+}
