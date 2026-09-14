@@ -53,7 +53,7 @@ def parse_keep(s: str):
 
 def ktag(k) -> str:
     """Row-file / json key suffix: `k0.50` for a fixed keep, `auto0.0251` for theta (driver's arm_tag)."""
-    return f"auto{k[1]:g}" if isinstance(k, tuple) else f"k{k:.2f}"
+    return (f"auto{k[1]:g}" + ("_lat" if LATTICE else "")) if isinstance(k, tuple) else f"k{k:.2f}"
 
 
 def klt1(k) -> bool:
@@ -62,9 +62,15 @@ def klt1(k) -> bool:
 
 def kdriver(k) -> list:
     if isinstance(k, tuple):
-        return ["--keep", "auto", "--pscore-threshold", f"{k[1]}", "--pscore-bucket", "8",
+        args = ["--keep", "auto", "--pscore-threshold", f"{k[1]}", "--pscore-bucket", "8",
                 "--pscore-score", "rms"]
+        if LATTICE:
+            args += ["--pscore-lattice", LATTICE]
+        return args
     return ["--keep", f"{k}"]
+
+
+LATTICE: str = ""      # set from --pscore-lattice; forwarded to the driver for every auto keep
 OUT_JSON = os.path.join(ROOT, "analysis", "results", "latency", "inprocess_latency.json")
 README = [
     "Single-request (concurrency 1) time-to-first-token medians, ms, for the eval table's Lat. /",
@@ -186,6 +192,9 @@ def main():
     ap.add_argument("--out", default=None, help="driver output dir (default results/latency/probe_<key>)")
     ap.add_argument("--timeout", type=int, default=1200)
     ap.add_argument("--aggregate-only", action="store_true")
+    ap.add_argument("--pscore-lattice", type=str, default=None,
+                    help="opt-in lattice mode for the auto keeps (forwarded to the driver as "
+                         "--pscore-lattice; keys gain `_lat`)")
     ap.add_argument("--pscore", choices=["deferred", "eager"], default="deferred",
                     help="forwarded to the driver (keep<1 arms)")
     ap.add_argument("--push-delay-ms", type=float, default=0.0,
@@ -202,6 +211,8 @@ def main():
                          "'unified_staged' is the tower-inside-the-staging form (memo §7.12), "
                          "whose rows are named interleaved_unified_*")
     a = ap.parse_args()
+    global LATTICE
+    LATTICE = a.pscore_lattice or ""
     out = a.out or os.path.join(ROOT, "analysis", "results", "latency", f"probe_{a.key}")
     os.makedirs(out, exist_ok=True)
     slug = a.model.split("/")[-1].lower()

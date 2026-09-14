@@ -32,7 +32,16 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
-from appcorr.models.qwen_vl_axis import bucket_quota        # noqa: E402  (the runtime's own rule)
+from appcorr.models.qwen_vl_axis import bucket_quota, bucket_quota_lattice   # noqa: E402  (the runtime's own rules)
+
+LATTICE = None          # --lattice: captured graph sizes; the LAST band is lifted onto them
+SUFFIX = {}             # --suffix-json: image_id -> text-suffix rows of the final round
+
+
+def _quota(n_over, n_band, bucket, img, r, last):
+    if LATTICE and r == last:
+        return bucket_quota_lattice(n_over, n_band, bucket, LATTICE, SUFFIX.get(int(img["image_id"]), 0))
+    return bucket_quota(n_over, n_band, bucket)
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -68,9 +77,11 @@ def realised_k(images, theta: float, bucket: int, score: str, pscore: str) -> np
     out = np.empty(len(images), np.float64)
     for j, img in enumerate(images):
         sel = tot = 0
-        for _, s in image_scores(img, score, pscore):
+        bands = image_scores(img, score, pscore)
+        last = max((r for r, s in bands if s.size), default=-1)
+        for r, s in bands:
             n_over = int(np.count_nonzero(s >= theta))
-            sel += bucket_quota(n_over, s.size, bucket)
+            sel += _quota(n_over, s.size, bucket, img, r, last)
             tot += s.size
         out[j] = sel / max(1, tot)
     return out
@@ -88,9 +99,11 @@ def floor_of(images, bucket: int) -> float:
     ks = []
     for img in images:
         sel = tot = 0
-        for r in sorted(set(int(b) for b in img["band"])):
+        rs = sorted(set(int(b) for b in img["band"]))
+        last = max((r for r in rs if np.count_nonzero(img["band"] == r)), default=-1)
+        for r in rs:
             g = int(np.count_nonzero(img["band"] == r))
-            sel += bucket_quota(0, g, bucket)
+            sel += _quota(0, g, bucket, img, r, last)
             tot += g
         ks.append(sel / max(1, tot))
     return float(np.mean(ks))
@@ -262,7 +275,24 @@ def main():
     ap.add_argument("--grid", type=int, default=25)
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--out", default=None, help="also write the text table here")
+    ap.add_argument("--lattice", type=str, default=None,
+                    help="opt-in: comma-separated captured graph sizes; the last band's count is "
+                         "lifted onto them with the image's text suffix (bucket_quota_lattice), "
+                         "exactly as the runtime does with axis.pscore_lattice")
+    ap.add_argument("--suffix-json", type=str, default=None,
+                    help="{dataset: {image_id: text-suffix rows}} for --lattice (final-round rows "
+                         "besides the band's groups)")
     a = ap.parse_args()
+    global LATTICE, SUFFIX
+    if a.lattice:
+        LATTICE = tuple(sorted({int(v) for v in a.lattice.split(",") if v.strip()}))
+    if a.suffix_json:
+        with open(a.suffix_json) as fh:
+            allsuf = json.load(fh)
+        SUFFIX = {}
+        for path in a.npz:
+            meta_ds = json.loads(str(np.load(path, allow_pickle=False)["meta"])).get("dataset")
+            SUFFIX.update({int(k): int(v) for k, v in allsuf.get(meta_ds, {}).items()})
     if a.selftest:
         sys.exit(selftest())
     if not a.npz:

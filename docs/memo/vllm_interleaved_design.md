@@ -1081,3 +1081,40 @@ streaming on V* / RWQA (35B), above it where the decoder share is large (TextVQA
 163 vs 150 %; 122B V*: 225 vs 145 %) because the unified decoder half is 1.3-1.5x the stock
 prefill; below it on long-prompt InfoVQA 35B (160 vs 170 %). (3) Crit. Lat.: at the interleaved /
 staged level everywhere; on 122B V* 89/66/49 ms vs interleaved 114/68/52 and streaming 86/75/65.
+
+## §7.14 The GDN half is now conditional on the served model (2026-09-12, GLM-4.6V port)
+
+`correct.py` was written for a hybrid decoder and assumed one: `install()` imported
+`QwenGatedDeltaNetAttention` unconditionally, `check_gdn_path` asserted that the model HAS GDN
+layers, and `_correct_sub` asserted a mamba KV-cache group. GLM-4.6V's 46 `Glm4MoeDecoderLayer`s
+are all softmax GQA, so all three fired on a model for which the whole side-buffer half is
+meaningless. Changed (engine behaviour on Qwen3.5 unchanged; `tests/test_correct_gdn_gating.py`
+pins both branches on CPU with fake module trees):
+
+* **Detection is structural, never by name.** `correct.gdn_modules(model)` walks
+  `_decoder_module(model).layers` (`.unwrap()` -> `.language_model` -> `.model` -> `.layers`, which
+  resolves GLM's `Glm4vMoeForConditionalGeneration` -> `Glm4MoeForCausalLM` -> `Glm4MoeModel`
+  exactly as it resolves Qwen3.5's) and calls a layer recurrent iff some submodule has
+  `GatedDeltaNet` in its class MRO. In vLLM 0.28 every GDN class (`GatedDeltaNetAttention` and the
+  Qwen/Olmo/Kimi subclasses) matches that test, so it is equivalent to the old
+  `isinstance(m, GatedDeltaNetAttention)` on Qwen3.5 -- and needs no import when the answer is no.
+* **The `_forward_core` patch is deferred**, because `install()` runs as a vLLM general plugin,
+  before a model exists. It goes on at the first `check_gdn_path` (i.e. `open(correct=True)`) or,
+  as a backstop, the first `execute_model` carrying a side buffer -- both before any capture. The
+  patch is a pure pass-through while `_ST.mode is MODE_NONE`, so deferring it cannot change what a
+  Qwen3.5 run computes (including what a warmup CUDA-graph capture records). A GDN layer of a class
+  other than `QwenGatedDeltaNetAttention` now raises instead of silently no-op'ing.
+* **`check_gdn_path` returns `[]` instead of asserting** when there are no GDN layers; it still
+  refuses `VLLM_GDN_DECODE_KERNEL=cuda` when there are.
+* `_mamba_group_ids` / `_mamba_blocks` return empty, `_correct_sub`'s "no mamba group" assert is
+  conditional on the detection, and `appcorr_rows_step` refuses `replay=True` (gate g1) on a
+  softmax-only decoder -- there is nothing to replay, the correct step IS the softmax path.
+* Consequences for GLM: the side buffer degenerates to the request's bookkeeping (`n`, `lo`/`hi`,
+  the depth-staged frontier buffers), `nbytes()` is the frontier buffers alone, the re-scan window
+  is a no-op, and `appcorr_snapshot`'s `mamba` dict is empty. The `--interleaved` server flag's
+  `VLLM_GDN_DECODE_KERNEL=triton` is irrelevant there; `--max-num-seqs` is no longer capped by the
+  mamba block count, so the 122B recipe's OOM margin does not carry over -- measure it.
+
+Gates for the GLM row: `analysis/experiments/glm46v_correct_gate.py` (`--gate g2` identity,
+`--gate g3` g=1 vs g=4, `--gate flops` the CPU reconcile). No g0/g1 sub-gate exists: they isolate
+the DeltaNet re-scan from the softmax rewrite, and there is no re-scan.

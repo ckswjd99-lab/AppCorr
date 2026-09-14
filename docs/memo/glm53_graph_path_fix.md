@@ -242,3 +242,96 @@ instrumentation; the env-gated profiler call-site wrap and the hook module are s
 b200-8_logs/correct.py.v3_with_profiler, _correct_profile_hook.py.step2).  Final sanity on the
 stripped files: MMVP 4/4 (34.4 ms), chartqa 4/4 (41.0 ms), server log
 "[appcorr] capture_model: recurrent seam=kda indexer ops hooked=11" (glm53_final_sanity/, 20:22).
+
+
+# LATTICE objective (2026-09-14 late evening): recompute count == captured graph size
+
+Goal: a correct round's |P| lands exactly on a captured size (no pad rows), with the pad filled by
+the next-highest-scoring groups instead of zeros -- latency-free accuracy.  Opt-in; the default
+`bucket_quota` (shared by all four models) is untouched.
+
+Design (appcorr/models/qwen_vl_axis.py `bucket_quota_lattice`, `axis.pscore_lattice`):
+  q0 = bucket_quota(n_over, n_band, bucket)   (the standing 1/bucket rule; never below it)
+  L  = min{l in lattice : l >= q0 + extra}    (the size the round would pad to)
+  q  = min(n_band, L - extra)                 (no lattice point -> q0; sub-batches as today)
+applied to the LAST band only -- the only round that is graphed (partial-depth frontier walks are
+eager) and the one that carries the text suffix `extra = (seq-1) - (lo + n_groups)`.  Monotone
+non-increasing in theta and >= q0 by construction (checked on n_band 7/42/85/600).
+Calibration: threshold_sim.py --lattice --suffix-json applies the identical rule (imports it), with
+per-image suffixes joined by dataset index (b200-8_logs/glm53_text_suffix_by_image.json; 36/36
+npz image ids matched on every dataset).  Drivers: --pscore-lattice (accuracy driver, arm tag
+`_lat`, row field pscore_lattice) and latency_probe.py --pscore-lattice (keys `auto<theta>_lat`).
+Ladder: 8 16 32 48 64 80 96 112 128 160 192 224 256 320 384 448 512 640, --max-num-seqs 640
+(V*'s fixed k0.50 band ~585 rows fits; the two withheld V* 0.50 cells become measurable).
+
+Recalibrated thetas (mean realised k at target, 36-image npz, rms, eager pscore, bucket 8):
+
+| dataset | theta50 old -> lattice | theta25 old -> lattice |
+|---|---|---|
+| chartqa        | 0.018935 -> 0.0203064 | 0.104678 -> 0.111496 |
+| vstar          | 0.057005 -> 0.0575774 | 0.105332 -> 0.106838 |
+| textvqa        | 0.039308 -> 0.0402505 | 0.0858648 -> 0.0871182 |
+| visdrone_count | 0.0444106 -> 0.0453187 | 0.0829471 -> 0.0849944 |
+| mmvp           | 0.043362 -> 0.053443  | 0.075766 -> 0.102235 |
+
+(The lift adds rows to the last band, so the global cut moves up to hold the mean k.)
+Accuracy gate, graph server (dense ladder, mns 640), rows lattice_gate/rows:
+
+| arm (same target k) | MMVP unified (300) | chartqa (36) | realised k (MMVP) | final round on a captured size | pad rows (mean) | corrected rows per band, median (last incl. suffix) |
+|---|---|---|---|---|---|---|
+| auto50 old rule (theta 0.043362)            | 83.00 | 97.22 | 0.533 | 17/300  | 8.0 | 6 / 10 / 10 / 42 |
+| auto50 lattice, recalibrated (0.053443_lat) | 81.00 | 94.44 | 0.544 | 210/300 | 1.7 | 4 / 7 / 8 / 48 |
+| auto25 old rule (0.075766)                  | 82.00 | 94.44 | 0.264 | -       | -   | 2 / 4 / 3 / 37 |
+| auto25 lattice, recalibrated (0.102235_lat) | 81.67 | 94.44 | 0.307 | -       | -   | 2 / 2 / 2 / 48 |
+
+Mechanism (why "same target k" is NOT the monotone case on short-image prompts): MMVP's final round
+is dominated by the text suffix (median 45 rows) and its last band holds only a few groups, so the
+lattice lift can add at most those few; recalibrating theta to hold the mean k then REMOVES rows
+from bands 0-2 (6/10/10 -> 4/7/8) to pay for them -- a redistribution, -2.0 pt at auto50 (6 rows of
+300), -0.33 at auto25 (where the lattice floor keeps k at 0.307 > 0.264 anyway).  The monotone
+claim ("the pad filled with real rows is free accuracy") is the OLD theta + lattice
+(lattice_gate_oldtheta/rows): auto50 old theta + lattice = 81.67 (k 0.623, bands 6/10/10/48,
+192/300 on a captured size) vs 83.00 old rule (k 0.533); auto25 old theta + lattice = 80.33 (k
+0.398) vs 82.00 (k 0.264).  So on MMVP the lattice arms sit 0.3-2.0 pt UNDER the old rule with
+equal or MORE corrected rows -- no accuracy gain is visible; the deltas are at or just past the
+model's ~1 pt A-vs-A noise (the old-rule auto50 draw of 83.00 may itself be high; a second sample
+of that pair is queued behind the probe).  ChartQA 36: old 97.22 / 94.44 vs lattice 94.44 / 94.44
+(one row).  Latency probe, lattice mode (dense ladder + 640, mns 640, lattice thetas; key
+glm53_ilu_adaptive_tp2graph_lat) against v3 (8-size ladder, mns 512, old thetas):
+
+| dataset | v3: k0.50 / auto50 / k0.25 / auto25 | lattice: k0.50 / auto50_lat / k0.25 / auto25_lat |
+|---|---|---|
+| chartqa        | 55.2 / 54.2 / 54.9 / 55.8 | 54.0 / 55.3 / 51.9 / 53.0 |
+| textvqa        | 62.1 / 59.5 / 58.0 / 55.0 | 56.8 / 61.0 / 54.7 / 54.5 |
+| visdrone_count | 62.0 / 60.0 / 57.7 / 51.9 | 59.0 / 62.6 / 55.2 / 54.3 |
+| vstar          | [162.5 / 142.9 withheld] / 88.7 / 87.1 | **103.6** (no longer sub-batched at 640) / [146.2 withheld: auto50 band ~820 > 640] / 90.0 / 85.8 |
+
+Reading: the lattice auto arms are a wash (-1 to +3 ms vs the old auto arms -- they correct a few
+more rows, and the round is host-bound, so the removed pad rows buy little); the DENSER LADDER helps
+the fixed keeps by 1-5 ms; the 640 point makes the V* fixed-k0.50 cell measurable (103.6 ms, was
+162.5 sub-batched at 512).  Ceiling pass 21:20-21:27 (full: chartqa 70.4 [unexplained drop from the 98-101 of every earlier
+pass; recorded, not interpreted], vstar 389.2, textvqa 116.7, visdrone_count 119.9).  Result json
+copy: b200-8_logs/inprocess_latency.lat.json (key glm53_ilu_adaptive_tp2graph_lat).
+
+Deliverables (lattice objective; diffs against the shared tree @ 90be55a): b200-8_logs/
+glm53_lattice.qwen_vl_axis.py.diff (+36: bucket_quota_lattice, axis.pscore_lattice, last-band
+application with the text suffix, stats field), glm53_lattice.qwen_vllm_accuracy.py.diff (+11:
+--pscore-lattice, arm tag _lat, row field), glm53_lattice.latency_probe.py.diff (+11: forwarding,
+key tag), glm53_lattice.threshold_sim.py.diff (+32: --lattice, --suffix-json, last-band rule);
+b200-8_logs/theta_lattice/thetas_lattice.json (old and lattice thetas for the five datasets, the
+ladder, the score settings) and glm53_text_suffix_by_image.json.  The default rule and every
+existing theta are untouched (opt-in only).
+Second sample of the auto50 pair (lattice_gate_resample2/rows): old rule 82.67, old theta +
+lattice 82.00 -> two samples each: 83.00 / 82.67 (old rule) vs 81.67 / 82.00 (old theta +
+lattice), means 82.8 vs 81.8.
+
+VERDICT (lattice objective): the pad rows are removed as designed (final round on a captured size
+17/300 -> 210/300, pad rows 8.0 -> 1.7 on MMVP), but the promised free accuracy does not appear on
+GLM-5.3: every lattice arm sits 0.3-2.0 pt under the old rule on MMVP (recalibrated and old-theta
+alike, k equal or higher), i.e. inside the model's ~1 pt A-vs-A noise but never above it, and
+chartqa 36 is one row lower; the latency effect of the lattice itself is a wash (-1..+3 ms) because
+the graphed round is host-bound.  Recommendation: keep the old rule as the default (no campaign
+re-run); land the opt-in code and the thetas for the record; ADOPT the denser ladder with the 640
+point and --max-num-seqs 640 for GLM-5.3 servers -- it costs 0.26 GiB of capture memory (3.18 ->
+3.44 GiB), buys 1-5 ms on the fixed keeps, and makes the withheld V* fixed-k0.50 cell measurable
+(103.6 ms; the auto50 band ~820 rows still exceeds 640 and stays withheld).
