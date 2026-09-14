@@ -74,13 +74,43 @@ def clean_text(family: str, text: str) -> str:
     (2026-09-12 22:37: floor == ceiling == 36.13% = the share of gold B). Free-text scorers would
     keep the sentinels inside `pred` and fail exact match. Strip them, keep everything else."""
     if family in ("glm46v", "glm53"):
+        # GLM-5.3-Flash's chat template never emits the pair (0 hits in chat_template.jinja),
+        # but its tokenizer still carries `<|begin_of_box|>` 154852 / `<|end_of_box|>` 154853 as
+        # added tokens, i.e. the trained wrapping behaviour is still reachable. Stripping is a
+        # no-op when they are absent and saves the whole family from the V*Bench failure mode
+        # (the 'B' of `<|BEGIN_OF_BOX|>` scoring every MCQ answer as B).
         text = text.replace("<|begin_of_box|>", "").replace("<|end_of_box|>", "").strip()
         # GLM answers free-text questions as "The answer is Pinterest." on 52-63% of InfoVQA
-        # rows (2026-09-13); ANLS / exact-match scorers compare the WHOLE string, so the row
-        # scored 37 where the bare answer scores 87, and the k<1 arms (terser) came out above
-        # the ceiling. Keep only what follows the answer prefix, drop one trailing period.
+        # rows (GLM-4.6V, 2026-09-13); ANLS / exact-match compare the WHOLE string, so the row
+        # scored 37 where the bare answer scores 87. Keep what follows the answer prefix, drop
+        # one trailing period.
+        # GLM-5.3-Flash answers free-text questions in MARKDOWN and usually keeps talking:
+        # "**Pinterest**\n\nAccording to the infographic, ..." or, just as often, the reverse
+        # "Looking at the image, I can see one motorcycle ...\n\n**1**".  ANLS / exact match
+        # compare the whole string, so a right answer scored 0.69 (bold markers) or 0.00
+        # (surrounding prose): InfoVQA's CEILING read 58.59 where the answers are worth 87.52,
+        # and the floor was hit harder than the ceiling (a degraded image makes the model more
+        # verbose), which widens the floor-ceiling gap and flatters every technique in between.
+        #
+        # 20-70% of GLM-5.3's free-text rows carry markdown; 7-50% run to several lines.
+        # When exactly ONE line is nothing but a bolded span, that line is the answer wherever it
+        # sits -- first (InfoVQA) or last (VisDrone counting).  With no such line, only a SHORT
+        # first line that is not a lead-in ("...I can count the bicycles:") can be the answer.
+        # Verified on 2026-09-14 over every stored GLM row: InfoVQA +901/-0 rows, TextVQA
+        # +202/-0, ChartQA +30/-2, VisDrone Count +50/-34 (the losses are counting narratives
+        # whose old score came from matching a list index, not an answer), and GLM-4.6V moves by
+        # one row in 9,000 -- it does not use this format, so the rule must not disturb it.
+        lines = [l for l in text.split("\n") if l.strip()]
+        solo = [m.group(1).strip() for m in (_ONLY_BOLD.fullmatch(l) for l in lines) if m]
+        if len(lines) > 1 and len(solo) == 1:
+            text = solo[0]
+        elif len(lines) > 1:
+            first = lines[0].strip()
+            if not first.endswith(":") and len(first) <= 120:
+                text = first
+        text = _BOLD.sub(r"\1", text)
         m = _ANSWER_PREFIX.match(text)
-        if m:
+        if m and m.group(1).strip():
             text = m.group(1).strip()
         text = text.rstrip(".").strip() if "\n" not in text else text
     return text
@@ -88,6 +118,9 @@ def clean_text(family: str, text: str) -> str:
 
 _ANSWER_PREFIX = re.compile(r"^\s*(?:the\s+)?(?:final\s+)?answer\s*(?:is|:)\s*(.+?)\s*$",
                             re.IGNORECASE | re.DOTALL)
+# markdown emphasis GLM-5.3 wraps its answers in, and a line that is NOTHING BUT one such span
+_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_ONLY_BOLD = re.compile(r"\s*\*\*(.+?)\*\*\s*[.:]?\s*$")
 
 def make_axis(family: str, model, proc):
     if family == "qwen25vl":
