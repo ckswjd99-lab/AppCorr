@@ -1407,7 +1407,21 @@ IL_KEEPS = [1.0, 0.5, 0.25]
 # 62-character pred). 52.9 % of ceiling rows had no parseable box; on the 173 rows where every
 # arm did emit one the ordering is the ordinary floor 37.57 < adaptive 48.55 < ceiling 50.29.
 # Both GLM-5.3 box cells stay out until all eight arms are re-run under the fixed scorer.
-IL_WITHHELD = {("_glm-5.3-flash", "refcoco"), ("_glm-5.3-flash", "visdrone_det")}
+# visdrone_det RESTORED 2026-09-15 after the third scorer fix (c7320f9): the arms were re-run
+# with `raw` stored and re-scored from it. As-scored, per the user: floor 21.21 / ceiling 30.13 /
+# adaptive 28.79 (k .50) and 25.67 (k .25). The 512-token cap ends 149 of 448 ceiling rows
+# mid-thought against 9 on the floor, so the as-scored column understates the ceiling and the
+# preservation it implies (95.5 %) is optimistic; on the 289 rows where every arm answered inside
+# the budget the ordering is floor 29.41 < auto25 35.64 < auto50 38.75 < ceiling 45.33. The capped
+# counts travel with the cell in IL_CAPPED and are printed in the caption.
+IL_WITHHELD = {("_glm-5.3-flash", "refcoco")}
+
+# (model slug, dataset) -> rows whose generation hit the max-tokens cap, per arm, for the caption.
+IL_CAPPED = {("_glm-5.3-flash", "visdrone_det"):
+             "GLM-5.3 VisDrone Det is scored as produced under the 512-token cap, which ends "
+             "149 of 448 ceiling rows mid-thought against 9 on the low-resolution arm and 12/6 "
+             "on the adaptive arms; on the 289 rows every arm answered inside the budget the "
+             "ceiling leads the adaptive arm 45.33 vs 38.75 (paired, $p=0.005$)."}
 # Single CELLS withheld: (model slug, dataset, cell key, k).  The 122B V* adaptive Crit. Lat. at
 # the 0.50 target is produced by the server's pseudo-sequence cap, not by the schedule.  Adaptive
 # holds the mean k (0.501 measured) but raises the per-band MAXIMUM -- max |P_r| median 589 vs the
@@ -1688,7 +1702,8 @@ def emit_interleaved_latex() -> str:
              r"fixed budget; the realised mean $\bar k$ is printed under the accuracy. "
              r"Parenthesised cells are reduced-$n$ subsets. GLM-5.3-Flash is served at "
              r"TP$=$2 (328\,GB); its Crit.\ Lat.\ row is measured in graph mode like the others. "
-             r"Schedule definitions, measurement bases and withheld cells: "
+             + "".join(" " + v for v in IL_CAPPED.values()) +
+             r" Schedule definitions, measurement bases and withheld cells: "
              r"docs/memo/interleaved\_table\_notes.md.}")
     L.append(r"\label{tab:interleaved_results}")
     L.append(r"\centering")
