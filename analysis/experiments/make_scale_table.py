@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolution-scaling table. Every image is resized (aspect preserved) to T merged vision tokens
+r"""Resolution-scaling table. Every image is resized (aspect preserved) to T merged vision tokens
 before any other step, so a rung differs from its neighbours in sequence length only; the native
 rung is the campaign row at the dataset's own resolution.
 
