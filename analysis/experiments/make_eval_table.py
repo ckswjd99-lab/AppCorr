@@ -1315,7 +1315,8 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
     ("Qwen3.5-MoE (35B-A3B)", "_qwen3.5-35b-a3b", "_c4",
      {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
       "visdrone_count": 2350, "visdrone_det": 448,
-      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
+      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811,
+      "mmerealworld": 23609}, False,
      {"vstar": "qwen35_flops_il.json", "realworldqa": "qwen35_flops_il_rwqa.json",
       "textvqa": "qwen35_flops_il_ext.json", "infovqa": "qwen35_flops_il_ext.json",
       "visdrone_count": "qwen35_flops_il_ext.json", "visdrone_det": "qwen35_flops_il_ext.json",
@@ -1336,7 +1337,8 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
     # _empty_artifacts_20260914/).  Main-session files still carry _c2 and are tried first.
     ("Qwen3.5-MoE (122B-A10B FP8)", "_qwen3.5-122b-a10b-fp8", ("_c2", ""),
      {"vstar": 40, "realworldqa": 240, "textvqa": 240, "infovqa": 240, "visdrone_count": 240,
-      "visdrone_det": 240, "chartqa": 240, "cvbench": 240, "mmvp": 240, "refcoco": 240},
+      "visdrone_det": 240, "chartqa": 240, "cvbench": 240, "mmvp": 240,
+      "refcoco": 240, "mmerealworld": 23609},
      True,
      {"vstar": "qwen35_122b_flops_il.json", "textvqa": "qwen35_122b_flops_fixed.json",
       "visdrone_count": "qwen35_122b_flops_fixed.json",
@@ -1356,7 +1358,8 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
     ("GLM-4.6V (106B-A12B FP8)", "_glm-4.6v-fp8", "_c2",
      {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
       "visdrone_count": 2350, "visdrone_det": 448,
-      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
+      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811,
+      "mmerealworld": 23609}, False,
      {ds: "glm46v_flops_il.json" for ds in ("vstar", "realworldqa", "textvqa", "infovqa",
                                             "visdrone_count", "visdrone_det", "chartqa",
                                             "cvbench", "mmvp", "refcoco")},
@@ -1367,7 +1370,8 @@ IL_MODELS = [  # (display, slug, file suffix, expected n per dataset, probe?, fl
     ("GLM-5.3-Flash (FP8, TP=2)", "_glm-5.3-flash", ("_c2", ""),
      {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
       "visdrone_count": 2350, "visdrone_det": 448,
-      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}, False,
+      "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811,
+      "mmerealworld": 23609}, False,
      {ds: "glm53_flops_il.json" for ds in ("vstar", "realworldqa", "textvqa", "infovqa",
                                            "visdrone_count", "visdrone_det", "chartqa",
                                            "cvbench", "mmvp", "refcoco")},
@@ -1390,7 +1394,14 @@ IL_DATASETS = [("vstar", "V*Bench (Acc.)", "ok", "qwen_vllm_accuracy_il_pyr"),
                ("chartqa", "ChartQA (Relaxed Acc.)", "ok", "qwen_vllm_accuracy_il"),
                ("cvbench", "CV-Bench (Acc.)", "ok", "qwen_vllm_accuracy_il"),
                ("mmvp", "MMVP (Acc.)", "ok", "qwen_vllm_accuracy_il"),
-               ("refcoco", "RefCOCO val (Acc.@0.5)", "ok", "qwen_vllm_accuracy_il_pyr")]
+               ("refcoco", "RefCOCO val (Acc.@0.5)", "ok", "qwen_vllm_accuracy_il_pyr"),
+               # 2026-09-16 (user go): MME-RealWorld, 23,609 MCQ rows over genuinely large
+               # photographs (median 2,728 vision tokens, p95 16,453 -- the only cell whose p95
+               # reaches the processor's 16,384-token cap), so it needs --max-model-len 20480.
+               # Only 35B is measured so far; the other three models render as `--`.  The rows
+               # are category-ordered in the source, so a PARTIAL file is biased by construction
+               # and the loader below refuses anything short of the full row count.
+               ("mmerealworld", "MME-RealWorld (Acc.)", "ok", "qwen_vllm_accuracy_il_pyr")]
 IL_KEEPS = [1.0, 0.5, 0.25]
 # (model slug, dataset) cells WITHHELD: arms whose numbers measure a known defect rather than the
 # schedule.  GLM-5.3-Flash emits box coordinates in a frame the scorer does not share -- on the
@@ -1504,7 +1515,8 @@ IL_SCHEDULES = [("stream", "streaming"), ("il", "interleaved"),
 # and renders parenthesized, unshaded, with no preservation % (the 2026-09-01 probe rule).
 IL_FULL_N = {"vstar": 191, "realworldqa": 765, "textvqa": 5000, "infovqa": 2801,
              "visdrone_count": 2350, "visdrone_det": 448,
-             "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811}
+             "chartqa": 2500, "cvbench": 2638, "mmvp": 300, "refcoco": 8811,
+             "mmerealworld": 23609}
 # Latency keys whose hooked FLOPs reference is known-understated: the FLOPs cells render with a
 # dagger until the reference is re-measured. Empty since the 2026-09-10 122B re-measure (the
 # FP8Experts hook fix; gate F on the ceiling: closed form within 0.05% of full - tower).
@@ -1630,8 +1642,11 @@ def il_flops(model_row, dataset: str) -> Dict[str, float]:
             if c is not None:
                 out[f"stream_crit_k{k:.2f}"], out[f"stream_total_k{k:.2f}"] = c, t
     # vision half for a decoder-only (--il-only) json: the 35B run's split at the same keep.
-    p35 = os.path.join(IL_ROOT, "flops", IL_MODELS[0][5].get(dataset, ""))
-    j35 = json.load(open(p35)).get(dataset, {}) if os.path.exists(p35) else {}
+    # A dataset with no FLOPs json yet (MME-RealWorld) names no file; joining "" yields the
+    # flops DIRECTORY, which os.path.exists happily confirms -- guard on the name, not the path.
+    n35 = IL_MODELS[0][5].get(dataset, "")
+    p35 = os.path.join(IL_ROOT, "flops", n35) if n35 else ""
+    j35 = json.load(open(p35)).get(dataset, {}) if p35 and os.path.isfile(p35) else {}
     for tag in ("il", "ils", "ilu"):   # unstaged / depth-staged / unified-axis interleaved arm
         for k in IL_KEEPS:
             kk = "" if k == 1.0 else f"_k{k:.2f}"
