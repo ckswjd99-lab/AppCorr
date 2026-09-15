@@ -203,6 +203,9 @@ def main():
                          "window (2026-09-09 rule: 150). Writes k{keep} from the pixel-arrival "
                          "anchor and detail streaming_k*_d<ms>; leaves 'full'/'total_k*' alone")
     ap.add_argument("--skip-ceiling", action="store_true", help="streaming arms only")
+    ap.add_argument("--target-tokens", type=int, default=0,
+                    help="forwarded to the driver (resize every image to ~N vision tokens); the "
+                         "row files carry `_tN`, so the probe reads the matching names")
     ap.add_argument("--llm-schedule",
                     choices=["streaming", "interleaved", "interleaved_staged", "unified_staged"],
                     default="streaming",
@@ -224,16 +227,18 @@ def main():
 
     def arm_path(ds, arm, keep=None):
         suf = "" if arm != "streaming" else f"_g{a.groups}" + (f"_{ktag(keep)}" if klt1(keep) else "")
-        # driver's `arm_tag` (incl. its schedule -> row-file-tag mapping)
+        # driver's `arm_tag` (incl. its schedule -> row-file-tag mapping); `_tN` sits last on
+        # both the bounds and the progressive arm, mirroring qwen_vllm_accuracy.target_suffix
         tag = SCHEDULE_TAG.get(a.llm_schedule, a.llm_schedule) if arm == "streaming" else arm
-        return os.path.join(out, f"{ds}_{slug}_{tag}{suf}.jsonl")
+        tsuf = f"_t{a.target_tokens}" if a.target_tokens else ""
+        return os.path.join(out, f"{ds}_{slug}_{tag}{suf}{tsuf}.jsonl")
 
     def run(ds, filt, arm, keep=1.0):
         p = arm_path(ds, arm, keep)
         if os.path.exists(p):
             os.remove(p)          # the driver resumes from existing rows; a probe must be fresh
         cmd = drv + ["--dataset", ds, "--degrade-filter", filt, "--arms", arm] + kdriver(keep) + [
-            "--llm-schedule", a.llm_schedule]
+            "--llm-schedule", a.llm_schedule] + (["--target-tokens", str(a.target_tokens)] if a.target_tokens else [])
         log = os.path.join(out, f"log_{ds}_{arm}_{ktag(keep)}.log")
         e = dict(env)
         if arm == "streaming" and a.push_delay_ms > 0:
