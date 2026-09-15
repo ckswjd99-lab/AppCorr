@@ -1414,10 +1414,22 @@ IL_KEEPS = [1.0, 0.5, 0.25]
 # preservation it implies (95.5 %) is optimistic; on the 289 rows where every arm answered inside
 # the budget the ordering is floor 29.41 < auto25 35.64 < auto50 38.75 < ceiling 45.33. The capped
 # counts travel with the cell in IL_CAPPED and are printed in the caption.
-IL_WITHHELD = {("_glm-5.3-flash", "refcoco")}
+# RefCOCO restored 2026-09-15 after the FOURTH scorer fix (89319d3, per-row 0-1000 frame drift)
+# on top of the third (c7320f9). All four arms re-run with `raw` and re-scored from it. The cell
+# is FLAT for GLM-5.3: on the 6019 rows where every arm answered inside the 512-token budget,
+# floor 80.91 / auto50 80.45 / auto25 81.08 / ceiling 79.48 -- a 1.6-point spread with the ceiling
+# marginally BELOW the floor. Nothing is withheld from the interleaved table any more.
+IL_WITHHELD: set = set()
 
 # (model slug, dataset) -> rows whose generation hit the max-tokens cap, per arm, for the caption.
-IL_CAPPED = {("_glm-5.3-flash", "visdrone_det"):
+IL_CAPPED = {("_glm-5.3-flash", "refcoco"):
+             "GLM-5.3 RefCOCO is scored as produced under the 512-token cap, which ends 2216 of "
+             "8811 ceiling rows mid-thought against 423 / 481 / 358 on the low-resolution and "
+             "adaptive arms; on the 6019 rows every arm answered inside the budget all four sit "
+             "within 1.6 points (floor 80.91, ceiling 79.48). Its full-resolution arm also "
+             "answers some rows in a 0-1000 frame rather than pixels, corrected by the "
+             "out-of-frame rule (20.0\\% of ceiling boxes, 5.5--6.8\\% elsewhere).",
+             ("_glm-5.3-flash", "visdrone_det"):
              "GLM-5.3 VisDrone Det is scored as produced under the 512-token cap, which ends "
              "149 of 448 ceiling rows mid-thought against 9 on the low-resolution arm and 12/6 "
              "on the adaptive arms; on the 289 rows every arm answered inside the budget the "
