@@ -53,13 +53,17 @@ def critcomp(rows, ks, dec, vision):
     return statistics.mean(v) if v else None
 
 def main():
-    L = [r"\begin{table*}[t]", r"\centering", r"\small",
+    L = [r"\begin{table*}[t]", r"\centering",
          r"\caption{Resolution scaling: every image is resized (aspect preserved) to $T$ merged vision tokens before "
          r"any other step, so a rung differs from its neighbours in sequence length only; ``native'' is the campaign "
          r"row at the dataset's own resolution. Acc.\ in \%, Ours with (preservation vs.\ the ceiling on the cell's "
          r"common rows) and the realised $\bar k$; Crit.\ Comp.: last-round FLOPs as a share of the full-resolution "
          r"pass (closed form). $n$ = common rows.}",
-         r"\label{tab:scaling}", r"\begin{tabular}{llrrrrrrrrrrrrrr}", r"\toprule",
+         r"\label{tab:scaling}",
+         # same device as the interleaved table: scale the whole tabular to \textwidth (height
+         # follows), tight column padding; without it 16 columns run off the page
+         r"\resizebox{\textwidth}{!}{%", r"\setlength{\tabcolsep}{3pt}",
+         r"\begin{tabular}{llrrrrrrrrrrrrrr}", r"\toprule",
          r"\multirow{2}{*}{Dataset} & \multirow{2}{*}{$T$} & \multirow{2}{*}{tok} & \multirow{2}{*}{$n$} & "
          r"\multirow{2}{*}{Low-res.} & \multirow{2}{*}{Full-res.} & "
          r"\multicolumn{4}{c}{Ours $k{=}.50$} & \multicolumn{4}{c}{Ours $k{=}.25$} & "
@@ -95,7 +99,7 @@ def main():
                              f"{a2:.2f} & {100*a2/c:.1f}\\% & {kbar(A25):.2f} & {th25:.4f} & {fmt(cc5)} & {fmt(cc2)} \\\\")
         if block:
             L += [r"\midrule", rf"\multicolumn{{10}}{{l}}{{\textbf{{{mname}}}}} \\"] + block
-    L += [r"\bottomrule", r"\end{tabular}", r"\end{table*}"]
+    L += [r"\bottomrule", r"\end{tabular}}", r"\end{table*}"]
     print("\n".join(L))
 
 if __name__ == "__main__":
