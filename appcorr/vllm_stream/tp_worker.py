@@ -112,6 +112,25 @@ def runner_call(worker, fn: Callable, args: tuple = (), kwargs: Optional[dict] =
     return fn(worker.model_runner, *args, **(kwargs or {}))
 
 
+def _patch_flags(runner) -> dict:
+    """Patch flags off the runner's OWN class, not the imported V1 symbol.
+
+    vLLM main instantiates a V2 GPUModelRunner our hooks never touch, so reading the flags off
+    `vllm.v1.worker.gpu_model_runner.GPUModelRunner` answers about a class that may not be the one
+    serving -- False while the live runner is patched, or True while it is not. This function is a
+    gate's only evidence that the patch is in on this rank, and a gate that can lie is worse than
+    no gate (see docs/memo, "patch target must be the instantiated class"). Walks the MRO because
+    install() sets the flag on whichever class it patched, which may be a base of the instance's.
+    """
+    cls = type(runner)
+    out = {}
+    for key, attr in (("stream_patched", "_appcorr_stream_patched"),
+                      ("correct_patched", "_appcorr_correct_patched")):
+        out[key] = any(bool(getattr(k, attr, False)) for k in cls.__mro__)
+    out["runner_class"] = f"{cls.__module__}.{cls.__qualname__}"
+    return out
+
+
 class AppcorrWorkerExtension:
     """Mixed into the worker class at `init_worker`. `self` is the vLLM `Worker`."""
 
@@ -180,8 +199,6 @@ class AppcorrWorkerExtension:
     # --- introspection for gates --------------------------------------------------------------
     def appcorr_worker_info(self) -> dict:
         """Enough to prove (a) from the driver: the patch is in, on this rank, on this device."""
-        from vllm.v1.worker.gpu_model_runner import GPUModelRunner
-
         runner = self.model_runner
         pc = runner.vllm_config.parallel_config
         return {
@@ -189,8 +206,7 @@ class AppcorrWorkerExtension:
             "local_rank": int(getattr(self, "local_rank", -1)),
             "device": str(runner.device),
             "installed": bool(INSTALLED),
-            "stream_patched": bool(getattr(GPUModelRunner, "_appcorr_stream_patched", False)),
-            "correct_patched": bool(getattr(GPUModelRunner, "_appcorr_correct_patched", False)),
+            **_patch_flags(runner),
             "has_correct_step": hasattr(runner, "appcorr_correct_step"),
             "tensor_parallel_size": int(pc.tensor_parallel_size),
             # SP inserts collectives INSIDE the decoder layer around attention
@@ -278,12 +294,10 @@ class OpDispatchMixin:
         extension did not import our package in a worker, that rank is missing from the list or
         reports `correct_patched=False`."""
         if self.tensor_parallel_size == 1:
-            from vllm.v1.worker.gpu_model_runner import GPUModelRunner
             r = self.runner
             pc = r.vllm_config.parallel_config
             return [{"rank": 0, "device": str(r.device), "installed": True,
-                     "stream_patched": bool(getattr(GPUModelRunner, "_appcorr_stream_patched", False)),
-                     "correct_patched": bool(getattr(GPUModelRunner, "_appcorr_correct_patched", False)),
+                     **_patch_flags(r),
                      "has_correct_step": hasattr(r, "appcorr_correct_step"),
                      "tensor_parallel_size": 1,
                      "sequence_parallel_moe": bool(pc.use_sequence_parallel_moe),
