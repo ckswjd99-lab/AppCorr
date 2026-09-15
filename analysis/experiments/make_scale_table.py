@@ -71,10 +71,24 @@ def comp_shares(rows, ks, dec, vision):
             tot.append(100 * (u["total"] + c["total"]) / full); crit.append(100 * (u["crit"] + c["crit"]) / full)
     return (statistics.mean(tot) if tot else None, statistics.mean(crit) if crit else None)
 
-def crit_lat_share(ad_key, st_key, ds, theta):
-    """Native rung only: this arm's Crit. Lat. as a share of the full-res TTFT, from the probe."""
-    x = (LAT.get(ad_key) or {}).get(ds) or {}
-    full = x.get("full") or ((LAT.get(st_key) or {}).get(ds) or {}).get("full") if st_key else x.get("full")
+# Sequence cap of the ladder's latency probe. The correct step submits one pseudo-sequence per
+# recomputed row, so max-num-seqs bounds |P_r|; a band above it splits into two passes and the
+# cell measures the cap rather than the schedule. Measured on the ladder's own `band_selected`,
+# |P_r| cannot exceed the band, i.e. ~T/4 (1,564 at T=6144), so 2048 clears every rung. The key
+# carries the cap so a cap-limited run can never be read as a clean one.
+LADDER_MNS = 2048
+
+def crit_lat_share(ad_key, st_key, ds, theta, T=None):
+    """This arm's Crit. Lat. as a share of the full-res TTFT, from the probe.
+
+    Native reads the campaign key; a ladder rung reads `<key>_mns<cap>_t<T>`, which is written by
+    scale_critlat.sh and never mixed with the native key -- the two run different engines."""
+    key = ad_key if T is None else f"{ad_key}_mns{LADDER_MNS}_t{T}"
+    x = (LAT.get(key) or {}).get(ds) or {}
+    if T is None:
+        full = x.get("full") or ((LAT.get(st_key) or {}).get(ds) or {}).get("full") if st_key else x.get("full")
+    else:
+        full = x.get("full")          # the rung's own denominator, same engine, same session
     v = x.get(f"auto{theta:g}")
     return 100 * v / full if (v and full) else None
 
@@ -84,7 +98,7 @@ def arm_cells(A, ks, theta, c, dec, vision, ad_key, st_key, ds, T):
     a = 100 * sum(float(A[i]["val"]) for i in ks) / len(ks)
     kb = statistics.mean(A[i]["keep_realised"] for i in ks if isinstance(A[i].get("keep_realised"), (int, float)))
     tot, crit = comp_shares(A, ks, dec, vision) if dec else (None, None)
-    lat = crit_lat_share(ad_key, st_key, ds, theta) if T is None else None
+    lat = crit_lat_share(ad_key, st_key, ds, theta, T)
     return f"{a:.2f} & {100 * a / c:.1f}\\% & {kb:.2f} & {theta:.4f} & {pct(tot)} & {pct(crit)} & {pct(lat)}"
 
 def main():
@@ -95,7 +109,7 @@ def main():
          r"vs.\ the ceiling on the cell's common rows; $\bar k$: realised mean keep; $\theta$: the per-band pscore "
          r"threshold the arm ran at, recalibrated per (dataset, $T$); Comp.\ / Crit.\ Comp.: total / last-round FLOPs "
          r"as a share of the full-resolution pass (closed form); Crit.\ Lat.: TTFT from the last band's arrival as a "
-         r"share of the full-resolution TTFT (probed at native only so far). $n$ = common rows; -- = not measured.}",
+         r"share of the full-resolution TTFT, each rung probed against its own full-resolution pass in the same session). $n$ = common rows; -- = not measured.}",
          r"\label{tab:scaling}", r"\resizebox{\textwidth}{!}{%", r"\setlength{\tabcolsep}{3pt}",
          r"\begin{tabular}{ll" + "r" * (NCOL - 2) + "}", r"\toprule",
          r"\multirow{2}{*}{Dataset} & \multirow{2}{*}{$T$} & \multirow{2}{*}{tok} & \multirow{2}{*}{$n$} & "
