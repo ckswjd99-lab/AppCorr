@@ -452,3 +452,38 @@ answered inside the budget the same data reads 38.75/45.33 = 85.5 % with the cei
 p = 0.005. The ordering there is the ordinary one and every gap but auto50-vs-auto25 is
 significant: floor 29.41 < auto25 35.64 < auto50 38.75 < ceiling 45.33. Quote the 95.5 % only
 next to the capped counts; never alone.
+
+## 122B InfoVQA at 16k: what the 8192 context was doing to the row (2026-09-15)
+
+The 122B served at `--max-model-len 8192` skipped every InfoVQA prompt longer than that -- 338 of
+2801 on the bounds. Re-running the row on TP=2 at 16384 shows those rows are the EASY ones, and
+that dropping them biased the row in our favour twice over.
+
+Bounds at 16k skip an identical 13 rows (prompts > 16,384 tokens), so 2788 rows / 99.5 % is the
+most complete reference we have:
+
+    reference, 2788 rows        floor 71.52   ceiling 88.27   gap 16.75 pt
+    the 325 rows 8192 dropped   floor 89.12   ceiling 92.46   gap  3.34 pt   <- floor already good
+    8192 common subset, 2227    floor 67.76   ceiling 87.78   gap 20.02 pt   -> gap overstated 3.27
+    16k  common subset, 2633    floor 70.53   ceiling 88.13   gap 17.60 pt   -> gap overstated 0.85
+
+Dropping rows the low-resolution pass already answers costs the FLOOR 3.8 pt and the ceiling 0.5,
+so the floor-ceiling gap widens and every technique sitting between them looks better. Same shape
+as the GLM-5.3 markdown-scorer note in clean_text ("the floor was hit harder than the ceiling ...
+which widens the floor-ceiling gap and flatters every technique in between"), different cause.
+
+SECOND bias, opposite direction: the arms do not skip the same rows. At 8192 the unified/adaptive
+arm skipped only 13 where the bounds skipped 338, because the unified schedule feeds the prompt
+progressively and the engine never sees it as one over-length chunk -- so our arm was scored on
+325 easy rows the ceiling never answered (own mean 85.38 vs 84.40 on the common subset). The
+table's common-subset rule already absorbs this; it is why the row prints parenthesized.
+
+16k does NOT remove the parentheses: the adaptive arms now OOM on the 155 longest prompts (side
+buffer, the known 122B InfoVQA limit -- at 8192 those rows were refused as over-length before they
+could OOM), so coverage is 2633 / 94.0 % against the bounds' 2788. It does cut the residual bias
+by 74 %. Rows in `qwen_vllm_accuracy_il_pyr{,_adaptive}_tp2_16k/`; realised k 0.518 mean /
+0.501 median at target 0.50.
+
+Checked across every 122B dataset: InfoVQA is the ONLY one affected. RealWorldQA, TextVQA, both
+VisDrone, ChartQA, CV-Bench, MMVP and RefCOCO skip 0 rows and skip them identically across all 18
+arms; V*Bench differs by at most 2 rows of 191.
