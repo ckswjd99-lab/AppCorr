@@ -16,10 +16,16 @@ from flops_analytic import DECODERS, VISIONS
 
 R = os.path.join(os.path.dirname(__file__), "..", "results")
 MODELS = [  # (row-file slug, flops_analytic key, latency adaptive key, latency streaming key for `full`, display)
-    ("qwen3.5-35b-a3b", "qwen35_35b", "qwen35_35b_ilu_adaptive", "qwen35_moe_cg1024", "Qwen3.5-35B"),
-    ("qwen3.5-122b-a10b-fp8", "qwen35_122b", "qwen35_122b_ilu_adaptive", "qwen35_122b_cg1024", "Qwen3.5-122B"),
-    ("glm-4.6v-fp8", "glm46v", "glm46v_ilu_adaptive", None, "GLM-4.6V"),
-    ("glm-5.3-flash", "glm53", "glm53_ilu_adaptive_tp2graph_fixed", None, "GLM-5.3")]
+    # Display names carry the full checkpoint identity, as in the interleaved table: the MoE active
+    # width and the FP8 weights are not decoration here -- every Comp. and Crit. Lat. number depends
+    # on them. The block label is a \multicolumn spanning the row, so length costs no width.
+    ("qwen3.5-35b-a3b", "qwen35_35b", "qwen35_35b_ilu_adaptive", "qwen35_moe_cg1024",
+     "Qwen3.5-MoE (35B-A3B)"),
+    ("qwen3.5-122b-a10b-fp8", "qwen35_122b", "qwen35_122b_ilu_adaptive", "qwen35_122b_cg1024",
+     "Qwen3.5-MoE (122B-A10B FP8)"),
+    ("glm-4.6v-fp8", "glm46v", "glm46v_ilu_adaptive", None, "GLM-4.6V (106B-A12B FP8)"),
+    ("glm-5.3-flash", "glm53", "glm53_ilu_adaptive_tp2graph_fixed", None,
+     "GLM-5.3-Flash (FP8, TP$=$2)")]
 DS = [("vstar", "V*Bench", "pyr"), ("infovqa", "InfoVQA", "pyr"), ("realworldqa", "RealWorldQA", "box"),
       ("textvqa", "TextVQA", "pyr")]
 LADDER = [None, 2048, 4096, 6144]
@@ -119,10 +125,13 @@ def main():
          r"as a share of the full-resolution pass (closed form); Crit.\ Lat.: TTFT from the last band's arrival as a "
          r"share of the full-resolution TTFT, each rung probed against its own full-resolution pass in the same session). $n$ = common rows; -- = not measured.}",
          r"\label{tab:scaling}", r"\resizebox{\textwidth}{!}{%", r"\setlength{\tabcolsep}{3pt}",
-         r"\begin{tabular}{ll" + "r" * (NCOL - 2) + "}", r"\toprule",
+# Vertical rules (user 2026-09-16): after Dataset, after n, after Low-res., after Full-res.,
+         # and between the two Ours blocks -- the four single columns each carry their own
+         # meaning, so the rule keeps them from reading as one band.
+         r"\begin{tabular}{l|lrr|r|r|" + "r" * NSUB + "|" + "r" * NSUB + "}", r"\toprule",
          r"\multirow{2}{*}{Dataset} & \multirow{2}{*}{$T$} & \multirow{2}{*}{tok} & \multirow{2}{*}{$n$} & "
          r"\multirow{2}{*}{Low-res.} & \multirow{2}{*}{Full-res.} & "
-         rf"\multicolumn{{{NSUB}}}{{c}}{{Ours $k{{=}}.50$}} & \multicolumn{{{NSUB}}}{{c}}{{Ours $k{{=}}.25$}} \\",
+         rf"\multicolumn{{{NSUB}}}{{c|}}{{Ours $k{{=}}.50$}} & \multicolumn{{{NSUB}}}{{c}}{{Ours $k{{=}}.25$}} \\",
          rf"\cmidrule(lr){{7-{6 + NSUB}}} \cmidrule(lr){{{7 + NSUB}-{NCOL}}}",
          r" & & & & & & " + " & ".join([r"Acc. & Pres. & $\bar k$ & $\theta$ & Comp. & Crit.\ Comp. & Crit.\ Lat."] * 2) + r" \\"]
     for slug, mk, ad_key, st_key, mname in MODELS:
