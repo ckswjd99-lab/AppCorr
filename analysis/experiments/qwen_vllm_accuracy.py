@@ -591,11 +591,16 @@ def main():
                 done = {json.loads(l)["i"] for l in fh if l.strip()}
         pending = [i for i in idxs if i not in done]
         correct, scored, skipped = 0, 0, {}
+        # `correct` is exact-match; `val` is the dataset's own metric (InfoVQA ANLS,
+        # TextVQA VQA soft score). Both TABLES read `val`, so the log has to print it too --
+        # quoting `acc` for those two understates the ceiling and overstates the floor
+        # (InfoVQA floor T=2048 reads 72.30 as exact match against 69.32 ANLS).
+        val_sum, val_n = 0.0, 0
         fh = open(path, "a")
         t_arm0 = time.perf_counter()
 
         def record(i, pred, gold, size, extra):
-            nonlocal correct, scored
+            nonlocal correct, scored, val_sum, val_n
             if args.dataset in GROUNDING_DATASETS:
                 pred = frame_fix_box(rescale_box(pred, size, args.family), size)
             try:
@@ -604,6 +609,8 @@ def main():
                 ok, val = 0, None
             correct += ok
             scored += 1
+            if val is not None:
+                val_sum += float(val); val_n += 1
             row = {"i": int(i), "pred": pred, "gold": gold, "ok": int(ok),
                    "val": (float(val) if val is not None else None)}
             row.update(extra)
@@ -925,7 +932,9 @@ def main():
         if scored:
             print(f"Final Summary: {{\"dataset\": \"{args.dataset}\", \"model\": \"{slug}\", "
                   f"\"arm\": \"{tag}{suffix}\", \"scored\": {scored}, "
-                  f"\"acc\": {correct / scored * 100:.4f}, \"elapsed_s\": {el:.1f}, "
+                  f"\"acc\": {correct / scored * 100:.4f}, "
+                  + (f"\"val\": {val_sum / val_n * 100:.4f}, " if val_n else "") +
+                  f"\"elapsed_s\": {el:.1f}, "
                   f"\"samples_per_s\": {scored / el:.3f}, "
                   f"\"skipped\": {json.dumps(skipped)}}}", flush=True)
     print("QWEN_VLLM_ACCURACY_COMPLETE", flush=True)
