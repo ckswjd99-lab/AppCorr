@@ -430,3 +430,25 @@ GLM-5.3 server dies on its first unified request after any non-unified one -- si
 always `Inplace update to inference tensor`). `VLLM_GDN_DECODE_KERNEL=triton` was NOT set for this
 run, unlike the accuracy chains. Numbers here were re-aggregated from the shared probe rows under
 b200-8_logs/probe_glm53_ilu_adaptive/, not transcribed from a log; they match the run's report.
+
+## GLM-5.3 grounding cells: as-scored, with the capped count stated (user 2026-09-15)
+
+The 512-token cap ends GLM-5.3 mid-thought on sharp grounding frames, and it hits the arms
+unequally -- the sharper the image, the longer it reasons. VisDrone Det, 448 rows, under
+c7320f9 (as scored / excluding finish_reason=length rows / capped count):
+
+    floor     21.21 / 21.64 (n=439) / 9 capped
+    ceiling   30.13 / 44.48 (n=299) / 149 capped      <- 33 % of the arm
+    auto50    28.79 / 29.59 (n=436) / 12 capped
+    auto25    25.67 / 26.02 (n=442) / 6 capped
+
+**Decision: print the as-scored column** and state the capped count. Excluding capped rows would
+leave each arm on a different row set (299 vs 436), the exact trap that has already cost this
+campaign twice ([[feedback_common_subset_and_power]]), and the 512 cap is the standing protocol.
+
+**But the as-scored column flatters us and must carry the footnote.** It puts preservation at
+28.79/30.13 = 95.5 % with ceiling-vs-auto50 a wash (p = 0.53); on the 289 rows where every arm
+answered inside the budget the same data reads 38.75/45.33 = 85.5 % with the ceiling ahead at
+p = 0.005. The ordering there is the ordinary one and every gap but auto50-vs-auto25 is
+significant: floor 29.41 < auto25 35.64 < auto50 38.75 < ceiling 45.33. Quote the 95.5 % only
+next to the capped counts; never alone.
