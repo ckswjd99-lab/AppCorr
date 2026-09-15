@@ -25,7 +25,10 @@ MODELS = [  # (row-file slug, flops_analytic key, latency adaptive key, latency 
      "Qwen3.5-MoE (122B-A10B FP8)"),
     ("glm-4.6v-fp8", "glm46v", "glm46v_ilu_adaptive", None, "GLM-4.6V (106B-A12B FP8)"),
     ("glm-5.3-flash", "glm53", "glm53_ilu_adaptive_tp2graph_fixed", None,
-     "GLM-5.3-Flash (FP8, TP$=$2)")]
+     # 320B-A18B is the vendor's own figure and it checks out against the checkpoint: summing the
+     # safetensors headers gives 321.3 B total, of which 311.7 B are the 288 routed experts, so at
+     # top-k 8 the per-token active weight is 18.3 B.
+     "GLM-5.3-Flash (320B-A18B FP8, TP$=$2)")]
 DS = [("vstar", "V*Bench", "pyr"), ("infovqa", "InfoVQA", "pyr"), ("realworldqa", "RealWorldQA", "box"),
       ("textvqa", "TextVQA", "pyr")]
 LADDER = [None, 2048, 4096, 6144]
