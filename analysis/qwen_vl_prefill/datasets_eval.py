@@ -693,13 +693,81 @@ class SOUDrivingSpec:
         return ok, float(ok)
 
 
+class _HRBenchBase:
+    """HR-Bench (DreamMr/HR-Bench, AAAI'25 "Divide, Conquer and Combine"): 200
+    questions x 4 cyclic option permutations = 800 rows per version, pure A/B/C/D
+    MCQ over genuinely huge real photographs. Two versions ask THE SAME 200
+    questions of two crops of the same scene -- 8K is the full frame (median
+    38.8 MP, up to 59), 4K is the annotated region cropped out (median 16.3 MP,
+    typically 4032x4032) -- so the pair is a controlled resolution experiment on
+    identical text, unlike our synthetic --target-tokens ladder.
+
+    Why it earns a row: at Qwen3.5's 32 px/token side a 4032x4032 image is 15,876
+    tokens and rides UNDER the 16,384-token cap, i.e. nothing is thrown away; the
+    8K version and every GLM cap land at the cap instead. That is ~4.8x V*Bench's
+    3,341 tokens, which is the regime where our critical-path share is smallest
+    (the fixed floor is 26% of Crit. Lat. on V* and grows to 82% on MMVP).
+
+    `category` splits FSP ('single', 400 rows) from FCP ('cross', 400). The
+    official metric is CircularEval -- a question counts only if all four of its
+    permutations are right. We score per ROW (the arms are compared against each
+    other, and per-row keeps n at 800 instead of 200); analysis/experiments can
+    recover the circular number by grouping on the question text.
+    """
+    hf = "DreamMr/HR-Bench"
+    split = None                 # set by the subclass: the parquet basename
+
+    def load(self, load_dataset):
+        # The repo ships two loose parquet files, so read them directly out of the
+        # hub snapshot rather than through the dataset script: that keeps the load
+        # working under HF_HUB_OFFLINE=1, which every campaign chain sets.
+        from huggingface_hub import snapshot_download
+        d = snapshot_download(self.hf, repo_type="dataset", local_files_only=True,
+                              allow_patterns=["*.parquet"])
+        return load_dataset("parquet", data_files=f"{d}/{self.split}.parquet", split="train")
+
+    def prepare(self, ex, smart_resize, factor, min_px, max_px):
+        import base64
+        import io
+        image = Image.open(io.BytesIO(base64.b64decode(ex["image"]))).convert("RGB")
+        th, tw = smart_resize(image.height, image.width, factor=factor, min_pixels=min_px, max_pixels=max_px)
+        image_r = image.resize((tw, th), Image.BILINEAR)
+        opts = "\n".join(f"{c}. {str(ex[c]).strip()}" for c in "ABCD")
+        prompt = (f"{ex['question'].strip()}\n{opts}\n"
+                  "Answer with the option's letter only.")
+        return image_r, prompt, str(ex["answer"]).strip().upper()
+
+    CHOICES = "ABCD"
+
+    def score(self, pred_text, gold):
+        ok, val, _ = score_mcq(pred_text, gold, self.CHOICES)
+        return ok, val
+
+    def no_answer(self, pred_text) -> bool:
+        return extract_choice(pred_text, self.CHOICES) is None
+
+
+class HRBench4KSpec(_HRBenchBase):
+    """HR-Bench 4K: the annotated region cropped from the 8K frame."""
+    name = "hrbench_4k"
+    split = "hr_bench_4k"
+
+
+class HRBench8KSpec(_HRBenchBase):
+    """HR-Bench 8K: the full frame. Every model's processor caps it, so its extra
+    pixels never reach the tower -- it is the harder-at-equal-tokens control."""
+    name = "hrbench_8k"
+    split = "hr_bench_8k"
+
+
 SPECS = {"refcoco": RefCOCOSpec, "realworldqa": RealWorldQASpec, "gqa": GQASpec,
          "textvqa": TextVQASpec, "chartqa": ChartQASpec, "docvqa": DocVQASpec,
          "infovqa": InfoVQASpec, "pope": POPESpec, "mmmu": MMMUSpec, "vsr": VSRSpec,
          "cvbench": CVBenchSpec, "mmvp": MMVPSpec, "mmerealworld": MMERealWorldSpec,
          "wildvision": WildVisionSpec,
          "visdrone_count": VisDroneCountSpec, "visdrone_det": VisDroneDetSpec,
-         "vstar": VStarSpec, "sou_driving": SOUDrivingSpec}
+         "vstar": VStarSpec, "sou_driving": SOUDrivingSpec,
+         "hrbench_4k": HRBench4KSpec, "hrbench_8k": HRBench8KSpec}
 
 
 def get_spec(name):
