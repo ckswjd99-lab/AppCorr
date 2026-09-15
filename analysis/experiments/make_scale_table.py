@@ -73,18 +73,24 @@ def main():
         for ds, dname, filt in DS:
             for T in LADDER:
                 fc, ff, fa = find(ds, slug, "ceiling", T, filt), find(ds, slug, "floor", T, filt), find(ds, slug, "auto", T, filt)
-                if not (fc and ff and fa): continue
+                Tlab = 'native' if T is None else T
+                if not (fc and ff and fa):
+                    # the rung is not measured yet: keep the row so the ladder's shape is visible
+                    block.append(f"{dname} & {Tlab} & " + " & ".join(["--"] * 14) + r" \\")
+                    continue
                 C, F = rows_of(fc[0]), rows_of(ff[0]); A50, A25 = rows_of(fa[0][0]), rows_of(fa[1][0])
                 th50, th25 = fa[0][1], fa[1][1]
                 ks = sorted(set(C) & set(F) & set(A50) & set(A25))
-                if len(ks) < 30: continue
+                if len(ks) < 30:
+                    block.append(f"{dname} & {Tlab} & " + " & ".join(["--"] * 14) + r" \\")
+                    continue
                 acc = lambda d: 100 * sum(float(d[i]["val"]) for i in ks) / len(ks)
                 kbar = lambda d: statistics.mean(d[i]["keep_realised"] for i in ks if isinstance(d[i].get("keep_realised"), (int, float)))
                 tok = statistics.median(C[i]["prompt_tokens"] for i in ks if C[i].get("prompt_tokens"))
                 c, f, a5, a2 = acc(C), acc(F), acc(A50), acc(A25)
                 cc5 = critcomp(A50, ks, dec, vision) if dec else None; cc2 = critcomp(A25, ks, dec, vision) if dec else None
                 fmt = lambda x: f"{x:.1f}\\%" if x is not None else "--"
-                block.append(f"{dname} & {'native' if T is None else T} & {tok:,.0f} & {len(ks)} & {f:.2f} & {c:.2f} & "
+                block.append(f"{dname} & {Tlab} & {tok:,.0f} & {len(ks)} & {f:.2f} & {c:.2f} & "
                              f"{a5:.2f} & {100*a5/c:.1f}\\% & {kbar(A50):.2f} & {th50:.4f} & "
                              f"{a2:.2f} & {100*a2/c:.1f}\\% & {kbar(A25):.2f} & {th25:.4f} & {fmt(cc5)} & {fmt(cc2)} \\\\")
         if block:
