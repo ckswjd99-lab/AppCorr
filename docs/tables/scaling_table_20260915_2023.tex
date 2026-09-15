@@ -1,0 +1,33 @@
+\begin{table*}[t]
+\centering
+\small
+\caption{Resolution scaling: every image is resized (aspect preserved) to $T$ merged vision tokens before any other step, so a rung differs from its neighbours in sequence length only; ``native'' is the campaign row at the dataset's own resolution. Acc.\ in \%, Ours with (preservation vs.\ the ceiling on the cell's common rows) and the realised $\bar k$; Crit.\ Comp.: last-round FLOPs as a share of the full-resolution pass (closed form). $n$ = common rows.}
+\label{tab:scaling}
+\begin{tabular}{llrrrrllrr}
+\toprule
+Dataset & $T$ & tok & $n$ & Low-res. & Full-res. & Ours $k{=}.50$ & Ours $k{=}.25$ & CC$_{.50}$ & CC$_{.25}$ \\
+\midrule
+\multicolumn{10}{l}{\textbf{Qwen3.5-35B}} \\
+V*Bench & 2048 & 2,031 & 191 & 73.82 & 83.25 & 81.15 (97.5\%, $\bar k{=}0.48$) & 80.63 (96.9\%, $\bar k{=}0.26$) & 10.7\% & 6.0\% \\
+InfoVQA & native & 2,238 & 2788 & 70.30 & 86.84 & 84.12 (96.9\%, $\bar k{=}0.51$) & 76.96 (88.6\%, $\bar k{=}0.25$) & 13.1\% & 7.3\% \\
+InfoVQA & 2048 & 2,073 & 2500 & 68.88 & 87.11 & 84.82 (97.4\%, $\bar k{=}0.53$) & 78.68 (90.3\%, $\bar k{=}0.26$) & 13.1\% & 7.0\% \\
+RealWorldQA & native & 1,344 & 765 & 74.25 & 78.04 & 77.39 (99.2\%, $\bar k{=}0.51$) & 75.95 (97.3\%, $\bar k{=}0.26$) & 9.2\% & 6.3\% \\
+TextVQA & native & 798 & 5000 & 69.65 & 87.41 & 85.56 (97.9\%, $\bar k{=}0.47$) & 83.26 (95.2\%, $\bar k{=}0.24$) & 11.9\% & 7.1\% \\
+\midrule
+\multicolumn{10}{l}{\textbf{Qwen3.5-122B}} \\
+InfoVQA & native & 1,934 & 2463 & 69.20 & 87.80 & 84.66 (96.4\%, $\bar k{=}0.53$) & 77.68 (88.5\%, $\bar k{=}0.26$) & 14.5\% & 8.4\% \\
+RealWorldQA & native & 1,344 & 765 & 78.17 & 79.22 & 79.08 (99.8\%, $\bar k{=}0.51$) & 80.52 (101.7\%, $\bar k{=}0.26$) & 10.3\% & 7.4\% \\
+TextVQA & native & 798 & 4998 & 69.84 & 87.09 & 85.92 (98.7\%, $\bar k{=}0.47$) & 83.41 (95.8\%, $\bar k{=}0.24$) & 12.9\% & 8.1\% \\
+\midrule
+\multicolumn{10}{l}{\textbf{GLM-4.6V}} \\
+InfoVQA & native & 2,887 & 2801 & 69.73 & 87.12 & 85.03 (97.6\%, $\bar k{=}0.51$) & 78.57 (90.2\%, $\bar k{=}0.26$) & 12.9\% & 7.1\% \\
+RealWorldQA & native & 1,803 & 765 & 70.46 & 73.86 & 73.07 (98.9\%, $\bar k{=}0.52$) & 72.68 (98.4\%, $\bar k{=}0.26$) & 9.1\% & 6.1\% \\
+TextVQA & native & 1,026 & 5000 & 63.91 & 81.75 & 80.82 (98.9\%, $\bar k{=}0.46$) & 78.66 (96.2\%, $\bar k{=}0.24$) & 11.4\% & 6.7\% \\
+\midrule
+\multicolumn{10}{l}{\textbf{GLM-5.3}} \\
+InfoVQA & native & 2,385 & 2332 & 66.86 & 87.51 & 84.16 (96.2\%, $\bar k{=}0.53$) & 78.68 (89.9\%, $\bar k{=}0.27$) & 13.6\% & 7.7\% \\
+RealWorldQA & native & 1,806 & 765 & 74.64 & 78.82 & 78.04 (99.0\%, $\bar k{=}0.51$) & 77.52 (98.3\%, $\bar k{=}0.26$) & 9.5\% & 6.5\% \\
+TextVQA & native & 1,066 & 4997 & 68.85 & 85.61 & 83.89 (98.0\%, $\bar k{=}0.46$) & 81.91 (95.7\%, $\bar k{=}0.24$) & 11.2\% & 6.7\% \\
+\bottomrule
+\end{tabular}
+\end{table*}
