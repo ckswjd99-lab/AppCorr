@@ -27,6 +27,7 @@ carries the attention; the full image is needed for the pixel residual alone, no
   PYTHONPATH=$PWD python analysis/experiments/pscore_dump.py --family qwen35 \\
       --model Qwen/Qwen3.5-35B-A3B --dataset vstar --degrade-filter pyr --samples 36
 """
+from PIL import Image
 import argparse, json, os, sys, time
 
 import numpy as np
