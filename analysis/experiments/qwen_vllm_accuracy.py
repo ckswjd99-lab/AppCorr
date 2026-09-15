@@ -260,6 +260,39 @@ def token_factor(proc, family: str = "") -> int:
     return int(p) * int(m)
 
 
+def frame_fix_box(pred: str, size) -> str:
+    """A box that cannot fit inside the image was not in pixels -- read it as 0-1000.
+
+    GLM-5.3 complies with GROUNDING_PROMPT's "pixel coordinates" on a degraded image and drifts
+    to its native 0-1000 frame on the full-resolution one, PER ROW. RefCOCO's images are small
+    (640x480 typical), so a 0-1000 box lands outside them and is detectable without the label:
+    x2 > w or y2 > h (1 % tolerance) is impossible for a genuine pixel box.
+
+    Measured over all 8811 rows of every GLM-5.3 refcoco arm (2026-09-15) -- as scored / under
+    this rule, with the out-of-frame share: floor 72.99 / 74.88 (5.7 %), ceiling 50.49 / 59.49
+    (20.0 %), auto50 72.22 / 73.90 (6.8 %), auto25 74.01 / 75.62 (5.5 %). An oracle allowed to
+    pick the better frame per row beats the rule by ~1.1 points, so it catches nearly all of it.
+
+    Safe to run unconditionally: on every Qwen3.5 and GLM-4.6V refcoco arm the out-of-frame share
+    is 0.0 % and accuracy is unchanged to two decimals, because those families answer in 0-1000
+    and `rescale_box` has already mapped them into the frame. The rule only ever fires on a box
+    that is already impossible as pixels.
+
+    The residual it cannot see: on a large image (VisDrone 1920x1080) a 0-1000 box fits inside the
+    frame, so the same drift would be undetectable. Checked there -- an oracle equals the pixel
+    rule exactly on all 448 rows, i.e. GLM-5.3 does not use the normalised frame on VisDrone.
+    """
+    from qwen_vl_prefill.datasets_eval import _parse_bbox
+    b = _parse_bbox(pred)
+    if b is None or not size:
+        return pred
+    w, h = size
+    if not (w and h) or (b[2] <= w * 1.01 and b[3] <= h * 1.01):
+        return pred
+    return (f"{b[0] * w / 1000:.1f},{b[1] * h / 1000:.1f},"
+            f"{b[2] * w / 1000:.1f},{b[3] * h / 1000:.1f}")
+
+
 def rescale_box(pred: str, size, family: str) -> str:
     """Map a grounding answer onto native pixels, per `GROUNDING_COORDS[family]`."""
     if GROUNDING_COORDS.get(family, "rel1000") == "pixel":
@@ -561,8 +594,8 @@ def main():
 
         def record(i, pred, gold, size, extra):
             nonlocal correct, scored
-            if args.dataset in ("refcoco", "visdrone_det"):
-                pred = rescale_box(pred, size, args.family)
+            if args.dataset in GROUNDING_DATASETS:
+                pred = frame_fix_box(rescale_box(pred, size, args.family), size)
             try:
                 ok, val = spec.score(pred, gold)
             except NotImplementedError:
