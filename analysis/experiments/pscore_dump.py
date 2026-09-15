@@ -227,13 +227,17 @@ def main():
     t0 = time.perf_counter()
     for j, i in enumerate(idxs):
         img, q, _ = spec.prepare(ds[int(i)], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
-        if a.target_tokens:
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            img = resize_to_tokens(img, a.target_tokens, token_factor(proc, a.family))
         if img.mode != "RGB":
             img = img.convert("RGB")
+        # Same contract as the driver (2026-09-16): the level is built in NATIVE coordinates and
+        # only then scaled onto the target grid.  The threshold this dump calibrates is fitted
+        # against `base`, so getting the order wrong here mis-fits every theta as well.
         base = degrade(img, a.level, a.degrade_filter)
+        if a.target_tokens:
+            _f = token_factor(proc, a.family)
+            img = resize_to_tokens(img, a.target_tokens, _f)
+            base = resize_to_tokens(base, a.target_tokens, _f)
+            assert img.size == base.size, (img.size, base.size)
         inputs = axis.build_inputs(img, q, **tmpl_kw).to(a.device)
         px_base = axis.build_inputs(base, q, **tmpl_kw)["pixel_values"].to(a.device)
         rms, mse, mse_raw, attn, band, ru = (score_one_unified if a.llm_schedule == "unified_staged"

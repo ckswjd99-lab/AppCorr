@@ -615,13 +615,11 @@ def main():
                       f"({scored / el:.2f} samples/s)", flush=True)
 
         def build(i):
+            """The sample at NATIVE resolution. --target-tokens is NOT applied here: the
+            degraded level has to be built in native coordinates first (see prep)."""
             img, q, gold = spec.prepare(ds[int(i)], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            if args.target_tokens:
-                # BEFORE degrade, so the low-resolution arm is derived from the resized image and
-                # every arm of the run sees the same token budget.
-                img = resize_to_tokens(img, args.target_tokens, token_factor(proc, args.family))
             return img, q, gold
 
         def prep(i):
@@ -629,7 +627,23 @@ def main():
             streaming arm). Runs on the prefetch thread when --prefetch > 0."""
             img, q, gold = build(i)
             t0 = time.perf_counter()
+            # AGENTS.md "Approx/Correct Contracts", restated in
+            # docs/memo/pyramid_degradation_native_vs_canvas.md: the degraded level is built from
+            # the ORIGINAL in native coordinates, and only the selected level is scaled onto the
+            # model input shape.  Degrading the resized canvas instead is what made COCO's floor
+            # equal its ceiling to 1e-4, and it is what this driver did until 2026-09-16: above
+            # native the resize is an upscale that carries no information, so degrading it removes
+            # the upscale rather than real content and the floor comes out far too strong
+            # (measured on Qwen3.5/pyr: 2.27x the high-frequency energy at InfoVQA T=6144).
             base = degrade(img, args.level, args.degrade_filter, max_px=family_max_px)
+            if args.target_tokens:
+                # degrade() preserves size, so the full and the degraded image enter
+                # resize_to_tokens with identical dimensions and land on the same token grid --
+                # which the band mixing requires.
+                _f = token_factor(proc, args.family)
+                img = resize_to_tokens(img, args.target_tokens, _f)
+                base = resize_to_tokens(base, args.target_tokens, _f)
+                assert img.size == base.size, (img.size, base.size)
             if arm == "streaming":
                 inputs = axis.build_inputs(img, q, **tmpl_kw)
                 px_base = axis.build_inputs(base, q, **tmpl_kw)["pixel_values"]
