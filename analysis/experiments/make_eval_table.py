@@ -1423,17 +1423,24 @@ IL_WITHHELD: set = set()
 
 # (model slug, dataset) -> rows whose generation hit the max-tokens cap, per arm, for the caption.
 IL_CAPPED = {("_glm-5.3-flash", "refcoco"):
-             "GLM-5.3 RefCOCO is scored as produced under the 512-token cap, which ends 2216 of "
+             "GLM-5.3 RefCOCO is still scored under the older 512-token cap -- its re-run at 2048 is "
+             "queued -- which ends 2216 of "
              "8811 ceiling rows mid-thought against 423 / 481 / 358 on the low-resolution and "
              "adaptive arms; on the 6019 rows every arm answered inside the budget all four sit "
              "within 1.6 points (floor 80.91, ceiling 79.48). Its full-resolution arm also "
              "answers some rows in a 0-1000 frame rather than pixels, corrected by the "
              "out-of-frame rule (20.0\\% of ceiling boxes, 5.5--6.8\\% elsewhere).",
              ("_glm-5.3-flash", "visdrone_det"):
-             "GLM-5.3 VisDrone Det is scored as produced under the 512-token cap, which ends "
-             "149 of 448 ceiling rows mid-thought against 9 on the low-resolution arm and 12/6 "
-             "on the adaptive arms; on the 289 rows every arm answered inside the budget the "
-             "ceiling leads the adaptive arm 45.33 vs 38.75 (paired, $p=0.005$)."}
+             "GLM-5.3 VisDrone Det is scored as produced under a 2048-token cap, settled after "
+             "512, 2048 and 4096 were each measured on the whole cell: of the 387 rows that "
+             "terminate at 4096 only two need more than 2048 tokens, so the 61 rows still at the "
+             "wall there are non-terminating rather than truncated, and the ceiling does not "
+             "improve for the larger budget (33.48 at 2048 against 31.70 at 4096, with the floor "
+             "moving 21.43 to 20.31 over the same pair as a noise yardstick). The cap ends 89 of "
+             "448 ceiling rows mid-thought against 5 on the low-resolution arm and 4/3 on the "
+             "adaptive arms; on the 349 rows every arm answered inside the budget with a box the "
+             "ordering is floor 26.93, adaptive 32.09 and 36.96, ceiling 40.97 (paired, ceiling "
+             "against $k{=}0.50$ $p=0.065$)."}
 # Single CELLS withheld: (model slug, dataset, cell key, k).  The 122B V* adaptive Crit. Lat. at
 # the 0.50 target is produced by the server's pseudo-sequence cap, not by the schedule.  Adaptive
 # holds the mean k (0.501 measured) but raises the per-band MAXIMUM -- max |P_r| median 589 vs the

@@ -44,8 +44,12 @@ def find(ds, slug, arm, T, filt):
         fs = [f for f in glob.glob(os.path.join(R, d, pat)) if "_lat" not in os.path.basename(f) and "_t" not in os.path.basename(f).split("_g4")[-1]]
     else:
         d = "qwen_vllm_accuracy_scale" + ("_adaptive" if arm == "auto" else "")
-        pat = f"{ds}_{slug}_interleaved_unified_g4_auto*_t{T}_c*.jsonl" if arm == "auto" else f"{ds}_{slug}_{arm}_t{T}_c*.jsonl"
-        fs = glob.glob(os.path.join(R, d, pat))
+        # the concurrency suffix is only written when the driver runs c>1, and the two boxes run
+        # different concurrencies per model (35B c4 here, GLM-5.3 c1 on the peer), so `_cN` is
+        # optional -- but nothing else may follow `_tN`, or a `_t20480` would answer for `_t2048`.
+        pat = f"{ds}_{slug}_interleaved_unified_g4_auto*_t{T}*.jsonl" if arm == "auto" else f"{ds}_{slug}_{arm}_t{T}*.jsonl"
+        tail = re.compile(rf"_t{T}(_c\d+)?\.jsonl$")
+        fs = [f for f in glob.glob(os.path.join(R, d, pat)) if tail.search(os.path.basename(f))]
     if arm != "auto":
         return fs[:1]
     fs = [f for f in fs if AUTO_RX.search(os.path.basename(f)) and not AUTO_RX.search(os.path.basename(f)).group(2)]
