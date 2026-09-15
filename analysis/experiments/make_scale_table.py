@@ -36,7 +36,7 @@ def find(ds, slug, arm, T, filt):
         rx = re.compile(r"_auto([0-9.eE+-]+?)(b\d+)?(?:_t\d+)?(?:_c\d+)?\.jsonl$")
         fs = [f for f in fs if rx.search(os.path.basename(f)) and not rx.search(os.path.basename(f)).group(2)]  # drop bucket-4 variants
         fs = sorted(fs, key=lambda f: float(rx.search(os.path.basename(f)).group(1)))
-        return fs[:2] if len(fs) >= 2 else []
+        return [(f, float(rx.search(os.path.basename(f)).group(1))) for f in fs[:2]] if len(fs) >= 2 else []
     return fs[:1]
 
 def critcomp(rows, ks, dec, vision):
@@ -59,13 +59,13 @@ def main():
          r"row at the dataset's own resolution. Acc.\ in \%, Ours with (preservation vs.\ the ceiling on the cell's "
          r"common rows) and the realised $\bar k$; Crit.\ Comp.: last-round FLOPs as a share of the full-resolution "
          r"pass (closed form). $n$ = common rows.}",
-         r"\label{tab:scaling}", r"\begin{tabular}{llrrrrrrrrrrrr}", r"\toprule",
+         r"\label{tab:scaling}", r"\begin{tabular}{llrrrrrrrrrrrrrr}", r"\toprule",
          r"\multirow{2}{*}{Dataset} & \multirow{2}{*}{$T$} & \multirow{2}{*}{tok} & \multirow{2}{*}{$n$} & "
          r"\multirow{2}{*}{Low-res.} & \multirow{2}{*}{Full-res.} & "
-         r"\multicolumn{3}{c}{Ours $k{=}.50$} & \multicolumn{3}{c}{Ours $k{=}.25$} & "
+         r"\multicolumn{4}{c}{Ours $k{=}.50$} & \multicolumn{4}{c}{Ours $k{=}.25$} & "
          r"\multirow{2}{*}{CC$_{.50}$} & \multirow{2}{*}{CC$_{.25}$} \\",
-         r"\cmidrule(lr){7-9} \cmidrule(lr){10-12}",
-         r" & & & & & & Acc. & Pres. & $\bar k$ & Acc. & Pres. & $\bar k$ & & \\"]
+         r"\cmidrule(lr){7-10} \cmidrule(lr){11-14}",
+         r" & & & & & & Acc. & Pres. & $\bar k$ & $\theta$ & Acc. & Pres. & $\bar k$ & $\theta$ & & \\"]
     for slug, mk, mname in MODELS:
         fam = next((f for f, reg in DECODERS.items() if mk in reg), None)
         dec, vision = (DECODERS[fam][mk], VISIONS[fam]) if fam else (None, None)
@@ -74,7 +74,8 @@ def main():
             for T in LADDER:
                 fc, ff, fa = find(ds, slug, "ceiling", T, filt), find(ds, slug, "floor", T, filt), find(ds, slug, "auto", T, filt)
                 if not (fc and ff and fa): continue
-                C, F = rows_of(fc[0]), rows_of(ff[0]); A50, A25 = rows_of(fa[0]), rows_of(fa[1])
+                C, F = rows_of(fc[0]), rows_of(ff[0]); A50, A25 = rows_of(fa[0][0]), rows_of(fa[1][0])
+                th50, th25 = fa[0][1], fa[1][1]
                 ks = sorted(set(C) & set(F) & set(A50) & set(A25))
                 if len(ks) < 30: continue
                 acc = lambda d: 100 * sum(float(d[i]["val"]) for i in ks) / len(ks)
@@ -84,8 +85,8 @@ def main():
                 cc5 = critcomp(A50, ks, dec, vision) if dec else None; cc2 = critcomp(A25, ks, dec, vision) if dec else None
                 fmt = lambda x: f"{x:.1f}\\%" if x is not None else "--"
                 block.append(f"{dname} & {'native' if T is None else T} & {tok:,.0f} & {len(ks)} & {f:.2f} & {c:.2f} & "
-                             f"{a5:.2f} & {100*a5/c:.1f}\\% & {kbar(A50):.2f} & "
-                             f"{a2:.2f} & {100*a2/c:.1f}\\% & {kbar(A25):.2f} & {fmt(cc5)} & {fmt(cc2)} \\\\")
+                             f"{a5:.2f} & {100*a5/c:.1f}\\% & {kbar(A50):.2f} & {th50:.4f} & "
+                             f"{a2:.2f} & {100*a2/c:.1f}\\% & {kbar(A25):.2f} & {th25:.4f} & {fmt(cc5)} & {fmt(cc2)} \\\\")
         if block:
             L += [r"\midrule", rf"\multicolumn{{10}}{{l}}{{\textbf{{{mname}}}}} \\"] + block
     L += [r"\bottomrule", r"\end{tabular}", r"\end{table*}"]
