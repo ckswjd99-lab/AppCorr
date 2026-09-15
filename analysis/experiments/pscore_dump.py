@@ -40,6 +40,46 @@ from analysis.experiments.qwen_vllm_accuracy import make_axis     # noqa: E402
 
 
 @torch.no_grad()
+def resize_to_tokens(img, target_tokens: int, factor: int):
+    """Force an image to ~`target_tokens` merged vision tokens, aspect ratio preserved.
+
+    Every one of the four served families ingests images the same way: no fixed resolution, an
+    AREA cap, and `smart_resize` rounding H and W to `factor = patch_size * merge_size` (Qwen3.5
+    16*2 = 32 px per token side, both GLMs 14*2 = 28). One token therefore costs factor**2 pixels,
+    and a token budget converts to an area budget exactly:
+
+        area = target_tokens * factor**2
+
+    Passing that as BOTH min_pixels and max_pixels makes smart_resize scale up or down onto it, so
+    the resulting grid is target_tokens +- the rounding to whole patches. Specifying the target in
+    TOKENS rather than pixels is what makes the four models comparable: the same pixel area gives
+    Qwen 1024 px/token and the GLMs 784, a 31 % difference in sequence length -- and sequence
+    length, not pixel count, is what Comp / Crit. Comp / Crit. Lat are functions of.
+    """
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
+    area = int(target_tokens) * factor * factor
+    h, w = smart_resize(img.height, img.width, factor=factor, min_pixels=area, max_pixels=area)
+    return img.resize((w, h), Image.BICUBIC)
+
+
+def token_factor(proc, family: str = "") -> int:
+    """`patch_size * merge_size` of the served processor -- the pixel side one token covers.
+
+    Measured 2026-09-15: Qwen3.5 16*2 = 32, both GLMs 14*2 = 28. GLM-5.3-Flash's processor does
+    not load through AutoImageProcessor (`Unrecognized image processor`), so the family table is
+    the fallback; its processor_config.json carries patch_size 14, merge_size 2, patch_expand 1.
+    """
+    ip = getattr(proc, "image_processor", None) or proc
+    p, m = getattr(ip, "patch_size", None), getattr(ip, "merge_size", None)
+    if p and m:
+        return int(p) * int(m)
+    fam = {"qwen25vl": 28, "qwen35": 32, "glm46v": 28, "glm53": 28}.get(family)
+    if fam:
+        return fam
+    raise RuntimeError(f"cannot read patch/merge from {type(ip).__name__} and no family given")
+    return int(p) * int(m)
+
+
 def score_one(axis, inputs, px_base, groups):
     """(rms, mse, mse_raw, attn, band) per merge group, as `streaming_forward` would compute them."""
     dev = px_base.device
@@ -147,6 +187,11 @@ def main():
                     help="MUST match the campaign arm being calibrated (the 2026-09-11 "
                          "convention: box for realworldqa/chartqa/mmvp/vsr/cvbench, pyr for "
                          "the rest) -- the score is a property of the degradation")
+    ap.add_argument("--target-tokens", type=int, default=0,
+                    help="resize every image to ~N merged vision tokens first "
+                         "(see resize_to_tokens); the npz name gains `_tN`. Thetas MUST be "
+                         "calibrated at the resolution the arm will run at -- the pscore "
+                         "distribution moves with the token grid.")
     ap.add_argument("--samples", type=int, default=36, help="0 = full split")
     ap.add_argument("--contiguous", action="store_true")
     ap.add_argument("--think", action="store_true")
@@ -181,6 +226,10 @@ def main():
     t0 = time.perf_counter()
     for j, i in enumerate(idxs):
         img, q, _ = spec.prepare(ds[int(i)], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
+        if a.target_tokens:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img = resize_to_tokens(img, a.target_tokens, token_factor(proc, a.family))
         if img.mode != "RGB":
             img = img.convert("RGB")
         base = degrade(img, a.level, a.degrade_filter)
@@ -204,7 +253,7 @@ def main():
     os.makedirs(os.path.join(ROOT, a.out), exist_ok=True)
     sched_tag = "" if a.llm_schedule == "streaming" else "_ilu"
     name = (f"{a.dataset}_{slug}_g{a.groups}_l{a.level}{a.degrade_filter}{sched_tag}"
-            f"_n{len(idxs)}.npz")
+            f"_n{len(idxs)}" + (f"_t{a.target_tokens}" if a.target_tokens else "") + ".npz")
     path = os.path.join(ROOT, a.out, name)
     meta = {"dataset": a.dataset, "model": a.model, "family": a.family, "groups": a.groups,
             "llm_schedule": a.llm_schedule,

@@ -220,6 +220,46 @@ GROUNDING_COORDS = {"qwen25vl": "rel1000", "qwen35": "rel1000",
                     "glm46v": "rel1000", "glm53": "pixel"}
 
 
+def resize_to_tokens(img, target_tokens: int, factor: int):
+    """Force an image to ~`target_tokens` merged vision tokens, aspect ratio preserved.
+
+    Every one of the four served families ingests images the same way: no fixed resolution, an
+    AREA cap, and `smart_resize` rounding H and W to `factor = patch_size * merge_size` (Qwen3.5
+    16*2 = 32 px per token side, both GLMs 14*2 = 28). One token therefore costs factor**2 pixels,
+    and a token budget converts to an area budget exactly:
+
+        area = target_tokens * factor**2
+
+    Passing that as BOTH min_pixels and max_pixels makes smart_resize scale up or down onto it, so
+    the resulting grid is target_tokens +- the rounding to whole patches. Specifying the target in
+    TOKENS rather than pixels is what makes the four models comparable: the same pixel area gives
+    Qwen 1024 px/token and the GLMs 784, a 31 % difference in sequence length -- and sequence
+    length, not pixel count, is what Comp / Crit. Comp / Crit. Lat are functions of.
+    """
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
+    area = int(target_tokens) * factor * factor
+    h, w = smart_resize(img.height, img.width, factor=factor, min_pixels=area, max_pixels=area)
+    return img.resize((w, h), Image.BICUBIC)
+
+
+def token_factor(proc, family: str = "") -> int:
+    """`patch_size * merge_size` of the served processor -- the pixel side one token covers.
+
+    Measured 2026-09-15: Qwen3.5 16*2 = 32, both GLMs 14*2 = 28. GLM-5.3-Flash's processor does
+    not load through AutoImageProcessor (`Unrecognized image processor`), so the family table is
+    the fallback; its processor_config.json carries patch_size 14, merge_size 2, patch_expand 1.
+    """
+    ip = getattr(proc, "image_processor", None) or proc
+    p, m = getattr(ip, "patch_size", None), getattr(ip, "merge_size", None)
+    if p and m:
+        return int(p) * int(m)
+    fam = {"qwen25vl": 28, "qwen35": 32, "glm46v": 28, "glm53": 28}.get(family)
+    if fam:
+        return fam
+    raise RuntimeError(f"cannot read patch/merge from {type(ip).__name__} and no family given")
+    return int(p) * int(m)
+
+
 def rescale_box(pred: str, size, family: str) -> str:
     """Map a grounding answer onto native pixels, per `GROUNDING_COORDS[family]`."""
     if GROUNDING_COORDS.get(family, "rel1000") == "pixel":
@@ -238,6 +278,12 @@ def rescale_box(pred: str, size, family: str) -> str:
 SCHEDULE_TAG = {"unified_staged": "interleaved_unified"}
 
 
+def target_suffix(args) -> str:
+    """`_t<N>` when the run forces a token budget, so a ladder point cannot collide with the
+    native-resolution rows of the same arm."""
+    return f"_t{int(args.target_tokens)}" if getattr(args, "target_tokens", 0) else ""
+
+
 def keep_suffix(args) -> str:
     """The `--keep` half of the progressive arm's row-file name.
 
@@ -251,8 +297,9 @@ def keep_suffix(args) -> str:
         # 2026-09-13: "1/4로 올려서도 해봐라") is a different arm and says so in the name
         b = int(args.pscore_bucket)
         lat = "_lat" if getattr(args, "pscore_lattice", None) else ""
-        return f"_auto{args.pscore_threshold:g}" + ("" if b == 8 else f"b{b}") + lat
-    return f"_k{args.keep:.2f}" if args.keep < 1.0 else ""
+        return (f"_auto{args.pscore_threshold:g}" + ("" if b == 8 else f"b{b}") + lat
+                + target_suffix(args))
+    return (f"_k{args.keep:.2f}" if args.keep < 1.0 else "") + target_suffix(args)
 
 
 def arm_tag(arm: str, args) -> str:
@@ -336,6 +383,11 @@ def main():
                          "one of them (appcorr.models.qwen_vl_axis.bucket_quota_lattice). Arm "
                          "tag gains `_lat`. Thetas must be calibrated with the same lattice "
                          "(threshold_sim.py --lattice)")
+    ap.add_argument("--target-tokens", type=int, default=0,
+                    help="resize every image to ~N merged vision tokens before anything else "
+                         "(aspect preserved; see resize_to_tokens). 0 = native, the default. "
+                         "The row-file name gains `_tN` so a ladder point cannot overwrite "
+                         "the native run of the same arm.")
     ap.add_argument("--pscore-bucket", type=int, default=8,
                     help="--keep auto: the 1/b lattice each band's corrected count is ceilinged "
                          "onto (and its floor: a band never corrects fewer than ceil(G_r/b))")
@@ -531,6 +583,10 @@ def main():
             img, q, gold = spec.prepare(ds[int(i)], lambda h, w, **kw: (h, w), 1, 1, 1 << 30)
             if img.mode != "RGB":
                 img = img.convert("RGB")
+            if args.target_tokens:
+                # BEFORE degrade, so the low-resolution arm is derived from the resized image and
+                # every arm of the run sees the same token budget.
+                img = resize_to_tokens(img, args.target_tokens, token_factor(proc, args.family))
             return img, q, gold
 
         def prep(i):
