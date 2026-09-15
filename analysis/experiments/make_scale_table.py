@@ -54,7 +54,10 @@ def find(ds, slug, arm, T, filt):
         return fs[:1]
     fs = [f for f in fs if AUTO_RX.search(os.path.basename(f)) and not AUTO_RX.search(os.path.basename(f)).group(2)]
     fs = sorted(fs, key=lambda f: float(AUTO_RX.search(os.path.basename(f)).group(1)))
-    return [(f, float(AUTO_RX.search(os.path.basename(f)).group(1))) for f in fs[:2]] if len(fs) >= 2 else []
+    # One arm is enough to print half a rung: a running cell shows the target that finished
+    # rather than a row of dashes. The caller assigns each file to its k slot by realised keep,
+    # not by position, so a lone file lands in the right half.
+    return [(f, float(AUTO_RX.search(os.path.basename(f)).group(1))) for f in fs[:2]]
 
 def comp_shares(rows, ks, dec, vision):
     """(total, crit) FLOPs share of the full-resolution pass, closed form replayed per row."""
@@ -126,19 +129,39 @@ def main():
             for ri, T in enumerate(LADDER):
                 lead = rf"\multirow{{{len(LADDER)}}}{{*}}{{{dname}}} & " if ri == 0 else " & "
                 Tlab = "native" if T is None else str(T)
+                blank = NSUB * ["--"]
                 fc, ff, fa = find(ds, slug, "ceiling", T, filt), find(ds, slug, "floor", T, filt), find(ds, slug, "auto", T, filt)
-                if not (fc and ff and fa):
+                if not (fc and ff):
                     L.append(lead + f"{Tlab} & " + " & ".join(["--"] * (NCOL - 2)) + r" \\"); continue
-                C, F = rows_of(fc[0]), rows_of(ff[0]); A50, A25 = rows_of(fa[0][0]), rows_of(fa[1][0])
-                ks = sorted(set(C) & set(F) & set(A50) & set(A25))
+                C, F = rows_of(fc[0]), rows_of(ff[0])
+                # A STILL-RUNNING arm must not join the common subset: it would shrink the rung to
+                # its own prefix and silently rebase Low-res./Full-res. on a biased slice (the
+                # TextVQA T=2048 ceiling sat at 2,750 of 5,000 for a day and read as complete).
+                full_n = max(len(C), len(F))
+                slot = {}
+                for path, th in fa:
+                    A = rows_of(path)
+                    if len(A) < 0.95 * full_n:
+                        continue
+                    kb = statistics.mean(A[i]["keep_realised"] for i in A
+                                         if isinstance(A[i].get("keep_realised"), (int, float)))
+                    slot["k25" if kb < 0.375 else "k50"] = (A, th)
+                ks = sorted(set(C) & set(F) & set.intersection(
+                    *[set(v[0]) for v in slot.values()]) if slot else set(C) & set(F))
                 if len(ks) < 30:
                     L.append(lead + f"{Tlab} & " + " & ".join(["--"] * (NCOL - 2)) + r" \\"); continue
                 acc = lambda d: 100 * sum(float(d[i]["val"]) for i in ks) / len(ks)
                 tok = statistics.median(C[i]["prompt_tokens"] for i in ks if C[i].get("prompt_tokens"))
                 c, f = acc(C), acc(F)
+                cells = []
+                for name in ("k50", "k25"):
+                    if name in slot:
+                        A, th = slot[name]
+                        cells.append(arm_cells(A, ks, th, c, dec, vision, ad_key, st_key, ds, T))
+                    else:
+                        cells.append(" & ".join(blank))
                 L.append(lead + f"{Tlab} & {tok:,.0f} & {len(ks)} & {f:.2f} & {c:.2f} & "
-                         + arm_cells(A50, ks, fa[0][1], c, dec, vision, ad_key, st_key, ds, T) + " & "
-                         + arm_cells(A25, ks, fa[1][1], c, dec, vision, ad_key, st_key, ds, T) + r" \\")
+                         + " & ".join(cells) + r" \\")
     L += [r"\bottomrule", r"\end{tabular}}", r"\end{table*}"]
     print("\n".join(L))
 
