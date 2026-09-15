@@ -10,7 +10,7 @@ from flops_analytic import DECODERS, VISIONS
 R = os.path.join(os.path.dirname(__file__), "..", "results")
 MODELS = [("qwen3.5-35b-a3b", "qwen35_35b", "Qwen3.5-35B"), ("qwen3.5-122b-a10b-fp8", "qwen35_122b", "Qwen3.5-122B"),
           ("glm-4.6v-fp8", "glm46v", "GLM-4.6V"), ("glm-5.3-flash", "glm53", "GLM-5.3")]
-DS = [("vstar", "V*Bench", "box"), ("infovqa", "InfoVQA", "pyr"), ("realworldqa", "RealWorldQA", "box"),
+DS = [("vstar", "V*Bench", "pyr"), ("infovqa", "InfoVQA", "pyr"), ("realworldqa", "RealWorldQA", "box"),
       ("textvqa", "TextVQA", "pyr")]
 LADDER = [None, 2048, 4096, 6144]
 
@@ -59,8 +59,13 @@ def main():
          r"row at the dataset's own resolution. Acc.\ in \%, Ours with (preservation vs.\ the ceiling on the cell's "
          r"common rows) and the realised $\bar k$; Crit.\ Comp.: last-round FLOPs as a share of the full-resolution "
          r"pass (closed form). $n$ = common rows.}",
-         r"\label{tab:scaling}", r"\begin{tabular}{llrrrrllrr}", r"\toprule",
-         r"Dataset & $T$ & tok & $n$ & Low-res. & Full-res. & Ours $k{=}.50$ & Ours $k{=}.25$ & CC$_{.50}$ & CC$_{.25}$ \\"]
+         r"\label{tab:scaling}", r"\begin{tabular}{llrrrrrrrrrrrr}", r"\toprule",
+         r"\multirow{2}{*}{Dataset} & \multirow{2}{*}{$T$} & \multirow{2}{*}{tok} & \multirow{2}{*}{$n$} & "
+         r"\multirow{2}{*}{Low-res.} & \multirow{2}{*}{Full-res.} & "
+         r"\multicolumn{3}{c}{Ours $k{=}.50$} & \multicolumn{3}{c}{Ours $k{=}.25$} & "
+         r"\multirow{2}{*}{CC$_{.50}$} & \multirow{2}{*}{CC$_{.25}$} \\",
+         r"\cmidrule(lr){7-9} \cmidrule(lr){10-12}",
+         r" & & & & & & Acc. & Pres. & $\bar k$ & Acc. & Pres. & $\bar k$ & & \\"]
     for slug, mk, mname in MODELS:
         fam = next((f for f, reg in DECODERS.items() if mk in reg), None)
         dec, vision = (DECODERS[fam][mk], VISIONS[fam]) if fam else (None, None)
@@ -79,8 +84,8 @@ def main():
                 cc5 = critcomp(A50, ks, dec, vision) if dec else None; cc2 = critcomp(A25, ks, dec, vision) if dec else None
                 fmt = lambda x: f"{x:.1f}\\%" if x is not None else "--"
                 block.append(f"{dname} & {'native' if T is None else T} & {tok:,.0f} & {len(ks)} & {f:.2f} & {c:.2f} & "
-                             f"{a5:.2f} ({100*a5/c:.1f}\\%, $\\bar k{{=}}{kbar(A50):.2f}$) & "
-                             f"{a2:.2f} ({100*a2/c:.1f}\\%, $\\bar k{{=}}{kbar(A25):.2f}$) & {fmt(cc5)} & {fmt(cc2)} \\\\")
+                             f"{a5:.2f} & {100*a5/c:.1f}\\% & {kbar(A50):.2f} & "
+                             f"{a2:.2f} & {100*a2/c:.1f}\\% & {kbar(A25):.2f} & {fmt(cc5)} & {fmt(cc2)} \\\\")
         if block:
             L += [r"\midrule", rf"\multicolumn{{10}}{{l}}{{\textbf{{{mname}}}}} \\"] + block
     L += [r"\bottomrule", r"\end{tabular}", r"\end{table*}"]
