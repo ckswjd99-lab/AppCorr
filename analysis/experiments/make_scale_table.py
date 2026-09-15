@@ -23,6 +23,11 @@ MODELS = [  # (row-file slug, flops_analytic key, latency adaptive key, latency 
 DS = [("vstar", "V*Bench", "pyr"), ("infovqa", "InfoVQA", "pyr"), ("realworldqa", "RealWorldQA", "box"),
       ("textvqa", "TextVQA", "pyr")]
 LADDER = [None, 2048, 4096, 6144]
+# Full row count of each ladder dataset. Every rung runs the whole split (no arm has ever reported
+# a skip), so a short file is a killed run, not a result -- and a rung built on one silently
+# rebases Low-res./Full-res. on a biased prefix. Native rows are exempt: 122B runs them on strided
+# 240-row subsets by design, and the interleaved table marks those with parentheses instead.
+LADDER_N = {"vstar": 191, "realworldqa": 765, "infovqa": 2801, "textvqa": 5000}
 NSUB = 7                       # sub-columns per Ours arm
 NCOL = 6 + 2 * NSUB            # 20
 AUTO_RX = re.compile(r"_auto([0-9.eE+-]+?)(b\d+)?(?:_t\d+)?(?:_c\d+)?\.jsonl$")
@@ -134,6 +139,10 @@ def main():
                 if not (fc and ff):
                     L.append(lead + f"{Tlab} & " + " & ".join(["--"] * (NCOL - 2)) + r" \\"); continue
                 C, F = rows_of(fc[0]), rows_of(ff[0])
+                want = LADDER_N.get(ds, 0) if T is not None else 0
+                if want and (len(C) < 0.95 * want or len(F) < 0.95 * want):
+                    # a killed ceiling/floor: dash the rung rather than print a prefix
+                    L.append(lead + f"{Tlab} & " + " & ".join(["--"] * (NCOL - 2)) + r" \\"); continue
                 # A STILL-RUNNING arm must not join the common subset: it would shrink the rung to
                 # its own prefix and silently rebase Low-res./Full-res. on a biased slice (the
                 # TextVQA T=2048 ceiling sat at 2,750 of 5,000 for a day and read as complete).
