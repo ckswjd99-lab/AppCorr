@@ -340,7 +340,9 @@ def arm_tag(arm: str, args) -> str:
     (`streaming_g4_k0.50` / `interleaved_g4_k0.50`), so the two schedules' rows sit next to each
     other under --out instead of one resuming from the other's file."""
     if arm != "streaming":
-        return arm
+        # bounds arms carry the token budget too, else a ladder's T=4096 ceiling resumes from
+        # the T=2048 file and silently reuses it (caught 2026-09-15 after the first rung)
+        return arm + target_suffix(args)
     return SCHEDULE_TAG.get(args.llm_schedule, args.llm_schedule)
 
 
